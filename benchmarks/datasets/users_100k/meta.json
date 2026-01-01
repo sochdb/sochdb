@@ -1,0 +1,19 @@
+{
+  "name": "users_100k",
+  "description": "100K synthetic user records for KV benchmarks",
+  "type": "kv",
+  "format": "jsonl.zst",
+  "records": 100000,
+  "schema": {
+    "key": "users/{id}",
+    "value": {
+      "id": "integer",
+      "name": "string",
+      "email": "string",
+      "score": "integer (0-99)"
+    }
+  },
+  "generated": "2024-12-27T00:00:00Z",
+  "generator": "scripts/generate_users.py",
+  "sha256": "f86f7fd2f6785f61b9ea2674b2f876fb2c55d8bba96fcea104aa34088b8a0a3a"
+}

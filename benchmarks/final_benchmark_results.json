@@ -1,0 +1,147 @@
+{
+  "timestamp": "2025-12-28T12:11:28.927182",
+  "benchmarks": [
+    {
+      "name": "Full Benchmark Suite",
+      "path": "/Users/sushanth/toondb/benchmarks/full_benchmark_suite.py",
+      "success": true,
+      "returncode": 0,
+      "elapsed": 58.762638092041016,
+      "stdout": "=========\n\n  [3.1] ToonDB vs ChromaDB...\n        ToonDB Insert: 711 vec/s\n        ChromaDB Insert: 13,915 vec/s\n        Insert Speedup: 0.1x\n        ToonDB Search: 0.432ms\n        ChromaDB Search: 0.560ms\n        Search Speedup: 1.3x\n\n================================================================================\n  SUMMARY & RECOMMENDATIONS\n================================================================================\n\n  \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n  \u2502  OVERALL STATUS                                                            \u2502\n  \u251c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2524\n  \u2502  Correctness: \u2713 PASS                                              \u2502\n  \u2502  Performance: \u274c NEEDS IMPROVEMENT                                              \u2502\n  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\n    \n  DETAILED METRICS:\n  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \u2502 Self-Retrieval Success:    100% \u2502 Expected: 100%     \u2502\n  \u2502 Recall@10:                98.3% \u2502 Expected: \u226590%     \u2502\n  \u2502 Search Latency (p50):     0.591ms \u2502 Target: <1ms       \u2502\n  \u2502 Insert Throughput:          627 \u2502 Target: >10K vec/s \u2502\n  \u2502 QPS:                      1,823 \u2502 Target: >10K       \u2502\n  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n  RECOMMENDATIONS:\n  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n  \u2713 Correctness tests passed! Performance looks good.\n\n  Next Steps:\n  1. Scale testing to 100K-1M vectors\n  2. Add persistence benchmarks\n  3. Compare with more competitors (Qdrant, LanceDB)\n        \n\n  \u2713 ToonDB is 1.3x faster than ChromaDB on search latency\n\n================================================================================\n  Completed: 2025-12-28 12:12:27\n================================================================================\n\n  Results saved to: /Users/sushanth/toondb/benchmarks/benchmark_results.json\n",
+      "stderr": "/Users/sushanth/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020\n  warnings.warn(\n"
+    },
+    {
+      "name": "Reproduce HNSW Bug",
+      "path": "/Users/sushanth/toondb/benchmarks/reproduce_hnsw_bug.py",
+      "success": true,
+      "returncode": 0,
+      "elapsed": 1.1755280494689941,
+      "stdout": "======================================================================\n  TOONDB HNSW BUG REPRODUCTION\n======================================================================\n\n  This script demonstrates retrieval issues in ToonDB's HNSW.\n======================================================================\n  TEST 1: Self-Retrieval (query for exact inserted vectors)\n======================================================================\n\n  Inserting 100 vectors...\n  Index size: 100 vectors\n\n  Testing self-retrieval:\n\n    Query for ID 0:\n      Expected: ID=0, distance\u22480.0\n      Actual top-3: [(0, '0.0000'), (84, '0.7840'), (4, '0.8079')]\n      Status: \u2713 PASS\n\n    Query for ID 25:\n      Expected: ID=25, distance\u22480.0\n      Actual top-3: [(25, '0.0000'), (89, '0.8125'), (87, '0.8181')]\n      Status: \u2713 PASS\n\n    Query for ID 50:\n      Expected: ID=50, distance\u22480.0\n      Actual top-3: [(50, '0.0000'), (28, '0.8117'), (8, '0.8161')]\n      Status: \u2713 PASS\n\n    Query for ID 75:\n      Expected: ID=75, distance\u22480.0\n      Actual top-3: [(75, '0.0000'), (5, '0.7105'), (41, '0.7731')]\n      Status: \u2713 PASS\n\n    Query for ID 99:\n      Expected: ID=99, distance\u22480.0\n      Actual top-3: [(99, '0.0000'), (88, '0.7927'), (36, '0.8071')]\n      Status: \u2713 PASS\n\n  Result: 0/5 tests FAILED\n\n======================================================================\n  TEST 2: Recall@10 (compare to brute-force ground truth)\n======================================================================\n\n  Inserting 1000 vectors...\n  Computing ground truth (brute-force cosine)...\n  Testing HNSW Recall@10...\n\n  Results:\n    Average Recall@10: 98.4%\n    Min Recall@10: 80.0%\n    Max Recall@10: 100.0%\n\n  Industry Standard: Recall@10 >= 90%\n  Status: \u2713 PASS\n\n======================================================================\n  SUMMARY\n======================================================================\n\n  Test 1 (Self-Retrieval): \u2713 PASS\n  Test 2 (Recall@10):      \u2713 PASS\n\n  \u2713 All tests passed!\n",
+      "stderr": ""
+    },
+    {
+      "name": "ToonDB vs ChromaDB",
+      "path": "/Users/sushanth/toondb/benchmarks/toondb_vs_chromadb.py",
+      "success": true,
+      "returncode": 0,
+      "elapsed": 52.48090600967407,
+      "stdout": "=========================\nInsert: 0.091ms (memory copy)\nSearch: 0.61ms avg, 0.60ms p50, 0.90ms p99\nQPS: 1643\n\n============================================================\nChromaDB (Python + HNSW)\n============================================================\nInsert: 0.928s (10781 vec/sec)\nSearch: 0.64ms avg, 0.61ms p50, 2.16ms p99\nQPS: 1572\n\n============================================================\nToonDB-Index (Rust + HNSW)\n============================================================\nToonDB HNSW test not available, showing estimated performance:\n  Insert: ~50,000-100,000 vec/sec (Rust compiled)\n  Search: ~0.1-0.5ms per query (with 10K vectors)\n  QPS: ~2,000-10,000\n\nNote: Run 'cargo bench -p toondb-index' for detailed metrics\n\n============================================================\n   SUMMARY COMPARISON\n============================================================\n\nDatabase                  Insert (vec/s)     Search (ms)     QPS       \n----------------------------------------------------------------------\nNumPy (brute-force)       N/A                0.61ms         1643\nChromaDB (HNSW)           10781             0.64ms         1572\nToonDB-Index (HNSW)       ~50-100K*          ~0.1-0.5ms*     ~2000-10K*\n\n* ToonDB numbers are estimated from Rust benchmarks\n  Run 'cargo bench -p toondb-index' for exact measurements\n\n============================================================\n   KEY INSIGHTS\n============================================================\n\n\u2022 ChromaDB Insert: 10781 vec/sec\n\u2022 ChromaDB Search: 0.64ms @ 1572 QPS\n\n\u2022 ToonDB-Index (estimated from Rust benchmarks):\n  - Insert: 50K-100K vec/sec (30-60x faster than ChromaDB)\n  - Search: ~0.1-0.5ms (~5-10x faster than ChromaDB)\n  - Advantage: Native Rust, no Python overhead, SIMD optimized\n\n\u2022 Why ToonDB is faster:\n  1. Rust vs Python: No GIL, zero-copy operations\n  2. SIMD kernels: AVX2/NEON for distance calculations\n  3. Memory layout: Cache-friendly data structures\n  4. No serialization: Direct memory access\n\n",
+      "stderr": "/Users/sushanth/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020\n  warnings.warn(\n"
+    },
+    {
+      "name": "Vector DB Benchmark",
+      "path": "/Users/sushanth/toondb/benchmarks/vector_db_benchmark.py",
+      "success": true,
+      "returncode": 0,
+      "elapsed": 8.675703048706055,
+      "stdout": "============================================================\nVector Database Benchmark\nVectors: 10000, Dimension: 768, Queries: 100\n============================================================\n\nGenerating random vectors...\nGenerated 10000 vectors of dim 768\n\n--- NumPy Brute-Force (Baseline) ---\nInsert 10000 vectors: 0.000790s (memory copy)\nQuery latency: 1.34ms avg, 1.74ms p99\nQPS: 746\n\n--- ChromaDB ---\nInsert 10000 vectors: 7.014s (1426 vec/sec)\nQuery latency: 3.30ms avg, 6.44ms p99\nQPS: 303\n\n--- ToonDB-Index (HNSW) ---\n(Run via: cd toondb-index && cargo run --release --bin hnsw_perf)\nSee toondb-index/benches/ for detailed benchmarks\n\n============================================================\nSUMMARY\n============================================================\n\nDatabase             Insert (vec/s)     Query (ms)      QPS       \n------------------------------------------------------------\nNumPy (brute)        N/A (memory)       1.34            746\nChromaDB (HNSW)      1426             3.30            303\n\nNote: ToonDB-Vector benchmarks run separately via Rust\nRun: cargo run --release -p engine-rs --bin bench\n",
+      "stderr": "/Users/sushanth/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020\n  warnings.warn(\n"
+    }
+  ],
+  "examples": [
+    {
+      "name": "code_search.py",
+      "path": "/Users/sushanth/toondb/examples/python/code_search.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "comprehensive_e2e_test.py",
+      "path": "/Users/sushanth/toondb/examples/python/comprehensive_e2e_test.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "crewai_research_crew.py",
+      "path": "/Users/sushanth/toondb/examples/python/crewai_research_crew.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "customer_support_rag.py",
+      "path": "/Users/sushanth/toondb/examples/python/customer_support_rag.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "ecommerce_search.py",
+      "path": "/Users/sushanth/toondb/examples/python/ecommerce_search.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "langgraph_agent.py",
+      "path": "/Users/sushanth/toondb/examples/python/langgraph_agent.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "llamaindex_rag.py",
+      "path": "/Users/sushanth/toondb/examples/python/llamaindex_rag.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "personalization.py",
+      "path": "/Users/sushanth/toondb/examples/python/personalization.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "real_llm_test.py",
+      "path": "/Users/sushanth/toondb/examples/python/real_llm_test.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "security_qa_triage.py",
+      "path": "/Users/sushanth/toondb/examples/python/security_qa_triage.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "semantic_dedup.py",
+      "path": "/Users/sushanth/toondb/examples/python/semantic_dedup.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "semantic_search_api.py",
+      "path": "/Users/sushanth/toondb/examples/python/semantic_search_api.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    },
+    {
+      "name": "simple_rag_chatbot.py",
+      "path": "/Users/sushanth/toondb/examples/python/simple_rag_chatbot.py",
+      "success": true,
+      "elapsed": 0,
+      "stdout": "Syntax OK",
+      "stderr": ""
+    }
+  ]
+}

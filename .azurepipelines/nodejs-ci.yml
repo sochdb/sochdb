@@ -1,0 +1,120 @@
+# =============================================================================
+# ToonDB Node.js SDK - Azure DevOps CI Pipeline
+# =============================================================================
+#
+# Manual trigger only
+#
+# =============================================================================
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  NODE_VERSION: '20.x'
+
+stages:
+  # ===========================================================================
+  # Stage 1: Build and Test
+  # ===========================================================================
+  - stage: BuildAndTest
+    displayName: 'Build and Test'
+    jobs:
+      - job: BuildTest
+        displayName: 'Build and Test'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+            displayName: 'Install Node.js'
+
+          - script: |
+              cd toondb-js
+              npm ci
+            displayName: 'Install dependencies'
+
+          - script: |
+              cd toondb-js
+              npm run lint
+            displayName: 'Lint'
+
+          - script: |
+              cd toondb-js
+              npm run build
+            displayName: 'Build'
+
+          - script: |
+              cd toondb-js
+              npm test -- --coverage
+            displayName: 'Test with coverage'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/junit.xml'
+              searchFolder: 'toondb-js'
+            displayName: 'Publish test results'
+            condition: succeededOrFailed()
+
+          - task: PublishCodeCoverageResults@1
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: 'toondb-js/coverage/cobertura-coverage.xml'
+            displayName: 'Publish code coverage'
+            condition: succeededOrFailed()
+
+      # Cross-platform testing
+      - job: TestWindows
+        displayName: 'Test on Windows'
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+
+          - script: |
+              cd toondb-js
+              npm ci
+              npm run build
+              npm test
+            displayName: 'Build and test'
+
+      - job: TestMacOS
+        displayName: 'Test on macOS'
+        pool:
+          vmImage: 'macOS-latest'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+
+          - script: |
+              cd toondb-js
+              npm ci
+              npm run build
+              npm test
+            displayName: 'Build and test'
+
+  # ===========================================================================
+  # Stage 2: Security Scan
+  # ===========================================================================
+  - stage: SecurityScan
+    displayName: 'Security Scan'
+    dependsOn: BuildAndTest
+    jobs:
+      - job: AuditDependencies
+        displayName: 'Audit dependencies'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+
+          - script: |
+              cd toondb-js
+              npm ci
+              npm audit --production
+            displayName: 'npm audit'
+            continueOnError: true

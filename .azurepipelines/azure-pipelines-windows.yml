@@ -1,0 +1,72 @@
+# =============================================================================
+# ToonDB Azure Pipeline - Windows Build
+# =============================================================================
+# Manual trigger only
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+steps:
+  - powershell: |
+      # Install protoc
+      $protocVersion = "25.1"
+      $protocZip = "protoc-$protocVersion-win64.zip"
+      Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/$protocZip" -OutFile $protocZip
+      Expand-Archive -Path $protocZip -DestinationPath "$env:USERPROFILE\protoc" -Force
+      echo "##vso[task.prependpath]$env:USERPROFILE\protoc\bin"
+    displayName: 'Install protoc'
+
+  - powershell: |
+      Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+      ./rustup-init.exe -y --default-toolchain stable
+      echo "##vso[task.prependpath]$env:USERPROFILE\.cargo\bin"
+    displayName: 'Install Rust'
+
+  - script: |
+      cargo build --release --workspace --exclude toondb-studio --exclude benchmarks
+    displayName: 'Build Rust libraries'
+
+  # Tests disabled to speed up CI - run locally before pushing
+  # - script: |
+  #     cargo test --release --workspace -- --test-threads=1
+  #   displayName: 'Run Rust tests'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Windows libraries'
+    inputs:
+      targetPath: 'target/release'
+      artifact: 'rust-windows-x64'
+
+  # --- Python Wheel ---
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+    displayName: 'Use Python 3.12'
+
+  - powershell: |
+      New-Item -ItemType Directory -Force -Path toondb-python-sdk/src/toondb/lib/windows-x86_64
+      New-Item -ItemType Directory -Force -Path toondb-python-sdk/src/toondb/_bin/windows-x86_64
+      Copy-Item target/release/toondb_storage.dll toondb-python-sdk/src/toondb/lib/windows-x86_64/
+      Copy-Item target/release/toondb_index.dll toondb-python-sdk/src/toondb/lib/windows-x86_64/
+      Copy-Item target/release/toondb-bulk.exe toondb-python-sdk/src/toondb/_bin/windows-x86_64/ -ErrorAction SilentlyContinue
+    displayName: 'Copy native libraries to Python package'
+
+  - script: |
+      cd toondb-python-sdk
+      pip install build wheel
+      python -m build --wheel
+      dir dist
+    displayName: 'Build Python wheel'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Windows wheel'
+    inputs:
+      targetPath: 'toondb-python-sdk\dist'
+      artifact: 'python-windows-x64'

@@ -1,0 +1,20 @@
+{
+  "name": "vectors_10k_128",
+  "description": "10000 random unit vectors with 128 dimensions",
+  "type": "vector",
+  "dimension": 128,
+  "vectors": 10000,
+  "queries": 100,
+  "format": "f32_binary",
+  "files": {
+    "vectors": "vectors.f32",
+    "queries": "queries.f32",
+    "ground_truth": "ground_truth.json"
+  },
+  "ground_truth": {
+    "k": 10,
+    "method": "brute_force_cosine"
+  },
+  "seed": 42,
+  "sha256": "15aa283b240f12c4548c86b1e327c7872100d02616c5c4b604ab0fb005ddd086"
+}

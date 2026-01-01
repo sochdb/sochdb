@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Background Mesh */
+.bg-mesh {
+  background-color: var(--background-app);
+  background-image:
+    radial-gradient(circle at 15% 50%, rgba(19, 187, 175, 0.05), transparent 25%),
+    radial-gradient(circle at 85% 30%, rgba(255, 79, 0, 0.05), transparent 25%);
+}
+
+/* Glassmorphism */
+.glass-panel {
+  background: rgba(34, 37, 42, 0.7);
+  /* neutral-950 equivalent transparency */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-default);
+}
+
+.glass-panel-hover:hover {
+  background: var(--background-muted);
+  border-color: var(--border-strong);
+}
+
+/* Scrollbars from sample.txt */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  background-color: transparent;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-neutral-800);
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+  min-height: 40px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-neutral-700);
+  border: 2px solid transparent;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--color-neutral-600);
+  border: 2px solid transparent;
+}
+
+/* Code Editor styling */
+.code-editor {
+  line-height: 1.6;
+  font-feature-settings: "ss01", "ss02";
+  font-variant-ligatures: normal;
+}
+
+
+/* Animations from sample.txt */
+@keyframes slide-up-fade {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-in {
+  animation: slide-up-fade 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-pulse-slow {
+  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: .7;
+  }
+}

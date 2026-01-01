@@ -1,0 +1,28 @@
+# Cargo configuration for ToonDB
+# Apple Silicon (aarch64) only
+
+# =============================================================================
+# macOS Apple Silicon Settings
+# =============================================================================
+
+[target.aarch64-apple-darwin]
+# Use clang as the linker for ARM64 builds
+linker = "clang"
+rustflags = ["-C", "link-arg=-arch", "-C", "link-arg=arm64"]
+
+# =============================================================================
+# Build Settings
+# =============================================================================
+
+[build]
+# Default target for macOS builds (Apple Silicon)
+# Uncomment if you want to always build for ARM64
+# target = "aarch64-apple-darwin"
+
+# =============================================================================
+# Environment Variables for Build Scripts
+# =============================================================================
+
+[env]
+# Set MACOSX_DEPLOYMENT_TARGET for compatibility
+MACOSX_DEPLOYMENT_TARGET = { value = "11.0", force = true }

@@ -1,0 +1,105 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "toondb"
+version = "0.2.3"
+description = "ToonDB - AI-native database with zero-copy vector search via PyO3"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Sushanth", email = "sushanth@toondb.dev"}
+]
+maintainers = [
+    {name = "Sushanth", email = "sushanth@toondb.dev"}
+]
+keywords = [
+    "database", "llm", "ai", "vector-search", "embedded", 
+    "hnsw", "ann", "nearest-neighbor", "toondb"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-benchmark>=4.0",
+    "maturin>=1.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/toondb/toondb"
+Repository = "https://github.com/toondb/toondb"
+Documentation = "https://github.com/toondb/toondb/tree/main/toondb-python"
+"Bug Tracker" = "https://github.com/toondb/toondb/issues"
+
+# =============================================================================
+# Maturin Configuration
+# =============================================================================
+# 
+# Maturin builds native Python extensions from Rust code.
+# This replaces the previous cibuildwheel + subprocess architecture.
+#
+# Key benefits:
+# - Single pip install (no external binaries to find)
+# - Zero-copy NumPy integration via PyO3
+# - ABI3 for maximum wheel compatibility
+# - ~10x faster than subprocess approach
+# =============================================================================
+
+[tool.maturin]
+# Build settings
+features = ["abi3"]
+python-source = "python"
+module-name = "toondb._native"
+
+# Strip binaries for smaller wheels
+strip = true
+
+# Compatibility settings
+# ABI3 means one wheel works for Python 3.9+
+compatibility = "manylinux2014"
+
+# Include additional files in wheel
+include = [
+    "README.md",
+    "LICENSE",
+]
+
+# Exclude development files
+exclude = [
+    "tests/**",
+    "benches/**",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+# Benchmark settings
+[tool.pytest.benchmark]
+min_rounds = 5
+warmup = true

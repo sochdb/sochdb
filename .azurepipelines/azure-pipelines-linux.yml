@@ -1,0 +1,75 @@
+# =============================================================================
+# ToonDB Azure Pipeline - Linux Build
+# =============================================================================
+# Manual trigger only
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+steps:
+  - script: |
+      sudo apt-get update
+      sudo apt-get install -y \
+        libglib2.0-dev \
+        libgtk-3-dev \
+        libwebkit2gtk-4.1-dev \
+        libappindicator3-dev \
+        librsvg2-dev \
+        patchelf \
+        protobuf-compiler
+    displayName: 'Install system dependencies'
+
+  - script: |
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      echo "##vso[task.prependpath]$HOME/.cargo/bin"
+    displayName: 'Install Rust'
+
+  - script: |
+      cargo build --release --workspace --exclude toondb-studio --exclude benchmarks
+    displayName: 'Build Rust libraries'
+
+  # Tests disabled to speed up CI - run locally before pushing
+  # - script: |
+  #     cargo test --release --workspace -- --test-threads=1
+  #   displayName: 'Run Rust tests'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Linux libraries'
+    inputs:
+      targetPath: 'target/release'
+      artifact: 'rust-linux-x64'
+
+  # --- Python Wheel ---
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+    displayName: 'Use Python 3.12'
+
+  - script: |
+      mkdir -p toondb-python-sdk/src/toondb/lib/linux-x86_64
+      mkdir -p toondb-python-sdk/src/toondb/_bin/linux-x86_64
+      cp target/release/libtoondb_storage.so toondb-python-sdk/src/toondb/lib/linux-x86_64/
+      cp target/release/libtoondb_index.so toondb-python-sdk/src/toondb/lib/linux-x86_64/
+      cp target/release/toondb-bulk toondb-python-sdk/src/toondb/_bin/linux-x86_64/ || true
+      chmod +x toondb-python-sdk/src/toondb/_bin/linux-x86_64/* || true
+    displayName: 'Copy native libraries to Python package'
+
+  - script: |
+      cd toondb-python-sdk
+      pip install build wheel
+      python -m build --wheel
+      ls -la dist/
+    displayName: 'Build Python wheel'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Linux wheel'
+    inputs:
+      targetPath: 'toondb-python-sdk/dist'
+      artifact: 'python-linux-x64'

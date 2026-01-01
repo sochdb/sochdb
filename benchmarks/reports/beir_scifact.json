@@ -1,0 +1,7 @@
+{
+  "dataset": "scifact",
+  "ndcg_at_10": 0.01,
+  "recall_at_10": 0.01,
+  "recall_at_100": 0.01,
+  "qps": 12543.9083831754
+}

@@ -1,0 +1,290 @@
+// ToonDB Vector Index gRPC Service
+// 
+// This protobuf definition provides a network-first interface for vector
+// indexing operations. It's designed for:
+// - Cross-language clients (Python, Go, Java, JavaScript, etc.)
+// - Distributed deployments
+// - Microservices architectures
+//
+// Copyright 2025 Sushanth (https://github.com/sushanthpy)
+// Licensed under the Apache License, Version 2.0
+
+syntax = "proto3";
+
+package toondb.vector.v1;
+
+option java_package = "com.toondb.vector.v1";
+option java_multiple_files = true;
+option go_package = "github.com/sushanthpy/toondb/proto/vector/v1;vectorv1";
+
+// =============================================================================
+// VECTOR INDEX SERVICE
+// =============================================================================
+
+/// VectorIndexService provides gRPC interface for HNSW vector index operations.
+/// 
+/// This service supports:
+/// - Batch insert operations with streaming
+/// - K-nearest neighbor search
+/// - Index statistics and health checks
+service VectorIndexService {
+  // Create a new vector index
+  rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
+  
+  // Drop an existing index
+  rpc DropIndex(DropIndexRequest) returns (DropIndexResponse);
+  
+  // Insert a batch of vectors
+  rpc InsertBatch(InsertBatchRequest) returns (InsertBatchResponse);
+  
+  // Insert vectors via streaming (for large batches)
+  rpc InsertStream(stream InsertStreamRequest) returns (InsertStreamResponse);
+  
+  // Search for k-nearest neighbors
+  rpc Search(SearchRequest) returns (SearchResponse);
+  
+  // Batch search multiple queries
+  rpc SearchBatch(SearchBatchRequest) returns (SearchBatchResponse);
+  
+  // Get index statistics
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  
+  // Health check for load balancers
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// =============================================================================
+// INDEX MANAGEMENT
+// =============================================================================
+
+message CreateIndexRequest {
+  // Index name (unique identifier)
+  string name = 1;
+  
+  // Vector dimension (e.g., 768 for BERT, 1536 for OpenAI)
+  uint32 dimension = 2;
+  
+  // HNSW configuration
+  HnswConfig config = 3;
+  
+  // Distance metric
+  DistanceMetric metric = 4;
+}
+
+message CreateIndexResponse {
+  // Whether the index was created successfully
+  bool success = 1;
+  
+  // Error message if failed
+  string error = 2;
+  
+  // Index metadata
+  IndexInfo info = 3;
+}
+
+message DropIndexRequest {
+  // Index name to drop
+  string name = 1;
+}
+
+message DropIndexResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// =============================================================================
+// INSERT OPERATIONS
+// =============================================================================
+
+message InsertBatchRequest {
+  // Index name
+  string index_name = 1;
+  
+  // Vector IDs (must match vectors length)
+  repeated uint64 ids = 2;
+  
+  // Flat vector data (row-major, length = len(ids) * dimension)
+  repeated float vectors = 3;
+}
+
+message InsertBatchResponse {
+  // Number of vectors successfully inserted
+  uint32 inserted_count = 1;
+  
+  // Error message if any
+  string error = 2;
+  
+  // Duration in microseconds
+  uint64 duration_us = 3;
+}
+
+message InsertStreamRequest {
+  // Index name (only required in first message)
+  string index_name = 1;
+  
+  // Single vector to insert
+  uint64 id = 2;
+  repeated float vector = 3;
+}
+
+message InsertStreamResponse {
+  // Total vectors inserted
+  uint32 total_inserted = 1;
+  
+  // Errors encountered (if any)
+  repeated string errors = 2;
+  
+  // Total duration in microseconds
+  uint64 duration_us = 3;
+}
+
+// =============================================================================
+// SEARCH OPERATIONS
+// =============================================================================
+
+message SearchRequest {
+  // Index name
+  string index_name = 1;
+  
+  // Query vector
+  repeated float query = 2;
+  
+  // Number of neighbors to return
+  uint32 k = 3;
+  
+  // Expansion factor during search (optional, default: ef_search from config)
+  uint32 ef = 4;
+}
+
+message SearchResponse {
+  // Search results ordered by distance (ascending)
+  repeated SearchResult results = 1;
+  
+  // Duration in microseconds
+  uint64 duration_us = 2;
+  
+  // Error message if any
+  string error = 3;
+}
+
+message SearchResult {
+  // Vector ID
+  uint64 id = 1;
+  
+  // Distance to query vector
+  float distance = 2;
+}
+
+message SearchBatchRequest {
+  // Index name
+  string index_name = 1;
+  
+  // Multiple query vectors (flat, row-major)
+  repeated float queries = 2;
+  
+  // Number of queries
+  uint32 num_queries = 3;
+  
+  // K neighbors per query
+  uint32 k = 4;
+  
+  // Expansion factor
+  uint32 ef = 5;
+}
+
+message SearchBatchResponse {
+  // Results for each query
+  repeated QueryResults results = 1;
+  
+  // Total duration in microseconds
+  uint64 duration_us = 2;
+}
+
+message QueryResults {
+  repeated SearchResult results = 1;
+}
+
+// =============================================================================
+// STATS AND HEALTH
+// =============================================================================
+
+message GetStatsRequest {
+  // Index name
+  string index_name = 1;
+}
+
+message GetStatsResponse {
+  IndexStats stats = 1;
+  string error = 2;
+}
+
+message IndexStats {
+  // Number of vectors in the index
+  uint64 num_vectors = 1;
+  
+  // Vector dimension
+  uint32 dimension = 2;
+  
+  // Maximum layer level
+  uint32 max_layer = 3;
+  
+  // Memory usage in bytes
+  uint64 memory_bytes = 4;
+  
+  // Average connections per node
+  float avg_connections = 5;
+}
+
+message HealthCheckRequest {
+  // Optional: specific index to check
+  string index_name = 1;
+}
+
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  
+  Status status = 1;
+  
+  // Server version
+  string version = 2;
+  
+  // Available indexes
+  repeated string indexes = 3;
+}
+
+// =============================================================================
+// CONFIGURATION TYPES
+// =============================================================================
+
+message HnswConfig {
+  // Maximum connections per node (M parameter, default: 16)
+  uint32 max_connections = 1;
+  
+  // Maximum connections for layer 0 (M0, default: 32)
+  uint32 max_connections_layer0 = 2;
+  
+  // Expansion factor during construction (default: 200)
+  uint32 ef_construction = 3;
+  
+  // Expansion factor during search (default: 50)
+  uint32 ef_search = 4;
+}
+
+enum DistanceMetric {
+  DISTANCE_METRIC_UNSPECIFIED = 0;
+  DISTANCE_METRIC_L2 = 1;
+  DISTANCE_METRIC_COSINE = 2;
+  DISTANCE_METRIC_DOT_PRODUCT = 3;
+}
+
+message IndexInfo {
+  string name = 1;
+  uint32 dimension = 2;
+  DistanceMetric metric = 3;
+  HnswConfig config = 4;
+  uint64 created_at = 5;  // Unix timestamp
+}

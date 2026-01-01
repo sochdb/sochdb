@@ -1,0 +1,21 @@
+{
+  "name": "agent_memory_test",
+  "description": "Agent memory dataset: 10 agents \u00d7 500 memories",
+  "type": "agent_memory",
+  "dimension": 128,
+  "num_agents": 10,
+  "memories_per_agent": 500,
+  "total_vectors": 5000,
+  "num_queries": 100,
+  "format": "f32_binary",
+  "files": {
+    "embeddings": "embeddings.f32",
+    "metadata": "metadata.json",
+    "queries": "queries.f32",
+    "query_metadata": "query_metadata.json",
+    "ground_truth": "ground_truth.json"
+  },
+  "generated_at": "2025-12-27T18:08:42.518058",
+  "seed": 42,
+  "sha256": "d598114c65891b1a89550643b1acaf29626622650a12cb4096b33a7630ae4bc3"
+}

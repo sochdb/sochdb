@@ -1,0 +1,14 @@
+{
+    "mcpServers": {
+        "toondb": {
+            "command": "/Users/sushanth/toon_database/target/release/toondb-mcp",
+            "args": [
+                "--db",
+                "/Users/sushanth/toon_database/toondb_data"
+            ],
+            "env": {
+                "RUST_LOG": "info"
+            }
+        }
+    }
+}

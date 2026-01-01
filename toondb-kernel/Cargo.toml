@@ -1,0 +1,36 @@
+[package]
+name = "toondb-kernel"
+version = "0.2.3"
+edition = "2024"
+description = "ToonDB Kernel - Minimal ACID core with plugin architecture"
+license = "Apache-2.0"
+
+[features]
+default = []
+# Feature flags for optional plugin loading
+dynamic-plugins = ["libloading"]
+# WASM plugin support
+wasm-plugins = ["wasmtime", "toml"]
+
+[dependencies]
+# Minimal dependencies - only what's needed for ACID core
+toondb-core = { version = "0.2.3", path = "../toondb-core" }
+thiserror = "2.0"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+bytes = "1.0"
+crc32fast = "1.3"
+
+# Optional: for dynamic plugin loading
+libloading = { version = "0.8", optional = true }
+
+# Optional: WASM sandbox runtime
+wasmtime = { version = "21", optional = true }
+toml = { version = "0.8", optional = true }
+
+# Optional: serde for manifest parsing
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }

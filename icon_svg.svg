@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffb347"/>
+      <stop offset="50%" stop-color="#ff6f61"/>
+      <stop offset="100%" stop-color="#ffcc33"/>
+    </linearGradient>
+
+    <!-- Soft shadow for main shapes -->
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded square app background -->
+  <rect x="32" y="32" width="448" height="448" rx="100" ry="100"
+        fill="url(#bgGrad)" />
+
+  <!-- Comic-style speech bubble -->
+  <g filter="url(#softShadow)">
+    <path d="
+      M150 150
+      h 220
+      a 40 40 0 0 1 40 40
+      v 120
+      a 40 40 0 0 1 -40 40
+      h -120
+      l -35 45
+      a 10 10 0 0 1 -18 -6
+      v -39
+      h -47
+      a 40 40 0 0 1 -40 -40
+      v -120
+      a 40 40 0 0 1 40 -40
+      z"
+      fill="#ffffff"
+      stroke="#f25c54"
+      stroke-width="10"
+      stroke-linejoin="round"
+    />
+  </g>
+
+  <!-- Cartoon face -->
+  <g>
+    <!-- Left eye -->
+    <circle cx="210" cy="220" r="28" fill="#ffffff"/>
+    <circle cx="218" cy="226" r="14" fill="#333333"/>
+
+    <!-- Right eye -->
+    <circle cx="290" cy="220" r="28" fill="#ffffff"/>
+    <circle cx="298" cy="226" r="14" fill="#333333"/>
+
+    <!-- Smile -->
+    <path d="M220 260 Q 250 285 280 260" fill="none" stroke="#333333" stroke-width="7" stroke-linecap="round"/>
+  </g>
+
+  <!-- "TD" text -->
+  <text x="50%" y="340"
+        text-anchor="middle"
+        font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        font-size="72"
+        font-weight="700"
+        fill="#333333">
+    TD
+  </text>
+</svg>

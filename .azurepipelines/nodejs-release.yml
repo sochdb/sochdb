@@ -1,0 +1,253 @@
+# =============================================================================
+# ToonDB Node.js SDK - Azure DevOps Release Pipeline
+# =============================================================================
+#
+# Enterprise build and deploy process for npm package.
+#
+# Required Variable Groups:
+#   - toondb-npm-secrets
+#     - NPM_TOKEN
+#
+# =============================================================================
+
+trigger: none  # Manual trigger only
+
+parameters:
+  - name: version
+    displayName: 'Release version (e.g., 0.2.3)'
+    type: string
+  - name: dryRun
+    displayName: 'Dry run (validate without publishing)'
+    type: boolean
+    default: false
+
+variables:
+  - group: toondb-npm-secrets
+  - name: NODE_VERSION
+    value: '20.x'
+
+stages:
+  # ===========================================================================
+  # Stage 1: Validate
+  # ===========================================================================
+  - stage: Validate
+    displayName: 'Validate'
+    jobs:
+      - job: ValidatePackage
+        displayName: 'Validate package'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+            displayName: 'Install Node.js'
+
+          - script: |
+              cd toondb-js
+              npm ci
+            displayName: 'Install dependencies'
+
+          - script: |
+              cd toondb-js
+              npm run lint
+            displayName: 'Lint'
+
+          - script: |
+              cd toondb-js
+              npm run build
+            displayName: 'Build'
+
+          - script: |
+              cd toondb-js
+              npm test
+            displayName: 'Test'
+
+          - script: |
+              cd toondb-js
+              # Verify version matches
+              PACKAGE_VERSION=$(node -p "require('./package.json').version")
+              if [ "$PACKAGE_VERSION" != "${{ parameters.version }}" ]; then
+                echo "##vso[task.logissue type=error]Version mismatch: package.json has $PACKAGE_VERSION, expected ${{ parameters.version }}"
+                exit 1
+              fi
+              echo "Version verified: $PACKAGE_VERSION"
+            displayName: 'Verify version'
+
+  # ===========================================================================
+  # Stage 2: Build for all platforms
+  # ===========================================================================
+  - stage: Build
+    displayName: 'Build'
+    dependsOn: Validate
+    jobs:
+      - job: BuildLinux
+        displayName: 'Build for Linux'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install Rust'
+
+          - script: cargo build --release -p toondb-tools
+            displayName: 'Build toondb-bulk binary'
+
+          - script: |
+              mkdir -p toondb-js/_bin/x86_64-unknown-linux-gnu
+              cp target/release/toondb-bulk toondb-js/_bin/x86_64-unknown-linux-gnu/
+              chmod +x toondb-js/_bin/x86_64-unknown-linux-gnu/toondb-bulk
+            displayName: 'Copy binary'
+
+          - script: |
+              cd toondb-js
+              npm ci
+              npm run build
+            displayName: 'Build package'
+
+          - publish: toondb-js
+            artifact: npm-package-linux
+
+      - job: BuildMacOS
+        displayName: 'Build for macOS'
+        pool:
+          vmImage: 'macOS-latest'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install Rust'
+
+          - script: |
+              rustup target add aarch64-apple-darwin
+              cargo build --release -p toondb-tools --target aarch64-apple-darwin
+            displayName: 'Build toondb-bulk binary'
+
+          - script: |
+              mkdir -p toondb-js/_bin/aarch64-apple-darwin
+              cp target/aarch64-apple-darwin/release/toondb-bulk toondb-js/_bin/aarch64-apple-darwin/
+              chmod +x toondb-js/_bin/aarch64-apple-darwin/toondb-bulk
+            displayName: 'Copy binary'
+
+          - script: |
+              cd toondb-js
+              npm ci
+              npm run build
+            displayName: 'Build package'
+
+          - publish: toondb-js/_bin/aarch64-apple-darwin
+            artifact: npm-binary-macos
+
+      - job: BuildWindows
+        displayName: 'Build for Windows'
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            displayName: 'Install Rust'
+
+          - script: cargo build --release -p toondb-tools
+            displayName: 'Build toondb-bulk binary'
+
+          - powershell: |
+              New-Item -ItemType Directory -Force -Path toondb-js\_bin\x86_64-pc-windows-msvc
+              Copy-Item target\release\toondb-bulk.exe toondb-js\_bin\x86_64-pc-windows-msvc\
+            displayName: 'Copy binary'
+
+          - script: |
+              cd toondb-js
+              npm ci
+              npm run build
+            displayName: 'Build package'
+
+          - publish: toondb-js\_bin\x86_64-pc-windows-msvc
+            artifact: npm-binary-windows
+
+  # ===========================================================================
+  # Stage 3: Publish to npm
+  # ===========================================================================
+  - stage: Publish
+    displayName: 'Publish to npm'
+    dependsOn: Build
+    jobs:
+      - job: PublishNpm
+        displayName: 'Publish to npm'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - download: current
+            artifact: npm-package-linux
+
+          - download: current
+            artifact: npm-binary-macos
+
+          - download: current
+            artifact: npm-binary-windows
+
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(NODE_VERSION)'
+
+          - script: |
+              # Merge all platform binaries
+              cp -r $(Pipeline.Workspace)/npm-binary-macos/* $(Pipeline.Workspace)/npm-package-linux/_bin/
+              cp -r $(Pipeline.Workspace)/npm-binary-windows/* $(Pipeline.Workspace)/npm-package-linux/_bin/
+              
+              cd $(Pipeline.Workspace)/npm-package-linux
+              
+              # Configure npm auth
+              echo "//registry.npmjs.org/:_authToken=$(NPM_TOKEN)" > .npmrc
+              
+              if [ "${{ parameters.dryRun }}" = "True" ]; then
+                echo "🔍 Dry run - validating package..."
+                npm publish --dry-run --access public
+              else
+                npm publish --access public
+              fi
+            displayName: 'Publish to npm'
+            env:
+              NPM_TOKEN: $(NPM_TOKEN)
+
+  # ===========================================================================
+  # Summary
+  # ===========================================================================
+  - stage: Summary
+    displayName: 'Summary'
+    dependsOn: Publish
+    condition: always()
+    jobs:
+      - job: PrintSummary
+        displayName: 'Print summary'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              echo "========================================"
+              echo "🚀 ToonDB Node.js SDK Release v${{ parameters.version }}"
+              echo "========================================"
+              echo ""
+              if [ "${{ parameters.dryRun }}" = "True" ]; then
+                echo "Mode: Dry Run (no package published)"
+              else
+                echo "Mode: Production Release"
+              fi
+              echo ""
+              echo "Package: @sushanth/toondb"
+              echo "Registry: https://www.npmjs.com/package/@sushanth/toondb"
+              echo ""
+              echo "========================================"
+            displayName: 'Release summary'

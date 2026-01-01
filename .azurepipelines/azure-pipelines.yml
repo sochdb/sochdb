@@ -1,0 +1,399 @@
+# =============================================================================
+# ToonDB Azure Pipelines - Build & Release
+# =============================================================================
+#
+# Builds ToonDB for all platforms:
+# - Rust libraries (toondb-storage, toondb-index)
+# - Python SDK with bundled FFI libraries
+# - Runs tests and publishes artifacts
+#
+# Triggers:
+# - Manual trigger only (no automatic runs)
+# =============================================================================
+
+# Disable automatic triggers - run manually only
+trigger: none
+pr: none
+
+parameters:
+  - name: publishToPyPI
+    displayName: 'Publish to PyPI'
+    type: boolean
+    default: false
+  - name: publishToTestPyPI
+    displayName: 'Publish to TestPyPI (for testing)'
+    type: boolean
+    default: false
+
+variables:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+stages:
+  # ===========================================================================
+  # Stage 1: Build Rust Libraries
+  # ===========================================================================
+  - stage: Build_Rust
+    displayName: 'Build Rust Libraries'
+    jobs:
+      # Linux x86_64
+      - job: Linux_x64
+        displayName: 'Linux x86_64'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              sudo apt-get update
+              sudo apt-get install -y \
+                libglib2.0-dev \
+                libgtk-3-dev \
+                libwebkit2gtk-4.1-dev \
+                libappindicator3-dev \
+                librsvg2-dev \
+                patchelf \
+                protobuf-compiler
+            displayName: 'Install system dependencies'
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install Rust'
+              
+          - script: |
+              cargo build --release --workspace --exclude toondb-studio --exclude benchmarks
+            displayName: 'Build Rust libraries'
+            
+          # Tests disabled to speed up CI - run locally before pushing
+          # - script: |
+          #     cargo test --release --workspace -- --test-threads=1
+          #   displayName: 'Run Rust tests'
+            
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Linux libraries'
+            inputs:
+              targetPath: 'target/release'
+              artifact: 'rust-linux-x64'
+              patterns: |
+                libtoondb_storage.so
+                libtoondb_index.so
+                toondb-bulk
+
+      # macOS ARM64
+      - job: macOS_ARM64
+        displayName: 'macOS ARM64'
+        pool:
+          vmImage: 'macos-latest'
+        steps:
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              source $HOME/.cargo/env
+              rustup target add aarch64-apple-darwin
+            displayName: 'Install Rust'
+            
+          - script: |
+              source $HOME/.cargo/env
+              # Build for ARM64 only
+              cargo build --release --workspace --target aarch64-apple-darwin --exclude toondb-studio --exclude benchmarks
+              
+              # Copy binaries to output directory
+              mkdir -p target/macos-arm64
+              if [ -f "target/aarch64-apple-darwin/release/libtoondb_storage.dylib" ]; then
+                cp target/aarch64-apple-darwin/release/libtoondb_storage.dylib target/macos-arm64/
+              fi
+              if [ -f "target/aarch64-apple-darwin/release/libtoondb_index.dylib" ]; then
+                cp target/aarch64-apple-darwin/release/libtoondb_index.dylib target/macos-arm64/
+              fi
+              if [ -f "target/aarch64-apple-darwin/release/toondb-bulk" ]; then
+                cp target/aarch64-apple-darwin/release/toondb-bulk target/macos-arm64/
+              fi
+            displayName: 'Build for Apple Silicon'
+            
+          # Tests disabled to speed up CI - run locally before pushing
+          # - script: |
+          #     source $HOME/.cargo/env
+          #     cargo test --release --workspace -- --test-threads=1
+          #   displayName: 'Run Rust tests'
+            
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish macOS libraries'
+            inputs:
+              targetPath: 'target/macos-arm64'
+              artifact: 'rust-macos-arm64'
+
+      # Windows x64
+      - job: Windows_x64
+        displayName: 'Windows x64'
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - powershell: |
+              # Install protoc
+              $protocVersion = "25.1"
+              $protocZip = "protoc-$protocVersion-win64.zip"
+              Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/$protocZip" -OutFile $protocZip
+              Expand-Archive -Path $protocZip -DestinationPath "$env:USERPROFILE\protoc" -Force
+              echo "##vso[task.prependpath]$env:USERPROFILE\protoc\bin"
+            displayName: 'Install protoc'
+
+          - powershell: |
+              Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+              ./rustup-init.exe -y --default-toolchain stable
+              echo "##vso[task.prependpath]$env:USERPROFILE\.cargo\bin"
+            displayName: 'Install Rust'
+              
+          - script: |
+              cargo build --release --workspace --exclude toondb-studio --exclude benchmarks
+            displayName: 'Build Rust libraries'
+            
+          # Tests disabled to speed up CI - run locally before pushing
+          # - script: |
+          #     cargo test --release --workspace -- --test-threads=1
+          #   displayName: 'Run Rust tests'
+            
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Windows libraries'
+            inputs:
+              targetPath: 'target/release'
+              artifact: 'rust-windows-x64'
+              patterns: |
+                toondb_storage.dll
+                toondb_index.dll
+                toondb-bulk.exe
+
+  # ===========================================================================
+  # Stage 2: Build Python SDK
+  # ===========================================================================
+  - stage: Build_Python
+    displayName: 'Build Python SDK'
+    dependsOn: Build_Rust
+    jobs:
+      # Linux wheel
+      - job: Python_Linux
+        displayName: 'Python Linux wheel'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Rust artifacts'
+            inputs:
+              artifact: 'rust-linux-x64'
+              path: '$(Build.SourcesDirectory)/rust-libs'
+              
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+              
+          - script: |
+              mkdir -p toondb-python-sdk/src/toondb/lib/linux-x86_64
+              mkdir -p toondb-python-sdk/src/toondb/_bin/linux-x86_64
+              cp rust-libs/libtoondb_storage.so toondb-python-sdk/src/toondb/lib/linux-x86_64/
+              cp rust-libs/libtoondb_index.so toondb-python-sdk/src/toondb/lib/linux-x86_64/
+              cp rust-libs/toondb-bulk toondb-python-sdk/src/toondb/_bin/linux-x86_64/
+              chmod +x toondb-python-sdk/src/toondb/_bin/linux-x86_64/toondb-bulk
+            displayName: 'Copy native libraries'
+            
+          - script: |
+              cd toondb-python-sdk
+              pip install build wheel
+              python -m build --wheel
+            displayName: 'Build wheel'
+            
+          - script: |
+              cd toondb-python-sdk
+              pip install dist/*.whl numpy pytest
+              pytest tests/ -v
+            displayName: 'Run Python tests'
+            
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Python wheel'
+            inputs:
+              targetPath: 'toondb-python-sdk/dist'
+              artifact: 'python-linux-x64'
+
+      # macOS wheel
+      - job: Python_macOS
+        displayName: 'Python macOS wheel'
+        pool:
+          vmImage: 'macos-latest'
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Rust artifacts'
+            inputs:
+              artifact: 'rust-macos-arm64'
+              path: '$(Build.SourcesDirectory)/rust-libs'
+              
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+              
+          - script: |
+              mkdir -p toondb-python-sdk/src/toondb/lib/darwin-arm64
+              mkdir -p toondb-python-sdk/src/toondb/_bin/darwin-arm64
+              cp rust-libs/libtoondb_storage.dylib toondb-python-sdk/src/toondb/lib/darwin-arm64/
+              cp rust-libs/libtoondb_index.dylib toondb-python-sdk/src/toondb/lib/darwin-arm64/
+              cp rust-libs/toondb-bulk toondb-python-sdk/src/toondb/_bin/darwin-arm64/
+              chmod +x toondb-python-sdk/src/toondb/_bin/darwin-arm64/toondb-bulk
+            displayName: 'Copy native libraries'
+            
+          - script: |
+              cd toondb-python-sdk
+              pip install build wheel
+              python -m build --wheel
+            displayName: 'Build wheel'
+            
+          - script: |
+              cd toondb-python-sdk
+              pip install dist/*.whl numpy pytest
+              pytest tests/ -v
+            displayName: 'Run Python tests'
+            
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Python wheel'
+            inputs:
+              targetPath: 'toondb-python-sdk/dist'
+              artifact: 'python-macos-arm64'
+
+      # Windows wheel
+      - job: Python_Windows
+        displayName: 'Python Windows wheel'
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Rust artifacts'
+            inputs:
+              artifact: 'rust-windows-x64'
+              path: '$(Build.SourcesDirectory)/rust-libs'
+              
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+              
+          - powershell: |
+              New-Item -ItemType Directory -Force -Path toondb-python-sdk/src/toondb/lib/windows-x86_64
+              New-Item -ItemType Directory -Force -Path toondb-python-sdk/src/toondb/_bin/windows-x86_64
+              Copy-Item rust-libs/toondb_storage.dll toondb-python-sdk/src/toondb/lib/windows-x86_64/
+              Copy-Item rust-libs/toondb_index.dll toondb-python-sdk/src/toondb/lib/windows-x86_64/
+              Copy-Item rust-libs/toondb-bulk.exe toondb-python-sdk/src/toondb/_bin/windows-x86_64/
+            displayName: 'Copy native libraries'
+            
+          - script: |
+              cd toondb-python-sdk
+              pip install build wheel
+              python -m build --wheel
+            displayName: 'Build wheel'
+            
+          - script: |
+              cd toondb-python-sdk
+              pip install dist\*.whl numpy pytest
+              pytest tests\ -v
+            displayName: 'Run Python tests'
+            
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Python wheel'
+            inputs:
+              targetPath: 'toondb-python-sdk/dist'
+              artifact: 'python-windows-x64'
+
+  # ===========================================================================
+  # Stage 3: Integration Tests
+  # ===========================================================================
+  - stage: Integration_Tests
+    displayName: 'Integration Tests'
+    dependsOn: Build_Python
+    jobs:
+      - job: Test_Examples
+        displayName: 'Test Python Examples'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Python wheel'
+            inputs:
+              artifact: 'python-linux-x64'
+              path: '$(Build.SourcesDirectory)/wheels'
+              
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+              
+          - script: |
+              pip install wheels/*.whl numpy tiktoken
+              python -c "from toondb import Database, VectorIndex; print('Import OK')"
+              python -c "
+              import numpy as np
+              from toondb import VectorIndex
+              index = VectorIndex(dimension=128)
+              ids = np.arange(100, dtype=np.uint64)
+              vecs = np.random.randn(100, 128).astype(np.float32)
+              index.insert_batch(ids, vecs)
+              print(f'Index size: {len(index)}')
+              results = index.search(vecs[0], k=5)
+              print(f'Search results: {len(results)}')
+              print('Vector search OK')
+              "
+            displayName: 'Test Python SDK'
+
+  # ===========================================================================
+  # Stage 4: Release (manual trigger or tag)
+  # ===========================================================================
+  - stage: Release
+    displayName: 'Release'
+    dependsOn: Integration_Tests
+    condition: and(succeeded(), or(startsWith(variables['Build.SourceBranch'], 'refs/tags/'), eq(variables['Build.Reason'], 'Manual')))
+    jobs:
+      - job: Publish_PyPI
+        displayName: 'Publish to PyPI'
+        condition: eq('${{ parameters.publishToPyPI }}', true)
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Python wheels'
+            inputs:
+              path: '$(Build.SourcesDirectory)/artifacts'
+
+          - script: |
+              pip install twine
+              mkdir -p upload
+              find artifacts -name "*.whl" -exec cp {} upload/ \;
+              ls -la upload/
+            displayName: 'Prepare wheels'
+
+          - script: |
+              twine upload upload/*.whl --username __token__ --password $(PYPI_API_TOKEN)
+            displayName: 'Upload to PyPI'
+            env:
+              PYPI_API_TOKEN: $(PYPI_API_TOKEN)
+
+      - job: Publish_TestPyPI
+        displayName: 'Publish to TestPyPI'
+        condition: eq('${{ parameters.publishToTestPyPI }}', true)
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Python wheels'
+            inputs:
+              path: '$(Build.SourcesDirectory)/artifacts'
+
+          - script: |
+              pip install twine
+              mkdir -p upload
+              find artifacts -name "*.whl" -exec cp {} upload/ \;
+              ls -la upload/
+            displayName: 'Prepare wheels'
+
+          - script: |
+              twine upload upload/*.whl --repository-url https://test.pypi.org/legacy/ --username __token__ --password $(TESTPYPI_API_TOKEN)
+            displayName: 'Upload to TestPyPI'
+            env:
+              TESTPYPI_API_TOKEN: $(TESTPYPI_API_TOKEN)

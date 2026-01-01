@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "run": {
+    "id": "20251228T052425Z_kv_put_scan_default_fa4b4b7",
+    "timestamp_utc": "2025-12-28T05:24:25Z",
+    "git": {
+      "sha": "fa4b4b7",
+      "dirty": true
+    },
+    "runner": {
+      "kind": "rust",
+      "command": "./target/release/perf-run --workload bench/workloads/rust/kv_put_scan.toml --runs 5 --verbose",
+      "duration_s": 0.827727916
+    }
+  },
+  "env": {
+    "os": "macos",
+    "cpu": "Apple M1 Max",
+    "cores": 10,
+    "ram_gb": 32,
+    "rustc": "rustc 1.91.1 (ed61e7d7e 2025-11-07)",
+    "features": []
+  },
+  "workload": {
+    "name": "kv_put_scan",
+    "params": {
+      "value_template": "json_user",
+      "run_scan": true,
+      "timed_iterations": 5,
+      "txn_mode": "single",
+      "n": 100000,
+      "warmup_iterations": 1,
+      "batch_size": 1000
+    }
+  },
+  "dataset": {
+    "name": "default",
+    "hash": "sha256:pending"
+  },
+  "metrics": {
+    "insert_throughput_ops_per_s": {
+      "value": 1062780.6644317666,
+      "unit": "ops/s",
+      "better": "higher"
+    },
+    "total_duration_s": {
+      "value": 0.134697709,
+      "unit": "s",
+      "better": "lower"
+    },
+    "scan_throughput_rows_per_s": {
+      "value": 2462755.926825315,
+      "unit": "rows/s",
+      "better": "higher"
+    },
+    "insert_latency_ms_p99": {
+      "value": 0.0025,
+      "unit": "ms",
+      "better": "lower"
+    },
+    "insert_latency_ms_p50": {
+      "value": 0.000458,
+      "unit": "ms",
+      "better": "lower"
+    }
+  },
+  "artifacts": {
+    "logs": null,
+    "raw": null
+  }
+}

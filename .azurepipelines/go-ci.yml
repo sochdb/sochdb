@@ -1,0 +1,135 @@
+# Azure DevOps CI Pipeline for Go SDK
+#
+# Manual trigger only
+
+trigger: none
+pr: none
+
+variables:
+  GO_VERSION: '1.22'
+
+stages:
+  - stage: Lint
+    displayName: 'Lint'
+    jobs:
+      - job: GolangciLint
+        displayName: 'golangci-lint'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: GoTool@0
+            inputs:
+              version: $(GO_VERSION)
+            displayName: 'Install Go'
+
+          - script: |
+              curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.62.0
+            displayName: 'Install golangci-lint'
+            workingDirectory: toondb-go
+
+          - script: |
+              $(go env GOPATH)/bin/golangci-lint run --timeout=5m
+            displayName: 'Run golangci-lint'
+            workingDirectory: toondb-go
+
+  - stage: Test
+    displayName: 'Test'
+    dependsOn: []
+    jobs:
+      - job: Test
+        displayName: 'Test'
+        strategy:
+          matrix:
+            Linux_Go121:
+              vmImage: 'ubuntu-latest'
+              goVersion: '1.21'
+            Linux_Go122:
+              vmImage: 'ubuntu-latest'
+              goVersion: '1.22'
+            Linux_Go123:
+              vmImage: 'ubuntu-latest'
+              goVersion: '1.23'
+            macOS_Go122:
+              vmImage: 'macos-latest'
+              goVersion: '1.22'
+            Windows_Go122:
+              vmImage: 'windows-latest'
+              goVersion: '1.22'
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - task: GoTool@0
+            inputs:
+              version: $(goVersion)
+            displayName: 'Install Go $(goVersion)'
+
+          - script: go mod download
+            displayName: 'Download dependencies'
+            workingDirectory: toondb-go
+
+          - script: go build -v ./...
+            displayName: 'Build'
+            workingDirectory: toondb-go
+
+          - script: go test -v -race -coverprofile=coverage.out ./...
+            displayName: 'Test'
+            workingDirectory: toondb-go
+
+          - task: PublishCodeCoverageResults@2
+            condition: and(succeeded(), eq(variables['vmImage'], 'ubuntu-latest'), eq(variables['goVersion'], '1.22'))
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: 'toondb-go/coverage.out'
+            displayName: 'Publish coverage'
+            continueOnError: true
+
+  - stage: Build
+    displayName: 'Build Check'
+    dependsOn: []
+    jobs:
+      - job: CrossPlatformBuild
+        displayName: 'Cross-platform Build'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: GoTool@0
+            inputs:
+              version: $(GO_VERSION)
+            displayName: 'Install Go'
+
+          - script: |
+              GOOS=linux GOARCH=amd64 go build -v ./...
+              GOOS=linux GOARCH=arm64 go build -v ./...
+              GOOS=darwin GOARCH=amd64 go build -v ./...
+              GOOS=darwin GOARCH=arm64 go build -v ./...
+              GOOS=windows GOARCH=amd64 go build -v ./...
+            displayName: 'Build all platforms'
+            workingDirectory: toondb-go
+
+          - script: |
+              go mod tidy
+              git diff --exit-code go.mod go.sum
+            displayName: 'Verify go.mod is tidy'
+            workingDirectory: toondb-go
+
+  - stage: Security
+    displayName: 'Security'
+    dependsOn: []
+    jobs:
+      - job: Vulncheck
+        displayName: 'Vulnerability Check'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: GoTool@0
+            inputs:
+              version: $(GO_VERSION)
+            displayName: 'Install Go'
+
+          - script: go install golang.org/x/vuln/cmd/govulncheck@latest
+            displayName: 'Install govulncheck'
+            workingDirectory: toondb-go
+
+          - script: govulncheck ./...
+            displayName: 'Run govulncheck'
+            workingDirectory: toondb-go

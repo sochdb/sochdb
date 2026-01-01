@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0",
+  "baseline_ref": "bench/baselines/mac-studio/kv_put_scan/default.json",
+  "run_ref": "20251227T231409Z_kv_put_scan_default_2514ab9",
+  "status": "pass",
+  "diffs": [
+    {
+      "metric": "insert_latency_ms_p50",
+      "baseline": 0.000417,
+      "new": 0.000417,
+      "delta_pct": 0.0,
+      "threshold_pct": 5.0,
+      "result": "pass"
+    },
+    {
+      "metric": "insert_throughput_ops_per_s",
+      "baseline": 1102111.5498457998,
+      "new": 1152760.4618746897,
+      "delta_pct": 4.595624829081624,
+      "threshold_pct": 5.0,
+      "result": "pass"
+    },
+    {
+      "metric": "total_duration_s",
+      "baseline": 0.130288458,
+      "new": 0.124555583,
+      "delta_pct": -4.40014034090418,
+      "threshold_pct": 5.0,
+      "result": "pass"
+    },
+    {
+      "metric": "scan_throughput_rows_per_s",
+      "baseline": 2528218.6492481166,
+      "new": 2644992.399878838,
+      "delta_pct": 4.618815333296017,
+      "threshold_pct": 5.0,
+      "result": "pass"
+    },
+    {
+      "metric": "insert_latency_ms_p99",
+      "baseline": 0.003458,
+      "new": 0.003125,
+      "delta_pct": -9.629843840370155,
+      "threshold_pct": 10.0,
+      "result": "pass"
+    }
+  ]
+}

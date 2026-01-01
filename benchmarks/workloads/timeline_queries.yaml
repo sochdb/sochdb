@@ -1,0 +1,61 @@
+workload:
+  name: timeline_queries
+  description: "Time-range scans with optional semantic refinement"
+
+data_model:
+  schema:
+    - name: timestamp
+      type: timestamp
+    - name: embedding
+      type: vector
+      dimension: 128
+      optional: true
+    - name: entity_id
+      type: uint64
+    - name: event_type
+      type: string
+    - name: payload_size
+      type: uint32
+
+query_patterns:
+  - type: time_range_scan
+    with_semantic: false
+  - type: time_range_scan
+    with_semantic: true
+
+time_distribution:
+  model: poisson_with_bursts
+  base_rate: 100
+  burst_probability: 0.05
+  burst_multiplier: 10
+
+datasets:
+  small:
+    events: 1000000
+    seed: 42
+  medium:
+    events: 50000000
+    seed: 42
+
+queries:
+  count: 5000
+  seed: 12345
+
+window_sizes:
+  tiny:
+    seconds: 60
+  medium:
+    hours: 24
+  large:
+    days: 30
+
+quality_metrics:
+  - recall@10
+  - checksum
+
+perf_targets:
+  p95_latency_ms: 50.0
+  min_qps: 1000.0
+
+concurrency:
+  levels: [1, 4, 16, 64]

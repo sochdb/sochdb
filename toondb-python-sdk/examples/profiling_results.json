@@ -1,0 +1,132 @@
+{
+  "timestamp": "2025-12-29T00:26:38.733071",
+  "config": {
+    "num_vectors": 1000,
+    "dimension": 768,
+    "batch_size": 1000,
+    "ef_construction": 200,
+    "max_connections": 16,
+    "safe_mode": "0",
+    "profiling_enabled": "1"
+  },
+  "summary": {
+    "total_vectors": 1000,
+    "total_insert_time_ms": 13348.056,
+    "vectors_per_second": 74.91727634346155,
+    "us_per_vector": 13348.056,
+    "search_time_ms": 2.004584,
+    "peak_memory_mb": 9.449854850769043,
+    "index_size": 1000
+  },
+  "memory": {
+    "peak_mb": 9.449854850769043,
+    "current_mb": 3.6307239532470703,
+    "allocations": 0,
+    "vector_data_mb": 2.93731689453125,
+    "overhead_mb": 6.512537956237793
+  },
+  "python_layer": {
+    "name": "python",
+    "timings": {
+      "numpy_ascontiguous": {
+        "name": "numpy_ascontiguous",
+        "count": 1,
+        "total_ms": 0.003542,
+        "mean_ms": 0.003542,
+        "std_ms": 0,
+        "min_ms": 0.003542,
+        "max_ms": 0.003542,
+        "p50_ms": 0.003542,
+        "p95_ms": 0.003542,
+        "p99_ms": 0.003542
+      },
+      "dtype_conversion": {
+        "name": "dtype_conversion",
+        "count": 1,
+        "total_ms": 0.002834,
+        "mean_ms": 0.002834,
+        "std_ms": 0,
+        "min_ms": 0.002834,
+        "max_ms": 0.002834,
+        "p50_ms": 0.002834,
+        "p95_ms": 0.002834,
+        "p99_ms": 0.002834
+      },
+      "data_validation": {
+        "name": "data_validation",
+        "count": 1,
+        "total_ms": 0.003,
+        "mean_ms": 0.003,
+        "std_ms": 0,
+        "min_ms": 0.003,
+        "max_ms": 0.003,
+        "p50_ms": 0.003,
+        "p95_ms": 0.003,
+        "p99_ms": 0.003
+      },
+      "ffi_ptr_creation": {
+        "name": "ffi_ptr_creation",
+        "count": 1,
+        "total_ms": 0.024334,
+        "mean_ms": 0.024334,
+        "std_ms": 0,
+        "min_ms": 0.024334,
+        "max_ms": 0.024334,
+        "p50_ms": 0.024334,
+        "p95_ms": 0.024334,
+        "p99_ms": 0.024334
+      },
+      "ffi_call_overhead": {
+        "name": "ffi_call_overhead",
+        "count": 1,
+        "total_ms": 0.0015,
+        "mean_ms": 0.0015,
+        "std_ms": 0,
+        "min_ms": 0.0015,
+        "max_ms": 0.0015,
+        "p50_ms": 0.0015,
+        "p95_ms": 0.0015,
+        "p99_ms": 0.0015
+      },
+      "batch_total": {
+        "name": "batch_total",
+        "count": 1,
+        "total_ms": 13347.933917,
+        "mean_ms": 13347.933917,
+        "std_ms": 0,
+        "min_ms": 13347.933917,
+        "max_ms": 13347.933917,
+        "p50_ms": 13347.933917,
+        "p95_ms": 13347.933917,
+        "p99_ms": 13347.933917
+      },
+      "index_creation": {
+        "name": "index_creation",
+        "count": 1,
+        "total_ms": 2.387208,
+        "mean_ms": 2.387208,
+        "std_ms": 0,
+        "min_ms": 2.387208,
+        "max_ms": 2.387208,
+        "p50_ms": 2.387208,
+        "p95_ms": 2.387208,
+        "p99_ms": 2.387208
+      },
+      "search_total": {
+        "name": "search_total",
+        "count": 1,
+        "total_ms": 2.004584,
+        "mean_ms": 2.004584,
+        "std_ms": 0,
+        "min_ms": 2.004584,
+        "max_ms": 2.004584,
+        "p50_ms": 2.004584,
+        "p95_ms": 2.004584,
+        "p99_ms": 2.004584
+      }
+    },
+    "counts": {
+      "vectors_inserted": 1000
+    }
+  }
+}

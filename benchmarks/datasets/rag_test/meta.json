@@ -1,0 +1,19 @@
+{
+  "name": "rag_test",
+  "description": "RAG retrieval dataset: 1000 chunks, 768-dim",
+  "type": "rag_retrieval",
+  "dimension": 768,
+  "num_chunks": 1000,
+  "num_queries": 100,
+  "format": "f32_binary",
+  "files": {
+    "embeddings": "embeddings.f32",
+    "metadata": "metadata.json",
+    "queries": "queries.f32",
+    "query_metadata": "query_metadata.json",
+    "ground_truth": "ground_truth.json"
+  },
+  "generated_at": "2025-12-27T18:08:43.988273",
+  "seed": 42,
+  "sha256": "762ecfb66db1c83706df2d758d056485c004b7b3776b5fee55fb792067ddbf2f"
+}

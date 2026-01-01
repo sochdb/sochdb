@@ -1,0 +1,47 @@
+[package]
+name = "toondb-python"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "ToonDB Python native extension with PyO3 - zero-copy vector operations"
+
+[lib]
+name = "toondb"
+crate-type = ["cdylib"]
+
+[dependencies]
+# ToonDB core libraries
+toondb-index = { path = "../toondb-index" }
+toondb-core = { path = "../toondb-core" }
+toondb-storage = { path = "../toondb-storage" }
+
+# PyO3 bindings
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
+
+# NumPy integration
+numpy = { version = "0.24", features = ["nalgebra"] }
+
+# ndarray for vector operations
+ndarray = { version = "0.15", features = ["rayon"] }
+
+# Parallel processing
+rayon = "1.10"
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[build-dependencies]
+pyo3-build-config = "0.24"
+
+# Features for conditional compilation
+[features]
+default = []
+# Use abi3 for maximum compatibility (single wheel works for Python 3.9+)
+abi3 = ["pyo3/abi3-py39"]

@@ -1,0 +1,227 @@
+name: Performance Gates
+
+on:
+  workflow_dispatch:      # Manual trigger only
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ============================================================================
+  # PR Gate - Fast check with small dataset
+  # ============================================================================
+  pr-fast:
+    name: PR Performance Gate (Fast)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: rustfmt, clippy
+          
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+          
+      - name: Build Release
+        run: cargo build -p benchmarks --release
+        
+      - name: Run KV Benchmark (Quick)
+        run: |
+          ./target/release/perf-run \
+            --workload benchmarks/workloads/rust/kv_put_scan.toml \
+            --runs 3 \
+            --json > /tmp/kv_results.json
+            
+      - name: Run SQLite Comparison (Quick)
+        run: |
+          ./target/release/perf-run \
+            --workload benchmarks/workloads/rust/sqlite_vs_toondb_360.toml \
+            --runs 3 \
+            --json > /tmp/sqlite_results.json
+            
+      - name: Check Performance Gates
+        run: |
+          # Extract key metrics
+          KV_INSERT=$(jq '.metrics.insert_throughput_ops_per_s.value' /tmp/kv_results.json)
+          TOONDB_INSERT=$(jq '.metrics.toondb_single_insert_ops_per_s.value' /tmp/sqlite_results.json)
+          SQLITE_INSERT=$(jq '.metrics.sqlite_single_insert_ops_per_s.value' /tmp/sqlite_results.json)
+          
+          echo "=== Performance Results ==="
+          echo "KV Insert: ${KV_INSERT} ops/s"
+          echo "ToonDB Insert: ${TOONDB_INSERT} ops/s"
+          echo "SQLite Insert: ${SQLITE_INSERT} ops/s"
+          
+          # Basic sanity check: ToonDB should be >500K ops/s
+          if (( $(echo "$KV_INSERT < 500000" | bc -l) )); then
+            echo "❌ FAIL: Insert throughput too low (${KV_INSERT} < 500000)"
+            exit 1
+          fi
+          
+          echo "✅ PASS: Performance gates passed"
+          
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-perf-results
+          path: /tmp/*_results.json
+          retention-days: 7
+
+  # ============================================================================
+  # Nightly Gate - Comprehensive benchmarks
+  # ============================================================================
+  nightly-comprehensive:
+    name: Nightly Performance Gate
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install Python Dependencies
+        run: |
+          pip install numpy chromadb
+          
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+          
+      - name: Build Release
+        run: cargo build -p benchmarks --release
+        
+      - name: Create Output Directory
+        run: mkdir -p benchmarks/reports/nightly
+        
+      - name: Run KV Benchmarks (5 runs)
+        run: |
+          ./target/release/perf-run \
+            --workload benchmarks/workloads/rust/kv_put_scan.toml \
+            --runs 5 \
+            --verbose \
+            --json > benchmarks/reports/nightly/kv_put_scan.json
+            
+      - name: Run SQLite Comparison (5 runs)
+        run: |
+          ./target/release/perf-run \
+            --workload benchmarks/workloads/rust/sqlite_vs_toondb_360.toml \
+            --runs 5 \
+            --verbose \
+            --json > benchmarks/reports/nightly/sqlite_vs_toondb.json
+            
+      - name: Run Perf Harness
+        run: |
+          ./target/release/perf-harness \
+            --workload benchmarks/workloads/agent_memory.yaml \
+            --tier small \
+            --duration 60 \
+            --warmup 10
+            
+      - name: Run Python Vector Benchmarks
+        run: |
+          PYTHONPATH=$(pwd)/toondb-python-sdk/src \
+          TOONDB_LIB_PATH=$(pwd)/target/release \
+          python3 benchmarks/comprehensive_benchmark.py | tee benchmarks/reports/nightly/vector_benchmark.txt
+          
+      - name: Generate Summary Report
+        run: |
+          echo "# Nightly Benchmark Results" > benchmarks/reports/nightly/SUMMARY.md
+          echo "" >> benchmarks/reports/nightly/SUMMARY.md
+          echo "**Date:** $(date -u +%Y-%m-%d)" >> benchmarks/reports/nightly/SUMMARY.md
+          echo "**Commit:** ${{ github.sha }}" >> benchmarks/reports/nightly/SUMMARY.md
+          echo "" >> benchmarks/reports/nightly/SUMMARY.md
+          echo "## KV Performance" >> benchmarks/reports/nightly/SUMMARY.md
+          jq -r '.metrics | "- Insert: \(.insert_throughput_ops_per_s.value | floor) ops/s\n- Scan: \(.scan_throughput_rows_per_s.value | floor) rows/s"' \
+            benchmarks/reports/nightly/kv_put_scan.json >> benchmarks/reports/nightly/SUMMARY.md
+          echo "" >> benchmarks/reports/nightly/SUMMARY.md
+          echo "## ToonDB vs SQLite" >> benchmarks/reports/nightly/SUMMARY.md
+          jq -r '.metrics | "- ToonDB Insert: \(.toondb_single_insert_ops_per_s.value | floor) ops/s\n- SQLite Insert: \(.sqlite_single_insert_ops_per_s.value | floor) ops/s"' \
+            benchmarks/reports/nightly/sqlite_vs_toondb.json >> benchmarks/reports/nightly/SUMMARY.md
+            
+      - name: Upload Nightly Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-perf-results-${{ github.run_number }}
+          path: benchmarks/reports/nightly/
+          retention-days: 30
+          
+      - name: Post Summary to Job
+        run: |
+          cat benchmarks/reports/nightly/SUMMARY.md >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # Baseline Update - Only on main branch
+  # ============================================================================
+  update-baseline:
+    name: Update Performance Baseline
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    needs: []
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        
+      - name: Build Release
+        run: cargo build -p benchmarks --release
+        
+      - name: Run and Update Baselines
+        run: |
+          mkdir -p benchmarks/baselines/ci-linux/kv_put_scan
+          mkdir -p benchmarks/baselines/ci-linux/sqlite_vs_toondb_360
+          
+          ./target/release/perf-run \
+            --workload benchmarks/workloads/rust/kv_put_scan.toml \
+            --runs 5 \
+            --json > benchmarks/baselines/ci-linux/kv_put_scan/default.json
+            
+          ./target/release/perf-run \
+            --workload benchmarks/workloads/rust/sqlite_vs_toondb_360.toml \
+            --runs 5 \
+            --json > benchmarks/baselines/ci-linux/sqlite_vs_toondb_360/default.json
+            
+      - name: Commit Baselines
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add benchmarks/baselines/ci-linux/
+          git diff --staged --quiet || git commit -m "chore: update performance baselines [skip ci]"
+          
+      - name: Push Baselines
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}

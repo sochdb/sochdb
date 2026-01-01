@@ -1,0 +1,53 @@
+# Quick publish - downloads wheels from last python-release build and uploads to PyPI
+trigger: none
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProjectId)'
+      definition: 'toondb-python-release'
+      buildVersionToDownload: 'latest'
+      artifactName: 'dist-linux-x64'
+      targetPath: '$(Pipeline.Workspace)/wheels'
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProjectId)'
+      definition: 'toondb-python-release'
+      buildVersionToDownload: 'latest'
+      artifactName: 'wheel-macos-arm64'
+      targetPath: '$(Pipeline.Workspace)/wheels'
+
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProjectId)'
+      definition: 'toondb-python-release'
+      buildVersionToDownload: 'latest'
+      artifactName: 'wheel-windows-x64'
+      targetPath: '$(Pipeline.Workspace)/wheels'
+
+  - script: |
+      pip install twine
+      echo "=== Wheels to upload ==="
+      ls -la $(Pipeline.Workspace)/wheels/
+      twine check $(Pipeline.Workspace)/wheels/*
+    displayName: 'Validate'
+
+  - script: |
+      twine upload --skip-existing $(Pipeline.Workspace)/wheels/* \
+        --username __token__ \
+        --password $(PYPI_API_TOKEN)
+    displayName: 'Upload to PyPI'
+    env:
+      PYPI_API_TOKEN: $(PYPI_API_TOKEN)

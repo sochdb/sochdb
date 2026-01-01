@@ -1,0 +1,136 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools-rust>=1.7"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "toondb-client"
+version = "0.2.3"
+description = "ToonDB is an AI-native database with token-optimized output, O(|path|) lookups, built-in vector search, and durable transactions."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Sushanth", email = "sushanth@toondb.dev"}
+]
+maintainers = [
+    {name = "Sushanth", email = "sushanth@toondb.dev"}
+]
+keywords = ["database", "llm", "ai", "vector-search", "embedded", "key-value", "toondb", "context-retrieval", "transactions"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "faker>=18.0",
+]
+
+[project.urls]
+Homepage = "https://toondb.dev"
+Repository = "https://github.com/toondb/toondb"
+Documentation = "https://docs.toondb.dev"
+"Bug Tracker" = "https://github.com/toondb/toondb/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Include bundled native libraries for each platform
+toondb = [
+    # Shared libraries (FFI) - platform-specific directories
+    "lib/*/*.so",
+    "lib/*/*.dylib", 
+    "lib/*/*.dll",
+    # Root lib directory (fallback)
+    "lib/*.so",
+    "lib/*.dylib",
+    "lib/*.dll",
+    # Bundled CLI binaries (bulk operations)
+    "_bin/**/toondb-bulk",
+    "_bin/**/toondb-bulk.exe",
+    "_bin/**/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+# =============================================================================
+# cibuildwheel Configuration (uv-style binary-in-wheel)
+# =============================================================================
+# 
+# Platform Matrix (minimal viable set):
+#   - Linux:   manylinux_2_17_x86_64, manylinux_2_17_aarch64
+#   - macOS:   macosx_11_0_universal2 (or separate x86_64 + arm64)
+#   - Windows: win_amd64
+#
+# Key insight: wheels are py3-none-<platform> since we bundle a Rust binary,
+# not a CPython extension. This avoids rebuilding for every Python minor.
+# =============================================================================
+
+[tool.cibuildwheel]
+# Build for Python 3.9+ only (matches requires-python)
+build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+
+# Skip 32-bit builds, PyPy, and musllinux (for now)
+skip = "*-win32 *-manylinux_i686 pp* *-musllinux*"
+
+# Before building wheel, compile the Rust binary
+before-build = "bash {project}/scripts/build_rust_binary.sh"
+
+# Test the wheel after building
+test-command = "python -c \"from toondb.bulk import get_toondb_bulk_path; print(get_toondb_bulk_path())\""
+
+[tool.cibuildwheel.linux]
+# Use manylinux_2_17 for broad glibc compatibility (glibc >= 2.17)
+# This matches what uv uses for maximum compatibility
+manylinux-x86_64-image = "manylinux_2_17"
+manylinux-aarch64-image = "manylinux_2_17"
+
+# Install Rust toolchain inside the manylinux container
+before-all = """
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source $HOME/.cargo/env
+"""
+
+# Environment for Rust builds
+environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+
+[tool.cibuildwheel.macos]
+# Build universal2 (x86_64 + arm64 in one binary)
+archs = ["universal2"]
+
+# macOS 11.0 minimum for universal2 support
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+# Install both Rust targets for universal2
+before-all = """
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+"""
+
+[tool.cibuildwheel.windows]
+# Windows x64 only (ARM64 later if needed)
+archs = ["AMD64"]
+
+# Rust should be pre-installed on GitHub Actions Windows runners

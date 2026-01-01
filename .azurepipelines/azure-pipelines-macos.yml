@@ -1,0 +1,89 @@
+# =============================================================================
+# ToonDB Azure Pipeline - macOS Build (Apple Silicon)
+# =============================================================================
+# Manual trigger only
+# Builds for Apple Silicon (aarch64) only
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: 'macos-latest'
+
+variables:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+steps:
+  - script: |
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      source $HOME/.cargo/env
+      rustup target add aarch64-apple-darwin
+    displayName: 'Install Rust'
+
+  - script: |
+      source $HOME/.cargo/env
+      
+      # Build for Apple Silicon (aarch64) only
+      echo "Building for aarch64-apple-darwin (Apple Silicon)..."
+      cargo build --release --workspace --target aarch64-apple-darwin --exclude toondb-studio --exclude benchmarks
+      
+      # Copy binaries to output directory
+      mkdir -p target/macos-arm64
+      
+      if [ -f "target/aarch64-apple-darwin/release/libtoondb_storage.dylib" ]; then
+        cp target/aarch64-apple-darwin/release/libtoondb_storage.dylib target/macos-arm64/
+      fi
+      if [ -f "target/aarch64-apple-darwin/release/libtoondb_index.dylib" ]; then
+        cp target/aarch64-apple-darwin/release/libtoondb_index.dylib target/macos-arm64/
+      fi
+      if [ -f "target/aarch64-apple-darwin/release/toondb-bulk" ]; then
+        cp target/aarch64-apple-darwin/release/toondb-bulk target/macos-arm64/
+      fi
+      if [ -f "target/aarch64-apple-darwin/release/toondb-mcp" ]; then
+        cp target/aarch64-apple-darwin/release/toondb-mcp target/macos-arm64/
+      fi
+      
+      echo "✅ Build complete. Contents of target/macos-arm64:"
+      ls -la target/macos-arm64/
+    displayName: 'Build for Apple Silicon'
+
+  # Tests disabled to speed up CI - run locally before pushing
+  # - script: |
+  #     source $HOME/.cargo/env
+  #     cargo test --release --workspace -- --test-threads=1
+  #   displayName: 'Run Rust tests'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish macOS ARM64 libraries'
+    inputs:
+      targetPath: 'target/macos-arm64'
+      artifact: 'rust-macos-arm64'
+
+  # --- Python Wheel ---
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+    displayName: 'Use Python 3.12'
+
+  - script: |
+      mkdir -p toondb-python-sdk/src/toondb/lib/darwin-arm64
+      mkdir -p toondb-python-sdk/src/toondb/_bin/darwin-arm64
+      cp target/macos-arm64/libtoondb_storage.dylib toondb-python-sdk/src/toondb/lib/darwin-arm64/
+      cp target/macos-arm64/libtoondb_index.dylib toondb-python-sdk/src/toondb/lib/darwin-arm64/
+      cp target/macos-arm64/toondb-bulk toondb-python-sdk/src/toondb/_bin/darwin-arm64/ || true
+      chmod +x toondb-python-sdk/src/toondb/_bin/darwin-arm64/* || true
+    displayName: 'Copy native libraries to Python package'
+
+  - script: |
+      cd toondb-python-sdk
+      pip install build wheel
+      python -m build --wheel
+      ls -la dist/
+    displayName: 'Build Python wheel'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish macOS wheel'
+    inputs:
+      targetPath: 'toondb-python-sdk/dist'
+      artifact: 'python-macos-arm64'

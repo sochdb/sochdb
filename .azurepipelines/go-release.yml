@@ -1,0 +1,136 @@
+# Azure DevOps Release Pipeline for Go SDK
+#
+# Trigger: Manual or tag-based
+# Publishes: Go module (via git tag - Go modules use git tags for versioning)
+
+trigger: none
+
+pr: none
+
+parameters:
+  - name: version
+    displayName: 'Version to release (e.g., v0.2.3)'
+    type: string
+    default: ''
+
+variables:
+  - group: toondb-release-secrets
+  - name: GO_VERSION
+    value: '1.22'
+
+stages:
+  - stage: Validate
+    displayName: 'Validate'
+    jobs:
+      - job: ValidateVersion
+        displayName: 'Validate Version'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              VERSION="${{ parameters.version }}"
+              if [ -z "$VERSION" ]; then
+                echo "##vso[task.logissue type=error]Version parameter is required"
+                exit 1
+              fi
+              
+              # Validate semver format with v prefix
+              if ! echo "$VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+                echo "##vso[task.logissue type=error]Version must be in format v0.0.0 or v0.0.0-suffix"
+                exit 1
+              fi
+              
+              echo "Version validated: $VERSION"
+              echo "##vso[task.setvariable variable=RELEASE_VERSION;isOutput=true]$VERSION"
+            name: validate
+            displayName: 'Validate version format'
+
+  - stage: Test
+    displayName: 'Test'
+    dependsOn: Validate
+    jobs:
+      - job: Test
+        displayName: 'Run Tests'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: GoTool@0
+            inputs:
+              version: $(GO_VERSION)
+            displayName: 'Install Go'
+
+          - script: |
+              go mod download
+              go build -v ./...
+              go test -v -race ./...
+            displayName: 'Build and Test'
+            workingDirectory: toondb-go
+
+  - stage: Release
+    displayName: 'Release'
+    dependsOn: Test
+    condition: succeeded()
+    jobs:
+      - job: TagRelease
+        displayName: 'Tag Release'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+            persistCredentials: true
+
+          - script: |
+              VERSION="${{ parameters.version }}"
+              
+              # Configure git
+              git config user.name "Azure Pipelines"
+              git config user.email "azuredevops@microsoft.com"
+              
+              # Create and push tag for the Go module
+              # Go modules use path-based tags: toondb-go/v0.2.3
+              TAG="toondb-go/$VERSION"
+              
+              echo "Creating tag: $TAG"
+              git tag -a "$TAG" -m "Release toondb-go $VERSION"
+              git push origin "$TAG"
+              
+              echo "##[section]Released toondb-go $VERSION"
+              echo "Install with: go get github.com/toondb/toondb/toondb-go@$VERSION"
+            displayName: 'Create release tag'
+            workingDirectory: toondb-go
+
+  - stage: Verify
+    displayName: 'Verify'
+    dependsOn: Release
+    condition: succeeded()
+    jobs:
+      - job: VerifyModule
+        displayName: 'Verify Module'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: GoTool@0
+            inputs:
+              version: $(GO_VERSION)
+            displayName: 'Install Go'
+
+          - script: |
+              VERSION="${{ parameters.version }}"
+              
+              # Wait for Go proxy to index the new version
+              echo "Waiting for Go proxy to index..."
+              sleep 60
+              
+              # Create a test module to verify the release
+              mkdir -p /tmp/test-toondb-go
+              cd /tmp/test-toondb-go
+              go mod init test
+              
+              # Try to get the new version
+              if go get github.com/toondb/toondb/toondb-go@$VERSION; then
+                echo "##[section]Module verified: github.com/toondb/toondb/toondb-go@$VERSION"
+              else
+                echo "##vso[task.logissue type=warning]Module not yet available on proxy (may take a few minutes)"
+              fi
+            displayName: 'Verify module availability'
+            continueOnError: true

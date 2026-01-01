@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "run": {
+    "id": "20251228T015014Z_sqlite_vs_toondb_360_default_fa4b4b7",
+    "timestamp_utc": "2025-12-28T01:50:14Z",
+    "git": {
+      "sha": "fa4b4b7",
+      "dirty": true
+    },
+    "runner": {
+      "kind": "rust",
+      "command": "./target/release/perf-run --workload bench/workloads/rust/sqlite_vs_toondb_360.toml --runs 5 --verbose",
+      "duration_s": 1.377606
+    }
+  },
+  "env": {
+    "os": "macos",
+    "cpu": "Apple M1 Max",
+    "cores": 10,
+    "ram_gb": 32,
+    "rustc": "rustc 1.91.1 (ed61e7d7e 2025-11-07)",
+    "features": []
+  },
+  "workload": {
+    "name": "sqlite_vs_toondb_360",
+    "params": {
+      "range_scan_size": 1000,
+      "n_records": 100000,
+      "single_insert_count": 10000,
+      "batch_sizes": [
+        100,
+        1000,
+        10000
+      ],
+      "concurrent_readers": 4,
+      "range_scan_count": 100,
+      "full_scan_iterations": 5,
+      "point_lookup_count": 10000,
+      "timed_iterations": 5
+    }
+  },
+  "dataset": {
+    "name": "default",
+    "hash": "sha256:pending"
+  },
+  "metrics": {
+    "toondb_single_insert_ops_per_s": {
+      "value": 1252169.1169091077,
+      "unit": "ops/s",
+      "better": "higher"
+    },
+    "sqlite_scan_rows_per_s": {
+      "value": 18512378.579622943,
+      "unit": "rows/s",
+      "better": "higher"
+    },
+    "toondb_scan_rows_per_s": {
+      "value": 2416609.3950378452,
+      "unit": "rows/s",
+      "better": "higher"
+    },
+    "sqlite_single_insert_ops_per_s": {
+      "value": 916551.0765914349,
+      "unit": "ops/s",
+      "better": "higher"
+    }
+  },
+  "artifacts": {
+    "logs": null,
+    "raw": null
+  }
+}

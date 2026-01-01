@@ -1,0 +1,302 @@
+{
+    "$schema": "https://raw.githubusercontent.com/anthropics/model-context-protocol/main/schema/mcp.schema.json",
+    "name": "toondb",
+    "version": "0.1.0",
+    "description": "AI-native database with context queries, TOON format, and token budgeting",
+    "author": "Sushanth",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/sushanthpy/toondb",
+    "transport": {
+        "type": "stdio",
+        "command": "/Users/sushanth/toon_database/target/release/toondb-mcp",
+        "args": [
+            "--db",
+            "/Users/sushanth/toon_database/toondb_data"
+        ],
+        "env": {
+            "RUST_LOG": "info"
+        }
+    },
+    "capabilities": {
+        "tools": true,
+        "resources": true,
+        "prompts": false
+    },
+    "tools": [
+        {
+            "name": "toondb.context_query",
+            "description": "Fetch AI-optimized context from ToonDB with token budgeting. Returns data in compact TOON format (40-60% fewer tokens than JSON).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sections": {
+                        "type": "array",
+                        "description": "Context sections to fetch, each with priority and data source",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string"
+                                },
+                                "priority": {
+                                    "type": "integer"
+                                },
+                                "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                        "last",
+                                        "get",
+                                        "query"
+                                    ]
+                                },
+                                "table": {
+                                    "type": "string"
+                                },
+                                "path": {
+                                    "type": "string"
+                                },
+                                "top_k": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Maximum tokens for the response"
+                    }
+                },
+                "required": [
+                    "sections"
+                ]
+            }
+        },
+        {
+            "name": "toondb.query",
+            "description": "Execute a ToonQL query. Returns results in TOON format.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "ToonQL query (SQL-like syntax)"
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": [
+                            "toon",
+                            "json"
+                        ],
+                        "default": "toon"
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            }
+        },
+        {
+            "name": "toondb.get",
+            "description": "Get a value at a path (e.g., '/users/123/profile'). O(|path|) complexity.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the value"
+                    }
+                },
+                "required": [
+                    "path"
+                ]
+            }
+        },
+        {
+            "name": "toondb.put",
+            "description": "Set a value at a path. Creates intermediate nodes as needed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to store the value"
+                    },
+                    "value": {
+                        "description": "Value to store (any JSON)"
+                    }
+                },
+                "required": [
+                    "path",
+                    "value"
+                ]
+            }
+        },
+        {
+            "name": "toondb.delete",
+            "description": "Delete a value at a path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to delete"
+                    }
+                },
+                "required": [
+                    "path"
+                ]
+            }
+        },
+        {
+            "name": "toondb.list_tables",
+            "description": "List all tables with semantic metadata (role, indexes, etc.)",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "include_metadata": {
+                        "type": "boolean",
+                        "default": true
+                    }
+                }
+            }
+        },
+        {
+            "name": "toondb.describe",
+            "description": "Get detailed schema for a table including semantic metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "description": "Table name"
+                    }
+                },
+                "required": [
+                    "table"
+                ]
+            }
+        },
+        {
+            "name": "memory.search_episodes",
+            "description": "Search for similar past episodes (tasks/conversations) by semantic similarity.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "k": {
+                        "type": "integer",
+                        "default": 5,
+                        "description": "Number of results"
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            }
+        },
+        {
+            "name": "memory.search_entities",
+            "description": "Search entities (users, projects, documents) by semantic similarity.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Entity kind filter"
+                    },
+                    "k": {
+                        "type": "integer",
+                        "default": 5
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            }
+        },
+        {
+            "name": "memory.build_context",
+            "description": "Build optimized LLM context from memory with automatic section selection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Current task description"
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "default": 4000
+                    }
+                },
+                "required": [
+                    "task"
+                ]
+            }
+        },
+        {
+            "name": "logs.tail",
+            "description": "Get the last N rows from a log table (most recent first).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "description": "Table name"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 10
+                    }
+                },
+                "required": [
+                    "table"
+                ]
+            }
+        },
+        {
+            "name": "logs.timeline",
+            "description": "Get events in a time range for an entity.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string"
+                    },
+                    "from_ts": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "to_ts": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                },
+                "required": [
+                    "entity_id"
+                ]
+            }
+        }
+    ],
+    "resources": [
+        {
+            "uri": "toondb://tables/{table_name}",
+            "name": "Table Schema",
+            "description": "Get schema and metadata for a table",
+            "mimeType": "application/json"
+        },
+        {
+            "uri": "toondb://views/{view_name}",
+            "name": "Predefined View",
+            "description": "Access predefined views (conversation_view, tool_calls_view, etc.)",
+            "mimeType": "application/json"
+        }
+    ]
+}

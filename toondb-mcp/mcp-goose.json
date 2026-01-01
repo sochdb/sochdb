@@ -1,0 +1,12 @@
+{
+    "name": "toondb",
+    "type": "stdio",
+    "description": "AI-native database with context queries, TOON format, and token budgeting",
+    "command": "/Users/sushanth/toon_database/target/release/toondb-mcp",
+    "args": [
+        "--db",
+        "/Users/sushanth/toon_database/toondb_data"
+    ],
+    "timeout": 300,
+    "env": {}
+}

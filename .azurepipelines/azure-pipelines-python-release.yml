@@ -1,0 +1,246 @@
+# =============================================================================
+# ToonDB Azure Pipeline - Python SDK Release (All-in-One)
+# =============================================================================
+#
+# Single pipeline that builds wheels for all platforms and publishes to PyPI.
+# All artifacts come from the same commit/version - no cross-pipeline issues.
+#
+# Produces:
+#   - toondb-X.Y.Z-py3-none-manylinux_2_17_x86_64.whl
+#   - toondb-X.Y.Z-py3-none-macosx_11_0_arm64.whl
+#   - toondb-X.Y.Z-py3-none-win_amd64.whl
+#   - toondb-X.Y.Z.tar.gz (source distribution)
+#
+# Prerequisites:
+#   - Add PYPI_API_TOKEN as a secret variable in Azure DevOps
+#   - macOS ARM64 pool requires self-hosted agent or appropriate pool name
+# =============================================================================
+
+trigger: none
+pr: none
+
+parameters:
+  - name: publishToPyPI
+    displayName: 'Publish to PyPI'
+    type: boolean
+    default: true
+
+variables:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+stages:
+  # ===========================================================================
+  # Stage 1: Build wheels for all platforms
+  # ===========================================================================
+  - stage: Build
+    displayName: 'Build Python Wheels'
+    jobs:
+      # -----------------------------------------------------------------------
+      # Linux x86_64
+      # -----------------------------------------------------------------------
+      - job: Linux
+        displayName: 'Linux x86_64'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install Rust'
+
+          - script: |
+              cargo build --release -p toondb-tools -p toondb-storage -p toondb-index
+            displayName: 'Build Rust libraries'
+
+          - script: |
+              mkdir -p toondb-python-sdk/src/toondb/lib/x86_64-unknown-linux-gnu
+              mkdir -p toondb-python-sdk/src/toondb/_bin/x86_64-unknown-linux-gnu
+              cp target/release/libtoondb_storage.so toondb-python-sdk/src/toondb/lib/x86_64-unknown-linux-gnu/
+              cp target/release/libtoondb_index.so toondb-python-sdk/src/toondb/lib/x86_64-unknown-linux-gnu/
+              cp target/release/toondb-bulk toondb-python-sdk/src/toondb/_bin/x86_64-unknown-linux-gnu/
+              chmod +x toondb-python-sdk/src/toondb/_bin/x86_64-unknown-linux-gnu/toondb-bulk
+            displayName: 'Copy binaries to SDK'
+
+          - script: |
+              cd toondb-python-sdk
+              pip install build wheel
+              python -m build
+              # Rename wheel with platform tag
+              cd dist
+              for f in *-py3-none-any.whl; do
+                newname=$(echo $f | sed 's/-py3-none-any/-py3-none-manylinux_2_17_x86_64/')
+                mv "$f" "$newname"
+              done
+              ls -la
+            displayName: 'Build wheel and sdist'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'toondb-python-sdk/dist'
+              artifactName: 'dist-linux-x64'
+
+      # -----------------------------------------------------------------------
+      # macOS ARM64
+      # -----------------------------------------------------------------------
+      - job: macOS
+        displayName: 'macOS ARM64'
+        pool:
+          vmImage: 'macOS-latest'
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+
+          - script: |
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install Rust'
+
+          - script: |
+              rustup target add aarch64-apple-darwin
+              cargo build --release -p toondb-tools -p toondb-storage -p toondb-index --target aarch64-apple-darwin
+            displayName: 'Build Rust libraries'
+
+          - script: |
+              mkdir -p toondb-python-sdk/src/toondb/lib/aarch64-apple-darwin
+              mkdir -p toondb-python-sdk/src/toondb/_bin/aarch64-apple-darwin
+              cp target/aarch64-apple-darwin/release/libtoondb_storage.dylib toondb-python-sdk/src/toondb/lib/aarch64-apple-darwin/
+              cp target/aarch64-apple-darwin/release/libtoondb_index.dylib toondb-python-sdk/src/toondb/lib/aarch64-apple-darwin/
+              cp target/aarch64-apple-darwin/release/toondb-bulk toondb-python-sdk/src/toondb/_bin/aarch64-apple-darwin/
+              chmod +x toondb-python-sdk/src/toondb/_bin/aarch64-apple-darwin/toondb-bulk
+            displayName: 'Copy binaries to SDK'
+
+          - script: |
+              cd toondb-python-sdk
+              pip install build wheel
+              python -m build --wheel
+              # Rename wheel with platform tag
+              cd dist
+              for f in *-py3-none-any.whl; do
+                newname=$(echo $f | sed 's/-py3-none-any/-py3-none-macosx_11_0_arm64/')
+                mv "$f" "$newname"
+              done
+              ls -la
+            displayName: 'Build wheel'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'toondb-python-sdk/dist'
+              artifactName: 'wheel-macos-arm64'
+
+      # -----------------------------------------------------------------------
+      # Windows x64
+      # -----------------------------------------------------------------------
+      - job: Windows
+        displayName: 'Windows x64'
+        pool:
+          vmImage: 'windows-latest'
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+
+          - powershell: |
+              $protocVersion = "25.1"
+              $protocZip = "protoc-$protocVersion-win64.zip"
+              Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/$protocZip" -OutFile $protocZip
+              Expand-Archive -Path $protocZip -DestinationPath "$env:USERPROFILE\protoc" -Force
+              echo "##vso[task.prependpath]$env:USERPROFILE\protoc\bin"
+            displayName: 'Install protoc'
+
+          - powershell: |
+              Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+              ./rustup-init.exe -y --default-toolchain stable
+              echo "##vso[task.prependpath]$env:USERPROFILE\.cargo\bin"
+            displayName: 'Install Rust'
+
+          - script: |
+              cargo build --release -p toondb-tools -p toondb-storage -p toondb-index
+            displayName: 'Build Rust libraries'
+
+          - powershell: |
+              New-Item -ItemType Directory -Force -Path toondb-python-sdk\src\toondb\lib\x86_64-pc-windows-msvc
+              New-Item -ItemType Directory -Force -Path toondb-python-sdk\src\toondb\_bin\x86_64-pc-windows-msvc
+              Copy-Item target\release\toondb_storage.dll toondb-python-sdk\src\toondb\lib\x86_64-pc-windows-msvc\
+              Copy-Item target\release\toondb_index.dll toondb-python-sdk\src\toondb\lib\x86_64-pc-windows-msvc\
+              Copy-Item target\release\toondb-bulk.exe toondb-python-sdk\src\toondb\_bin\x86_64-pc-windows-msvc\
+            displayName: 'Copy binaries to SDK'
+
+          - powershell: |
+              cd toondb-python-sdk
+              pip install build wheel
+              python -m build --wheel
+              # Rename wheel with platform tag
+              cd dist
+              Get-ChildItem -Filter "*-py3-none-any.whl" | ForEach-Object {
+                $newname = $_.Name -replace '-py3-none-any', '-py3-none-win_amd64'
+                Rename-Item $_.FullName $newname
+              }
+              Get-ChildItem
+            displayName: 'Build wheel'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'toondb-python-sdk\dist'
+              artifactName: 'wheel-windows-x64'
+
+  # ===========================================================================
+  # Stage 2: Publish to PyPI
+  # ===========================================================================
+  - stage: Publish
+    displayName: 'Publish to PyPI'
+    dependsOn: Build
+    condition: and(succeeded(), eq('${{ parameters.publishToPyPI }}', true))
+    jobs:
+      - job: Upload
+        displayName: 'Upload to PyPI'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              buildType: 'current'
+              artifactName: 'dist-linux-x64'
+              targetPath: '$(Pipeline.Workspace)/wheels'
+
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              buildType: 'current'
+              artifactName: 'wheel-macos-arm64'
+              targetPath: '$(Pipeline.Workspace)/wheels'
+
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              buildType: 'current'
+              artifactName: 'wheel-windows-x64'
+              targetPath: '$(Pipeline.Workspace)/wheels'
+
+          - script: |
+              pip install twine
+              echo "=== All packages to upload ==="
+              ls -la $(Pipeline.Workspace)/wheels/
+              twine check $(Pipeline.Workspace)/wheels/*
+            displayName: 'Validate packages'
+
+          - script: |
+              twine upload --skip-existing $(Pipeline.Workspace)/wheels/* \
+                --username __token__ \
+                --password $(PYPI_API_TOKEN)
+            displayName: 'Upload to PyPI'
+            env:
+              PYPI_API_TOKEN: $(PYPI_API_TOKEN)

@@ -1,0 +1,12 @@
+
+    #[test]
+    fn test_quantized_euclidean_distance() {
+        let a = arr1(&[1.0, 0.0, 0.0]);
+        let b = arr1(&[4.0, 0.0, 0.0]); // Distance = 3.0
+
+        let a_f16 = QuantizedVector::from_f32(a, Precision::F16);
+        let b_f16 = QuantizedVector::from_f32(b, Precision::F16);
+
+        let distance = euclidean_distance_quantized(&a_f16, &b_f16);
+        assert!((distance - 3.0).abs() < 0.01);
+    }

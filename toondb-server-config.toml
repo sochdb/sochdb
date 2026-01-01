@@ -1,0 +1,12 @@
+# ToonDB Server Configuration
+
+[server]
+listen_addr = "127.0.0.1:9600"
+max_connections = 1000
+request_timeout_secs = 30
+
+[storage]
+data_dir = "./toondb-data"
+enable_compression = true
+use_project_storage = true
+

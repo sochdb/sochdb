@@ -1,0 +1,93 @@
+[package]
+name = "toondb-index"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "ToonDB indexing (HNSW vector index and related utilities)"
+
+[lib]
+# Build both static lib and shared library for Python FFI
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+toondb-core = { version = "0.2.3", path = "../toondb-core" }
+toondb-storage = { version = "0.2.3", path = "../toondb-storage" }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+moka = { workspace = true }  # LRU cache for path resolution
+blake3 = { workspace = true } # Checksum for corruption detection
+# nalgebra removed - unused (ndarray handles vector ops)
+ndarray = { workspace = true, features = ["serde"] }
+thiserror = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true } # Logging for dimension locking
+half = { version = "2.4", features = ["serde"] } # f16/bf16 support for quantization
+smallvec = { version = "1.13", features = ["serde"] } # Inline storage for neighbor lists
+arrayvec = "0.7" # Fixed-capacity arrays for compile-time bounds
+bincode = "1.3" # Binary serialization for persistence
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0" # JSON serialization for metadata
+prometheus = "0.13" # Metrics and observability
+lazy_static = "1.4" # Static metrics initialization
+flate2 = "1.0" # Gzip compression for persistence
+memmap2.workspace = true
+rayon = "1.10" # Parallel iterators for HNSW batch build
+ordered-float = "4.2" # Ordered floats for priority queues
+array-init = "2.1" # Array initialization helpers for atomic arrays
+
+# Arrow IPC for cross-language zero-copy data exchange
+arrow = { version = "54", default-features = false, features = ["ipc"] }
+
+# Embedding dependencies
+crossbeam-channel = "0.5" # MPMC channels for embedding pipeline
+sha2 = "0.10" # SHA-256 for model checksums
+dirs = "5.0" # Platform-specific directories
+tokio = { version = "1.0", features = ["rt-multi-thread", "sync"], optional = true } # Async runtime
+async-trait = "0.1" # Async trait support
+fastembed = { version = "4", optional = true } # Local ONNX embeddings
+
+# LLM crate for external embedding providers (OpenAI, Ollama, etc.)
+llm = { version = "1.3", optional = true }
+crc32fast = "1.5.0"
+
+[features]
+default = ["local-embeddings"]
+local-embeddings = []
+fastembed-embeddings = ["dep:fastembed"]
+llm-embeddings = ["dep:llm", "dep:tokio"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+rand_chacha = "0.3"
+
+[[bin]]
+name = "bulk-load"
+path = "src/bin/bulk_load.rs"
+
+[[bench]]
+name = "vector_bench"
+harness = false
+
+[[bench]]
+name = "hnsw_bench"
+harness = false
+
+[[bench]]
+name = "concurrent_bench"
+harness = false
+
+[[bench]]
+name = "quantization_bench"
+harness = false
+
+[[bench]]
+name = "perf_regression"
+harness = false
