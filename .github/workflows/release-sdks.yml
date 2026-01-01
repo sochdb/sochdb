@@ -1,0 +1,185 @@
+# =============================================================================
+# ToonDB SDK Release Pipeline (npm & Go only)
+# =============================================================================
+#
+# Lightweight pipeline for releasing SDK packages without rebuilding binaries.
+# Use this when binaries are already published and you only need to update:
+#   - npm: @sushanth/toondb (JavaScript/TypeScript)
+#   - Go modules: github.com/toondb/toondb/toondb-go (Go)
+#
+# Binaries must already exist from a previous full release.
+# =============================================================================
+
+name: Release SDKs (npm & Go)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 0.2.4)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (validate without publishing)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_VERSION: ${{ inputs.version }}
+
+jobs:
+  # ===========================================================================
+  # Publish npm Package
+  # ===========================================================================
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment:
+      name: toondb-workflow
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update package version
+        run: |
+          cd toondb-js
+          npm version ${{ inputs.version }} --no-git-tag-version || echo "Version already set to ${{ inputs.version }}"
+
+      - name: Install dependencies and build
+        run: |
+          cd toondb-js
+          npm ci
+          npm run build
+
+      - name: Run tests
+        run: |
+          cd toondb-js
+          npm test
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd toondb-js
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "🔍 Dry run - validating package..."
+            npm publish --dry-run --access public
+          else
+            npm publish --access public
+          fi
+
+  # ===========================================================================
+  # Publish Go Module
+  # ===========================================================================
+  publish-go:
+    name: Publish Go Module
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push tags
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: toondb-go/go.sum
+
+      - name: Update Go SDK version
+        run: |
+          cd toondb-go
+          sed -i 's/const Version = ".*"/const Version = "${{ inputs.version }}"/' database.go
+
+      - name: Test Go module
+        run: |
+          cd toondb-go
+          go mod download
+          go build -v ./...
+          go test -v ./...
+
+      - name: Commit version change and create tag
+        if: ${{ inputs.dry_run != true }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v${{ inputs.version }}"
+          TAG="toondb-go/$VERSION"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Commit version change if there are changes
+          if ! git diff --quiet toondb-go/database.go; then
+            git add toondb-go/database.go
+            git commit -m "chore(go): bump version to $VERSION"
+            git push origin HEAD
+          fi
+          
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping..."
+          else
+            echo "Creating tag: $TAG"
+            git tag -a "$TAG" -m "Release toondb-go $VERSION"
+            git push origin "$TAG"
+          fi
+          
+          echo "Go module released: github.com/toondb/toondb/toondb-go@$VERSION"
+
+      - name: Verify Go module (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "🔍 Dry run - would create tag: toondb-go/v${{ inputs.version }}"
+          echo "Install command would be: go get github.com/toondb/toondb/toondb-go@v${{ inputs.version }}"
+
+  # ===========================================================================
+  # Release Summary
+  # ===========================================================================
+  summary:
+    name: Release Summary
+    runs-on: ubuntu-latest
+    needs: [publish-npm, publish-go]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "## 📦 ToonDB SDK Release v${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "**Mode:** Dry Run (no packages published)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Mode:** Production Release" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### SDK Packages" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | Package | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| npm | \`@sushanth/toondb\` | ${{ needs.publish-npm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Go modules | \`github.com/toondb/toondb/toondb-go\` | ${{ needs.publish-go.result }} |" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**JavaScript/TypeScript**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "npm install @sushanth/toondb@${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Go**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "go get github.com/toondb/toondb/toondb-go@v${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Note: This is an SDK-only release. Binaries from the full release pipeline are required for functionality.*" >> $GITHUB_STEP_SUMMARY
