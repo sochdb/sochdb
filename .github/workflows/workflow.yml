@@ -90,15 +90,9 @@ jobs:
             binary_ext: ""
             lib_ext: ".so"
             
-          # macOS ARM64 (Apple Silicon)
+          # macOS ARM64 (Apple Silicon) - Rosetta 2 handles x86 apps
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_ext: ""
-            lib_ext: ".dylib"
-            
-          # macOS x86_64 (Intel)
-          - os: macos-13
-            target: x86_64-apple-darwin
             binary_ext: ""
             lib_ext: ".dylib"
             
@@ -202,7 +196,7 @@ jobs:
           mkdir -p toondb-js/_bin
           
           # Copy binaries for each platform
-          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
             if [ -d "binaries/$target" ]; then
               mkdir -p "toondb-js/_bin/$target"
               cp -r binaries/$target/* "toondb-js/_bin/$target/"
@@ -288,10 +282,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             wheel_platform: macosx_11_0_arm64
-            
-          - os: macos-13
-            target: x86_64-apple-darwin
-            wheel_platform: macosx_10_12_x86_64
             
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -598,7 +588,7 @@ jobs:
         run: |
           mkdir -p release-assets
           
-          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
             if [ -d "release-binaries/$target" ]; then
               cd release-binaries
               if [ "$target" = "x86_64-pc-windows-msvc" ]; then
@@ -649,8 +639,7 @@ jobs:
             
             All SDK packages include pre-built binaries for:
             - Linux x86_64
-            - macOS ARM64 (Apple Silicon)
-            - macOS x86_64 (Intel)
+            - macOS ARM64 (Apple Silicon) - Intel Macs use Rosetta 2
             - Windows x64
             
             No Rust toolchain or compilation required!
@@ -691,6 +680,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Platforms Bundled" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Linux x86_64 (manylinux_2_17)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ macOS ARM64 (Apple Silicon)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ macOS x86_64 (Intel)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ macOS ARM64 (Apple Silicon, Rosetta 2 for Intel)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Windows x64" >> $GITHUB_STEP_SUMMARY
