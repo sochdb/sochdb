@@ -129,18 +129,21 @@ jobs:
       - name: Build release binaries
         shell: bash
         run: |
-          # toondb-server uses Unix sockets - skip on Windows
+          # Build libraries first (needed by all platforms)
+          cargo build --release --target ${{ matrix.target }} \
+            -p toondb-storage \
+            -p toondb-index
+          
+          # Build binaries (toondb-server is Unix-only)
           if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            # Windows: skip toondb-server (uses Unix sockets)
             cargo build --release --target ${{ matrix.target }} \
-              -p toondb-tools --bin toondb-bulk \
-              -p toondb-storage \
-              -p toondb-index \
-              -p toondb-grpc
+              --bin toondb-bulk \
+              --bin toondb-grpc-server
           else
+            # Unix: build all binaries
             cargo build --release --target ${{ matrix.target }} \
               -p toondb-tools \
-              -p toondb-storage \
-              -p toondb-index \
               -p toondb-grpc
           fi
 
