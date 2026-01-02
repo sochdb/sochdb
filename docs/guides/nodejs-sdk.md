@@ -33,6 +33,11 @@ npm install toondb
 yarn add toondb
 ```
 
+**What's New in 0.2.7:**
+- ✅ Full SQL engine support (CREATE, INSERT, SELECT, UPDATE, DELETE)
+- ✅ SQL WHERE clauses with multiple operators
+- ✅ SQL ORDER BY, LIMIT, OFFSET support
+
 **What's New in 0.2.6:**
 - ✅ Fixed putPath/getPath operations
 - ✅ Enhanced scan() method for prefix iteration
@@ -872,4 +877,4 @@ const end = Buffer.from('users;'); // ';' is after '/' in ASCII
 
 ---
 
-*Last updated: January 2026 (v0.2.6)*
+*Last updated: January 2026 (v0.2.7)*
