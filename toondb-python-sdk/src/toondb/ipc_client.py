@@ -444,15 +444,14 @@ class IpcClient:
         """
         resp = self._request(Message(OpCode.STATS))
         if resp.opcode == OpCode.STATS_RESP:
-            stats = {}
-            for line in resp.payload.decode("utf-8").splitlines():
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    try:
-                        stats[key] = int(value)
-                    except ValueError:
-                        pass
-            return stats
+            # Parse JSON response
+            import json
+            stats_str = resp.payload.decode("utf-8")
+            try:
+                stats = json.loads(stats_str)
+                return stats
+            except json.JSONDecodeError as e:
+                raise ProtocolError(f"Failed to parse stats JSON: {e}")
         if resp.opcode == OpCode.ERROR:
             raise DatabaseError(resp.payload.decode("utf-8", errors="replace"))
         raise ProtocolError(f"Unexpected opcode: {resp.opcode:#x}")

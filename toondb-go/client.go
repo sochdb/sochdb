@@ -10,6 +10,7 @@ package toondb
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -248,16 +249,27 @@ func (c *IPCClient) Stats() (*StorageStats, error) {
 		return nil, &ProtocolError{Message: fmt.Sprintf("unexpected stats response opcode: %#x", opcode)}
 	}
 
-	// Stats response format varies - handle both OK with data and STATS_RESP
-	if len(payload) < 20 {
-		// Minimal stats response
+	// Stats response format is JSON
+	if len(payload) == 0 {
+		// Empty response
 		return &StorageStats{}, nil
 	}
 
+	// Parse JSON response
+	var stats struct {
+		MemtableSizeBytes  uint64 `json:"memtable_size_bytes"`
+		WALSizeBytes       uint64 `json:"wal_size_bytes"`
+		ActiveTransactions int    `json:"active_transactions"`
+	}
+	
+	if err := json.Unmarshal(payload, &stats); err != nil {
+		return nil, &ProtocolError{Message: fmt.Sprintf("failed to parse stats JSON: %v", err)}
+	}
+
 	return &StorageStats{
-		MemtableSizeBytes:  binary.LittleEndian.Uint64(payload[0:8]),
-		WALSizeBytes:       binary.LittleEndian.Uint64(payload[8:16]),
-		ActiveTransactions: int(binary.LittleEndian.Uint32(payload[16:20])),
+		MemtableSizeBytes:  stats.MemtableSizeBytes,
+		WALSizeBytes:       stats.WALSizeBytes,
+		ActiveTransactions: stats.ActiveTransactions,
 	}, nil
 }
 
