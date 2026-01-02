@@ -924,7 +924,7 @@ Cleaned up 0 expired sessions
 |--------|-------------|
 | `SqlExecutor::new(client)` | Create executor |
 | `execute(query)` | Execute DDL/DML |
-| `query<T>(query)` | Execute SELECT (returns Vec<T>) |
+| `query<T>(query)` | Execute SELECT (returns `Vec<T>`) |
 
 ---
 
