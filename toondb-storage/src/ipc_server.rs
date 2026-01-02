@@ -1266,14 +1266,11 @@ impl IpcClient {
         match resp.opcode {
             opcode::STATS_RESP => {
                 let stats_str = String::from_utf8_lossy(&resp.payload);
-                let mut stats = HashMap::new();
-                for line in stats_str.lines() {
-                    if let Some((key, value)) = line.split_once('=')
-                        && let Ok(v) = value.parse::<u64>()
-                    {
-                        stats.insert(key.to_string(), v);
-                    }
-                }
+                
+                // Parse JSON response
+                let stats: HashMap<String, u64> = serde_json::from_str(&stats_str)
+                    .map_err(|e| IpcError::Protocol(format!("Failed to parse stats JSON: {}", e)))?;
+                
                 Ok(stats)
             }
             opcode::ERROR => Err(IpcError::Database(
