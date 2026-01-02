@@ -8,7 +8,14 @@ The official JavaScript/TypeScript SDK for **ToonDB** — a high-performance emb
 
 ## Version
 
-**v0.2.6** (January 2026)
+**v0.2.7** (January 2026)
+
+**What's New in 0.2.7:**
+- ✅ **Full SQL engine support** - CREATE TABLE, INSERT, SELECT, UPDATE, DELETE
+- ✅ **SQL WHERE clauses** - Supports =, !=, <, >, >=, <=, LIKE, NOT LIKE
+- ✅ **SQL ORDER BY, LIMIT, OFFSET** - Complete query control
+- ✅ SQL storage via KV backend (no external dependencies)
+- ✅ Fixed stats() to return valid JSON format
 
 **What's New in 0.2.6:**
 - ✅ Fixed `putPath()` and `getPath()` encoding (path segment format)
@@ -22,6 +29,7 @@ The official JavaScript/TypeScript SDK for **ToonDB** — a high-performance emb
 - ✅ **Key-Value Store** — Simple `get()`/`put()`/`delete()` operations
 - ✅ **Path-Native API** — Hierarchical keys like `users/alice/email`
 - ✅ **Prefix Scanning** — Fast `scan()` for multi-tenant data isolation
+- ✅ **SQL Support** — Full DDL/DML with CREATE, INSERT, SELECT, UPDATE, DELETE
 - ✅ **Transactions** — ACID-compliant with automatic commit/abort
 - ✅ **Query Builder** — Fluent API for complex queries (returns TOON format)
 - ✅ **Vector Search** — HNSW approximate nearest neighbor search
