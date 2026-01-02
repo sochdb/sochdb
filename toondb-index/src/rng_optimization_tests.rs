@@ -89,6 +89,7 @@ mod rng_optimization_tests {
                 triangle_inequality_gating: true,
                 early_abort_distance: true,
                 batch_oriented_rng: true,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -102,6 +103,7 @@ mod rng_optimization_tests {
                 triangle_inequality_gating: false,
                 early_abort_distance: false,
                 batch_oriented_rng: false,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -133,8 +135,8 @@ mod rng_optimization_tests {
         let results_original = index_original.search(&query, 5).unwrap();
 
         // Check that we get reasonable recall between the two methods
-        let optimized_ids: HashSet<u128> = results_optimized.iter().map(|r| r.id).collect();
-        let original_ids: HashSet<u128> = results_original.iter().map(|r| r.id).collect();
+        let optimized_ids: HashSet<u128> = results_optimized.iter().map(|r| r.0).collect();
+        let original_ids: HashSet<u128> = results_original.iter().map(|r| r.0).collect();
         
         let intersection_size = optimized_ids.intersection(&original_ids).count();
         let recall = intersection_size as f32 / results_original.len().min(5) as f32;
@@ -185,6 +187,7 @@ mod rng_optimization_tests {
                 triangle_inequality_gating: true,
                 early_abort_distance: true,
                 batch_oriented_rng: true,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -198,6 +201,7 @@ mod rng_optimization_tests {
                 triangle_inequality_gating: false,
                 early_abort_distance: false,
                 batch_oriented_rng: false,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -212,7 +216,7 @@ mod rng_optimization_tests {
 
         // Test optimized version
         let start = Instant::now();
-        let index_optimized = HnswIndex::new(dimension, config_optimized).unwrap();
+        let index_optimized = HnswIndex::new(dimension, config_optimized);
         for (i, vector) in vectors.iter().enumerate() {
             index_optimized.insert(i as u128, vector.clone()).unwrap();
         }
@@ -220,7 +224,7 @@ mod rng_optimization_tests {
 
         // Test original version  
         let start = Instant::now();
-        let index_original = HnswIndex::new(dimension, config_original).unwrap();
+        let index_original = HnswIndex::new(dimension, config_original);
         for (i, vector) in vectors.iter().enumerate() {
             index_original.insert(i as u128, vector.clone()).unwrap();
         }

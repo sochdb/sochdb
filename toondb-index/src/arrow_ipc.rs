@@ -461,12 +461,17 @@ pub fn serialize_to_ipc(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hnsw::HnswIndex;
+    use crate::hnsw::{HnswIndex, HnswConfig};
     
     #[test]
     fn test_arrow_ipc_roundtrip() {
         // Create a small index
-        let index = HnswIndex::new(4, 16, 50);
+        let config = HnswConfig {
+            max_connections: 16,
+            ef_construction: 50,
+            ..Default::default()
+        };
+        let index = HnswIndex::new(4, config);
         
         // Create test data
         let ids: Vec<u64> = vec![1, 2, 3];
@@ -485,7 +490,7 @@ mod tests {
         assert_eq!(inserted, 3);
         
         // Verify search works
-        let results = index.search(&[1.0, 0.0, 0.0, 0.0], 1);
+        let results = index.search(&[1.0, 0.0, 0.0, 0.0], 1).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 1); // Should find vector 1
     }
@@ -493,7 +498,12 @@ mod tests {
     #[test]
     fn test_dimension_mismatch() {
         // Create index with dimension 8
-        let index = HnswIndex::new(8, 16, 50);
+        let config = HnswConfig {
+            max_connections: 16,
+            ef_construction: 50,
+            ..Default::default()
+        };
+        let index = HnswIndex::new(8, config);
         
         // Create data with dimension 4
         let ids: Vec<u64> = vec![1];
@@ -509,7 +519,12 @@ mod tests {
     
     #[test]
     fn test_empty_batch() {
-        let index = HnswIndex::new(4, 16, 50);
+        let config = HnswConfig {
+            max_connections: 16,
+            ef_construction: 50,
+            ..Default::default()
+        };
+        let index = HnswIndex::new(4, config);
         
         let ids: Vec<u64> = vec![];
         let vectors: Vec<f32> = vec![];

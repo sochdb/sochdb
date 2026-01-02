@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn test_insert_and_get() {
         let storage = ContiguousNodeStorage::new(10);
-        let vector = QuantizedVector::F32(vec![1.0, 2.0, 3.0]);
+        let vector = QuantizedVector::F32(ndarray::Array1::from(vec![1.0, 2.0, 3.0]));
         
         let index = storage.insert(123, vector.clone(), 2).unwrap();
         assert_eq!(index, 0);
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn test_neighbors() {
         let storage = ContiguousNodeStorage::new(10);
-        let vector = QuantizedVector::F32(vec![1.0]);
+        let vector = QuantizedVector::F32(ndarray::Array1::from(vec![1.0]));
         
         let idx1 = storage.insert(1, vector.clone(), 1).unwrap();
         let idx2 = storage.insert(2, vector.clone(), 1).unwrap();
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn test_delete_and_reuse() {
         let storage = ContiguousNodeStorage::new(10);
-        let vector = QuantizedVector::F32(vec![1.0]);
+        let vector = QuantizedVector::F32(ndarray::Array1::from(vec![1.0]));
         
         let idx1 = storage.insert(1, vector.clone(), 0).unwrap();
         storage.delete(1).unwrap();
@@ -488,7 +488,7 @@ mod tests {
     #[test] 
     fn test_batch_access() {
         let storage = ContiguousNodeStorage::new(10);
-        let vector = QuantizedVector::F32(vec![1.0]);
+        let vector = QuantizedVector::F32(ndarray::Array1::from(vec![1.0]));
         
         let mut indices = Vec::new();
         for i in 0..5 {

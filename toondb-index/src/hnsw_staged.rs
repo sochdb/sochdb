@@ -793,6 +793,7 @@ impl HnswIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HnswConfig;
     
     #[test]
     fn test_staged_basic() {

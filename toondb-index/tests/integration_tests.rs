@@ -126,9 +126,9 @@ fn test_incremental_building() {
 
     let stats = index.stats();
     println!(
-        "✓ Final: {} vectors, {:.2} MB",
+        "✓ Final: {} vectors, ~{:.2} MB (estimated)",
         stats.num_vectors,
-        index.memory_stats().estimated_total_bytes as f64 / 1_000_000.0
+        (stats.num_vectors * stats.dimension * 4 + stats.num_vectors * 16 * 4) as f64 / 1_000_000.0
     );
 }
 
@@ -158,11 +158,11 @@ fn test_high_dimensional_embeddings() {
             index.insert(i as u128, vec).unwrap();
         }
 
-        let mem = index.memory_stats();
+        let stats = index.stats();
         println!(
-            "  ✓ {} vectors, {:.2} MB",
-            mem.num_nodes,
-            mem.estimated_total_bytes as f64 / 1_000_000.0
+            "  ✓ {} vectors, ~{:.2} MB (estimated)",
+            stats.num_vectors,
+            (stats.num_vectors * dim * 4 + stats.num_vectors * 16 * 4) as f64 / 1_000_000.0
         );
 
         // Test search quality

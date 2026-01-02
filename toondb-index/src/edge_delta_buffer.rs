@@ -453,7 +453,8 @@ mod tests {
         let delta = EdgeDelta::new(1, 0, 2);
         assert_eq!(delta.target_node, 1);
         assert_eq!(delta.layer, 0);
-        assert_eq!(delta.new_neighbors, smallvec::smallvec![2]);
+        let expected: smallvec::SmallVec<[u32; 4]> = smallvec::smallvec![2_u32];
+        assert_eq!(delta.new_neighbors, expected);
         assert_eq!(delta.priority, 0);
         
         let multi_delta = EdgeDelta::with_neighbors(1, 0, vec![2, 3, 4]);

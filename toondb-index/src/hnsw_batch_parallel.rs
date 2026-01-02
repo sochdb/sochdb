@@ -591,6 +591,7 @@ impl ParallelBatchInsert for HnswIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HnswConfig;
 
     fn create_test_index(dim: usize) -> HnswIndex {
         let config = HnswConfig {
