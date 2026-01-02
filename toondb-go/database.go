@@ -37,6 +37,10 @@ type Config struct {
 	// MemtableSizeBytes is the maximum memtable size before flushing.
 	// Default: 64MB
 	MemtableSizeBytes int64
+
+	// Embedded enables embedded mode (auto-start server).
+	// Default: true
+	Embedded bool
 }
 
 // DefaultConfig returns the default configuration.
@@ -47,6 +51,7 @@ func DefaultConfig(path string) *Config {
 		WALEnabled:        true,
 		SyncMode:          "normal",
 		MemtableSizeBytes: 64 * 1024 * 1024,
+		Embedded:          true,
 	}
 }
 
@@ -75,9 +80,10 @@ func DefaultConfig(path string) *Config {
 //	    return nil // commits on success
 //	})
 type Database struct {
-	client *IPCClient
-	config *Config
-	mu     sync.RWMutex
+	client              *IPCClient
+	config              *Config
+	mu                  sync.RWMutex
+	embeddedServerOwned bool
 	closed bool
 }
 
@@ -96,6 +102,11 @@ func Open(path string) (*Database, error) {
 
 // OpenWithConfig opens a database with custom configuration.
 //
+// In embedded mode (default), the SDK automatically starts a ToonDB server
+// process and manages its lifecycle. The server is stopped when Close() is called.
+//
+// To connect to an existing external server, set Embedded to false.
+//
 // Example:
 //
 //	config := &toondb.Config{
@@ -103,6 +114,7 @@ func Open(path string) (*Database, error) {
 //	    WALEnabled:      true,
 //	    SyncMode:        "full",
 //	    CreateIfMissing: true,
+//	    Embedded:        true,  // default
 //	}
 //	db, err := toondb.OpenWithConfig(config)
 func OpenWithConfig(config *Config) (*Database, error) {
@@ -118,16 +130,40 @@ func OpenWithConfig(config *Config) (*Database, error) {
 		}
 	}
 
-	// Connect to the database
-	socketPath := filepath.Join(config.Path, "toondb.sock")
+	var socketPath string
+	var embeddedStarted bool
+
+	// Start embedded server if configured (default: true)
+	if config.Embedded {
+		var err error
+		socketPath, err = StartEmbeddedServer(config.Path)
+		if err != nil {
+			return nil, &ToonDBError{
+				Op:      "open",
+				Path:    config.Path,
+				Message: "failed to start embedded server",
+				Err:     err,
+			}
+		}
+		embeddedStarted = true
+	} else {
+		// Connect to existing server socket
+		socketPath = filepath.Join(config.Path, "toondb.sock")
+	}
+
 	client, err := Connect(socketPath)
 	if err != nil {
+		if embeddedStarted {
+			// Clean up server if we started it
+			StopEmbeddedServer(config.Path)
+		}
 		return nil, err
 	}
 
 	return &Database{
-		client: client,
-		config: config,
+		client:              client,
+		config:              config,
+		embeddedServerOwned: embeddedStarted,
 	}, nil
 }
 
@@ -349,6 +385,7 @@ func (db *Database) Execute(sql string) (*SQLQueryResult, error) {
 }
 
 // Close closes the database connection.
+// If running in embedded mode, also stops the embedded server.
 func (db *Database) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -358,7 +395,16 @@ func (db *Database) Close() error {
 	}
 
 	db.closed = true
-	return db.client.Close()
+	
+	// Close the client connection first
+	err := db.client.Close()
+	
+	// Stop embedded server if we started it
+	if db.embeddedServerOwned {
+		StopEmbeddedServer(db.config.Path)
+	}
+	
+	return err
 }
 
 // Path returns the database path.

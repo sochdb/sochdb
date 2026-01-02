@@ -567,9 +567,8 @@ Apache License 2.0
 
 ## Support
 
-- GitHub Issues: https://github.com/sushanthpy/toondb/issues
-- Discord: https://discord.gg/toondb
-- Email: support@toondb.io
+- GitHub Issues: https://github.com/toondb/toondb/issues
+- Email: sushanth@toondb.dev
 
 ## Author
 

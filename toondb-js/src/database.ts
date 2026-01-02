@@ -413,31 +413,53 @@ export class Database {
   /**
    * Execute a SQL query.
    * 
-   * @param sql - SQL query string (SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, etc.)
+   * ToonDB supports a subset of SQL for relational data stored on top of 
+   * the key-value engine. Tables and rows are stored as:
+   * - Schema: _sql/tables/{table_name}/schema
+   * - Rows: _sql/tables/{table_name}/rows/{row_id}
+   * 
+   * Supported SQL:
+   * - CREATE TABLE table_name (col1 TYPE, col2 TYPE, ...)
+   * - DROP TABLE table_name
+   * - INSERT INTO table_name (cols) VALUES (vals)
+   * - SELECT cols FROM table_name [WHERE ...] [ORDER BY ...] [LIMIT ...]
+   * - UPDATE table_name SET col=val [WHERE ...]
+   * - DELETE FROM table_name [WHERE ...]
+   * 
+   * Supported types: INT, TEXT, FLOAT, BOOL, BLOB
+   * 
+   * @param sql - SQL query string
    * @returns SQLQueryResult with rows and metadata
    * 
    * @example
    * ```typescript
-   * const result = await db.execute("SELECT * FROM users WHERE age > 25");
+   * // Create a table
+   * await db.execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT, age INT)");
+   * 
+   * // Insert data
+   * await db.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)");
+   * 
+   * // Query data
+   * const result = await db.execute("SELECT * FROM users WHERE age > 26");
    * result.rows.forEach(row => console.log(row));
    * ```
    */
   async execute(sql: string): Promise<SQLQueryResult> {
     this._ensureOpen();
     
-    // For now, provide a stub implementation
-    // Full SQL support requires backend implementation
-    const sqlUpper = sql.trim().toUpperCase();
+    // Import the SQL executor
+    const { SQLExecutor } = await import('./sql-engine.js');
     
-    if (sqlUpper.startsWith('SELECT')) {
-      return { rows: [], columns: [], rowsAffected: 0 };
-    } else if (sqlUpper.startsWith('INSERT') || sqlUpper.startsWith('UPDATE') || sqlUpper.startsWith('DELETE')) {
-      return { rows: [], columns: [], rowsAffected: 0 };
-    } else if (sqlUpper.startsWith('CREATE')) {
-      return { rows: [], columns: [], rowsAffected: 0 };
-    } else {
-      return { rows: [], columns: [], rowsAffected: 0 };
-    }
+    // Create a database adapter for the SQL executor
+    const dbAdapter = {
+      get: (key: Buffer | string) => this.get(key),
+      put: (key: Buffer | string, value: Buffer | string) => this.put(key, value),
+      delete: (key: Buffer | string) => this.delete(key),
+      scan: (prefix: string) => this.scan(prefix),
+    };
+    
+    const executor = new SQLExecutor(dbAdapter);
+    return executor.execute(sql);
   }
 
   /**
