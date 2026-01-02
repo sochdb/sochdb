@@ -164,8 +164,8 @@ func main() {
 	// Clean up any existing test data
 	os.RemoveAll(testDir)
 
-	fmt.Println("🧪 ToonDB Go SDK Comprehensive Feature Test\n")
-	fmt.Println("Testing all features mentioned in README...\n")
+	fmt.Println("🧪 ToonDB Go SDK Comprehensive Feature Test")
+	fmt.Println("Testing all features mentioned in README...")
 	fmt.Println("============================================================")
 
 	// Open database
@@ -194,7 +194,7 @@ func main() {
 	fmt.Printf("   Success Rate: %.1f%%\n", float64(passCount)/float64(testCount)*100)
 
 	if failCount == 0 {
-		fmt.Println("\n✅ All tests passed! Go SDK is working correctly.\n")
+		fmt.Println("\n✅ All tests passed! Go SDK is working correctly.")
 		os.Exit(0)
 	} else {
 		fmt.Printf("\n❌ %d test(s) failed. See details above.\n\n", failCount)
