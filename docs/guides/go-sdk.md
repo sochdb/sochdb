@@ -855,7 +855,7 @@ go test -run TestScan -v
 
 ## Resources
 
-- [Go SDK GitHub](https://github.com/sushanthpy/toondb/tree/main/toondb-go)
+- [Go SDK GitHub](https://github.com/toondb/toondb/tree/main/toondb-go)
 - [API Reference](../api-reference/go-api.md)
 - [Python SDK](./python-sdk.md)
 - [JavaScript SDK](./nodejs-sdk.md)

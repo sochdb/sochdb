@@ -863,9 +863,9 @@ const end = Buffer.from('users;'); // ';' is after '/' in ASCII
 
 ## Resources
 
-- [JavaScript SDK GitHub](https://github.com/sushanthpy/toondb/tree/main/toondb-js)
+- [JavaScript SDK GitHub](https://github.com/toondb/toondb/tree/main/toondb-js)
 - [npm Package](https://www.npmjs.com/package/toondb)
-- [TypeScript Definitions](https://github.com/sushanthpy/toondb/blob/main/toondb-js/src/index.ts)
+- [TypeScript Definitions](https://github.com/toondb/toondb/blob/main/toondb-js/src/index.ts)
 - [Go SDK](./go-sdk.md)
 - [Python SDK](./python-sdk.md)
 - [Rust SDK](./rust-sdk.md)

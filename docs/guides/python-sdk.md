@@ -5,7 +5,9 @@
 > **Difficulty:** Beginner  
 > **Prerequisites:** Python 3.9+
 
-Complete guide to ToonDB's Python SDK with full SQL support, bulk operations, and multi-process modes.
+Complete guide to ToonDB's Python SDK with key-value operations, bulk operations, and multi-process modes.
+
+> **Note:** SQL support is planned for a future release. This guide covers key-value and path-based operations.
 
 ---
 
@@ -33,11 +35,12 @@ pip install toondb-client
 ```
 
 **What's New in 0.2.6:**
-- ✅ Full SQL support (CREATE TABLE, INSERT, SELECT, JOIN, WHERE, GROUP BY)
-- ✅ Enhanced scan() method for multi-tenant isolation
+- ✅ Enhanced `scan_prefix()` method for multi-tenant isolation
 - ✅ Bulk vector operations (~1,600 vec/s)
 - ✅ Zero-compilation with pre-built binaries
 - ✅ Improved FFI performance
+
+> **Import Note:** Install with `pip install toondb-client`, import as `from toondb import Database`
 
 **Pre-built for:**
 - Linux (x86_64, aarch64)
@@ -704,7 +707,7 @@ pytest --cov=toondb tests/
 
 ## Resources
 
-- [Python SDK GitHub](https://github.com/sushanthpy/toondb/tree/main/toondb-python-sdk)
+- [Python SDK GitHub](https://github.com/toondb/toondb/tree/main/toondb-python-sdk)
 - [PyPI Package](https://pypi.org/project/toondb-client/)
 - [API Reference](../api-reference/python-api.md)
 - [Go SDK](./go-sdk.md)

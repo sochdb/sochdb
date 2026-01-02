@@ -930,7 +930,7 @@ Cleaned up 0 expired sessions
 
 ## Resources
 
-- [Rust SDK GitHub](https://github.com/sushanthpy/toondb/tree/main/toondb-client)
+- [Rust SDK GitHub](https://github.com/toondb/toondb/tree/main/toondb-client)
 - [Crates.io](https://crates.io/crates/toondb-client)
 - [API Documentation](https://docs.rs/toondb-client/)
 - [Go SDK](./go-sdk.md)

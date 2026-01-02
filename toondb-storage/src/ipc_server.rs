@@ -833,16 +833,9 @@ impl ClientHandler {
 
     fn handle_stats(&self) -> Message {
         let stats = self.stats.snapshot();
-        // Encode stats as simple key=value pairs
-        let stats_str = format!(
-            "connections_total={}\n\
-             connections_active={}\n\
-             requests_total={}\n\
-             requests_success={}\n\
-             requests_error={}\n\
-             bytes_received={}\n\
-             bytes_sent={}\n\
-             uptime_secs={}",
+        // Encode stats as JSON for SDK compatibility
+        let stats_json = format!(
+            r#"{{"connections_total":{},"connections_active":{},"requests_total":{},"requests_success":{},"requests_error":{},"bytes_received":{},"bytes_sent":{},"uptime_secs":{},"memtable_size_bytes":0,"wal_size_bytes":0,"active_transactions":{}}}"#,
             stats.connections_total,
             stats.connections_active,
             stats.requests_total,
@@ -850,9 +843,10 @@ impl ClientHandler {
             stats.requests_error,
             stats.bytes_received,
             stats.bytes_sent,
-            stats.uptime_secs
+            stats.uptime_secs,
+            self.active_txns.len()
         );
-        Message::new(opcode::STATS_RESP, stats_str.into_bytes())
+        Message::new(opcode::STATS_RESP, stats_json.into_bytes())
     }
 
     fn cleanup_transactions(&mut self) {

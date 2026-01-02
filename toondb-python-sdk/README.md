@@ -11,29 +11,34 @@ The official Python SDK for **ToonDB** — a high-performance embedded document 
 **v0.2.6** (January 2026)
 
 **What's New in 0.2.6:**
-- ✅ Full SQL support with CREATE TABLE, INSERT, SELECT, WHERE, JOIN
-- ✅ Enhanced `scan()` method for efficient prefix-based iteration
+- ✅ Enhanced `scan_prefix()` method for efficient prefix-based iteration
 - ✅ Bulk vector operations (~1,600 vec/s for HNSW index building)
 - ✅ Zero-compilation installation with pre-built binaries
 - ✅ Improved FFI performance and error handling
 
+> **Note:** SQL support is available via **IPC mode only** (not embedded mode). The embedded `Database` class uses FFI bindings which don't expose SQL. See [IPC Mode](#ipc-mode-multi-process) section for SQL usage.
+
 ## Features
 
-- ✅ **Full SQL Database** — CREATE TABLE, INSERT, SELECT with WHERE/JOIN/GROUP BY
 - ✅ **Key-Value Store** — Simple `get()`/`put()`/`delete()` operations
 - ✅ **Path-Native API** — Hierarchical keys like `users/alice/email`
-- ✅ **Prefix Scanning** — Fast `scan()` for multi-tenant data isolation
+- ✅ **Prefix Scanning** — Fast `scan_prefix()` for multi-tenant data isolation
 - ✅ **ACID Transactions** — Full snapshot isolation with automatic commit/abort
-- ✅ **Query Builder** — Fluent API returning TOON format (LLM-optimized)
 - ✅ **Vector Search** — HNSW with bulk API (~1,600 vec/s ingestion)
 - ✅ **Dual Mode** — Embedded (FFI) or IPC (multi-process)
 - ✅ **Zero Compilation** — Pre-built binaries for Linux/macOS/Windows
+- 🚧 **SQL Support** — Coming in a future release
 
 ## Installation
 
 ```bash
 pip install toondb-client
 ```
+
+> **Import Note:** The package is installed as `toondb-client` but imported as `toondb`:
+> ```python
+> from toondb import Database  # Correct
+> ```
 
 **Pre-built binaries included for:**
 - Linux x86_64 and aarch64 (glibc ≥ 2.17)
@@ -602,9 +607,8 @@ Apache License 2.0
 
 ## Support
 
-- GitHub Issues: https://github.com/sushanthpy/toondb/issues
-- Discord: https://discord.gg/toondb
-- Email: support@toondb.io
+- GitHub Issues: https://github.com/toondb/toondb/issues
+- Email: sushanth@toondb.dev
 
 ## Author
 

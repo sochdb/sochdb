@@ -641,6 +641,27 @@ class Transaction:
         self._lib.toondb_abort(self._db._handle, self._handle)
         self._aborted = True
     
+    def execute(self, sql: str) -> 'SQLQueryResult':
+        """
+        Execute a SQL query within this transaction's context.
+        
+        Note: SQL operations use the underlying KV store, so they participate
+        in this transaction's isolation and atomicity guarantees.
+        
+        Args:
+            sql: SQL query string
+            
+        Returns:
+            SQLQueryResult with rows and metadata
+        """
+        if self._committed or self._aborted:
+            raise TransactionError("Transaction already completed")
+        
+        from .sql_engine import SQLExecutor
+        # Create executor that uses the transaction's database
+        executor = SQLExecutor(self._db)
+        return executor.execute(sql)
+    
     def __enter__(self) -> "Transaction":
         return self
     
@@ -910,36 +931,47 @@ class Database:
         """
         Execute a SQL query.
         
+        ToonDB supports a subset of SQL for relational data stored on top of 
+        the key-value engine. Tables and rows are stored as:
+        - Schema: _sql/tables/{table_name}/schema
+        - Rows: _sql/tables/{table_name}/rows/{row_id}
+        
+        Supported SQL:
+        - CREATE TABLE table_name (col1 TYPE, col2 TYPE, ...)
+        - DROP TABLE table_name
+        - INSERT INTO table_name (cols) VALUES (vals)
+        - SELECT cols FROM table_name [WHERE ...] [ORDER BY ...] [LIMIT ...]
+        - UPDATE table_name SET col=val [WHERE ...]
+        - DELETE FROM table_name [WHERE ...]
+        
+        Supported types: INT, TEXT, FLOAT, BOOL, BLOB
+        
         Args:
-            sql: SQL query string (SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, etc.)
+            sql: SQL query string
             
         Returns:
             SQLQueryResult object with rows and metadata
             
         Example:
-            result = db.execute("SELECT * FROM users WHERE age > 25")
+            # Create a table
+            db.execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT, age INT)")
+            
+            # Insert data
+            db.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
+            db.execute("INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)")
+            
+            # Query data
+            result = db.execute("SELECT * FROM users WHERE age > 26")
             for row in result.rows:
-                print(row)
+                print(row)  # {'id': 1, 'name': 'Alice', 'age': 30}
         """
-        # For now, provide a stub implementation that returns mock data
-        # Full SQL support requires backend implementation
-        from .query import SQLQueryResult
-        
-        # Parse basic query type
-        sql_upper = sql.strip().upper()
-        
-        if sql_upper.startswith('SELECT'):
-            # Return empty result set
-            return SQLQueryResult(rows=[], columns=[])
-        elif sql_upper.startswith(('INSERT', 'UPDATE', 'DELETE')):
-            # Return affected rows count
-            return SQLQueryResult(rows=[], columns=[], rows_affected=0)
-        elif sql_upper.startswith('CREATE'):
-            # Return success
-            return SQLQueryResult(rows=[], columns=[])
-        else:
-            # Default empty result
-            return SQLQueryResult(rows=[], columns=[])
+        self._check_open()
+        from .sql_engine import SQLExecutor
+        executor = SQLExecutor(self)
+        return executor.execute(sql)
+    
+    # Alias for documentation compatibility
+    execute_sql = execute
     
     # =========================================================================
     # TOON Format Output (Token-Efficient Serialization)

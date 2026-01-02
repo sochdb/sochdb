@@ -35,13 +35,18 @@ The official Go client SDK for **ToonDB** — a high-performance embedded docume
 go get github.com/toondb/toondb/toondb-go@v0.2.6
 ```
 
+> ⚠️ **Important: Server Required**
+>
+> Unlike Python/JS/Rust SDKs, the Go SDK is an **IPC client only** — it requires a running ToonDB server.
+> The Go SDK does not support embedded mode. You must start the server before using the SDK.
+
 **Requirements:**
 - Go 1.21+
-- ToonDB server running
+- ToonDB server running (see below)
 
-**Start the server:**
+**Start the server first:**
 ```bash
-# Download or build toondb-server, then:
+# Download or build toondb-server from the main repo, then:
 ./toondb-server --db ./my_database
 
 # Output: [IpcServer] Listening on "./my_database/toondb.sock"
@@ -237,7 +242,7 @@ products/001: result[1]{name,price}:Laptop,999
 products/002: result[1]{name,price}:Mouse,25
 ```
 
-> **Note:** For full SQL (CREATE TABLE, JOIN, etc.), use Python SDK or Rust API.
+> **Note:** For full SQL (CREATE TABLE, INSERT, SELECT, JOIN), use `db.Execute(sql)` when the server is running. The Query builder above provides SQL-like operations for KV data.
 
 ## Vector Search
 

@@ -29,6 +29,7 @@ export { Database, Transaction, DatabaseConfig, SQLQueryResult } from './databas
 export { IpcClient, IpcClientConfig, OpCode } from './ipc-client';
 export { Query, QueryResult } from './query';
 export { VectorIndex, VectorSearchResult, VectorIndexConfig } from './vector';
+export { SQLParser, SQLExecutor } from './sql-engine';
 export {
   ToonDBError,
   ConnectionError,
@@ -43,4 +44,4 @@ export {
   isServerRunning,
 } from './server-manager';
 
-export const VERSION = '0.2.4';
+export const VERSION = '0.2.6';
