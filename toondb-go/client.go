@@ -424,6 +424,10 @@ func (c *IPCClient) readValueResponse() ([]byte, error) {
 		return nil, nil
 	case OpValue:
 		// VALUE response: payload is the value
+		// Empty payload means key doesn't exist
+		if len(payload) == 0 {
+			return nil, nil
+		}
 		return payload, nil
 	case OpError:
 		return nil, c.parseErrorPayload(payload)

@@ -1,14 +1,14 @@
 # Tutorial: Vector Search with ToonDB
 
-> **Time:** 20 minutes  
-> **Difficulty:** Intermediate  
-> **Prerequisites:** Python 3.9+, numpy, basic understanding of embeddings
+> **🔧 Skill Level:** Intermediate  
+> **⏱️ Time Required:** 20 minutes  
+> **📦 Requirements:** Python 3.9+, numpy, sentence-transformers
 
 Learn how to build a semantic search system using ToonDB's HNSW vector index.
 
 ---
 
-## What You'll Build
+## 🎯 What You'll Build
 
 A document search system that:
 - ✅ Stores documents with vector embeddings

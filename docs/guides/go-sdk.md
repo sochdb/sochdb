@@ -1,34 +1,17 @@
 # Go SDK Guide
 
-> **Version:** 0.2.8  
-> **Time:** 20 minutes  
-> **Difficulty:** Beginner  
-> **Prerequisites:** Go 1.21+
+> **🔧 Skill Level:** Beginner  
+> **⏱️ Time Required:** 20 minutes  
+> **📦 Requirements:** Go 1.21+
 
 Complete guide to ToonDB's Go SDK with all features, patterns, and best practices.
 
 ---
 
-## Table of Contents
-
-1. [Installation](#installation)
-2. [Quick Start](#quick-start)
-3. [Core Operations](#core-operations)
-4. [Path API](#path-api)
-5. [Prefix Scanning](#prefix-scanning)
-6. [Transactions](#transactions)
-7. [Query Builder](#query-builder)
-8. [Vector Search](#vector-search)
-9. [Error Handling](#error-handling)
-10. [Best Practices](#best-practices)
-11. [Complete Examples](#complete-examples)
-
----
-
-## Installation
+## 📦 Installation
 
 ```bash
-go get github.com/toondb/toondb/toondb-go@v0.2.7
+go get github.com/toondb/toondb/toondb-go@v0.2.8
 ```
 
 **What's New in 0.2.7:**
@@ -889,4 +872,4 @@ go test -run TestScan -v
 
 ---
 
-*Last updated: January 2026 (v0.2.7)*
+*Last updated: January 2026 (v0.2.8)*

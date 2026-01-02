@@ -280,6 +280,10 @@ export class IpcClient {
     const { opcode, payload } = this._parseResponse(response);
 
     if (opcode === InternalOpCode.VALUE) {
+      // If payload is empty, the key doesn't exist
+      if (payload.length === 0) {
+        return null;
+      }
       return payload;
     }
     return null;
@@ -323,6 +327,10 @@ export class IpcClient {
     const { opcode, payload: responsePayload } = this._parseResponse(response);
 
     if (opcode === InternalOpCode.VALUE) {
+      // If payload is empty, the key doesn't exist
+      if (responsePayload.length === 0) {
+        return null;
+      }
       return responsePayload;
     }
     return null;

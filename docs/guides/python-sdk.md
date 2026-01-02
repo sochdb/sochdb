@@ -1189,4 +1189,4 @@ pytest --cov=toondb tests/
 
 ---
 
-*Last updated: January 2026 (v0.2.7)*
+*Last updated: January 2026 (v0.2.8)*

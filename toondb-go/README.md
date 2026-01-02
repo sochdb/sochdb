@@ -7,28 +7,6 @@
 
 The official Go client SDK for **ToonDB** — a high-performance embedded document database with HNSW vector search and built-in multi-tenancy support.
 
-## Version
-
-**v0.2.8** (January 2026)
-
-**What's New in 0.2.8:**
-- ✅ **Native CLI Wrappers** - `toondb-server`, `toondb-bulk`, `toondb-grpc-server` available via `go install`
-- ✅ **Advanced Binary Discovery** - Launchers locate native binaries in PATH or standard locations
-- ✅ **Unified Tooling** - Seamless experience for multi-language environments
-
-**What's New in 0.2.7:**
-- ✅ **Embedded server mode** - Automatically starts/stops toondb-server
-- ✅ **Zero external setup** - No need to manually run server process
-- ✅ Server lifecycle management with automatic cleanup
-- ✅ Platform-specific binary discovery (darwin, linux, x86_64, aarch64)
-
-**What's New in 0.2.6:**
-- ✅ Fixed wire protocol compatibility with ToonDB server
-- ✅ Added `Scan()` method for efficient prefix-based key-value iteration
-- ✅ Fixed path operations (`GetPath`, `PutPath`) encoding
-- ✅ All opcodes now match server implementation (Little Endian)
-- ✅ Improved error handling and protocol parsing
-
 ## Features
 
 - ✅ **Key-Value Store** — Simple `Get`/`Put`/`Delete` operations

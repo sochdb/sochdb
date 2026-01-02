@@ -1,8 +1,14 @@
 # Working with SQL in ToonDB
 
-This guide shows you how to use SQL queries in ToonDB for relational data operations.
+> **🔧 Skill Level:** Intermediate  
+> **⏱️ Time Required:** 25 minutes  
+> **📦 Requirements:** Any ToonDB SDK
 
-## Introduction
+Learn how to use SQL queries in ToonDB for relational data operations.
+
+---
+
+## 💡 Introduction
 
 ToonDB supports full SQL-92 syntax, allowing you to work with relational data using familiar SQL statements. The SQL engine is built on top of ToonDB's high-performance storage layer, giving you both SQL flexibility and ToonDB's speed.
 
@@ -20,10 +26,10 @@ pip install toondb
 npm install @sushanth/toondb
 
 # Rust (add to Cargo.toml)
-toondb-client = "0.2.7"
+toondb-client = "0.2.8"
 
 # Go
-go get github.com/toondb/toondb/toondb-go@v0.2.7
+go get github.com/toondb/toondb/toondb-go@v0.2.8
 ```
 
 ### Opening a Database

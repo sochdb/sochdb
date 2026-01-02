@@ -164,15 +164,13 @@ export class VectorIndex {
         '--input', tempFile,
         '--output', options.output,
         '--dimension', options.dimension.toString(),
-        '--count', vectorCount.toString(),
-        '--m', (options.m || 16).toString(),
+        '--max-connections', (options.m || 16).toString(),
         '--ef-construction', (options.efConstruction || 100).toString(),
-        '--metric', options.metric || 'cosine',
       ];
 
       const startTime = Date.now();
 
-      return new Promise((resolve, reject) => {
+      const result = await new Promise<BulkBuildStats>((resolve, reject) => {
         const child = spawn(bulkPath, args);
         let stdout = '';
         let stderr = '';
@@ -204,6 +202,8 @@ export class VectorIndex {
           reject(new DatabaseError(`Failed to spawn bulk process: ${err.message}`));
         });
       });
+      
+      return result;
     } finally {
       // Clean up temp file
       if (fs.existsSync(tempFile)) {
@@ -245,10 +245,10 @@ export class VectorIndex {
         '--index', indexPath,
         '--query', tempFile,
         '--k', k.toString(),
-        '--ef-search', efSearch.toString(),
+        '--ef', efSearch.toString(),
       ];
 
-      return new Promise((resolve, reject) => {
+      const result = await new Promise<VectorSearchResult[]>((resolve, reject) => {
         const child = spawn(bulkPath, args);
         let stdout = '';
         let stderr = '';
@@ -291,6 +291,8 @@ export class VectorIndex {
           reject(new DatabaseError(`Failed to spawn query process: ${err.message}`));
         });
       });
+      
+      return result;
     } finally {
       if (fs.existsSync(tempFile)) {
         fs.unlinkSync(tempFile);
@@ -404,6 +406,19 @@ export class VectorIndex {
       efConstruction: this._config.efConstruction,
       metric: this._config.metric,
     });
+  }
+
+  /**
+   * Query the index (instance method).
+   * 
+   * @param query - Query vector as number array
+   * @param k - Number of nearest neighbors to return
+   * @param efSearch - Search quality parameter
+   * @returns Array of search results
+   */
+  async query(query: number[], k?: number, efSearch?: number): Promise<VectorSearchResult[]> {
+    const queryFloat = new Float32Array(query);
+    return VectorIndex.query(this._path, queryFloat, { k, efSearch });
   }
 
   /**

@@ -219,7 +219,11 @@ class IpcClient:
         """
         resp = self._request(Message(OpCode.GET, key))
         if resp.opcode == OpCode.VALUE:
-            return resp.payload if resp.payload else None
+            # Return None only if payload is None, not for empty bytes
+            # Empty payload (length 0) means key doesn't exist
+            if len(resp.payload) == 0:
+                return None
+            return resp.payload
         if resp.opcode == OpCode.ERROR:
             raise DatabaseError(resp.payload.decode("utf-8", errors="replace"))
         raise ProtocolError(f"Unexpected opcode: {resp.opcode:#x}")
@@ -263,7 +267,10 @@ class IpcClient:
         payload = self._encode_path(path)
         resp = self._request(Message(OpCode.GET_PATH, payload))
         if resp.opcode == OpCode.VALUE:
-            return resp.payload if resp.payload else None
+            # Return None only if payload is empty (key doesn't exist)
+            if len(resp.payload) == 0:
+                return None
+            return resp.payload
         if resp.opcode == OpCode.ERROR:
             raise DatabaseError(resp.payload.decode("utf-8", errors="replace"))
         raise ProtocolError(f"Unexpected opcode: {resp.opcode:#x}")

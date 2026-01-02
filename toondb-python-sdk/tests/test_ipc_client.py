@@ -132,7 +132,9 @@ class MockServer:
         elif opcode == OpCode.CHECKPOINT:
             return Message(OpCode.OK)
         elif opcode == OpCode.STATS:
-            return Message(OpCode.STATS_RESP, b"requests_total=10\nuptime_secs=60")
+            import json
+            stats_json = json.dumps({"requests_total": 10, "uptime_secs": 60})
+            return Message(OpCode.STATS_RESP, stats_json.encode("utf-8"))
         else:
             return Message(OpCode.ERROR, b"Unknown opcode")
 

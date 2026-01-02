@@ -6,27 +6,6 @@
 
 The official Python SDK for **ToonDB** — a high-performance embedded document database with HNSW vector search, built-in multi-tenancy, and SQL support.
 
-## Version
-
-**v0.2.8** (January 2026)
-
-**What's New in 0.2.8:**
-- ✅ **Production-grade CLI tools** - `toondb-server`, `toondb-bulk`, `toondb-grpc-server` globally available
-- ✅ **Smart process management** - status, stop commands with PID tracking
-- ✅ **Health checks & validation** - Socket/port checks, file validation
-- ✅ **Graceful shutdown** - Signal handling for clean teardown
-
-**What's New in 0.2.7:**
-- ✅ **Full SQL engine support** - CREATE TABLE, INSERT, SELECT, UPDATE, DELETE
-- ✅ **SQL in transactions** - execute() method on Transaction objects
-- ✅ **SQL WHERE clauses** - Supports =, !=, <, >, >=, <=, LIKE, NOT LIKE
-- ✅ **SQL ORDER BY, LIMIT, OFFSET** - Complete query control
-
-**What's New in 0.2.6:**
-- ✅ Enhanced `scan_prefix()` method for efficient prefix-based iteration
-- ✅ Bulk vector operations (~1,600 vec/s for HNSW index building)
-- ✅ Zero-compilation installation with pre-built binaries
-
 ## Features
 
 - ✅ **Key-Value Store** — Simple `get()`/`put()`/`delete()` operations
@@ -138,39 +117,50 @@ Table 'users' created
 ### Query with SELECT
 
 ```python
-# Select all users
-results = db.execute_sql("SELECT * FROM users")
-for row in results:
+# Select all users - Returns SQLQueryResult object
+result = db.execute_sql("SELECT * FROM users")
+print(f"Found {len(result.rows)} users (affected: {result.rows_affected})")
+for row in result.rows:
     print(row)
 
 # Output:
+# Found 2 users (affected: 0)
 # {'id': 1, 'name': 'Alice', 'email': 'alice@example.com', 'age': 30}
 # {'id': 2, 'name': 'Bob', 'email': 'bob@example.com', 'age': 25}
 
 # WHERE clause
-results = db.execute_sql("SELECT name, age FROM users WHERE age > 26")
-for row in results:
+result = db.execute_sql("SELECT name, age FROM users WHERE age > 26")
+for row in result.rows:
     print(f"{row['name']}: {row['age']} years old")
 
 # Output:
 # Alice: 30 years old
 ```
 
+**Important:** `execute_sql()` returns a `SQLQueryResult` object with:
+- `.rows` - List of dictionaries (for SELECT queries)
+- `.columns` - List of column names  
+- `.rows_affected` - Number of rows modified (for INSERT/UPDATE/DELETE)
+
 ### UPDATE and DELETE
 
 ```python
 # Update
-db.execute_sql("UPDATE users SET age = 31 WHERE name = 'Alice'")
+update_result = db.execute_sql("UPDATE users SET age = 31 WHERE name = 'Alice'")
+print(f"Updated {update_result.rows_affected} rows")
 
 # Delete
-db.execute_sql("DELETE FROM users WHERE age < 26")
+delete_result = db.execute_sql("DELETE FROM users WHERE age < 26")
+print(f"Deleted {delete_result.rows_affected} rows")
 
 # Verify
-results = db.execute_sql("SELECT name, age FROM users ORDER BY age")
-for row in results:
+result = db.execute_sql("SELECT name, age FROM users ORDER BY age")
+for row in result.rows:
     print(row)
 
 # Output:
+# Updated 1 rows
+# Deleted 1 rows
 # {'name': 'Alice', 'age': 31}
 ```
 
@@ -194,7 +184,7 @@ db.execute_sql("INSERT INTO orders VALUES (2, 1, 'Mouse', 25.00)")
 db.execute_sql("INSERT INTO orders VALUES (3, 2, 'Keyboard', 75.00)")
 
 # JOIN query
-results = db.execute_sql("""
+result = db.execute_sql("""
     SELECT users.name, orders.product, orders.amount
     FROM users
     JOIN orders ON users.id = orders.user_id
@@ -202,7 +192,7 @@ results = db.execute_sql("""
     ORDER BY orders.amount DESC
 """)
 
-for row in results:
+for row in result.rows:
     print(f"{row['name']} bought {row['product']} for ${row['amount']}")
 ```
 
@@ -216,7 +206,7 @@ Bob bought Keyboard for $75.0
 
 ```python
 # GROUP BY with aggregations
-results = db.execute_sql("""
+result = db.execute_sql("""
     SELECT users.name, COUNT(*) as order_count, SUM(orders.amount) as total
     FROM users
     JOIN orders ON users.id = orders.user_id
@@ -224,7 +214,7 @@ results = db.execute_sql("""
     ORDER BY total DESC
 """)
 
-for row in results:
+for row in result.rows:
     print(f"{row['name']}: {row['order_count']} orders, ${row['total']} total")
 ```
 

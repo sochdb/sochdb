@@ -7,22 +7,6 @@
 
 The official Rust client SDK for **ToonDB** — a high-performance embedded document database with HNSW vector search, built-in multi-tenancy, and SQL support.
 
-## Version
-
-**v0.2.7** (January 2026)
-
-**What's New in 0.2.7:**
-- ✅ SQL engine enhancements in Python/JavaScript SDKs
-- ✅ Go embedded server mode
-- ✅ IPC server stats JSON format fix
-
-**What's New in 0.2.6:**
-- ✅ IPC client with async support (tokio/async-std)
-- ✅ Enhanced scan operations for multi-tenant isolation
-- ✅ SQL support via toondb-query integration
-- ✅ Zero-copy reads from memory-mapped storage
-- ✅ Thread-safe concurrent access with MVCC
-
 ## Features
 
 - ✅ **Zero-Copy Reads** — Direct access to memory-mapped data
@@ -40,7 +24,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-toondb = "0.2.7"
+toondb = "0.2.8"
 tokio = { version = "1", features = ["full"] }  # For async IPC
 ```
 

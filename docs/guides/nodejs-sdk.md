@@ -1,31 +1,14 @@
 # JavaScript/Node.js SDK Guide
 
-> **Version:** 0.2.8  
-> **Time:** 20 minutes  
-> **Difficulty:** Beginner  
-> **Prerequisites:** Node.js 18+, TypeScript 5+
+> **🔧 Skill Level:** Beginner  
+> **⏱️ Time Required:** 20 minutes  
+> **📦 Requirements:** Node.js 18+, TypeScript 5+
 
 Complete guide to ToonDB's JavaScript SDK with embedded/external modes, TypeScript support, and multi-tenant patterns.
 
 ---
 
-## Table of Contents
-
-1. [Installation](#installation)
-2. [Quick Start](#quick-start)
-3. [Embedded vs External](#embedded-vs-external)
-4. [Core Operations](#core-operations)
-5. [Path API](#path-api)
-6. [Prefix Scanning](#prefix-scanning)
-7. [Transactions](#transactions)
-8. [Query Builder](#query-builder)
-9. [TypeScript Usage](#typescript-usage)
-10. [Best Practices](#best-practices)
-11. [Complete Examples](#complete-examples)
-
----
-
-## Installation
+## 📦 Installation
 
 ```bash
 npm install toondb
@@ -33,35 +16,14 @@ npm install toondb
 yarn add toondb
 ```
 
-**What's New in 0.2.7:**
-- ✅ Full SQL engine support (CREATE, INSERT, SELECT, UPDATE, DELETE)
-- ✅ SQL WHERE clauses with multiple operators
-- ✅ SQL ORDER BY, LIMIT, OFFSET support
-
-**What's New in 0.2.6:**
-- ✅ Fixed putPath/getPath operations
-- ✅ Enhanced scan() method for prefix iteration
-- ✅ Embedded mode optimization
-- ✅ Better TypeScript definitions
-- ✅ Improved error messages
-
-**Package size:** 2.1 MB (includes native binaries)
+**Package includes:**
+- Native binaries for all major platforms
+- Full TypeScript definitions
+- CLI tools: `toondb-server`, `toondb-bulk`, `toondb-grpc-server`
 
 ---
 
-## CLI Tools (v0.2.8+)
-
-ToonDB includes three globally available CLI tools after installation:
-
-1. **`toondb-server`**: Start the IPC server process.
-2. **`toondb-bulk`**: High-performance index building and file conversion.
-3. **`toondb-grpc-server`**: Dedicated gRPC server for vector operations.
-
-> **Deep Dive:** See [Server Reference](/servers/IPC_SERVER.md) for full commands and usage.
-
----
-
-## Quick Start
+## 🚀 Quick Start
 
 ### Embedded Mode (Recommended)
 
@@ -889,4 +851,4 @@ const end = Buffer.from('users;'); // ';' is after '/' in ASCII
 
 ---
 
-*Last updated: January 2026 (v0.2.7)*
+*Last updated: January 2026 (v0.2.8)*

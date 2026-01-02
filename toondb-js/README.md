@@ -6,29 +6,6 @@
 
 The official JavaScript/TypeScript SDK for **ToonDB** — a high-performance embedded document database with HNSW vector search and built-in multi-tenancy support.
 
-## Version
-
-**v0.2.8** (January 2026)
-
-**What's New in 0.2.8:**
-- ✅ **Global CLI Tools** - `toondb-server`, `toondb-bulk`, `toondb-grpc-server` exposed as binaries
-- ✅ **Automatic Binary Resolution** - Smarter platform detection for finding native binaries
-- ✅ **Enhanced Post-Install** - Robust permission fixups for executable binaries
-
-**What's New in 0.2.7:**
-- ✅ **Full SQL engine support** - CREATE TABLE, INSERT, SELECT, UPDATE, DELETE
-- ✅ **SQL WHERE clauses** - Supports =, !=, <, >, >=, <=, LIKE, NOT LIKE
-- ✅ **SQL ORDER BY, LIMIT, OFFSET** - Complete query control
-- ✅ SQL storage via KV backend (no external dependencies)
-- ✅ Fixed stats() to return valid JSON format
-
-**What's New in 0.2.6:**
-- ✅ Fixed `putPath()` and `getPath()` encoding (path segment format)
-- ✅ Added `scan()` method for efficient prefix-based iteration
-- ✅ Wire protocol fully compatible with ToonDB server
-- ✅ Improved error handling and Buffer management
-- ✅ Full TypeScript type definitions included
-
 ## Features
 
 - ✅ **Key-Value Store** — Simple `get()`/`put()`/`delete()` operations
@@ -304,30 +281,90 @@ await db.put(Buffer.from('products/001'), Buffer.from(JSON.stringify(product)));
 await db.delete(Buffer.from('products/001'));
 ```
 
-> **Note:** For full SQL (CREATE TABLE, JOIN, WHERE clauses), use Python SDK or Rust API.
+> **Note:** For full SQL support, use the SQLExecutor class (see SQL Operations section below).
+
+## SQL Operations
+
+**New in v0.2.7:** Full SQL engine with CREATE TABLE, INSERT, SELECT, UPDATE, DELETE.
+
+```typescript
+import { Database, SQLExecutor } from 'sushanth-toondb';
+
+const db = await Database.open('./sql_db');
+const sqlExecutor = new SQLExecutor(db);
+
+// CREATE TABLE
+const createResult = await sqlExecutor.execute(`
+  CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE,
+    age INTEGER
+  )
+`);
+
+// INSERT
+await sqlExecutor.execute("INSERT INTO users (id, name, email, age) VALUES (1, 'Alice', 'alice@example.com', 30)");
+await sqlExecutor.execute("INSERT INTO users (id, name, email, age) VALUES (2, 'Bob', 'bob@example.com', 25)");
+
+// SELECT - Returns SQLQueryResult with .rows, .columns, .rowsAffected
+const result = await sqlExecutor.execute('SELECT * FROM users');
+console.log(`Found ${result.rows.length} users:`);
+result.rows.forEach(row => {
+  console.log(`  ${row.name}: ${row.email}`);
+});
+
+// SELECT with WHERE
+const filtered = await sqlExecutor.execute("SELECT name, age FROM users WHERE age > 26");
+filtered.rows.forEach(row => {
+  console.log(`${row.name}: ${row.age} years old`);
+});
+
+// UPDATE
+await sqlExecutor.execute("UPDATE users SET age = 31 WHERE name = 'Alice'");
+
+// DELETE
+await sqlExecutor.execute("DELETE FROM users WHERE age < 26");
+```
+
+**Output:**
+```
+Found 2 users:
+  Alice: alice@example.com
+  Bob: bob@example.com
+Alice: 30 years old
+```
+
+**Important:** `execute()` returns a `SQLQueryResult` object with:
+- `.rows` - Array of row objects (for SELECT queries)
+- `.columns` - Array of column names
+- `.rowsAffected` - Number of rows modified (for INSERT/UPDATE/DELETE)
 
 ## Vector Search
 
 ```typescript
-// Create HNSW index
-const index = await db.createVectorIndex({
-  dimension: 384,
-  metric: 'cosine',
+import { VectorIndex } from 'sushanth-toondb';
+
+// Create HNSW index using VectorIndex class
+const indexPath = './my-vector-index';
+const index = new VectorIndex(indexPath, {
+  dimensions: 384,
+  maxElements: 10000,
   m: 16,
   efConstruction: 100
 });
 
-// Build from embeddings
+// Build from embeddings - accepts number[][] (not Float32Array[])
 const vectors = [
-  new Float32Array([0.1, 0.2, 0.3, /* ... 384 dims */]),
-  new Float32Array([0.4, 0.5, 0.6, /* ... 384 dims */])
+  [0.1, 0.2, 0.3, /* ... 384 dims */],
+  [0.4, 0.5, 0.6, /* ... 384 dims */]
 ];
 const labels = ['doc1', 'doc2'];
 await index.bulkBuild(vectors, labels);
 
-// Search
-const query = new Float32Array([0.15, 0.25, 0.35, /* ... */]);
-const results = await index.query(query, 10, 50); // k=10, ef_search=50
+// Search - accepts number[] (converted internally to Float32Array)
+const query = [0.15, 0.25, 0.35, /* ... 384 dims */];
+const results = await index.query(query, 10); // k=10 (ef defaults to 64)
 
 results.forEach((r, i) => {
   console.log(`${i + 1}. ${r.label} (distance: ${r.distance.toFixed(4)})`);
@@ -511,7 +548,7 @@ await db.open(); // Must call open() first!
 ```
 
 **"Path segment truncated" (v0.2.5):**
-- **Fixed in v0.2.6!** Upgrade: `npm install sushanth-toondb@0.2.7`
+- **Fixed in v0.2.6!** Upgrade: `npm install sushanth-toondb@0.2.8`
 
 **Server not found:**
 ```typescript
@@ -549,7 +586,7 @@ npm run build
 
 # Create tarball
 npm pack
-# Creates: sushanth-toondb-0.2.7.tgz
+# Creates: sushanth-toondb-0.2.8.tgz
 ```
 
 ## License

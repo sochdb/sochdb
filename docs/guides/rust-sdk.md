@@ -1,32 +1,14 @@
 # Rust SDK Guide
 
-> **Version:** 0.2.8  
-> **Time:** 25 minutes  
-> **Difficulty:** Intermediate  
-> **Prerequisites:** Rust 1.70+, Tokio runtime
+> **🔧 Skill Level:** Intermediate  
+> **⏱️ Time Required:** 25 minutes  
+> **📦 Requirements:** Rust 1.70+, Tokio runtime
 
 Complete guide to ToonDB's Rust SDK with async IPC client, SQL integration, and zero-copy operations.
 
 ---
 
-## Table of Contents
-
-1. [Installation](#installation)
-2. [Quick Start](#quick-start)
-3. [Async IPC Client](#async-ipc-client)
-4. [SQL Integration](#sql-integration)
-5. [Key-Value Operations](#key-value-operations)
-6. [Path API](#path-api)
-7. [Prefix Scanning](#prefix-scanning)
-8. [Transactions](#transactions)
-9. [Query Builder](#query-builder)
-10. [Zero-Copy Reads](#zero-copy-reads)
-11. [Best Practices](#best-practices)
-12. [Complete Examples](#complete-examples)
-
----
-
-## Installation
+## 📦 Installation
 
 Add to `Cargo.toml`:
 
@@ -957,4 +939,4 @@ Cleaned up 0 expired sessions
 
 ---
 
-*Last updated: January 2026 (v0.2.7)*
+*Last updated: January 2026 (v0.2.8)*
