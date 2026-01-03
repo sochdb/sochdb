@@ -282,7 +282,9 @@ impl Storage {
     }
 }
 
-/// Builder for scan operations
+/// Builder for scan operations on LscsStorage
+/// 
+/// Uses key-based range scanning on the underlying BTreeMap storage.
 pub struct ScanBuilder<'a> {
     storage: &'a Storage,
     #[allow(dead_code)]
@@ -305,7 +307,7 @@ impl<'a> ScanBuilder<'a> {
         }
     }
 
-    /// Set key range
+    /// Set key range for scan
     pub fn range(mut self, start: &[u8], end: &[u8]) -> Self {
         self.range = Some(start.to_vec()..end.to_vec());
         self
@@ -325,20 +327,30 @@ impl<'a> ScanBuilder<'a> {
 
     /// Execute scan with columnar projection
     pub fn execute(self) -> Result<ColumnIterator> {
+        // Get the range bounds
+        let start = self.range.as_ref().map(|r| r.start.as_slice()).unwrap_or(b"");
+        let end = self.range.as_ref().map(|r| r.end.as_slice()).unwrap_or(&[0xFF; 256]);
+        let limit = self.limit.unwrap_or(usize::MAX);
+        
+        // Use LscsStorage's scan method
+        let results = self.storage.conn.storage.scan(start, end, limit)?;
+        let count = results.len();
+        
         // Record stats
-        self.storage.record_scan(self.columns.len(), 0);
-
-        // Placeholder - real impl would:
-        // 1. Resolve column IDs
-        // 2. Create column-optimized scan
-        // 3. Apply predicate pushdown
-
-        Ok(ColumnIterator::new(0))
+        self.storage.record_scan(self.columns.len(), count);
+        
+        // Convert to column iterator
+        Ok(ColumnIterator::new(count))
     }
 
     /// Count matching rows (without fetching data)
     pub fn count(self) -> Result<usize> {
-        Ok(0)
+        let start = self.range.as_ref().map(|r| r.start.as_slice()).unwrap_or(b"");
+        let end = self.range.as_ref().map(|r| r.end.as_slice()).unwrap_or(&[0xFF; 256]);
+        let limit = self.limit.unwrap_or(usize::MAX);
+        
+        let results = self.storage.conn.storage.scan(start, end, limit)?;
+        Ok(results.len())
     }
 }
 
