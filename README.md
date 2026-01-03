@@ -89,7 +89,7 @@ pip install toondb-client
 npm install @sushanth/toondb
 
 # Go
-go get github.com/toondb/toondb/toondb-go@v0.2.9
+go get github.com/toondb/toondb/toondb-go@latest
 
 # Rust - add to Cargo.toml
 # toondb = "0.2"
@@ -675,7 +675,7 @@ Where:
 
 ## 📈 Benchmarks
 
-> **Benchmark Date**: January 2026 | **Hardware**: Apple M-series (ARM64) | **Embeddings**: Azure OpenAI text-embedding-3-small (1536 dimensions)
+> **Version**: 0.2.9 | **Benchmark Date**: January 2026 | **Hardware**: Apple M-series (ARM64) | **Embeddings**: Azure OpenAI text-embedding-3-small (1536 dimensions)
 
 ### Real-World Vector Search Performance
 

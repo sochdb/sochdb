@@ -14,6 +14,12 @@ Complete guide to ToonDB's Go SDK with all features, patterns, and best practice
 go get github.com/toondb/toondb/toondb-go@v0.2.9
 ```
 
+**What's New in 0.2.9:**
+- ✅ Full SQL engine support with DDL/DML operations
+- ✅ Complete SQL-92 compatibility (CREATE, INSERT, SELECT, UPDATE, DELETE)
+- ✅ Improved embedded server stability
+- ✅ Comprehensive benchmark results with real embeddings
+
 **What's New in 0.2.7:**
 - ✅ Embedded server mode with automatic lifecycle management
 - ✅ Zero external setup required

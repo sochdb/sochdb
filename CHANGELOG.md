@@ -11,6 +11,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.9] - 2026-01-02
+
+### Added
+- **Comprehensive benchmark suite** with real-world LLM embeddings (Azure OpenAI)
+  - ToonDB vs ChromaDB: **3× faster** vector search
+  - ToonDB vs LanceDB: **22× faster** vector search
+  - Recall@k benchmarks showing **>98% recall** with sub-millisecond latency
+  - End-to-end RAG bottleneck analysis (API is 333× slower than database)
+- **Full SQL engine support in Go SDK** with DDL/DML operations matching Python/JS SDKs
+- **Community health files** for open source project
+  - CODE_OF_CONDUCT.md (Contributor Covenant v2.1)
+  - SECURITY.md with vulnerability reporting policy and response timelines
+  - Issue templates (bug report, feature request, support) with YAML validation
+- **Unified release workflow** with automated SDK publishing to crates.io, PyPI, and npm
+- **360° performance report** with retrieval quality, latency, throughput, and resource efficiency metrics
+
+### Changed
+- Simplified release workflow with improved error handling and protected branch support
+- Updated documentation with consistent SDK guides across all languages
+- Enhanced benchmark reports with real-world embedding comparisons
+
+### Fixed
+- Rust compilation errors in storage.rs
+- Go SDK test output formatting (removed redundant newlines)
+- Path dependencies for crates.io publishing
+- Wire protocol documentation for all SDKs
+
+---
+
 ## [0.2.7] - 2026-01-01
 
 ### Added
