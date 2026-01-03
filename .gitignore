@@ -68,3 +68,4 @@ toondb_demo_db_real/
 bench_sqlite.db*
 c-code.py
 demo_sql_db/
+task.md
