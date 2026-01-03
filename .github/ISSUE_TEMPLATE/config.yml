@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: GitHub Discussions
-    url: https://github.com/yourusername/toondb/discussions
+    url: https://github.com/toondb/toondb/discussions
     about: Ask questions and discuss ideas with the community
   - name: Documentation
-    url: https://github.com/yourusername/toondb/tree/main/docs
+    url: https://github.com/toondb/toondb/tree/main/docs
     about: Read the official ToonDB documentation
   - name: Security Vulnerability
-    url: https://github.com/yourusername/toondb/blob/main/SECURITY.md
+    url: https://github.com/toondb/toondb/blob/main/SECURITY.md
     about: Report security vulnerabilities privately via email
