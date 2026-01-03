@@ -38,7 +38,9 @@ Most "agent stacks" still glue together:
 ### ✅ LLM / Agent primitives
 
 * **TOON output format** for compact, model-friendly context
-* **Context Query Builder** with token budgeting + priority-based truncation
+* **ContextQuery Builder** with token budgeting, deduplication, and multi-source fusion
+* **Hybrid search** (vector + BM25 keyword) with Reciprocal Rank Fusion (RRF)
+* **Multi-vector documents** with chunk-level aggregation (max, mean, first)
 * **Vector search** (HNSW), integrated into retrieval workflows
 
 ### ✅ Database fundamentals
@@ -56,6 +58,8 @@ Most "agent stacks" still glue together:
 
   * **Embedded mode (FFI)** for lowest latency
   * **IPC mode (Unix sockets)** for multi-process / service scenarios
+  * **Namespace isolation** for multi-tenant applications
+  * **Type-safe error taxonomy** with remediation hints
 * **Bulk vector operations** for high-throughput ingestion
 
 ### Known limits
@@ -153,6 +157,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+```
+
+### Namespace Isolation (v0.3.0)
+
+#### Python
+
+```python
+from toondb import Database, CollectionConfig, DistanceMetric
+
+db = Database.open("./my_db")
+
+# Create namespace for tenant isolation
+with db.use_namespace("tenant_acme") as ns:
+    # Create vector collection with frozen config
+    collection = ns.create_collection(
+        CollectionConfig(
+            name="documents",
+            dimension=384,
+            metric=DistanceMetric.COSINE,
+            enable_hybrid_search=True,  # Enable keyword search
+            content_field="text"
+        )
+    )
+    
+    # Insert multi-vector document (e.g., chunked document)
+    collection.insert_multi(
+        id="doc_123",
+        vectors=[chunk_embedding_1, chunk_embedding_2, chunk_embedding_3],
+        metadata={"title": "ToonDB Guide", "author": "Alice"},
+        chunk_texts=["Intro text", "Body text", "Conclusion"],
+        aggregate="max"  # Use max score across chunks
+    )
+    
+    # Hybrid search: vector + keyword with RRF fusion
+    results = collection.hybrid_search(
+        vector=query_embedding,
+        text_query="database performance",
+        k=10,
+        alpha=0.7  # 70% vector, 30% keyword
+    )
+
+db.close()
+```
+
+### ContextQuery for LLM Retrieval (v0.3.0)
+
+#### Python
+
+```python
+from toondb import Database, ContextQuery, DeduplicationStrategy
+
+db = Database.open("./my_db")
+ns = db.namespace("tenant_acme")
+collection = ns.collection("documents")
+
+# Build context with token budgeting
+context = (
+    ContextQuery(collection)
+    .add_vector_query(query_embedding, weight=0.7)
+    .add_keyword_query("machine learning optimization", weight=0.3)
+    .with_token_budget(4000)  # Fit within model context window
+    .with_min_relevance(0.5)  # Filter low-quality results
+    .with_deduplication(DeduplicationStrategy.EXACT)
+    .execute()
+)
+
+# Use in LLM prompt
+prompt = f"""Context:
+{context.as_markdown()}
+
+Question: {user_question}
+"""
+
+print(f"Retrieved {len(context)} chunks using {context.total_tokens} tokens")
+db.close()
 ```
 
 ### Vector Search Example

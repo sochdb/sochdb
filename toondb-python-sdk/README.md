@@ -10,10 +10,15 @@ The official Python SDK for **ToonDB** — a high-performance embedded document 
 
 - ✅ **Key-Value Store** — Simple `get()`/`put()`/`delete()` operations
 - ✅ **Path-Native API** — Hierarchical keys like `users/alice/email`
-- ✅ **Prefix Scanning** — Fast `scan_prefix()` for multi-tenant data isolation
+- ✅ **Namespace Isolation** (v0.3.0) — Type-safe multi-tenancy with `Namespace` and `Collection`
+- ✅ **Hybrid Search** (v0.3.0) — Vector + BM25 keyword search with RRF fusion
+- ✅ **ContextQuery Builder** (v0.3.0) — Token-aware LLM context retrieval with budgeting
+- ✅ **Multi-Vector Documents** (v0.3.0) — Chunk-level embeddings with aggregation
+- ✅ **Prefix Scanning** — Fast `scan_prefix()` for safe tenant-scoped iteration
 - ✅ **ACID Transactions** — Full snapshot isolation with automatic commit/abort
 - ✅ **Vector Search** — HNSW with bulk API (~1,600 vec/s ingestion)
 - ✅ **SQL Support** — Full DDL/DML with CREATE, INSERT, SELECT, UPDATE, DELETE
+- ✅ **Enhanced Error Taxonomy** (v0.3.0) — ErrorCode enum with remediation hints
 - ✅ **CLI Tools** — `toondb-server`, `toondb-bulk`, `toondb-grpc-server` commands
 - ✅ **Dual Mode** — Embedded (FFI) or IPC (multi-process)
 - ✅ **Zero Compilation** — Pre-built binaries for Linux/macOS/Windows
@@ -48,6 +53,85 @@ with Database.open("./my_database") as db:
     # Simple key-value
     db.put(b"user:123", b'{"name":"Alice","age":30}')
     value = db.get(b"user:123")
+```
+
+### Multi-Tenant Namespace Isolation (v0.3.0)
+
+```python
+from toondb import Database, CollectionConfig, DistanceMetric
+
+db = Database.open("./my_database")
+
+# Create isolated namespace for tenant
+ns = db.create_namespace(
+    "tenant_acme",
+    display_name="Acme Corporation",
+    labels={"tier": "enterprise"}
+)
+
+# Create collection with immutable config
+collection = ns.create_collection(
+    CollectionConfig(
+        name="documents",
+        dimension=384,
+        metric=DistanceMetric.COSINE,
+        enable_hybrid_search=True,
+        content_field="text"
+    )
+)
+
+# Insert vector with metadata
+collection.insert(
+    id="doc_1",
+    vector=[0.1] * 384,
+    metadata={"title": "Guide", "text": "ToonDB is fast"},
+    content="ToonDB is a fast database"
+)
+
+# Hybrid search (vector + keyword)
+results = collection.hybrid_search(
+    vector=query_embedding,
+    text_query="fast database",
+    k=10,
+    alpha=0.7  # 70% vector, 30% keyword weight
+)
+
+for result in results:
+    print(f"{result.id}: {result.score:.3f}")
+
+db.close()
+```
+
+### Token-Aware Context Retrieval (v0.3.0)
+
+```python
+from toondb import Database, ContextQuery, DeduplicationStrategy
+
+db = Database.open("./my_database")
+ns = db.namespace("tenant_acme")
+collection = ns.collection("documents")
+
+# Build context with token budgeting for LLM
+context = (
+    ContextQuery(collection)
+    .add_vector_query(query_embedding, weight=0.7)
+    .add_keyword_query("machine learning", weight=0.3)
+    .with_token_budget(4000)  # Stay within model limit
+    .with_min_relevance(0.5)
+    .with_deduplication(DeduplicationStrategy.EXACT)
+    .from_field("text")  # Extract text from this field
+    .execute()
+)
+
+# Format for LLM prompt
+prompt = f"""Context (using {context.total_tokens}/{context.budget_tokens} tokens):
+{context.as_markdown(include_scores=True)}
+
+Question: {user_question}
+"""
+
+print(f"Retrieved {len(context)} relevant chunks")
+db.close()
     print(value.decode())
     # Output: {"name":"Alice","age":30}
 ```

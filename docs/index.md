@@ -15,6 +15,9 @@ Welcome to the official ToonDB documentation. ToonDB is **The LLM-Native Databas
 | Feature | Description |
 |---------|-------------|
 | **40-66% Fewer Tokens** | TOON format optimized for LLM consumption |
+| **Namespace Isolation** (v0.3.0) | Type-safe multi-tenancy with per-tenant data isolation |
+| **Hybrid Search** (v0.3.0) | Vector + BM25 keyword search with RRF fusion |
+| **ContextQuery Builder** (v0.3.0) | Token-aware retrieval with budgeting and deduplication |
 | **Blazing Fast** | Rust-powered with zero-copy and SIMD |
 | **Vector Search** | Built-in HNSW indexing for embeddings |
 | **Embeddable** | In-process or client-server mode |
