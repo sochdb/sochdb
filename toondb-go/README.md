@@ -22,17 +22,110 @@ The official Go client SDK for **ToonDB** — a high-performance embedded docume
 ## Installation
 
 ```bash
-go get github.com/toondb/toondb/toondb-go@v0.2.9
+go get github.com/toondb/toondb/toondb-go@v0.3.0
 ```
 
 **Requirements:**
 - Go 1.21+
 - ToonDB server binary (automatically managed in embedded mode)
 
-**Batteries Included (v0.2.9+):**
+**Batteries Included (v0.3.0+):**
 - ✅ Pre-built binaries bundled for Linux x86_64, macOS ARM64, and Windows x64
 - ✅ No manual binary installation required for released versions
 - ✅ Development builds fall back to `TOONDB_SERVER_PATH` or system PATH
+
+## What's New in v0.3.0
+
+### 🎯 Namespace Isolation
+Logical database namespaces for true multi-tenancy without key prefixing:
+
+```go
+// Create isolated namespaces
+userDB, _ := db.Namespace("users")
+ordersDB, _ := db.Namespace("orders")
+
+// Keys don't collide across namespaces
+userDB.Put([]byte("123"), []byte(`{"name":"Alice"}`))
+ordersDB.Put([]byte("123"), []byte(`{"total":500}`))  // Different "123"!
+
+// Each namespace has isolated collections
+userDB.CreateCollection("profiles", &toondb.CollectionConfig{
+    VectorDim: 384,
+    IndexType: toondb.HNSW,
+})
+```
+
+### 🔍 Hybrid Search
+Combine dense vectors (HNSW) with sparse BM25 text search:
+
+```go
+// Create collection with hybrid search
+config := &toondb.CollectionConfig{
+    VectorDim:   384,
+    IndexType:   toondb.HNSW,
+    EnableBM25:  true,  // Enable text search
+}
+collection, _ := db.CreateCollection("documents", config)
+
+// Insert documents with text and vectors
+doc := &toondb.Document{
+    ID:     "doc1",
+    Text:   "Machine learning models for NLP tasks",
+    Vector: []float32{0.1, 0.2, ...},  // 384-dim embedding
+}
+collection.Insert(doc)
+
+// Hybrid search (vector + text)
+results, _ := collection.HybridSearch(&toondb.HybridQuery{
+    Vector:    queryEmbedding,
+    Text:      "NLP transformer",
+    K:         10,
+    Alpha:     0.7,  // 70% vector, 30% BM25
+    RRFusion:  true, // Reciprocal Rank Fusion
+})
+```
+
+### 📄 Multi-Vector Documents
+Store multiple embeddings per document (e.g., title + content):
+
+```go
+// Insert document with multiple vectors
+multiDoc := &toondb.MultiVectorDocument{
+    ID:   "article1",
+    Text: "Deep Learning: A Survey",
+    Vectors: map[string][]float32{
+        "title":    titleEmbedding,    // 384-dim
+        "abstract": abstractEmbedding, // 384-dim
+        "content":  contentEmbedding,  // 384-dim
+    },
+}
+collection.InsertMultiVector(multiDoc)
+
+// Search with aggregation strategy
+results, _ := collection.MultiVectorSearch(&toondb.MultiVectorQuery{
+    QueryVectors: map[string][]float32{
+        "title":   queryTitleEmbedding,
+        "content": queryContentEmbedding,
+    },
+    K:           10,
+    Aggregation: toondb.MaxPooling,  // or MeanPooling, WeightedSum
+})
+```
+
+### 🧩 Context-Aware Queries
+Optimize retrieval for LLM context windows:
+
+```go
+// Query with token budget
+results, _ := collection.ContextQuery(&toondb.ContextConfig{
+    Vector:         queryEmbedding,
+    MaxTokens:      4000,
+    TargetProvider: "gpt-4",  // Auto token counting
+    DedupStrategy:  toondb.Semantic,  // Avoid redundant results
+})
+
+// Results fit within 4000 tokens, deduplicated for relevance
+```
 
 ## CLI Tools
 

@@ -24,8 +24,119 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-toondb = "0.2.9"
+toondb = "0.3.0"
 tokio = { version = "1", features = ["full"] }  # For async IPC
+```
+
+## What's New in v0.3.0
+
+### 🎯 Namespace Isolation
+Logical database namespaces for true multi-tenancy without key prefixing:
+
+```rust
+use toondb::{Database, NamespaceHandle};
+
+let db = Database::open("./my_database")?;
+
+// Create isolated namespaces
+let user_db = db.namespace("users")?;
+let orders_db = db.namespace("orders")?;
+
+// Keys don't collide across namespaces
+user_db.put(b"123", b r#"{"name":"Alice"}"#)?;
+orders_db.put(b"123", b r#"{"total":500}"#)?;  // Different "123"!
+
+// Each namespace has isolated collections
+user_db.create_collection("profiles", CollectionConfig {
+    vector_dim: 384,
+    index_type: IndexType::HNSW,
+    metric: DistanceMetric::Cosine,
+    ..Default::default()
+})?;
+```
+
+### 🔍 Hybrid Search
+Combine dense vectors (HNSW) with sparse BM25 text search:
+
+```rust
+use toondb_vector::{HybridSearchEngine, HybridQuery, RRFFusion};
+
+// Create collection with hybrid search
+let config = CollectionConfig {
+    vector_dim: 384,
+    index_type: IndexType::HNSW,
+    enable_bm25: true,  // Enable text search
+    ..Default::default()
+};
+let collection = db.create_collection("documents", config)?;
+
+// Insert documents with text and vectors
+let doc = Document {
+    id: "doc1".to_string(),
+    text: Some("Machine learning models for NLP tasks".to_string()),
+    vector: vec![0.1, 0.2, 0.3, /* ... 384 dims */],
+};
+collection.insert(&doc)?;
+
+// Hybrid search (vector + text)
+let query = HybridQuery {
+    vector: query_embedding,
+    text: Some("NLP transformer".to_string()),
+    k: 10,
+    alpha: 0.7,      // 70% vector, 30% BM25
+    rrf_fusion: true, // Reciprocal Rank Fusion
+};
+let results = collection.hybrid_search(&query)?;
+```
+
+### 📄 Multi-Vector Documents
+Store multiple embeddings per document (e.g., title + content):
+
+```rust
+use toondb_vector::MultiVectorDocument;
+use std::collections::HashMap;
+
+// Insert document with multiple vectors
+let mut vectors = HashMap::new();
+vectors.insert("title".to_string(), title_embedding);
+vectors.insert("abstract".to_string(), abstract_embedding);
+vectors.insert("content".to_string(), content_embedding);
+
+let multi_doc = MultiVectorDocument {
+    id: "article1".to_string(),
+    text: Some("Deep Learning: A Survey".to_string()),
+    vectors,
+};
+collection.insert_multi_vector(&multi_doc)?;
+
+// Search with aggregation strategy
+let mut query_vectors = HashMap::new();
+query_vectors.insert("title".to_string(), query_title_embedding);
+query_vectors.insert("content".to_string(), query_content_embedding);
+
+let results = collection.multi_vector_search(
+    &query_vectors,
+    10,  // k
+    AggregationStrategy::MaxPooling  // or MeanPooling, WeightedSum
+)?;
+```
+
+### 🧩 Context-Aware Queries
+Optimize retrieval for LLM context windows:
+
+```rust
+use toondb::ContextQuery;
+
+// Query with token budget
+let config = ContextQueryConfig {
+    vector: query_embedding,
+    max_tokens: 4000,
+    target_provider: Some("gpt-4".to_string()),
+    dedup_strategy: DeduplicationStrategy::Semantic,
+};
+let results = collection.context_query(&config)?;
+
+// Results fit within 4000 tokens, deduplicated for relevance
 ```
 
 ## Quick Start

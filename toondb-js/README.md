@@ -22,16 +22,107 @@ The official JavaScript/TypeScript SDK for **ToonDB** — a high-performance emb
 ## Installation
 
 ```bash
-npm install @sushanth/toondb@0.2.9
+npm install @sushanth/toondb@0.3.0
 # or
-yarn add @sushanth/toondb@0.2.9
+yarn add @sushanth/toondb@0.3.0
 # or
-bun add @sushanth/toondb@0.2.9
+bun add @sushanth/toondb@0.3.0
 ```
 
 **Requirements:**
 - Node.js 18+ or Bun 1.0+
 - ToonDB server binaries (automatically installed)
+
+## What's New in v0.3.0
+
+### 🎯 Namespace Isolation
+Logical database namespaces for true multi-tenancy without key prefixing:
+
+```typescript
+// Create isolated namespaces
+const userDB = await db.namespace('users');
+const ordersDB = await db.namespace('orders');
+
+// Keys don't collide across namespaces
+await userDB.put(Buffer.from('123'), Buffer.from('{"name":"Alice"}'));
+await ordersDB.put(Buffer.from('123'), Buffer.from('{"total":500}'));  // Different "123"!
+
+// Each namespace has isolated collections
+await userDB.createCollection('profiles', {
+  vectorDim: 384,
+  indexType: 'hnsw',
+  metric: 'cosine'
+});
+```
+
+### 🔍 Hybrid Search
+Combine dense vectors (HNSW) with sparse BM25 text search:
+
+```typescript
+// Create collection with hybrid search
+const collection = await db.createCollection('documents', {
+  vectorDim: 384,
+  indexType: 'hnsw',
+  enableBM25: true  // Enable text search
+});
+
+// Insert documents with text and vectors
+await collection.insert({
+  id: 'doc1',
+  text: 'Machine learning models for NLP tasks',
+  vector: new Float32Array(384)  // Your embedding
+});
+
+// Hybrid search (vector + text)
+const results = await collection.hybridSearch({
+  vector: queryEmbedding,
+  text: 'NLP transformer',
+  k: 10,
+  alpha: 0.7,      // 70% vector, 30% BM25
+  rrfFusion: true  // Reciprocal Rank Fusion
+});
+```
+
+### 📄 Multi-Vector Documents
+Store multiple embeddings per document (e.g., title + content):
+
+```typescript
+// Insert document with multiple vectors
+await collection.insertMultiVector({
+  id: 'article1',
+  text: 'Deep Learning: A Survey',
+  vectors: {
+    title: titleEmbedding,      // Float32Array(384)
+    abstract: abstractEmbedding, // Float32Array(384)
+    content: contentEmbedding    // Float32Array(384)
+  }
+});
+
+// Search with aggregation strategy
+const results = await collection.multiVectorSearch({
+  queryVectors: {
+    title: queryTitleEmbedding,
+    content: queryContentEmbedding
+  },
+  k: 10,
+  aggregation: 'max-pooling'  // or 'mean-pooling', 'weighted-sum'
+});
+```
+
+### 🧩 Context-Aware Queries
+Optimize retrieval for LLM context windows:
+
+```typescript
+// Query with token budget
+const results = await collection.contextQuery({
+  vector: queryEmbedding,
+  maxTokens: 4000,
+  targetProvider: 'gpt-4',  // Auto token counting
+  dedupStrategy: 'semantic'  // Avoid redundant results
+});
+
+// Results fit within 4000 tokens, deduplicated for relevance
+```
 
 ## CLI Tools
 
