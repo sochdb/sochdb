@@ -84,7 +84,7 @@ except ImportError:
     BulkBuildStats = None
     QueryResult = None
 
-__version__ = "0.2.9"
+__version__ = "0.3.0"
 __all__ = [
     # Core
     "Database",

@@ -15,7 +15,7 @@ import (
 )
 
 // Version is the current SDK version.
-const Version = "0.2.9"
+const Version = "0.3.0"
 
 // Config holds database configuration options.
 type Config struct {
