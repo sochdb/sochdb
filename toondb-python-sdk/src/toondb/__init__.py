@@ -26,7 +26,48 @@ Provides two modes of access:
 from .ipc_client import IpcClient
 from .database import Database, Transaction
 from .query import Query, SQLQueryResult
-from .errors import ToonDBError, ConnectionError, TransactionError, ProtocolError
+from .errors import (
+    ToonDBError, 
+    ConnectionError, 
+    TransactionError, 
+    ProtocolError,
+    # Error taxonomy (Task 11)
+    ErrorCode,
+    NamespaceError,
+    NamespaceNotFoundError,
+    NamespaceExistsError,
+    CollectionError,
+    CollectionNotFoundError,
+    CollectionExistsError,
+    CollectionConfigError,
+    ValidationError,
+    DimensionMismatchError,
+    QueryError,
+)
+from .namespace import (
+    # Namespace handle (Task 8)
+    Namespace,
+    NamespaceConfig,
+    # Collection (Task 9)
+    Collection,
+    CollectionConfig,
+    DistanceMetric,
+    QuantizationType,
+    # Search (Task 10)
+    SearchRequest,
+    SearchResult,
+    SearchResults,
+)
+from .context import (
+    # ContextQuery (Task 12)
+    ContextQuery,
+    ContextResult,
+    ContextChunk,
+    TokenEstimator,
+    DeduplicationStrategy,
+    estimate_tokens,
+    split_by_tokens,
+)
 
 # Vector search (optional - requires libtoondb_index)
 try:
@@ -45,18 +86,58 @@ except ImportError:
 
 __version__ = "0.2.9"
 __all__ = [
+    # Core
     "Database",
     "Transaction", 
     "Query",
     "SQLQueryResult",
     "IpcClient",
     "VectorIndex",
+    
+    # Namespace (Task 8)
+    "Namespace",
+    "NamespaceConfig",
+    
+    # Collection (Task 9)
+    "Collection",
+    "CollectionConfig",
+    "DistanceMetric",
+    "QuantizationType",
+    
+    # Search (Task 10)
+    "SearchRequest",
+    "SearchResult",
+    "SearchResults",
+    
+    # ContextQuery (Task 12)
+    "ContextQuery",
+    "ContextResult",
+    "ContextChunk",
+    "TokenEstimator",
+    "DeduplicationStrategy",
+    "estimate_tokens",
+    "split_by_tokens",
+    
+    # Bulk operations
     "bulk_build_index",
     "bulk_query_index",
     "BulkBuildStats",
     "QueryResult",
+    
+    # Errors
     "ToonDBError",
     "ConnectionError",
     "TransactionError",
     "ProtocolError",
+    "ErrorCode",
+    "NamespaceError",
+    "NamespaceNotFoundError",
+    "NamespaceExistsError",
+    "CollectionError",
+    "CollectionNotFoundError",
+    "CollectionExistsError",
+    "CollectionConfigError",
+    "ValidationError",
+    "DimensionMismatchError",
+    "QueryError",
 ]
