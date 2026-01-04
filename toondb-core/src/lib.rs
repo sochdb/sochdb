@@ -112,6 +112,10 @@ pub mod version_chain; // Unified MVCC version chain trait
 pub mod vfs;
 pub mod zero_copy; // Predefined ToonQL views (Task 7)
 
+// Analytics - anonymous usage tracking (disabled with TOONDB_DISABLE_ANALYTICS=true)
+#[cfg(feature = "analytics")]
+pub mod analytics;
+
 // Re-export core types
 pub use block_storage::{
     BlockCompression, BlockRef, BlockStore, BlockStoreStats, FileBlockManager,

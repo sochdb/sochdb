@@ -268,6 +268,14 @@ export class Database {
 
     db._client = await IpcClient.connect(socketPath);
 
+    // Track database open event (only analytics event we send)
+    try {
+      const { trackDatabaseOpen } = await import('./analytics.js');
+      await trackDatabaseOpen(config.path, 'embedded');
+    } catch {
+      // Never let analytics break database operations
+    }
+
     return db;
   }
 
@@ -512,6 +520,135 @@ export class Database {
     
     const executor = new SQLExecutor(dbAdapter);
     return executor.execute(sql);
+  }
+
+  // =========================================================================
+  // Static Serialization Methods
+  // =========================================================================
+
+  /**
+   * Convert records to TOON format for token-efficient LLM context.
+   * 
+   * TOON format achieves 40-66% token reduction compared to JSON by using
+   * a columnar text format with minimal syntax.
+   * 
+   * @param tableName - Name of the table/collection
+   * @param records - Array of objects with the data
+   * @param fields - Optional array of field names to include
+   * @returns TOON-formatted string
+   * 
+   * @example
+   * ```typescript
+   * const records = [
+   *   { id: 1, name: 'Alice', email: 'alice@ex.com' },
+   *   { id: 2, name: 'Bob', email: 'bob@ex.com' }
+   * ];
+   * console.log(Database.toToon('users', records, ['name', 'email']));
+   * // users[2]{name,email}:Alice,alice@ex.com;Bob,bob@ex.com
+   * ```
+   */
+  static toToon(
+    tableName: string,
+    records: Array<Record<string, any>>,
+    fields?: string[]
+  ): string {
+    if (!records || records.length === 0) {
+      return `${tableName}[0]{}:`;
+    }
+
+    // Determine fields from first record if not specified
+    const useFields = fields ?? Object.keys(records[0]);
+
+    // Build header: table[count]{field1,field2,...}:
+    const header = `${tableName}[${records.length}]{${useFields.join(',')}}:`;
+
+    // Escape values containing delimiters
+    const escapeValue = (v: any): string => {
+      const s = v != null ? String(v) : '';
+      if (s.includes(',') || s.includes(';') || s.includes('\n')) {
+        return `"${s}"`;
+      }
+      return s;
+    };
+
+    // Build rows: value1,value2;value1,value2;...
+    const rows = records
+      .map(r => useFields.map(f => escapeValue(r[f])).join(','))
+      .join(';');
+
+    return header + rows;
+  }
+
+  /**
+   * Convert records to JSON format for easy application decoding.
+   * 
+   * While TOON format is optimized for LLM context (40-66% token reduction),
+   * JSON is often easier for applications to parse. Use this method when
+   * the output will be consumed by application code rather than LLMs.
+   * 
+   * @param tableName - Name of the table/collection
+   * @param records - Array of objects with the data
+   * @param fields - Optional array of field names to include
+   * @param compact - If true (default), outputs minified JSON
+   * @returns JSON-formatted string
+   * 
+   * @example
+   * ```typescript
+   * const records = [
+   *   { id: 1, name: 'Alice' },
+   *   { id: 2, name: 'Bob' }
+   * ];
+   * console.log(Database.toJson('users', records));
+   * // {"table":"users","count":2,"records":[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]}
+   * ```
+   */
+  static toJson(
+    tableName: string,
+    records: Array<Record<string, any>>,
+    fields?: string[],
+    compact: boolean = true
+  ): string {
+    if (!records || records.length === 0) {
+      return JSON.stringify({ table: tableName, count: 0, records: [] });
+    }
+
+    // Filter fields if specified
+    const filteredRecords = fields
+      ? records.map(r => {
+          const filtered: Record<string, any> = {};
+          for (const f of fields) {
+            filtered[f] = r[f];
+          }
+          return filtered;
+        })
+      : records;
+
+    const output = {
+      table: tableName,
+      count: filteredRecords.length,
+      records: filteredRecords,
+    };
+
+    return compact ? JSON.stringify(output) : JSON.stringify(output, null, 2);
+  }
+
+  /**
+   * Parse a JSON format string back to structured data.
+   * 
+   * @param jsonStr - JSON-formatted string (from toJson)
+   * @returns Object with table, fields, and records
+   */
+  static fromJson(jsonStr: string): {
+    table: string;
+    fields: string[];
+    records: Array<Record<string, any>>;
+  } {
+    const data = JSON.parse(jsonStr);
+    const table = data.table ?? 'unknown';
+    const records = data.records ?? [];
+    const fields = records.length > 0 ? Object.keys(records[0]) : [];
+
+    return { table, fields, records };
   }
 
   /**

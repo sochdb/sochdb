@@ -11,6 +11,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.1] - 2026-01-04
+
+### Added
+- **Anonymous Usage Analytics** — Optional, privacy-respecting usage information collection
+  - `database_opened` event — Track database initialization across SDKs
+  - `error` event — Static error tracking (error type + code location only, no sensitive data)
+  - Stable anonymous machine ID (SHA-256 hash, no PII)
+  - Environment variable opt-out: `TOONDB_DISABLE_ANALYTICS=true`
+  - Graceful degradation when analytics dependencies unavailable
+  - Python: Optional `posthog` dependency in `[analytics]` extra
+  - JavaScript: Optional `posthog-node` in `optionalDependencies`
+  - Rust: Feature flag `analytics` for `toondb-core`
+
+### Changed
+- **Analytics Privacy-First Design** — No sensitive data collection
+  - Error tracking sends only static `error_type` and `location` (e.g., "query_error" @ "sql.execute")
+  - No dynamic error messages, user data, file paths, or identifiable information
+  - SDK context: version, OS, architecture only
+  - All data sent to PostHog with user-controlled opt-out
+- **Documentation Updates** — Version references updated to 0.3.1 across all guides
+  - Updated benchmark versions in README
+  - Updated installation instructions in all SDK guides
+  - Consistent versioning across Python, JavaScript, Rust, and Go documentation
+
+### Fixed
+- **JavaScript Analytics Import** — Fixed ESM import path in `database.ts` (`.js` extension required)
+- **Rust Analytics Feature** — Enabled `analytics` feature by default in client crates
+  - Added to `toondb-client`, `toondb-python`, `toondb-grpc`
+  - Added `json` feature to `ureq` dependency for PostHog integration
+- **Test Version Mismatch** — Updated JavaScript test expectations to match 0.3.1 version
+
+---
+
 ## [0.3.0] - 2026-01-03
 
 ### Added

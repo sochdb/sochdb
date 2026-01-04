@@ -43,5 +43,12 @@ export {
   stopAllEmbeddedServers,
   isServerRunning,
 } from './server-manager';
+export {
+  capture as captureAnalytics,
+  captureError,
+  shutdown as shutdownAnalytics,
+  trackDatabaseOpen,
+  isAnalyticsDisabled,
+} from './analytics';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.1';

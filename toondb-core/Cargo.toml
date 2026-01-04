@@ -26,6 +26,11 @@ zstd = { workspace = true }
 # Lock-free concurrent data structures
 dashmap = { workspace = true }
 
+# Analytics (optional - for PostHog tracking)
+serde_json = { workspace = true, optional = true }
+ureq = { version = "2.9", optional = true, features = ["json"] }
+hostname = { version = "0.4", optional = true }
+
 # Optional jemalloc allocator for better performance
 tikv-jemallocator = { version = "0.5", optional = true }
 
@@ -39,3 +44,4 @@ tempfile = { workspace = true }
 [features]
 default = []
 jemalloc = ["tikv-jemallocator"]
+analytics = ["serde_json", "ureq", "hostname"]

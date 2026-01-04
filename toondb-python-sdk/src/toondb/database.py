@@ -753,6 +753,14 @@ class Database:
         
         if not handle:
             raise DatabaseError(f"Failed to open database at {path}")
+        
+        # Track database open event (only analytics event we send)
+        try:
+            from .analytics import track_database_open
+            track_database_open(path, mode="embedded")
+        except Exception:
+            # Never let analytics break database operations
+            pass
             
         return cls(path, handle)
     
@@ -1062,6 +1070,100 @@ class Database:
         )
         
         return header + rows
+    
+    @staticmethod
+    def to_json(
+        table_name: str, 
+        records: list, 
+        fields: list = None,
+        compact: bool = True
+    ) -> str:
+        """
+        Convert records to JSON format for easy application decoding.
+        
+        While TOON format is optimized for LLM context (40-66% token reduction),
+        JSON is often easier for applications to parse. Use this method when
+        the output will be consumed by application code rather than LLMs.
+        
+        Args:
+            table_name: Name of the table/collection (included in output).
+            records: List of dicts with the data.
+            fields: Optional list of field names to include. If None, uses
+                   all fields from records.
+            compact: If True (default), outputs minified JSON. If False,
+                    outputs pretty-printed JSON.
+                   
+        Returns:
+            JSON-formatted string.
+            
+        Example:
+            >>> records = [
+            ...     {"id": 1, "name": "Alice", "email": "alice@ex.com"},
+            ...     {"id": 2, "name": "Bob", "email": "bob@ex.com"}
+            ... ]
+            >>> print(Database.to_json("users", records, ["name", "email"]))
+            {"table":"users","count":2,"records":[{"name":"Alice","email":"alice@ex.com"},{"name":"Bob","email":"bob@ex.com"}]}
+            
+        See Also:
+            - to_toon(): For token-efficient LLM context (40-66% smaller)
+            - from_json(): To parse JSON back to structured data
+        """
+        import json
+        
+        if not records:
+            return json.dumps({
+                "table": table_name,
+                "count": 0,
+                "records": []
+            })
+        
+        # Filter fields if specified
+        if fields is not None:
+            filtered_records = [
+                {f: r.get(f) for f in fields}
+                for r in records
+            ]
+        else:
+            filtered_records = records
+        
+        output = {
+            "table": table_name,
+            "count": len(filtered_records),
+            "records": filtered_records
+        }
+        
+        if compact:
+            return json.dumps(output, separators=(',', ':'))
+        else:
+            return json.dumps(output, indent=2)
+    
+    @staticmethod
+    def from_json(json_str: str) -> tuple:
+        """
+        Parse a JSON format string back to structured data.
+        
+        Args:
+            json_str: JSON-formatted string (from to_json).
+            
+        Returns:
+            Tuple of (table_name, fields, records) where records is a list of dicts.
+            
+        Example:
+            >>> json_data = '{"table":"users","count":2,"records":[{"name":"Alice"},{"name":"Bob"}]}'
+            >>> name, fields, records = Database.from_json(json_data)
+            >>> print(records)
+            [{'name': 'Alice'}, {'name': 'Bob'}]
+        """
+        import json
+        
+        data = json.loads(json_str)
+        table_name = data.get("table", "unknown")
+        records = data.get("records", [])
+        
+        # Extract field names from first record
+        fields = list(records[0].keys()) if records else []
+        
+        return table_name, fields, records
     
     @staticmethod
     def from_toon(toon_str: str) -> tuple:

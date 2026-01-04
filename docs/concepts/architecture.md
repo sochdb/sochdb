@@ -1,6 +1,6 @@
 # ToonDB Complete Architecture & API Reference
 
-**Version:** 0.2.9  
+**Version:** 0.3.1  
 **License:** Apache-2.0  
 **Repository:** https://github.com/toondb/toondb
 

@@ -69,3 +69,4 @@ bench_sqlite.db*
 c-code.py
 demo_sql_db/
 task.md
+toondb_agent_memory/

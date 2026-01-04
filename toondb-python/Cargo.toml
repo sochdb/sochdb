@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 # ToonDB core libraries
 toondb-index = { path = "../toondb-index" }
-toondb-core = { path = "../toondb-core" }
+toondb-core = { path = "../toondb-core", features = ["analytics"] }
 toondb-storage = { path = "../toondb-storage" }
 
 # PyO3 bindings

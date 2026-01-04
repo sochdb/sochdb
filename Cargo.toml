@@ -12,7 +12,6 @@ members = [
     "toondb-wasm",
     "toondb-vector",
     "toondb-tools",
-    "benchmarks",
 ]
 # toondb-python is excluded from workspace - it must be built with maturin
 # Use: cd toondb-python && maturin develop --release
@@ -20,7 +19,7 @@ exclude = ["toondb-python"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 authors = ["Sushanth <sushanth@toondb.dev>"]
 license = "Apache-2.0"

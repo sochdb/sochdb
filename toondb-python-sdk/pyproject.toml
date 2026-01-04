@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "toondb-client"
-version = "0.3.0"
+version = "0.3.1"
 description = "ToonDB is an AI-native database with token-optimized output, O(|path|) lookups, built-in vector search, and durable transactions."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -39,10 +39,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+analytics = [
+    "posthog>=3.0.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "faker>=18.0",
+]
+all = [
+    "posthog>=3.0.0",
 ]
 
 [project.urls]

@@ -51,7 +51,7 @@ await db.close();
 ## Go SDK
 
 ```bash
-go get github.com/toondb/toondb-go@v0.2.9
+go get github.com/toondb/toondb-go@v0.3.1
 ```
 
 ### Verify Installation

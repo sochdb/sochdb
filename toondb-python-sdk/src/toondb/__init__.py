@@ -84,7 +84,27 @@ except ImportError:
     BulkBuildStats = None
     QueryResult = None
 
-__version__ = "0.3.0"
+# Analytics (optional - requires posthog)
+try:
+    from .analytics import (
+        capture as capture_analytics,
+        capture_error,
+        shutdown as shutdown_analytics,
+        track_database_open,
+        track_vector_search,
+        track_batch_insert,
+        is_analytics_disabled,
+    )
+except ImportError:
+    capture_analytics = None
+    capture_error = None
+    shutdown_analytics = None
+    track_database_open = None
+    track_vector_search = None
+    track_batch_insert = None
+    is_analytics_disabled = lambda: True
+
+__version__ = "0.3.1"
 __all__ = [
     # Core
     "Database",
@@ -123,6 +143,15 @@ __all__ = [
     "bulk_query_index",
     "BulkBuildStats",
     "QueryResult",
+    
+    # Analytics (disabled with TOONDB_DISABLE_ANALYTICS=true)
+    "capture_analytics",
+    "capture_error",
+    "shutdown_analytics",
+    "track_database_open",
+    "track_vector_search",
+    "track_batch_insert",
+    "is_analytics_disabled",
     
     # Errors
     "ToonDBError",

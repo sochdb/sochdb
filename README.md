@@ -754,7 +754,7 @@ Where:
 
 ## 📈 Benchmarks
 
-> **Version**: 0.2.9 | **Benchmark Date**: January 2026 | **Hardware**: Apple M-series (ARM64) | **Embeddings**: Azure OpenAI text-embedding-3-small (1536 dimensions)
+> **Version**: 0.3.1 | **Benchmark Date**: January 2026 | **Hardware**: Apple M-series (ARM64) | **Embeddings**: Azure OpenAI text-embedding-3-small (1536 dimensions)
 
 ### Real-World Vector Search Performance
 
