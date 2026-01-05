@@ -86,18 +86,30 @@ Most "agent stacks" still glue together:
 Choose your preferred SDK:
 
 ```bash
-# Python
-pip install toondb-client
-
-# Node.js / TypeScript
-npm install @sushanth/toondb
-
-# Go (from separate repository)
-go get github.com/toondb/toondb-go@latest
-
 # Rust - add to Cargo.toml
-# toondb = "0.2"
+toondb = "0.2"
 ```
+
+### SDK Repositories
+
+Language SDKs are maintained in separate repositories with their own release cycles:
+
+| Language | Repository | Installation |
+|----------|------------|-------------|
+| **Python** | [toondb-python-sdk](https://github.com/toondb/toondb-python-sdk) | `pip install toondb-client` |
+| **Node.js/TypeScript** | [toondb-nodejs-sdk](https://github.com/toondb/toondb-nodejs-sdk) | `npm install @sushanth/toondb` |
+| **Go** | [toondb-go](https://github.com/toondb/toondb-go) | `go get github.com/toondb/toondb-go@latest` |
+| **Rust** | This repository | `cargo add toondb` |
+
+### Examples
+
+- **Python Examples**: [toondb-python-examples](https://github.com/toondb/toondb-python-examples)
+- **Node.js Examples**: [toondb-nodejs-examples](https://github.com/toondb/toondb-nodejs-examples)
+- **Go Examples**: [toondb-golang-examples](https://github.com/toondb/toondb-golang-examples)
+
+### Benchmarks
+
+For performance comparisons and benchmarks, see [toondb-benchmarks](https://github.com/toondb/toondb-benchmarks).
 
 ### Hello World
 
@@ -295,6 +307,8 @@ console.log(results);  // [{ id: 'doc1', distance: 0.23 }, ...]
 | Path API | ✅ | ✅ | ✅ | ✅ |
 | Prefix Scanning | ✅ | ✅ | ✅ | ✅ |
 | Query Builder | ✅ | ✅ | ✅ | ✅ |
+
+> **Note:** While SDKs are maintained in separate repositories, they share the same core functionality and API design. Refer to individual SDK repositories for language-specific documentation and examples.
 
 ---
 

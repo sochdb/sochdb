@@ -1,22 +1,19 @@
 # =============================================================================
-# ToonDB Unified Release Pipeline (workflow.yml)
+# ToonDB Core Release Pipeline
 # =============================================================================
 #
-# SINGLE pipeline that builds ALL platforms and releases ALL SDK packages:
-#   - crates.io: toondb (Rust)
-#   - PyPI: toondb-client (Python) - uses Trusted Publisher (OIDC, no token!)
-#   - npm: @sushanth/toondb (JavaScript/TypeScript)
+# Builds Rust binaries and publishes to crates.io.
 #
-# Go SDK: Released separately at github.com/toondb/toondb-go
+# SDK packages are maintained in separate repositories:
+#   - Python SDK: https://github.com/toondb/toondb-python-sdk
+#   - Node.js SDK: https://github.com/toondb/toondb-nodejs-sdk
+#   - Go SDK: https://github.com/toondb/toondb-go
 #
 # Platforms supported:
 #   - Linux x86_64 (manylinux)
 #   - macOS ARM64 (Apple Silicon)
 #   - macOS x86_64 (Intel)
 #   - Windows x64
-#
-# Principle: When version changes, it changes everywhere.
-# All binaries are bundled - zero compilation required for end users.
 #
 # =============================================================================
 # REQUIRED SETUP:
@@ -27,15 +24,10 @@
 #
 # 2. Add Environment Secrets (in the toondb-workflow environment):
 #    CRATES_IO_TOKEN   - crates.io API token (https://crates.io/settings/tokens)
-#    NPM_TOKEN         - npm access token (https://www.npmjs.com/settings/~/tokens)
 #
 # 3. GITHUB_TOKEN - NO ACTION NEEDED!
 #    Automatically provided by GitHub Actions. Do NOT add as a secret.
-#    Used for: Git operations, creating releases, Go module tagging
-#
-# 4. PyPI - NO TOKEN NEEDED!
-#    Already configured at: https://pypi.org/manage/project/toondb-client/settings/publishing/
-#    Uses OIDC Trusted Publisher (workflow.yml on toondb/toondb repository)
+#    Used for: Git operations, creating releases
 # =============================================================================
 
 name: Release
@@ -182,300 +174,12 @@ jobs:
           retention-days: 1
 
   # ===========================================================================
-  # Build and Publish npm Package (All Platforms)
-  # ===========================================================================
-  build-npm:
-    name: Build npm Package
-    runs-on: ubuntu-latest
-    needs: build-binaries
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Download all binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: binaries-*
-          path: binaries/
-          merge-multiple: true
-
-      - name: Copy binaries to npm package
-        run: |
-          # Create _bin directory structure
-          mkdir -p toondb-js/_bin
-          
-          # Copy binaries for each platform
-          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
-            if [ -d "binaries/$target" ]; then
-              mkdir -p "toondb-js/_bin/$target"
-              cp -r binaries/$target/* "toondb-js/_bin/$target/"
-              
-              # Make executables on non-Windows
-              if [ "$target" != "x86_64-pc-windows-msvc" ]; then
-                chmod +x toondb-js/_bin/$target/*
-              fi
-            fi
-          done
-          
-          echo "=== Binary structure ==="
-          find toondb-js/_bin -type f
-
-      - name: Update package version
-        run: |
-          cd toondb-js
-          npm version ${{ inputs.version }} --no-git-tag-version || echo "Version already set to ${{ inputs.version }}"
-
-      - name: Install dependencies and build
-        run: |
-          cd toondb-js
-          npm ci
-          npm run build
-
-      - name: Run tests
-        run: |
-          cd toondb-js
-          npm test
-
-      - name: Upload npm package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-package
-          path: toondb-js/
-          retention-days: 1
-
-  publish-npm:
-    name: Publish to npm
-    runs-on: ubuntu-latest
-    needs: build-npm
-    environment:
-      name: toondb-workflow
-    steps:
-      - name: Download npm package
-        uses: actions/download-artifact@v4
-        with:
-          name: npm-package
-          path: toondb-js/
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install dependencies
-        run: |
-          cd toondb-js
-          npm ci
-
-      - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          cd toondb-js
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "🔍 Dry run - validating package..."
-            npm publish --dry-run --access public
-          else
-            npm publish --access public
-          fi
-
-  # ===========================================================================
-  # Build Python Wheels (All Platforms)
-  # ===========================================================================
-  build-python:
-    name: Build Python (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    needs: build-binaries
-    strategy:
-      fail-fast: false  # Continue building other platforms if one fails
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            wheel_platform: manylinux_2_17_x86_64
-            
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            wheel_platform: macosx_11_0_arm64
-            
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            wheel_platform: win_amd64
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries-${{ matrix.target }}
-          path: binaries/
-
-      - name: Copy binaries and libraries to SDK
-        shell: bash
-        run: |
-          # Copy binaries to _bin/
-          mkdir -p toondb-python-sdk/src/toondb/_bin/${{ matrix.target }}
-          
-          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
-            cp binaries/${{ matrix.target }}/toondb-bulk.exe toondb-python-sdk/src/toondb/_bin/${{ matrix.target }}/
-            # toondb-server not available on Windows (Unix sockets only)
-            cp binaries/${{ matrix.target }}/toondb-grpc-server.exe toondb-python-sdk/src/toondb/_bin/${{ matrix.target }}/
-          else
-            cp binaries/${{ matrix.target }}/toondb-bulk toondb-python-sdk/src/toondb/_bin/${{ matrix.target }}/
-            cp binaries/${{ matrix.target }}/toondb-server toondb-python-sdk/src/toondb/_bin/${{ matrix.target }}/
-            cp binaries/${{ matrix.target }}/toondb-grpc-server toondb-python-sdk/src/toondb/_bin/${{ matrix.target }}/
-            chmod +x toondb-python-sdk/src/toondb/_bin/${{ matrix.target }}/*
-          fi
-          
-          # Copy shared libraries to lib/
-          mkdir -p toondb-python-sdk/src/toondb/lib/${{ matrix.target }}
-          
-          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
-            cp binaries/${{ matrix.target }}/toondb_storage.dll toondb-python-sdk/src/toondb/lib/${{ matrix.target }}/
-            cp binaries/${{ matrix.target }}/toondb_index.dll toondb-python-sdk/src/toondb/lib/${{ matrix.target }}/
-          else
-            cp binaries/${{ matrix.target }}/libtoondb_storage* toondb-python-sdk/src/toondb/lib/${{ matrix.target }}/
-            cp binaries/${{ matrix.target }}/libtoondb_index* toondb-python-sdk/src/toondb/lib/${{ matrix.target }}/
-            chmod +x toondb-python-sdk/src/toondb/lib/${{ matrix.target }}/*
-          fi
-          
-          echo "=== SDK structure ==="
-          echo "Binaries:"
-          find toondb-python-sdk/src/toondb/_bin -type f
-          echo "Libraries:"
-          find toondb-python-sdk/src/toondb/lib -type f
-
-      - name: Update package version
-        shell: bash
-        run: |
-          cd toondb-python-sdk
-          sed -i.bak 's/version = ".*"/version = "${{ inputs.version }}"/' pyproject.toml
-          rm -f pyproject.toml.bak
-
-      - name: Build wheel
-        run: |
-          cd toondb-python-sdk
-          pip install build wheel
-          python -m build --wheel
-
-      - name: Rename wheel with correct platform tag
-        shell: bash
-        run: |
-          cd toondb-python-sdk/dist
-          for f in *-py3-none-any.whl; do
-            if [ -f "$f" ]; then
-              newname=$(echo $f | sed 's/-py3-none-any/-py3-none-${{ matrix.wheel_platform }}/')
-              mv "$f" "$newname"
-            fi
-          done
-          ls -la
-
-      - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-${{ matrix.target }}
-          path: toondb-python-sdk/dist/*.whl
-          retention-days: 1
-
-  # Build source distribution (once)
-  build-python-sdist:
-    name: Build Python sdist
-    runs-on: ubuntu-latest
-    needs: build-binaries
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Update package version
-        run: |
-          cd toondb-python-sdk
-          sed -i 's/version = ".*"/version = "${{ inputs.version }}"/' pyproject.toml
-
-      - name: Build sdist
-        run: |
-          cd toondb-python-sdk
-          pip install build
-          python -m build --sdist
-
-      - name: Upload sdist artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-sdist
-          path: toondb-python-sdk/dist/*.tar.gz
-          retention-days: 1
-
-  publish-python:
-    name: Publish to PyPI
-    runs-on: ubuntu-latest
-    needs: [build-python, build-python-sdist]
-    # Required for PyPI Trusted Publisher (OIDC) - no token needed!
-    permissions:
-      id-token: write
-      contents: read
-    # Environment not required since PyPI is configured with "(Any)"
-    steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Download all wheel artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: python-*
-          path: dist/
-          merge-multiple: true
-
-      - name: List packages
-        run: |
-          echo "=== Packages to upload ==="
-          ls -la dist/
-          if [ -z "$(ls -A dist/)" ]; then
-            echo "ERROR: No Python packages found to publish!"
-            exit 1
-          fi
-
-      - name: Validate packages
-        run: |
-          pip install twine
-          twine check dist/*
-
-      - name: Publish to PyPI (Trusted Publisher)
-        if: ${{ inputs.dry_run != true }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/
-          skip-existing: true
-          verbose: true
-
-      - name: Dry run validation
-        if: ${{ inputs.dry_run == true }}
-        run: |
-          echo "🔍 Dry run - packages validated but not uploaded"
-          ls -la dist/
-
-  # ===========================================================================
   # Publish Rust Crates
   # ===========================================================================
   publish-rust:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: [build-binaries, build-npm, build-python, build-python-sdist]
+    needs: build-binaries
     environment:
       name: toondb-workflow
     steps:
@@ -533,7 +237,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [publish-npm, publish-python, publish-rust]
+    needs: publish-rust
     if: ${{ inputs.dry_run != true }}
     permissions:
       contents: write  # Required to create releases and upload assets
@@ -583,29 +287,30 @@ jobs:
             cargo add toondb
             ```
             
-            **Python (PyPI)**
-            ```bash
-            pip install toondb-client
-            ```
+            ### SDK Repositories
             
-            **JavaScript/TypeScript (npm)**
-            ```bash
-            npm install @sushanth/toondb
-            ```
+            Language SDKs are now maintained in separate repositories:
             
-            **Go** (separate repository)
-            ```bash
-            go get github.com/toondb/toondb-go@latest
-            ```
+            - **Python**: https://github.com/toondb/toondb-python-sdk
+            - **Node.js/TypeScript**: https://github.com/toondb/toondb-nodejs-sdk
+            - **Go**: https://github.com/toondb/toondb-go
+            
+            ### Examples
+            
+            - **Python Examples**: https://github.com/toondb/toondb-python-examples
+            - **Node.js Examples**: https://github.com/toondb/toondb-nodejs-examples
+            - **Go Examples**: https://github.com/toondb/toondb-golang-examples
+            
+            ### Benchmarks
+            
+            See https://github.com/toondb/toondb-benchmarks for performance comparisons.
             
             ### Pre-built Binaries
             
-            All SDK packages include pre-built binaries for:
+            This release includes pre-built binaries for:
             - Linux x86_64
             - macOS ARM64 (Apple Silicon) - Intel Macs use Rosetta 2
             - Windows x64
-            
-            No Rust toolchain or compilation required!
             
             See [CHANGELOG.md](https://github.com/toondb/toondb/blob/main/CHANGELOG.md) for details.
         env:
@@ -617,12 +322,12 @@ jobs:
   summary:
     name: Release Summary
     runs-on: ubuntu-latest
-    needs: [publish-rust, publish-python, publish-npm]
+    needs: publish-rust
     if: always()
     steps:
       - name: Summary
         run: |
-          echo "## 🚀 ToonDB Release v${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 ToonDB Core Release v${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ "${{ inputs.dry_run }}" = "true" ]; then
@@ -636,12 +341,16 @@ jobs:
           echo "| Platform | Package | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|---------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| crates.io | \`toondb\` | ${{ needs.publish-rust.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| PyPI | \`toondb-client\` | ${{ needs.publish-python.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| npm | \`@sushanth/toondb\` | ${{ needs.publish-npm.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Go modules | \`github.com/toondb/toondb-go\` | separate repo |" >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Platforms Bundled" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Linux x86_64 (manylinux_2_17)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ macOS ARM64 (Apple Silicon, Rosetta 2 for Intel)" >> $GITHUB_STEP_SUMMARY
+          echo "### SDK Repositories" >> $GITHUB_STEP_SUMMARY
+          echo "Language SDKs are maintained separately:" >> $GITHUB_STEP_SUMMARY
+          echo "- [Python SDK](https://github.com/toondb/toondb-python-sdk)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Node.js SDK](https://github.com/toondb/toondb-nodejs-sdk)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Go SDK](https://github.com/toondb/toondb-go)" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Platforms Built" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Linux x86_64" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ macOS ARM64 (Apple Silicon)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Windows x64" >> $GITHUB_STEP_SUMMARY
