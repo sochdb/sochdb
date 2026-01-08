@@ -1,0 +1,1390 @@
+// ToonDB gRPC Services
+// 
+// This protobuf definition provides a network-first interface for all ToonDB
+// operations. It's designed for "Thick Server / Thin Client" architecture:
+// - All business logic lives in the Rust server
+// - SDKs are thin RPC wrappers (~200 LOC each)
+// - Cross-language clients (Python, Go, JavaScript, etc.)
+//
+// Services:
+// - VectorIndexService: HNSW vector operations
+// - GraphService: Graph overlay operations
+// - PolicyService: Policy evaluation and enforcement
+// - ContextService: Context query and assembly
+// - CollectionService: Collection management
+// - NamespaceService: Namespace management
+// - SemanticCacheService: Semantic caching
+// - TraceService: Trace management
+// - CheckpointService: Checkpoint/restore operations
+// - McpService: MCP tool routing
+//
+// Copyright 2025 Sushanth (https://github.com/sushanthpy)
+// Licensed under the Apache License, Version 2.0
+
+syntax = "proto3";
+
+package toondb.v1;
+
+option java_package = "com.toondb.v1";
+option java_multiple_files = true;
+option go_package = "github.com/toondb/toondb/proto/v1;toondbv1";
+
+// =============================================================================
+// VECTOR INDEX SERVICE
+// =============================================================================
+
+/// VectorIndexService provides gRPC interface for HNSW vector index operations.
+/// 
+/// This service supports:
+/// - Batch insert operations with streaming
+/// - K-nearest neighbor search
+/// - Index statistics and health checks
+service VectorIndexService {
+  // Create a new vector index
+  rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
+  
+  // Drop an existing index
+  rpc DropIndex(DropIndexRequest) returns (DropIndexResponse);
+  
+  // Insert a batch of vectors
+  rpc InsertBatch(InsertBatchRequest) returns (InsertBatchResponse);
+  
+  // Insert vectors via streaming (for large batches)
+  rpc InsertStream(stream InsertStreamRequest) returns (InsertStreamResponse);
+  
+  // Search for k-nearest neighbors
+  rpc Search(SearchRequest) returns (SearchResponse);
+  
+  // Batch search multiple queries
+  rpc SearchBatch(SearchBatchRequest) returns (SearchBatchResponse);
+  
+  // Get index statistics
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  
+  // Health check for load balancers
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// =============================================================================
+// INDEX MANAGEMENT
+// =============================================================================
+
+message CreateIndexRequest {
+  // Index name (unique identifier)
+  string name = 1;
+  
+  // Vector dimension (e.g., 768 for BERT, 1536 for OpenAI)
+  uint32 dimension = 2;
+  
+  // HNSW configuration
+  HnswConfig config = 3;
+  
+  // Distance metric
+  DistanceMetric metric = 4;
+}
+
+message CreateIndexResponse {
+  // Whether the index was created successfully
+  bool success = 1;
+  
+  // Error message if failed
+  string error = 2;
+  
+  // Index metadata
+  IndexInfo info = 3;
+}
+
+message DropIndexRequest {
+  // Index name to drop
+  string name = 1;
+}
+
+message DropIndexResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// =============================================================================
+// INSERT OPERATIONS
+// =============================================================================
+
+message InsertBatchRequest {
+  // Index name
+  string index_name = 1;
+  
+  // Vector IDs (must match vectors length)
+  repeated uint64 ids = 2;
+  
+  // Flat vector data (row-major, length = len(ids) * dimension)
+  repeated float vectors = 3;
+}
+
+message InsertBatchResponse {
+  // Number of vectors successfully inserted
+  uint32 inserted_count = 1;
+  
+  // Error message if any
+  string error = 2;
+  
+  // Duration in microseconds
+  uint64 duration_us = 3;
+}
+
+message InsertStreamRequest {
+  // Index name (only required in first message)
+  string index_name = 1;
+  
+  // Single vector to insert
+  uint64 id = 2;
+  repeated float vector = 3;
+}
+
+message InsertStreamResponse {
+  // Total vectors inserted
+  uint32 total_inserted = 1;
+  
+  // Errors encountered (if any)
+  repeated string errors = 2;
+  
+  // Total duration in microseconds
+  uint64 duration_us = 3;
+}
+
+// =============================================================================
+// SEARCH OPERATIONS
+// =============================================================================
+
+message SearchRequest {
+  // Index name
+  string index_name = 1;
+  
+  // Query vector
+  repeated float query = 2;
+  
+  // Number of neighbors to return
+  uint32 k = 3;
+  
+  // Expansion factor during search (optional, default: ef_search from config)
+  uint32 ef = 4;
+}
+
+message SearchResponse {
+  // Search results ordered by distance (ascending)
+  repeated SearchResult results = 1;
+  
+  // Duration in microseconds
+  uint64 duration_us = 2;
+  
+  // Error message if any
+  string error = 3;
+}
+
+message SearchResult {
+  // Vector ID
+  uint64 id = 1;
+  
+  // Distance to query vector
+  float distance = 2;
+}
+
+message SearchBatchRequest {
+  // Index name
+  string index_name = 1;
+  
+  // Multiple query vectors (flat, row-major)
+  repeated float queries = 2;
+  
+  // Number of queries
+  uint32 num_queries = 3;
+  
+  // K neighbors per query
+  uint32 k = 4;
+  
+  // Expansion factor
+  uint32 ef = 5;
+}
+
+message SearchBatchResponse {
+  // Results for each query
+  repeated QueryResults results = 1;
+  
+  // Total duration in microseconds
+  uint64 duration_us = 2;
+}
+
+message QueryResults {
+  repeated SearchResult results = 1;
+}
+
+// =============================================================================
+// STATS AND HEALTH
+// =============================================================================
+
+message GetStatsRequest {
+  // Index name
+  string index_name = 1;
+}
+
+message GetStatsResponse {
+  IndexStats stats = 1;
+  string error = 2;
+}
+
+message IndexStats {
+  // Number of vectors in the index
+  uint64 num_vectors = 1;
+  
+  // Vector dimension
+  uint32 dimension = 2;
+  
+  // Maximum layer level
+  uint32 max_layer = 3;
+  
+  // Memory usage in bytes
+  uint64 memory_bytes = 4;
+  
+  // Average connections per node
+  float avg_connections = 5;
+}
+
+message HealthCheckRequest {
+  // Optional: specific index to check
+  string index_name = 1;
+}
+
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  
+  Status status = 1;
+  
+  // Server version
+  string version = 2;
+  
+  // Available indexes
+  repeated string indexes = 3;
+}
+
+// =============================================================================
+// CONFIGURATION TYPES
+// =============================================================================
+
+message HnswConfig {
+  // Maximum connections per node (M parameter, default: 16)
+  uint32 max_connections = 1;
+  
+  // Maximum connections for layer 0 (M0, default: 32)
+  uint32 max_connections_layer0 = 2;
+  
+  // Expansion factor during construction (default: 200)
+  uint32 ef_construction = 3;
+  
+  // Expansion factor during search (default: 50)
+  uint32 ef_search = 4;
+}
+
+enum DistanceMetric {
+  DISTANCE_METRIC_UNSPECIFIED = 0;
+  DISTANCE_METRIC_L2 = 1;
+  DISTANCE_METRIC_COSINE = 2;
+  DISTANCE_METRIC_DOT_PRODUCT = 3;
+}
+
+message IndexInfo {
+  string name = 1;
+  uint32 dimension = 2;
+  DistanceMetric metric = 3;
+  HnswConfig config = 4;
+  uint64 created_at = 5;  // Unix timestamp
+}
+
+// =============================================================================
+// GRAPH SERVICE
+// =============================================================================
+
+/// GraphService provides graph overlay operations for agent memory.
+service GraphService {
+  // Add a node to the graph
+  rpc AddNode(AddNodeRequest) returns (AddNodeResponse);
+  
+  // Get a node by ID
+  rpc GetNode(GetNodeRequest) returns (GetNodeResponse);
+  
+  // Delete a node
+  rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
+  
+  // Add an edge between nodes
+  rpc AddEdge(AddEdgeRequest) returns (AddEdgeResponse);
+  
+  // Get edges from a node
+  rpc GetEdges(GetEdgesRequest) returns (GetEdgesResponse);
+  
+  // Delete an edge
+  rpc DeleteEdge(DeleteEdgeRequest) returns (DeleteEdgeResponse);
+  
+  // Traverse the graph (BFS/DFS)
+  rpc Traverse(TraverseRequest) returns (TraverseResponse);
+  
+  // Find shortest path between nodes
+  rpc ShortestPath(ShortestPathRequest) returns (ShortestPathResponse);
+  
+  // Get neighbors of a node
+  rpc GetNeighbors(GetNeighborsRequest) returns (GetNeighborsResponse);
+  
+  // Add a temporal edge with validity interval
+  rpc AddTemporalEdge(AddTemporalEdgeRequest) returns (AddTemporalEdgeResponse);
+  
+  // Query temporal graph at specific point in time or range
+  rpc QueryTemporalGraph(QueryTemporalGraphRequest) returns (QueryTemporalGraphResponse);
+}
+
+message GraphNode {
+  string id = 1;
+  string node_type = 2;
+  map<string, string> properties = 3;
+}
+
+message GraphEdge {
+  string from_id = 1;
+  string edge_type = 2;
+  string to_id = 3;
+  map<string, string> properties = 4;
+}
+
+message AddNodeRequest {
+  string namespace = 1;
+  GraphNode node = 2;
+}
+
+message AddNodeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message GetNodeRequest {
+  string namespace = 1;
+  string node_id = 2;
+}
+
+message GetNodeResponse {
+  GraphNode node = 1;
+  string error = 2;
+}
+
+message DeleteNodeRequest {
+  string namespace = 1;
+  string node_id = 2;
+}
+
+message DeleteNodeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message AddEdgeRequest {
+  string namespace = 1;
+  GraphEdge edge = 2;
+}
+
+message AddEdgeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message GetEdgesRequest {
+  string namespace = 1;
+  string node_id = 2;
+  string edge_type = 3;  // Optional filter
+  EdgeDirection direction = 4;
+}
+
+enum EdgeDirection {
+  EDGE_DIRECTION_OUTGOING = 0;
+  EDGE_DIRECTION_INCOMING = 1;
+  EDGE_DIRECTION_BOTH = 2;
+}
+
+message GetEdgesResponse {
+  repeated GraphEdge edges = 1;
+  string error = 2;
+}
+
+message DeleteEdgeRequest {
+  string namespace = 1;
+  string from_id = 2;
+  string edge_type = 3;
+  string to_id = 4;
+}
+
+message DeleteEdgeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message TraverseRequest {
+  string namespace = 1;
+  string start_node_id = 2;
+  TraversalOrder order = 3;
+  uint32 max_depth = 4;
+  repeated string edge_types = 5;  // Optional filter
+}
+
+enum TraversalOrder {
+  TRAVERSAL_ORDER_BFS = 0;
+  TRAVERSAL_ORDER_DFS = 1;
+}
+
+message TraverseResponse {
+  repeated GraphNode nodes = 1;
+  repeated GraphEdge edges = 2;
+  string error = 3;
+}
+
+message ShortestPathRequest {
+  string namespace = 1;
+  string from_id = 2;
+  string to_id = 3;
+  uint32 max_depth = 4;
+  repeated string edge_types = 5;  // Optional filter
+}
+
+message ShortestPathResponse {
+  repeated string path = 1;
+  repeated GraphEdge edges = 2;
+  string error = 3;
+}
+
+message GetNeighborsRequest {
+  string namespace = 1;
+  string node_id = 2;
+  EdgeDirection direction = 3;
+  repeated string edge_types = 4;  // Optional filter
+}
+
+message GetNeighborsResponse {
+  repeated GraphNode nodes = 1;
+  repeated GraphEdge edges = 2;
+  string error = 3;
+}
+
+message AddTemporalEdgeRequest {
+  string namespace = 1;
+  string from_id = 2;
+  string edge_type = 3;
+  string to_id = 4;
+  map<string, string> properties = 5;
+  uint64 valid_from = 6;  // Unix timestamp in milliseconds
+  uint64 valid_until = 7; // Unix timestamp in milliseconds (0 = no expiry)
+}
+
+message AddTemporalEdgeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message QueryTemporalGraphRequest {
+  string namespace = 1;
+  string node_id = 2;
+  TemporalQueryMode mode = 3;
+  uint64 timestamp = 4;      // For POINT_IN_TIME queries
+  uint64 start_time = 5;     // For RANGE queries
+  uint64 end_time = 6;       // For RANGE queries
+  repeated string edge_types = 7; // Optional filter
+  EdgeDirection direction = 8;
+}
+
+enum TemporalQueryMode {
+  TEMPORAL_QUERY_MODE_POINT_IN_TIME = 0;  // Query at specific timestamp
+  TEMPORAL_QUERY_MODE_RANGE = 1;           // Query over time range
+  TEMPORAL_QUERY_MODE_CURRENT = 2;         // Query current valid edges
+}
+
+message QueryTemporalGraphResponse {
+  repeated TemporalEdge edges = 1;
+  string error = 2;
+}
+
+message TemporalEdge {
+  string from_id = 1;
+  string edge_type = 2;
+  string to_id = 3;
+  map<string, string> properties = 4;
+  uint64 valid_from = 5;
+  uint64 valid_until = 6;
+}
+
+// =============================================================================
+// POLICY SERVICE
+// =============================================================================
+
+/// PolicyService provides policy evaluation and enforcement.
+service PolicyService {
+  // Register a policy rule
+  rpc RegisterPolicy(RegisterPolicyRequest) returns (RegisterPolicyResponse);
+  
+  // Evaluate a policy for an operation
+  rpc Evaluate(EvaluatePolicyRequest) returns (EvaluatePolicyResponse);
+  
+  // List registered policies
+  rpc ListPolicies(ListPoliciesRequest) returns (ListPoliciesResponse);
+  
+  // Delete a policy
+  rpc DeletePolicy(DeletePolicyRequest) returns (DeletePolicyResponse);
+}
+
+message PolicyRule {
+  string id = 1;
+  string name = 2;
+  string pattern = 3;  // Key pattern (glob)
+  PolicyTrigger trigger = 4;
+  PolicyActionType default_action = 5;
+  string expression = 6;  // Policy expression
+  map<string, string> metadata = 7;
+}
+
+enum PolicyTrigger {
+  POLICY_TRIGGER_BEFORE_READ = 0;
+  POLICY_TRIGGER_AFTER_READ = 1;
+  POLICY_TRIGGER_BEFORE_WRITE = 2;
+  POLICY_TRIGGER_AFTER_WRITE = 3;
+  POLICY_TRIGGER_BEFORE_DELETE = 4;
+  POLICY_TRIGGER_AFTER_DELETE = 5;
+}
+
+enum PolicyActionType {
+  POLICY_ACTION_ALLOW = 0;
+  POLICY_ACTION_DENY = 1;
+  POLICY_ACTION_LOG = 2;
+}
+
+message RegisterPolicyRequest {
+  PolicyRule policy = 1;
+}
+
+message RegisterPolicyResponse {
+  bool success = 1;
+  string policy_id = 2;
+  string error = 3;
+}
+
+message EvaluatePolicyRequest {
+  string operation = 1;  // read, write, delete
+  bytes key = 2;
+  bytes value = 3;
+  string agent_id = 4;
+  string session_id = 5;
+  map<string, string> context = 6;
+}
+
+message EvaluatePolicyResponse {
+  PolicyActionType action = 1;
+  bytes modified_value = 2;  // If action is MODIFY
+  string reason = 3;
+  repeated string matched_policies = 4;
+}
+
+message ListPoliciesRequest {
+  string pattern = 1;  // Optional filter
+}
+
+message ListPoliciesResponse {
+  repeated PolicyRule policies = 1;
+}
+
+message DeletePolicyRequest {
+  string policy_id = 1;
+}
+
+message DeletePolicyResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// =============================================================================
+// CONTEXT SERVICE
+// =============================================================================
+
+/// ContextService provides LLM context assembly with token budgets.
+service ContextService {
+  // Execute a context query
+  rpc Query(ContextQueryRequest) returns (ContextQueryResponse);
+  
+  // Estimate tokens for content
+  rpc EstimateTokens(EstimateTokensRequest) returns (EstimateTokensResponse);
+  
+  // Format context output
+  rpc FormatContext(FormatContextRequest) returns (FormatContextResponse);
+}
+
+message ContextSection {
+  string name = 1;
+  uint32 priority = 2;  // Lower = higher priority
+  ContextSectionType section_type = 3;
+  string query = 4;  // Section-specific query
+  map<string, string> options = 5;
+}
+
+enum ContextSectionType {
+  CONTEXT_SECTION_GET = 0;
+  CONTEXT_SECTION_LAST = 1;
+  CONTEXT_SECTION_SEARCH = 2;
+  CONTEXT_SECTION_SELECT = 3;
+}
+
+message ContextQueryRequest {
+  string session_id = 1;
+  uint32 token_limit = 2;
+  repeated ContextSection sections = 3;
+  OutputFormat format = 4;
+  bool include_schema = 5;
+}
+
+enum OutputFormat {
+  OUTPUT_FORMAT_TOON = 0;
+  OUTPUT_FORMAT_JSON = 1;
+  OUTPUT_FORMAT_MARKDOWN = 2;
+  OUTPUT_FORMAT_TEXT = 3;
+}
+
+message ContextQueryResponse {
+  string context = 1;
+  uint32 total_tokens = 2;
+  repeated SectionResult section_results = 3;
+  string error = 4;
+}
+
+message SectionResult {
+  string name = 1;
+  uint32 tokens_used = 2;
+  bool truncated = 3;
+  string content = 4;
+}
+
+message EstimateTokensRequest {
+  string content = 1;
+  string model = 2;  // Optional: model-specific tokenizer
+}
+
+message EstimateTokensResponse {
+  uint32 token_count = 1;
+}
+
+message FormatContextRequest {
+  string content = 1;
+  OutputFormat format = 2;
+}
+
+message FormatContextResponse {
+  string formatted = 1;
+}
+
+// =============================================================================
+// COLLECTION SERVICE
+// =============================================================================
+
+/// CollectionService manages collections of vectors/documents.
+service CollectionService {
+  // Create a collection
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse);
+  
+  // Get collection info
+  rpc GetCollection(GetCollectionRequest) returns (GetCollectionResponse);
+  
+  // List collections
+  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
+  
+  // Delete a collection
+  rpc DeleteCollection(DeleteCollectionRequest) returns (DeleteCollectionResponse);
+  
+  // Add documents to collection
+  rpc AddDocuments(AddDocumentsRequest) returns (AddDocumentsResponse);
+  
+  // Search collection
+  rpc SearchCollection(SearchCollectionRequest) returns (SearchCollectionResponse);
+  
+  // Get document by ID
+  rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
+  
+  // Delete document
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+}
+
+message Collection {
+  string name = 1;
+  string namespace = 2;
+  uint32 dimension = 3;
+  DistanceMetric metric = 4;
+  uint64 document_count = 5;
+  uint64 created_at = 6;
+  map<string, string> metadata = 7;
+}
+
+message Document {
+  string id = 1;
+  repeated float embedding = 2;
+  string content = 3;
+  map<string, string> metadata = 4;
+}
+
+message CreateCollectionRequest {
+  string name = 1;
+  string namespace = 2;
+  uint32 dimension = 3;
+  DistanceMetric metric = 4;
+  map<string, string> metadata = 5;
+}
+
+message CreateCollectionResponse {
+  bool success = 1;
+  Collection collection = 2;
+  string error = 3;
+}
+
+message GetCollectionRequest {
+  string name = 1;
+  string namespace = 2;
+}
+
+message GetCollectionResponse {
+  Collection collection = 1;
+  string error = 2;
+}
+
+message ListCollectionsRequest {
+  string namespace = 1;  // Optional filter
+}
+
+message ListCollectionsResponse {
+  repeated Collection collections = 1;
+}
+
+message DeleteCollectionRequest {
+  string name = 1;
+  string namespace = 2;
+}
+
+message DeleteCollectionResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message AddDocumentsRequest {
+  string collection_name = 1;
+  string namespace = 2;
+  repeated Document documents = 3;
+}
+
+message AddDocumentsResponse {
+  uint32 added_count = 1;
+  repeated string ids = 2;
+  string error = 3;
+}
+
+message SearchCollectionRequest {
+  string collection_name = 1;
+  string namespace = 2;
+  repeated float query = 3;
+  uint32 k = 4;
+  map<string, string> filter = 5;  // Metadata filter
+}
+
+message SearchCollectionResponse {
+  repeated DocumentResult results = 1;
+  uint64 duration_us = 2;
+  string error = 3;
+}
+
+message DocumentResult {
+  Document document = 1;
+  float score = 2;
+}
+
+message GetDocumentRequest {
+  string collection_name = 1;
+  string namespace = 2;
+  string document_id = 3;
+}
+
+message GetDocumentResponse {
+  Document document = 1;
+  string error = 2;
+}
+
+message DeleteDocumentRequest {
+  string collection_name = 1;
+  string namespace = 2;
+  string document_id = 3;
+}
+
+message DeleteDocumentResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// =============================================================================
+// NAMESPACE SERVICE
+// =============================================================================
+
+/// NamespaceService manages namespaces for multi-tenant isolation.
+service NamespaceService {
+  // Create a namespace
+  rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse);
+  
+  // Get namespace info
+  rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
+  
+  // List namespaces
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+  
+  // Delete a namespace
+  rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse);
+  
+  // Set namespace quota
+  rpc SetQuota(SetQuotaRequest) returns (SetQuotaResponse);
+}
+
+message Namespace {
+  string name = 1;
+  string description = 2;
+  uint64 created_at = 3;
+  NamespaceQuota quota = 4;
+  NamespaceStats stats = 5;
+  map<string, string> metadata = 6;
+}
+
+message NamespaceQuota {
+  uint64 max_storage_bytes = 1;
+  uint64 max_vectors = 2;
+  uint64 max_collections = 3;
+}
+
+message NamespaceStats {
+  uint64 storage_bytes = 1;
+  uint64 vector_count = 2;
+  uint64 collection_count = 3;
+}
+
+message CreateNamespaceRequest {
+  string name = 1;
+  string description = 2;
+  NamespaceQuota quota = 3;
+  map<string, string> metadata = 4;
+}
+
+message CreateNamespaceResponse {
+  bool success = 1;
+  Namespace namespace = 2;
+  string error = 3;
+}
+
+message GetNamespaceRequest {
+  string name = 1;
+}
+
+message GetNamespaceResponse {
+  Namespace namespace = 1;
+  string error = 2;
+}
+
+message ListNamespacesRequest {
+  // No parameters - lists all namespaces
+}
+
+message ListNamespacesResponse {
+  repeated Namespace namespaces = 1;
+}
+
+message DeleteNamespaceRequest {
+  string name = 1;
+}
+
+message DeleteNamespaceResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message SetQuotaRequest {
+  string namespace = 1;
+  NamespaceQuota quota = 2;
+}
+
+message SetQuotaResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// =============================================================================
+// SEMANTIC CACHE SERVICE
+// =============================================================================
+
+/// SemanticCacheService provides semantic caching for LLM queries.
+service SemanticCacheService {
+  // Get from cache by semantic similarity
+  rpc Get(SemanticCacheGetRequest) returns (SemanticCacheGetResponse);
+  
+  // Put a value in cache
+  rpc Put(SemanticCachePutRequest) returns (SemanticCachePutResponse);
+  
+  // Invalidate cache entries
+  rpc Invalidate(SemanticCacheInvalidateRequest) returns (SemanticCacheInvalidateResponse);
+  
+  // Get cache statistics
+  rpc GetStats(SemanticCacheStatsRequest) returns (SemanticCacheStatsResponse);
+}
+
+message SemanticCacheGetRequest {
+  string cache_name = 1;
+  string query = 2;
+  repeated float query_embedding = 3;  // Pre-computed embedding
+  float similarity_threshold = 4;
+}
+
+message SemanticCacheGetResponse {
+  bool hit = 1;
+  string cached_value = 2;
+  float similarity_score = 3;
+  string matched_key = 4;
+}
+
+message SemanticCachePutRequest {
+  string cache_name = 1;
+  string key = 2;
+  string value = 3;
+  repeated float key_embedding = 4;  // Pre-computed embedding
+  uint64 ttl_seconds = 5;
+}
+
+message SemanticCachePutResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message SemanticCacheInvalidateRequest {
+  string cache_name = 1;
+  string pattern = 2;  // Optional key pattern
+}
+
+message SemanticCacheInvalidateResponse {
+  uint32 invalidated_count = 1;
+}
+
+message SemanticCacheStatsRequest {
+  string cache_name = 1;
+}
+
+message SemanticCacheStatsResponse {
+  uint64 hits = 1;
+  uint64 misses = 2;
+  uint64 entry_count = 3;
+  float hit_rate = 4;
+}
+
+// =============================================================================
+// TRACE SERVICE
+// =============================================================================
+
+/// TraceService provides trace/span management for observability.
+service TraceService {
+  // Start a new trace
+  rpc StartTrace(StartTraceRequest) returns (StartTraceResponse);
+  
+  // Start a span within a trace
+  rpc StartSpan(StartSpanRequest) returns (StartSpanResponse);
+  
+  // End a span
+  rpc EndSpan(EndSpanRequest) returns (EndSpanResponse);
+  
+  // Add event to span
+  rpc AddEvent(AddEventRequest) returns (AddEventResponse);
+  
+  // Get trace by ID
+  rpc GetTrace(GetTraceRequest) returns (GetTraceResponse);
+  
+  // List recent traces
+  rpc ListTraces(ListTracesRequest) returns (ListTracesResponse);
+}
+
+message Trace {
+  string trace_id = 1;
+  string name = 2;
+  uint64 start_time_us = 3;
+  uint64 end_time_us = 4;
+  repeated Span spans = 5;
+  map<string, string> attributes = 6;
+}
+
+message Span {
+  string span_id = 1;
+  string trace_id = 2;
+  string parent_span_id = 3;
+  string name = 4;
+  uint64 start_time_us = 5;
+  uint64 end_time_us = 6;
+  SpanStatus status = 7;
+  repeated SpanEvent events = 8;
+  map<string, string> attributes = 9;
+}
+
+enum SpanStatus {
+  SPAN_STATUS_UNSET = 0;
+  SPAN_STATUS_OK = 1;
+  SPAN_STATUS_ERROR = 2;
+}
+
+message SpanEvent {
+  string name = 1;
+  uint64 timestamp_us = 2;
+  map<string, string> attributes = 3;
+}
+
+message StartTraceRequest {
+  string name = 1;
+  map<string, string> attributes = 2;
+}
+
+message StartTraceResponse {
+  string trace_id = 1;
+  string root_span_id = 2;
+}
+
+message StartSpanRequest {
+  string trace_id = 1;
+  string parent_span_id = 2;
+  string name = 3;
+  map<string, string> attributes = 4;
+}
+
+message StartSpanResponse {
+  string span_id = 1;
+}
+
+message EndSpanRequest {
+  string trace_id = 1;
+  string span_id = 2;
+  SpanStatus status = 3;
+  map<string, string> attributes = 4;
+}
+
+message EndSpanResponse {
+  bool success = 1;
+  uint64 duration_us = 2;
+}
+
+message AddEventRequest {
+  string trace_id = 1;
+  string span_id = 2;
+  string event_name = 3;
+  map<string, string> attributes = 4;
+}
+
+message AddEventResponse {
+  bool success = 1;
+}
+
+message GetTraceRequest {
+  string trace_id = 1;
+}
+
+message GetTraceResponse {
+  Trace trace = 1;
+  string error = 2;
+}
+
+message ListTracesRequest {
+  uint32 limit = 1;
+  uint64 since_timestamp = 2;
+  string name_filter = 3;
+}
+
+message ListTracesResponse {
+  repeated Trace traces = 1;
+}
+
+// =============================================================================
+// CHECKPOINT SERVICE
+// =============================================================================
+
+/// CheckpointService provides state checkpoint and restore.
+service CheckpointService {
+  // Create a checkpoint
+  rpc CreateCheckpoint(CreateCheckpointRequest) returns (CreateCheckpointResponse);
+  
+  // Restore from checkpoint
+  rpc RestoreCheckpoint(RestoreCheckpointRequest) returns (RestoreCheckpointResponse);
+  
+  // List checkpoints
+  rpc ListCheckpoints(ListCheckpointsRequest) returns (ListCheckpointsResponse);
+  
+  // Delete checkpoint
+  rpc DeleteCheckpoint(DeleteCheckpointRequest) returns (DeleteCheckpointResponse);
+  
+  // Export checkpoint data
+  rpc ExportCheckpoint(ExportCheckpointRequest) returns (ExportCheckpointResponse);
+  
+  // Import checkpoint data
+  rpc ImportCheckpoint(ImportCheckpointRequest) returns (ImportCheckpointResponse);
+}
+
+message Checkpoint {
+  string id = 1;
+  string name = 2;
+  string namespace = 3;
+  uint64 created_at = 4;
+  uint64 size_bytes = 5;
+  map<string, string> metadata = 6;
+}
+
+message CreateCheckpointRequest {
+  string name = 1;
+  string namespace = 2;
+  repeated string include_patterns = 3;  // Key patterns to include
+  map<string, string> metadata = 4;
+}
+
+message CreateCheckpointResponse {
+  bool success = 1;
+  Checkpoint checkpoint = 2;
+  string error = 3;
+}
+
+message RestoreCheckpointRequest {
+  string checkpoint_id = 1;
+  string target_namespace = 2;  // Optional: restore to different namespace
+  bool overwrite = 3;
+}
+
+message RestoreCheckpointResponse {
+  bool success = 1;
+  uint64 restored_keys = 2;
+  string error = 3;
+}
+
+message ListCheckpointsRequest {
+  string namespace = 1;  // Optional filter
+}
+
+message ListCheckpointsResponse {
+  repeated Checkpoint checkpoints = 1;
+}
+
+message DeleteCheckpointRequest {
+  string checkpoint_id = 1;
+}
+
+message DeleteCheckpointResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message ExportCheckpointRequest {
+  string checkpoint_id = 1;
+  ExportFormat format = 2;
+}
+
+enum ExportFormat {
+  EXPORT_FORMAT_BINARY = 0;
+  EXPORT_FORMAT_JSON = 1;
+}
+
+message ExportCheckpointResponse {
+  bytes data = 1;
+  string error = 2;
+}
+
+message ImportCheckpointRequest {
+  bytes data = 1;
+  ExportFormat format = 2;
+  string name = 3;
+  string namespace = 4;
+}
+
+message ImportCheckpointResponse {
+  bool success = 1;
+  Checkpoint checkpoint = 2;
+  string error = 3;
+}
+
+// =============================================================================
+// MCP SERVICE
+// =============================================================================
+
+/// McpService provides Model Context Protocol tool routing.
+service McpService {
+  // Register a tool
+  rpc RegisterTool(RegisterToolRequest) returns (RegisterToolResponse);
+  
+  // Execute a tool
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+  
+  // List available tools
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+  
+  // Unregister a tool
+  rpc UnregisterTool(UnregisterToolRequest) returns (UnregisterToolResponse);
+  
+  // Get tool schema
+  rpc GetToolSchema(GetToolSchemaRequest) returns (GetToolSchemaResponse);
+}
+
+message McpTool {
+  string name = 1;
+  string description = 2;
+  string input_schema = 3;  // JSON Schema
+  string output_schema = 4;  // JSON Schema
+  repeated string tags = 5;
+  map<string, string> metadata = 6;
+}
+
+message RegisterToolRequest {
+  McpTool tool = 1;
+  string handler_endpoint = 2;  // Callback URL or function name
+}
+
+message RegisterToolResponse {
+  bool success = 1;
+  string tool_id = 2;
+  string error = 3;
+}
+
+message ExecuteToolRequest {
+  string tool_name = 1;
+  string input = 2;  // JSON input
+  string context = 3;  // Optional context
+  uint32 timeout_ms = 4;
+}
+
+message ExecuteToolResponse {
+  bool success = 1;
+  string output = 2;  // JSON output
+  string error = 3;
+  uint64 duration_us = 4;
+}
+
+message ListToolsRequest {
+  repeated string tags = 1;  // Optional tag filter
+}
+
+message ListToolsResponse {
+  repeated McpTool tools = 1;
+}
+
+message UnregisterToolRequest {
+  string tool_name = 1;
+}
+
+message UnregisterToolResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message GetToolSchemaRequest {
+  string tool_name = 1;
+}
+
+message GetToolSchemaResponse {
+  McpTool tool = 1;
+  string error = 2;
+}
+
+// =============================================================================
+// KV SERVICE (Basic operations)
+// =============================================================================
+
+/// KvService provides basic key-value operations.
+service KvService {
+  // Get a value
+  rpc Get(KvGetRequest) returns (KvGetResponse);
+  
+  // Put a value
+  rpc Put(KvPutRequest) returns (KvPutResponse);
+  
+  // Delete a key
+  rpc Delete(KvDeleteRequest) returns (KvDeleteResponse);
+  
+  // Scan keys by prefix
+  rpc Scan(KvScanRequest) returns (stream KvScanResponse);
+  
+  // Batch get
+  rpc BatchGet(KvBatchGetRequest) returns (KvBatchGetResponse);
+  
+  // Batch put
+  rpc BatchPut(KvBatchPutRequest) returns (KvBatchPutResponse);
+}
+
+message KvGetRequest {
+  string namespace = 1;
+  bytes key = 2;
+}
+
+message KvGetResponse {
+  bytes value = 1;
+  bool found = 2;
+  string error = 3;
+}
+
+message KvPutRequest {
+  string namespace = 1;
+  bytes key = 2;
+  bytes value = 3;
+  uint64 ttl_seconds = 4;  // Optional TTL
+}
+
+message KvPutResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message KvDeleteRequest {
+  string namespace = 1;
+  bytes key = 2;
+}
+
+message KvDeleteResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message KvScanRequest {
+  string namespace = 1;
+  bytes prefix = 2;
+  uint32 limit = 3;
+}
+
+message KvScanResponse {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message KvBatchGetRequest {
+  string namespace = 1;
+  repeated bytes keys = 2;
+}
+
+message KvBatchGetResponse {
+  repeated KvEntry entries = 1;
+}
+
+message KvEntry {
+  bytes key = 1;
+  bytes value = 2;
+  bool found = 3;
+}
+
+message KvBatchPutRequest {
+  string namespace = 1;
+  repeated KvPutEntry entries = 2;
+}
+
+message KvPutEntry {
+  bytes key = 1;
+  bytes value = 2;
+  uint64 ttl_seconds = 3;
+}
+
+message KvBatchPutResponse {
+  uint32 success_count = 1;
+  string error = 2;
+}
