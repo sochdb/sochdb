@@ -475,7 +475,8 @@ impl SimdTimestampDecoder {
         // Process 4 at a time using AVX2
         while i + 4 <= n {
             // Load 4 deltas
-            let d = _mm256_loadu_si256(deltas[i..].as_ptr() as *const __m256i);
+            // SAFETY: The caller ensures this function is only called on x86_64 with AVX2 support
+            let _d = unsafe { _mm256_loadu_si256(deltas[i..].as_ptr() as *const __m256i) };
             
             // For prefix sum, we need to do it sequentially for correctness
             // AVX2 doesn't have efficient horizontal prefix sum for u64

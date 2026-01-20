@@ -28,7 +28,7 @@ async = ["tokio"]
 embedded-sync = []
 
 [dependencies]
-sochdb-core = { version = "0.4.0", path = "../sochdb-core" }
+sochdb-core = { version = "0.4.1", path = "../sochdb-core" }
 # Tokio is optional - only included when "async" feature is enabled
 tokio = { version = "1.35", features = ["sync", "time", "macros", "rt"], optional = true }
 serde = { workspace = true }
@@ -67,6 +67,14 @@ thread_local = "1.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.27", features = ["uio"] }
 io-uring = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
