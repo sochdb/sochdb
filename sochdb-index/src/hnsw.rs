@@ -6013,7 +6013,7 @@ impl HnswIndex {
         
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            simd_distance::cosine_distance_avx2_fused(a, b)
+            simd_distance::cosine_distance_fast(a, b)
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -6033,7 +6033,7 @@ impl HnswIndex {
         
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            simd_distance::cosine_distance_avx2_fused(a, b)
+            simd_distance::cosine_distance_fast(a, b)
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -6173,7 +6173,7 @@ impl HnswIndex {
         
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            simd_distance::l2_distance_avx2_fused(a, b)
+            simd_distance::l2_distance_fast(a, b)
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -6193,7 +6193,7 @@ impl HnswIndex {
         
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            simd_distance::l2_distance_avx2_fused(a, b)
+            simd_distance::l2_distance_fast(a, b)
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -6333,7 +6333,7 @@ impl HnswIndex {
         
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            simd_distance::dot_product_avx2_fused(a, b)
+            simd_distance::dot_product_avx2(a, b)
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
@@ -6353,7 +6353,7 @@ impl HnswIndex {
         
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            simd_distance::dot_product_avx2_fused(a, b)
+            simd_distance::dot_product_avx2(a, b)
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
