@@ -1,112 +1,125 @@
 # 🎬 SochDB
 
-> **📢 Note:** This project has been renamed from **ToonDB** to **SochDB**. All references, packages, and APIs have been updated accordingly.
+## What is SochDB?
 
-### The LLM‑Native Database
+SochDB is a **single database** that replaces your vector DB + relational DB + prompt packer stack. Store structured data, embeddings, and conversation history together—then ask SochDB to assemble token-optimized context for your LLM.
 
-**Token‑optimized context • Columnar storage • Built‑in vector search • Embedded-first**
+## Comparison
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
+### Database + retrieval layer
 
-* **SQL support** with full SQL-92 syntax for relational queries
-* **Context Query Builder**: assemble *system + user + history + retrieval* under a token budget
-* **Native HNSW vector search** (F32/F16/BF16) with optional quantization
-* **ACID transactions** (MVCC + WAL + Serializable Snapshot Isolation)
-* **Two access modes**: **Embedded (FFI)** and **IPC (Unix sockets)** via Python SDK
+| Feature | SochDB | SQLite + vec | Postgres + pgvector | Chroma | LanceDB |
+|---------|--------|--------|----------------------|--------|---------|
+| Embedded | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Vector search | ✅ HNSW | ⚠️ (via extension) | ✅ (HNSW / IVFFlat) | ✅ | ✅ |
+| Full SQL (user-facing) | ✅ SQL-92 | ✅ | ✅ | ❌ | ✅ |
+| Hybrid search (vector + keyword) | ✅ | ⚠️ (DIY) | ⚠️ (DIY) | ⚠️ (limited) | ✅ |
+| Context builder | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Token budgeting | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Graph overlay | ✅ | ❌ | ❌ | ❌ | ❌ |
+| ACID transactions | ✅ | ✅ | ✅ | ⚠️ (limited) | ❌ |
+| Columnar storage | ✅ | ❌ | ❌ | ❌ | ✅ |
+
+
+### Memory / agent-memory layer
+
+| Feature | SochDB | Mem0 | Letta | Graphiti |
+|--------|--------|------|-------|----------|
+| Primary focus | DB + retrieval + context | Memory layer | Agent framework + memory | Temporal knowledge-graph memory |
+| Long-term memory primitives | ✅ | ✅ | ✅ | ✅ |
+| Token-aware context budgeting | ✅ | ❌ | ❌ | ❌ |
+| Graph-based memory | ✅ | ❌ | ❌ | ✅ |
+| Built-in vector store | ✅ | ❌ (BYO) | ❌ (BYO) | ❌ (BYO) |
+| Built-in agent runtime | ❌ | ❌ | ✅ | ❌ |
+| Drop-in “memory add-on” to existing apps | ✅ | ✅ | ⚠️ | ✅ |
+
 
 **Quick links:** [📚 Documentation](https://sochdb.dev) • [Quick Start](#-quick-start) • [Architecture](#-architecture) • [TOON Format](#-toon-format) • [Benchmarks](#-benchmarks) • [RFD](docs/rfds/RFD-001-ai-native-database.md)
 
 ---
 
-## 🎉 What's New in v0.4.0
+## Why SochDB?
 
-### Project Renamed: ToonDB → SochDB
+### ❌ The Typical AI Agent Stack
 
-SochDB v0.4.0 marks a major milestone with the project rename from ToonDB to SochDB. All packages, APIs, and types have been updated to reflect this change.
-
-### Sync-First Architecture: Tokio is Truly Optional
-
-SochDB v0.4.0 continues with the **sync-first core** design, following SQLite's proven architecture pattern. The async runtime (tokio) is now **truly optional** and only required at the edges (gRPC server, async client APIs).
-
-**Benefits:**
-- **~500KB smaller binaries** for embedded use cases
-- **~40 fewer transitive dependencies** in default builds
-- **Better compatibility** with sync codebases and FFI boundaries
-- **Simpler mental model**: storage is synchronous, async is opt-in
-
-```bash
-# Default build (no tokio)
-cargo build --release -p sochdb-storage
-# Binary size: 732 KB
-
-# With async features
-cargo build --release -p sochdb-storage --features async
-# Binary size: 1.2 MB
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              YOUR APPLICATION                                    │
+└───────┬─────────────────┬─────────────────┬─────────────────┬───────────────────┘
+        │                 │                 │                 │
+        ▼                 ▼                 ▼                 ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────────────────┐
+│   Postgres    │ │   Pinecone    │ │    Redis      │ │    Custom Code            │
+│   (metadata)  │ │   (vectors)   │ │  (sessions)   │ │    (context assembly)     │
+│               │ │               │ │               │ │                           │
+│ • User data   │ │ • Embeddings  │ │ • Chat state  │ │ • Token counting          │
+│ • Settings    │ │ • Similarity  │ │ • Cache       │ │ • Truncation logic        │
+│ • History     │ │   search      │ │ • Temp data   │ │ • Prompt packing          │
+│               │ │               │ │               │ │ • Multi-source fusion     │
+└───────────────┘ └───────────────┘ └───────────────┘ └───────────────────────────┘
+        │                 │                 │                 │
+        └─────────────────┴─────────────────┴─────────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │  😰 You manage all of this:   │
+                    │  • 4 different query languages │
+                    │  • 4 sets of credentials       │
+                    │  • 4 failure modes             │
+                    │  • No cross-system transactions│
+                    │  • Weeks of glue code          │
+                    └───────────────────────────────┘
 ```
 
-**Architecture:**
+### ✅ With SochDB
+
 ```
-┌─────────────────────────────────────┐
-│      Async Edges (Optional)         │
-│  gRPC Server • Async Client APIs    │  ← tokio required
-├─────────────────────────────────────┤
-│         Sync-First Core             │
-│  Storage • MVCC • WAL • Indexes     │  ← NO tokio
-│  SQL Engine • Vector Index          │
-└─────────────────────────────────────┘
-```
-
-### Enhanced SQL Support
-
-- **AST-based query executor**: Unified SQL processing pipeline
-- **Multi-dialect support**: MySQL, PostgreSQL, SQLite syntax compatibility
-- **Idempotent DDL**: `CREATE TABLE IF NOT EXISTS`, `DROP TABLE IF EXISTS`
-- **Better error messages**: Detailed syntax errors with position information
-
-### Python SDK Improvements
-
-**Vector Index Convenience Methods**: Manage vector operations directly from the `Database` class without separate `VectorIndex` objects:
-
-```python
-from sochdb import Database
-import numpy as np
-
-db = Database.open("./my_db")
-
-# Create index from Database class
-db.create_index("embeddings", dimension=384, max_connections=16, ef_construction=200)
-
-# Insert vectors (bulk operation)
-ids = ["doc1", "doc2", "doc3"]
-vectors = [np.random.randn(384).tolist() for _ in range(3)]
-db.insert_vectors("embeddings", ids, vectors)
-
-# Search directly
-results = db.search("embeddings", query_vector, k=10)
-print(f"Found {len(results)} results")
-
-db.close()
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              YOUR APPLICATION                                    │
+└─────────────────────────────────────┬───────────────────────────────────────────┘
+                                      │
+                                      ▼
+                    ┌─────────────────────────────────────┐
+                    │             SochDB                   │
+                    │                                      │
+                    │   SQL + Vectors + Context Builder    │
+                    │                                      │
+                    │   • One query language               │
+                    │   • One connection                   │
+                    │   • ACID transactions                │
+                    │   • Token budgeting built-in         │
+                    │                                      │
+                    └─────────────────────────────────────┘
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    │  😎 What you actually ship:       │
+                    │  • Single ~700KB embedded DB      │
+                    │  • Zero external dependencies     │
+                    │  • Works offline                  │
+                    │  • Deploys anywhere               │
+                    └───────────────────────────────────┘
 ```
 
-### Node.js SDK Graph Overlay
+### The Problem → Solution
 
-Full TypeScript/JavaScript support for graph operations:
+| Challenge | Traditional Stack | SochDB |
+|-----------|------------------|--------|
+| **Token waste** | JSON/SQL bloat in prompts | TOON format for dense output |
+| **RAG plumbing** | Separate vector DB + glue code | Built-in HNSW with hybrid search |
+| **Context assembly** | Custom packer per use case | One query with token budget |
+| **I/O overhead** | Multiple DB round-trips | Single columnar read |
+| **Consistency** | Distributed transaction headaches | Local ACID guarantees |
+| **Deployment** | Manage 4 services | Single binary, embed anywhere |
 
-```typescript
-import { Database } from '@sochdb/sochdb';
+---
 
-const db = await Database.open('./my_db');
+## Key Features
 
-// Graph operations available on Database class
-await db.addNode('node1', { type: 'entity', name: 'Alice' });
-await db.addEdge('node1', 'node2', { relationship: 'knows' });
-const path = await db.traverse('node1', 'node2', { algorithm: 'bfs' });
-
-await db.close();
-```
-
-**Migration Guide**: See [docs/RELEASE_NOTES_0.4.0.md](docs/RELEASE_NOTES_0.4.0.md) for complete migration instructions (including rename from ToonDB → SochDB).
+🧠 **Context Query Builder** — Assemble system + user + history + retrieval under a token budget  
+🔍 **Hybrid Search** — HNSW vectors + BM25 keywords with reciprocal rank fusion  
+🕸️ **Graph Overlay** — Lightweight relationship tracking for agent memory  
+⚡ **Embedded-First** — ~700KB binary, no runtime dependencies, SQLite-style simplicity  
+🔒 **Full ACID** — MVCC + WAL + Serializable Snapshot Isolation  
+📊 **Columnar Storage** — Read only the columns you need  
 
 ---
 
@@ -125,48 +138,46 @@ Most "agent stacks" still glue together:
 
 ---
 
-## What you can rely on today (verified features)
+## What you can rely on today
 
-### ✅ LLM / Agent primitives
+### ✅ LLM + agent primitives
 
-* **TOON output format** for compact, model-friendly context
-* **🕸️ Graph Overlay** (v0.3.3) - lightweight graph layer for agent memory with BFS/DFS traversal, relationship tracking
-* **ContextQuery Builder** with token budgeting, deduplication, and multi-source fusion (enhanced in v0.3.3)
-* **🛡️ Policy Hooks** (v0.3.3) - agent safety controls with pre-built policy templates and audit trails
-* **🔀 Tool Routing** (v0.3.3) - multi-agent coordination with dynamic discovery and load balancing
-* **Hybrid search** (vector + BM25 keyword) with Reciprocal Rank Fusion (RRF)
-* **Multi-vector documents** with chunk-level aggregation (max, mean, first)
-* **Vector search** (HNSW), integrated into retrieval workflows
+- **TOON**: compact, model-friendly output for context windows
+- **Graph Overlay**: lightweight agent-memory graph with BFS/DFS traversal and relationship tracking
+- **ContextQuery builder**: token budgets, deduplication, and multi-source fusion
+- **Policy hooks**: safety controls with pre-built policy templates and audit trails
+- **Tool routing**: multi-agent coordination with dynamic discovery and load balancing
+- **Hybrid retrieval**: vector + BM25 keyword with Reciprocal Rank Fusion (RRF)
+- **Multi-vector documents**: chunk-level aggregation (max / mean / first)
+- **Vector search (HNSW)**: integrated into retrieval workflows
 
 ### ✅ Database fundamentals
 
-* **SQL support** with full SQL-92 syntax (SELECT, INSERT, UPDATE, DELETE, JOINs)
-  * **AST-based query executor** (v0.3.5) - unified SQL processing with dialect normalization
-  * **Multi-dialect support** (v0.3.5) - MySQL, PostgreSQL, SQLite compatibility
-  * **Idempotent DDL** (v0.3.5) - CREATE TABLE IF NOT EXISTS, DROP TABLE IF EXISTS
-* **ACID transactions** with **MVCC**
-* **WAL durability** + **group commit**
-* **Serializable Snapshot Isolation (SSI)**
-* **Columnar storage** with projection pushdown (read only the columns you need)
-* **Sync-first architecture** (v0.3.5) - async runtime (tokio) is truly optional
-  * ~500KB smaller binaries for embedded use cases
-  * Follows SQLite's design pattern for maximum compatibility
+- **SQL (SQL-92)**: SELECT / INSERT / UPDATE / DELETE / JOINs
+  - **AST-based query executor**: unified SQL processing with dialect normalization
+  - **Multi-dialect compatibility**: MySQL, PostgreSQL, SQLite
+  - **Idempotent DDL**: `CREATE TABLE IF NOT EXISTS`, `DROP TABLE IF EXISTS`
+- **ACID transactions** with **MVCC**
+- **WAL durability** + **group commit**
+- **Serializable Snapshot Isolation (SSI)**
+- **Columnar storage** with projection pushdown (read only the columns you need)
+- **Sync-first architecture**: async runtime (tokio) is optional
+  - ~500KB smaller binaries for embedded use cases
+  - Follows SQLite-style design for maximum compatibility
 
 ### ✅ Developer experience
 
-* **Rust client** (`sochdb-client`)
-* **Python SDK** with:
-
-  * **Embedded mode (FFI)** for lowest latency
-  * **IPC mode (Unix sockets)** for multi-process / service scenarios
-  * **Namespace isolation** for multi-tenant applications
-  * **Type-safe error taxonomy** with remediation hints
-* **Bulk vector operations** for high-throughput ingestion
+- **Rust client**: `sochdb`
+- **Python & Nodejs & Golang SDK** with:
+  - **Embedded mode (FFI)** for lowest latency
+  - **IPC mode (Unix sockets)** for multi-process / service deployments
+  - **Namespace isolation** for multi-tenant apps
+  - **Typed error taxonomy** with remediation hints
+- **Bulk vector operations** for high-throughput ingestion
 
 ### Known limits
 
-* **Single-node only** (no replication / clustering yet)
-
+- **Single-node only** (no replication / clustering yet)
 ---
 
 ## SochDB in one picture
