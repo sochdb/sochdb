@@ -204,17 +204,19 @@ Language SDKs are maintained in separate repositories with their own release cyc
 SochDB includes a production-ready Docker setup with gRPC server:
 
 ```bash
-# Quick start
+# Pull and run from Docker Hub
+docker pull sushanth53/sochdb:latest
+docker run -d -p 50051:50051 sushanth53/sochdb:latest
+
+# Or use docker-compose
 cd docker
 docker compose up -d
-
-# Or build manually
-docker build -t sochdb/sochdb-grpc:latest -f docker/Dockerfile .
-docker run -d -p 50051:50051 sochdb/sochdb-grpc:latest
 ```
 
+**Docker Hub:** [`sushanth53/sochdb`](https://hub.docker.com/r/sushanth53/sochdb)
+
 **Features:**
-- ✅ Production & slim images (159MB / 25MB)
+- ✅ Production-ready image (159MB)
 - ✅ High availability setup with Traefik
 - ✅ Prometheus + Grafana monitoring
 - ✅ gRPC-Web support via Envoy

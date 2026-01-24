@@ -1,12 +1,17 @@
-# SochDB Docker Setup
+# SochDB Docker - Quick Start
+
+## 📦 Docker Hub
+
+**Image:** [`sushanth53/sochdb`](https://hub.docker.com/r/sushanth53/sochdb)
 
 ## Quick Start
 
 ```bash
-# Build and run
-make build run
+# Pull and run
+docker pull sushanth53/sochdb:latest
+docker run -d -p 50051:50051 sushanth53/sochdb:latest
 
-# Or using docker compose directly
+# Or use docker-compose
 docker compose up -d
 ```
 

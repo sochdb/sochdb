@@ -2,14 +2,40 @@
 
 Production-ready Docker configuration for SochDB gRPC server.
 
-## 🚀 Quick Start
+## � Public Docker Image
 
-### Single Container
+**Available on Docker Hub:** [`sushanth53/sochdb`](https://hub.docker.com/r/sushanth53/sochdb)
 
 ```bash
-# Build the image (from sochdb root)
+# Pull and run (easiest way)
+docker pull sushanth53/sochdb:latest
+docker run -d -p 50051:50051 sushanth53/sochdb:latest
+
+# Or with docker-compose
+docker compose up -d
+```
+
+## 🚀 Quick Start
+
+### Using Pre-built Image (Recommended)
+
+### Building Locally
+
+```bash
+# Build from source (from sochdb root)
 cd docker
-docker build -t sochdb/sochdb-grpc:latest -f Dockerfile ..
+docker build -t sushanth53/sochdb
+docker pull sushanth53/sochdb:latest
+
+# Run
+docker run -d \
+  --name sochdb \
+  -p 50051:50051 \
+  -v sochdb-data:/var/lib/sochdb \
+  sushanth53/sochdb:latest
+```
+
+### Building Locally
 
 # Run the container
 docker run -d \
@@ -32,10 +58,16 @@ docker compose logs -f sochdb
 docker compose down
 ```
 
-## 📦 Available Images
+## 📦 AvaiTags | Size | Description |
+|-------|------|------|-------------|
+| `sushanth53/sochdb` | `latest`, `0.4.3` | 159MB (34MB compressed) | Debian-based, production-ready |
+| `sushanth53/sochdb` | `slim` | ~25MB | Alpine-based, minimal (coming soon) |
 
-| Image | Size | Description |
-|-------|------|-------------|
+### Image Tags
+
+- `latest` - Latest stable release
+- `0.4.3` - Specific version
+- `slim` - Minimal Alpine-based image (coming soon)
 | `sochdb/sochdb-grpc:latest` | ~50MB | Debian-based, stable |
 | `sochdb/sochdb-grpc:slim` | ~25MB | Alpine-based, minimal |
 
