@@ -212,7 +212,7 @@ Language SDKs are maintained in separate repositories with their own release cyc
 
 | Language | Repository | Installation |
 |----------|------------|-------------|
-| **Python** | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb-client` |
+| **Python** | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb` |
 
 ### 🐳 Docker Deployment
 
