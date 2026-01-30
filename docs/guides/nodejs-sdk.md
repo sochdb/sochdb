@@ -1,20 +1,61 @@
 # JavaScript/Node.js SDK Guide
 
 > **🔧 Skill Level:** Beginner  
-> **⏱️ Time Required:** 20 minutes  
+> **⏱️ Time Required:** 30 minutes  
 > **📦 Requirements:** Node.js 18+, TypeScript 5+
+> **Version:** 0.5.1
 
-Complete guide to SochDB's JavaScript SDK with embedded/external modes, TypeScript support, and multi-tenant patterns.
+Complete guide to SochDB's JavaScript SDK with dual-mode architecture (embedded FFI + server gRPC), namespaces, collections, vector search, priority queues, MCP integration, and advanced features.
+
+---
+
+## Table of Contents
+
+1. [Installation](#installation)
+2. [Quick Start](#quick-start)
+3. [Architecture: Dual-Mode](#architecture-dual-mode)
+4. [Namespace & Collections](#namespace--collections)
+5. [Vector Search](#vector-search)
+6. [Priority Queue](#priority-queue)
+7. [Semantic Cache](#semantic-cache)
+8. [Context Builder](#context-builder)
+9. [Memory System](#memory-system)
+10. [MCP Integration](#mcp-integration)
+11. [Policy Service](#policy-service)
+12. [Core Operations](#core-operations)
+13. [Transactions](#transactions)
+14. [Server Mode (gRPC/IPC)](#server-mode-grpcipc)
+15. [Best Practices](#best-practices)
 
 ---
 
 ## 📦 Installation
 
 ```bash
-npm install sochdb
+npm install @sochdb/sochdb
 # or
-yarn add sochdb
+yarn add @sochdb/sochdb
 ```
+
+**What's New in 0.5.1:**
+- ✅ Improved TypeScript definitions
+- ✅ Better error messages
+
+**What's New in 0.4.3:**
+- ✅ MCP (Model Context Protocol) client/server
+- ✅ Policy Service for access control
+- ✅ Enhanced namespace isolation
+
+**What's New in 0.4.2:**
+- ✅ Memory System: Extraction, Consolidation, Retrieval
+- ✅ Hybrid retrieval with BM25 + vector
+
+**What's New in 0.4.1:**
+- ✅ Namespace & Collection APIs
+- ✅ Priority Queue with ordered keys
+- ✅ Semantic Cache for LLM responses
+- ✅ Context Builder with token limits
+- ✅ Concurrent mode (multi-process MVCC)
 
 **Package includes:**
 - Native binaries for all major platforms
@@ -95,6 +136,375 @@ await client.put(Buffer.from('key'), Buffer.from('value'));
 **When to use:**
 - Embedded: Single app, local data, fast operations
 - External: Microservices, multi-process, remote data
+
+---
+
+## Architecture: Dual-Mode
+
+SochDB Node.js SDK supports **three deployment modes**:
+
+### 1. Embedded Mode (FFI)
+
+Direct FFI bindings to Rust libraries. No server required.
+
+```typescript
+import { Database } from '@sochdb/sochdb';
+
+const db = Database.open('./mydb');
+await db.put(Buffer.from('key'), Buffer.from('value'));
+await db.close();
+```
+
+### 2. Concurrent Mode (FFI + MVCC)
+
+Multi-process access with MVCC. Ideal for PM2 clusters, Express workers.
+
+```typescript
+import { openConcurrent } from '@sochdb/sochdb';
+
+// Multiple processes can access simultaneously
+const db = openConcurrent('./shared_db');
+console.log(`Concurrent: ${db.isConcurrent}`); // true
+```
+
+### 3. Server Mode (gRPC)
+
+Thin client connecting to sochdb-grpc server.
+
+```typescript
+import { SochDBClient } from '@sochdb/sochdb';
+
+const client = new SochDBClient({ address: 'localhost:50051' });
+await client.putKv('namespace', 'key', Buffer.from('value'));
+await client.close();
+```
+
+---
+
+## Namespace & Collections
+
+**New in v0.4.1** — Type-safe multi-tenant isolation with vector collections.
+
+### Creating Namespaces
+
+```typescript
+import { Database, Namespace, NamespaceConfig } from '@sochdb/sochdb';
+
+const db = Database.open('./multi_tenant');
+
+// Create namespace
+const config: NamespaceConfig = {
+  name: 'tenant_123',
+  displayName: 'Acme Corp',
+  labels: { tier: 'enterprise' },
+};
+const ns = db.createNamespace(config);
+
+// Or get existing
+const existingNs = db.namespace('tenant_123');
+```
+
+### Creating Collections
+
+```typescript
+import { CollectionConfig, DistanceMetric } from '@sochdb/sochdb';
+
+const config: CollectionConfig = {
+  name: 'documents',
+  dimension: 384,
+  metric: DistanceMetric.COSINE,
+  m: 16,
+  efConstruction: 100,
+};
+const collection = ns.createCollection(config);
+
+// Or simpler
+const simpleCollection = ns.createCollection('embeddings', { dimension: 768 });
+```
+
+### Vector Operations
+
+```typescript
+// Insert vectors
+await collection.insert({
+  vector: [0.1, 0.2, 0.3, /* ... */],
+  metadata: { source: 'web', url: 'https://...' },
+  id: 'doc_001',
+});
+
+// Batch insert
+await collection.insertBatch({
+  vectors: [[0.1, ...], [0.2, ...], [0.3, ...]],
+  metadatas: [{ type: 'a' }, { type: 'b' }, { type: 'c' }],
+  ids: ['doc_1', 'doc_2', 'doc_3'],
+});
+```
+
+### Search
+
+```typescript
+import { SearchRequest } from '@sochdb/sochdb';
+
+// Vector search
+const results = await collection.search({
+  vector: queryEmbedding,
+  k: 10,
+  filter: { source: 'web' },
+});
+
+// Hybrid search (vector + keyword)
+const hybridResults = await collection.search({
+  vector: queryEmbedding,
+  textQuery: 'machine learning',
+  k: 10,
+  alpha: 0.7, // 70% vector, 30% keyword
+});
+
+for (const result of results) {
+  console.log(`ID: ${result.id}, Score: ${result.score.toFixed(4)}`);
+}
+```
+
+---
+
+## Priority Queue
+
+**New in v0.4.1** — First-class queue API with ordered-key task entries.
+
+```typescript
+import { createQueue, TaskState } from '@sochdb/sochdb';
+
+const db = Database.open('./queue_db');
+const queue = createQueue(db, 'tasks', {
+  visibilityTimeoutMs: 30000,
+  maxAttempts: 3,
+});
+
+// Enqueue
+const taskId = await queue.enqueue({
+  priority: 1, // Lower = higher priority
+  payload: Buffer.from(JSON.stringify({ action: 'process', orderId: 123 })),
+});
+
+// Dequeue and process
+const task = await queue.dequeue('worker-1');
+if (task) {
+  try {
+    // Process task...
+    await queue.ack(task.taskId);
+  } catch (error) {
+    await queue.nack(task.taskId);
+  }
+}
+
+// Stats
+const stats = await queue.stats();
+console.log(`Pending: ${stats.pending}, In-flight: ${stats.claimed}`);
+```
+
+---
+
+## Semantic Cache
+
+**New in v0.4.1** — Cache LLM responses with semantic similarity lookup.
+
+```typescript
+import { SemanticCache } from '@sochdb/sochdb';
+
+const cache = new SemanticCache(db, 'llm_cache', {
+  dimension: 1536,
+  similarityThreshold: 0.95,
+  ttlMs: 3600000, // 1 hour
+});
+
+// Check cache before calling LLM
+const query = 'What is the capital of France?';
+const queryEmbedding = await embed(query);
+
+const hit = await cache.get(queryEmbedding);
+if (hit) {
+  console.log('Cache hit:', hit.response);
+} else {
+  const response = await callLLM(query);
+  await cache.set(queryEmbedding, response, { query });
+  console.log('Cache miss, stored:', response);
+}
+```
+
+---
+
+## Context Builder
+
+**New in v0.4.1** — Token-aware context assembly for LLM prompts.
+
+```typescript
+import { createContextBuilder, ContextOutputFormat } from '@sochdb/sochdb';
+
+const builder = createContextBuilder({
+  maxTokens: 4000,
+  format: ContextOutputFormat.TOON, // Token-optimized
+});
+
+const context = await builder
+  .addSection('user', await db.get(Buffer.from('user:123')))
+  .addSection('history', await db.scan('messages/'))
+  .addSection('knowledge', await collection.search({ vector: queryVec, k: 5 }))
+  .build();
+
+console.log(`Tokens used: ${context.tokenCount}`);
+console.log(context.content);
+```
+
+---
+
+## Memory System
+
+**New in v0.4.2** — Structured memory extraction, consolidation, and retrieval.
+
+### Extraction
+
+```typescript
+import { ExtractionPipeline } from '@sochdb/sochdb';
+
+const pipeline = new ExtractionPipeline({
+  schema: {
+    entities: ['Person', 'Organization', 'Product'],
+    relations: ['works_at', 'owns', 'purchased'],
+  },
+});
+
+const result = await pipeline.extract(
+  'Alice works at Acme Corp and purchased a new laptop.'
+);
+
+console.log(result.entities);
+// [{ type: 'Person', name: 'Alice' }, { type: 'Organization', name: 'Acme Corp' }, ...]
+console.log(result.relations);
+// [{ type: 'works_at', from: 'Alice', to: 'Acme Corp' }, ...]
+```
+
+### Consolidation
+
+```typescript
+import { Consolidator } from '@sochdb/sochdb';
+
+const consolidator = new Consolidator(db, 'memory');
+
+// Consolidate extracted facts
+await consolidator.add(result);
+
+// Merge duplicate entities
+await consolidator.consolidate({
+  mergeThreshold: 0.9,
+});
+```
+
+### Hybrid Retrieval
+
+```typescript
+import { HybridRetriever } from '@sochdb/sochdb';
+
+const retriever = new HybridRetriever(db, 'memory', {
+  vectorWeight: 0.7,
+  keywordWeight: 0.3,
+});
+
+const memories = await retriever.retrieve({
+  query: 'What did Alice buy?',
+  queryVector: queryEmbedding,
+  k: 10,
+});
+
+for (const memory of memories) {
+  console.log(`${memory.content} (score: ${memory.score.toFixed(3)})`);
+}
+```
+
+---
+
+## MCP Integration
+
+**New in v0.4.3** — Model Context Protocol for Claude and LLM agents.
+
+### MCP Server
+
+```typescript
+import { McpServer } from '@sochdb/sochdb';
+
+const server = new McpServer({
+  name: 'sochdb-mcp',
+  version: '1.0.0',
+  database: db,
+});
+
+// Register tools
+server.registerTool({
+  name: 'search_documents',
+  description: 'Search documents by semantic similarity',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string' },
+      k: { type: 'number', default: 10 },
+    },
+  },
+  handler: async (input) => {
+    const results = await collection.search({ textQuery: input.query, k: input.k });
+    return { results };
+  },
+});
+
+await server.start({ transport: 'stdio' });
+```
+
+### MCP Client
+
+```typescript
+import { McpClient } from '@sochdb/sochdb';
+
+const client = new McpClient({ transport: 'stdio' });
+
+// Call a tool
+const result = await client.callTool('search_documents', {
+  query: 'machine learning',
+  k: 5,
+});
+console.log(result);
+```
+
+---
+
+## Policy Service
+
+**New in v0.4.3** — Access control policies for namespaces and collections.
+
+```typescript
+import { PolicyService, PolicyAction } from '@sochdb/sochdb';
+
+const policyService = new PolicyService(db);
+
+// Define policy
+await policyService.createPolicy({
+  name: 'tenant_isolation',
+  rules: [
+    {
+      action: PolicyAction.READ,
+      resource: 'namespace:tenant_*',
+      condition: { 'user.tenantId': { $eq: '$resource.tenantId' } },
+      effect: 'allow',
+    },
+  ],
+});
+
+// Evaluate access
+const allowed = await policyService.evaluate({
+  action: PolicyAction.READ,
+  resource: 'namespace:tenant_123',
+  context: { user: { tenantId: 'tenant_123' } },
+});
+
+console.log(`Access allowed: ${allowed}`);
+```
 
 ---
 
@@ -842,13 +1252,13 @@ const end = Buffer.from('users;'); // ';' is after '/' in ASCII
 
 ## Resources
 
-- [JavaScript SDK GitHub](https://github.com/sochdb/sochdb/tree/main/sochdb-js)
-- [npm Package](https://www.npmjs.com/package/sochdb)
-- [TypeScript Definitions](https://github.com/sochdb/sochdb/blob/main/sochdb-js/src/index.ts)
+- [Node.js SDK GitHub](https://github.com/sochdb/sochdb-nodejs-sdk)
+- [npm Package](https://www.npmjs.com/package/@sochdb/sochdb)
+- [TypeScript Definitions](https://github.com/sochdb/sochdb-nodejs-sdk/blob/main/src/index.ts)
 - [Go SDK](./go-sdk.md)
 - [Python SDK](./python-sdk.md)
 - [Rust SDK](./rust-sdk.md)
 
 ---
 
-*Last updated: January 2026 (v0.2.9)*
+*Last updated: January 2026 (v0.5.1)*

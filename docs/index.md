@@ -8,6 +8,8 @@ title: Introduction
 
 Welcome to the official SochDB documentation. SochDB is **The LLM-Native Database** — a high-performance embedded database designed specifically for AI applications.
 
+**Current Version:** v0.4.4 (Core) | Python SDK v0.4.7 | Node.js SDK v0.5.1 | Go SDK v0.4.3
+
 ---
 
 ## Key Features
@@ -15,17 +17,21 @@ Welcome to the official SochDB documentation. SochDB is **The LLM-Native Databas
 | Feature | Description |
 |---------|-------------|
 | **40-66% Fewer Tokens** | TOON format optimized for LLM consumption |
+| **Dual-Mode Architecture** | Embedded (FFI) + Server (gRPC) for flexible deployment |
+| **Namespace & Collections** (v0.4.1) | Type-safe multi-tenant isolation with vector collections |
+| **Priority Queue** (v0.4.3) | First-class queue API with ordered-key task entries |
+| **Memory System** (v0.4.2) | Extraction, consolidation, and hybrid retrieval for agents |
+| **MCP Integration** (v0.4.3) | Model Context Protocol for Claude and LLM agents |
 | **Graph Overlay** (v0.3.3) | Lightweight graph layer for agent memory with BFS/DFS traversal |
-| **Namespace Isolation** (v0.3.0) | Type-safe multi-tenancy with per-tenant data isolation |
-| **Hybrid Search** (v0.3.0) | Vector + BM25 keyword search with RRF fusion |
-| **ContextQuery Builder** (v0.3.0+) | Token-aware retrieval with enhanced deduplication (v0.3.3) |
-| **Policy Hooks** (v0.3.3) | Agent safety controls with pre-built templates |
-| **Tool Routing** (v0.3.3) | Multi-agent coordination with dynamic discovery |
+| **Temporal Graph** (v0.4.6) | Time-aware relationships with point-in-time queries |
+| **Hybrid Search** | Vector + BM25 keyword search with RRF fusion |
+| **Context Builder** | Token-aware retrieval with configurable limits |
+| **Semantic Cache** | Cache LLM responses with similarity lookup |
+| **Policy Service** (v0.4.3) | Access control policies for namespaces |
 | **Blazing Fast** | Rust-powered with zero-copy and SIMD |
-| **Vector Search** | Built-in HNSW indexing for embeddings |
+| **Vector Search** | Built-in HNSW indexing (~15,000 vec/s) |
 | **Embeddable** | In-process or client-server mode |
 | **Multi-Language** | Native SDKs for Rust, Python, Node.js, Go |
-| **MCP Ready** | Seamless Claude/LLM agent integration |
 
 ---
 
@@ -64,7 +70,7 @@ fn main() -> anyhow::Result<()> {
 <TabItem value="python" label="Python">
 
 ```bash
-pip install sochdb-client
+pip install sochdb
 ```
 
 ```python
@@ -91,7 +97,7 @@ npm install @sochdb/sochdb
 ```typescript
 import { Database } from '@sochdb/sochdb';
 
-const db = await Database.open('./my_app_db');
+const db = Database.open('./my_app_db');
 
 await db.withTransaction(async (txn) => {
   await txn.put('users/alice', '{"name": "Alice", "role": "admin"}');
@@ -107,7 +113,7 @@ await db.close();
 <TabItem value="go" label="Go">
 
 ```bash
-go get github.com/sochdb/sochdb-go
+go get github.com/sochdb/sochdb-go@v0.4.3
 ```
 
 ```go
@@ -152,9 +158,9 @@ Task-oriented guides for specific use cases.
 
 **Language SDKs:**
 - [Rust SDK](/guides/rust-sdk) — Native Rust guide
-- [Python SDK](/guides/python-sdk) — Complete Python guide
-- [Node.js SDK](/guides/nodejs-sdk) — TypeScript/JavaScript guide
-- [Go SDK](/guides/go-sdk) — Go client guide
+- [Python SDK](/guides/python-sdk) — Complete Python guide (v0.4.7)
+- [Node.js SDK](/guides/nodejs-sdk) — TypeScript/JavaScript guide (v0.5.1)
+- [Go SDK](/guides/go-sdk) — Go client guide (v0.4.3)
 
 **Features:**
 - [SQL Guide](/guides/sql-guide) — Working with SQL queries
@@ -162,11 +168,9 @@ Task-oriented guides for specific use cases.
 - [Bulk Operations](/guides/bulk-operations) — Batch processing
 - [Deployment](/guides/deployment) — Production setup
 
-**AI Agent Safety:**
+**AI Agent Safety & Memory:**
 - [Policy & Safety Hooks](/guides/policy-hooks) — Pre/post operation validation
 - [Multi-Agent Tool Routing](/guides/tool-routing) — Route tools across agents
-
-**Agent Memory & Context:**
 - [Graph Overlay](/guides/graph-overlay) — Lightweight graph for agent memory
 - [Context Query](/guides/context-query) — Token-aware retrieval for LLMs
 
@@ -207,12 +211,16 @@ Recipes for common tasks.
 | I want to... | Go to... |
 |--------------|----------|
 | Get started in 5 minutes | [Quick Start](/getting-started/quickstart) |
+| Use Namespace & Collections | [Python SDK](/guides/python-sdk#namespace--collections) |
+| Use Priority Queues | [Python SDK](/guides/python-sdk#priority-queue) |
+| Use Memory System | [Node.js SDK](/guides/nodejs-sdk#memory-system) |
 | Use SQL queries | [SQL Guide](/guides/sql-guide) |
 | Use the Rust SDK | [Rust Guide](/guides/rust-sdk) |
 | Use the Python SDK | [Python Guide](/guides/python-sdk) |
 | Use the Node.js SDK | [Node.js Guide](/guides/nodejs-sdk) |
 | Use the Go SDK | [Go Guide](/guides/go-sdk) |
 | Add vector search | [Vector Search](/guides/vector-search) |
+| Integrate with Claude (MCP) | [MCP Integration](/cookbook/mcp-integration) |
 | Enforce agent safety policies | [Policy Hooks](/guides/policy-hooks) |
 | Route tools across agents | [Tool Routing](/guides/tool-routing) |
 | Model agent memory relationships | [Graph Overlay](/guides/graph-overlay) |
@@ -226,4 +234,7 @@ Recipes for common tasks.
 
 - [**sochdb.dev**](https://sochdb.dev) — Main website
 - [**GitHub**](https://github.com/sochdb/sochdb) — Source code
+- [**Python SDK**](https://github.com/sochdb/sochdb-python-sdk) — Python SDK repo
+- [**Node.js SDK**](https://github.com/sochdb/sochdb-nodejs-sdk) — Node.js SDK repo
+- [**Go SDK**](https://github.com/sochdb/sochdb-go) — Go SDK repo
 - [**Discussions**](https://github.com/sochdb/sochdb/discussions) — Community Q&A

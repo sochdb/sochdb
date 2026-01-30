@@ -1,36 +1,53 @@
 # Go SDK Guide
 
 > **🔧 Skill Level:** Beginner  
-> **⏱️ Time Required:** 20 minutes  
+> **⏱️ Time Required:** 30 minutes  
 > **📦 Requirements:** Go 1.21+
+> **Version:** 0.4.3
 
-Complete guide to SochDB's Go SDK with all features, patterns, and best practices.
+Complete guide to SochDB's Go SDK with dual-mode architecture (embedded CGO + server gRPC), namespaces, collections, vector search, priority queues, memory system, and advanced features.
+
+---
+
+## Table of Contents
+
+1. [Installation](#installation)
+2. [Quick Start](#quick-start)
+3. [Architecture: Dual-Mode](#architecture-dual-mode)
+4. [Namespace & Collections](#namespace--collections)
+5. [Priority Queue](#priority-queue)
+6. [Memory System](#memory-system)
+7. [Semantic Cache](#semantic-cache)
+8. [Context Builder](#context-builder)
+9. [Core Operations](#core-operations)
+10. [Transactions](#transactions)
+11. [SQL Database](#sql-database)
+12. [Server Mode (gRPC)](#server-mode-grpc)
+13. [Best Practices](#best-practices)
 
 ---
 
 ## 📦 Installation
 
 ```bash
-go get github.com/sochdb/sochdb-go@v0.2.9
+go get github.com/sochdb/sochdb-go@v0.4.3
 ```
 
-**What's New in 0.2.9:**
-- ✅ Full SQL engine support with DDL/DML operations
-- ✅ Complete SQL-92 compatibility (CREATE, INSERT, SELECT, UPDATE, DELETE)
-- ✅ Improved embedded server stability
-- ✅ Comprehensive benchmark results with real embeddings
+**What's New in 0.4.3:**
+- ✅ Memory System: Extraction, Consolidation, Retrieval
+- ✅ Semantic Cache for LLM responses
+- ✅ Context Builder with token limits
+- ✅ Enhanced gRPC client
 
-**What's New in 0.2.7:**
-- ✅ Embedded server mode with automatic lifecycle management
-- ✅ Zero external setup required
-- ✅ Platform-specific binary discovery
+**What's New in 0.4.1:**
+- ✅ Namespace & Collection APIs
+- ✅ Priority Queue with ordered keys
+- ✅ Embedded mode via CGO (embedded/ package)
+- ✅ Multi-process concurrent access
 
-**What's New in 0.2.6:**
-- ✅ Fixed wire protocol compatibility (Little Endian)
-- ✅ Added `Scan()` method for prefix-based iteration
-- ✅ Fixed `GetPath` and `PutPath` encoding
-- ✅ Improved error handling
-- ✅ Zero CGO dependencies
+**What's New in 0.4.0:**
+- ✅ Project rename: ToonDB → SochDB
+- ✅ Dual-mode architecture
 
 ---
 
@@ -95,6 +112,253 @@ func main() {
 **Output:**
 ```
 {"name":"Alice","age":30}
+```
+
+---
+
+## Architecture: Dual-Mode
+
+SochDB Go SDK supports **two deployment modes**:
+
+### 1. Embedded Mode (CGO)
+
+Direct bindings to Rust libraries via CGO. No server required.
+
+```go
+import "github.com/sochdb/sochdb-go/embedded"
+
+// Open embedded database
+db, err := embedded.Open("./mydb")
+if err != nil {
+    log.Fatal(err)
+}
+defer db.Close()
+
+// Direct operations - no network overhead
+err = db.Put([]byte("key"), []byte("value"))
+```
+
+**Best for:** Local development, edge deployments, single-process apps.
+
+### 2. Server Mode (gRPC)
+
+Thin client connecting to sochdb-grpc server.
+
+```go
+import sochdb "github.com/sochdb/sochdb-go"
+
+// Connect to gRPC server
+client, err := sochdb.GrpcConnect("localhost:50051")
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+// Remote operations
+err = client.PutKv(context.Background(), "namespace", "key", []byte("value"))
+```
+
+**Best for:** Production, microservices, multi-language environments.
+
+---
+
+## Namespace & Collections
+
+**New in v0.4.1** — Type-safe multi-tenant isolation with vector collections.
+
+### Creating Namespaces
+
+```go
+import (
+    sochdb "github.com/sochdb/sochdb-go"
+    "github.com/sochdb/sochdb-go/embedded"
+)
+
+db, _ := embedded.Open("./multi_tenant")
+defer db.Close()
+
+// Create namespace
+ns, err := db.CreateNamespace("tenant_123")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Creating Collections
+
+```go
+// Create vector collection
+collection, err := ns.CreateCollection(sochdb.CollectionConfig{
+    Name:           "documents",
+    Dimension:      384,
+    Metric:         sochdb.DistanceMetricCosine,
+    M:              16,
+    EfConstruction: 100,
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Vector Operations
+
+```go
+// Insert vector
+err = collection.Insert(
+    []float32{0.1, 0.2, 0.3, /* ... */},
+    map[string]interface{}{"source": "web"},
+    "", // Auto-generate ID
+)
+
+// Search
+results, err := collection.Search(sochdb.SearchRequest{
+    Vector: queryEmbedding,
+    K:      10,
+})
+
+for _, result := range results {
+    fmt.Printf("ID: %s, Score: %.4f\n", result.ID, result.Score)
+}
+```
+
+---
+
+## Priority Queue
+
+**New in v0.4.1** — First-class queue API with ordered-key task entries.
+
+```go
+import sochdb "github.com/sochdb/sochdb-go"
+
+db, _ := embedded.Open("./queue_db")
+defer db.Close()
+
+// Create queue
+queue := sochdb.NewPriorityQueue(db, "tasks", nil)
+
+// Enqueue
+taskID, err := queue.Enqueue(1, []byte("high priority task"), nil)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Enqueued: %s\n", taskID)
+
+// Dequeue and process
+task, err := queue.Dequeue("worker-1")
+if err != nil {
+    log.Fatal(err)
+}
+
+if task != nil {
+    // Process task...
+    fmt.Printf("Processing: %s\n", task.Payload)
+    
+    // Acknowledge completion
+    err = queue.Ack(task.TaskID)
+}
+```
+
+---
+
+## Memory System
+
+**New in v0.4.3** — Structured memory for LLM agents.
+
+### Memory Extraction
+
+```go
+import sochdb "github.com/sochdb/sochdb-go"
+
+// Extract entities and relations from text
+extractor := sochdb.NewMemoryExtractor(db)
+
+result, err := extractor.Extract(
+    "Alice works at Acme Corp and purchased a laptop.",
+)
+
+for _, entity := range result.Entities {
+    fmt.Printf("Entity: %s (%s)\n", entity.Name, entity.Type)
+}
+// Output:
+// Entity: Alice (Person)
+// Entity: Acme Corp (Organization)
+// Entity: laptop (Product)
+```
+
+### Memory Consolidation
+
+```go
+// Consolidate and merge duplicate facts
+consolidator := sochdb.NewConsolidator(db, "memory")
+
+err = consolidator.Add(result)
+err = consolidator.Consolidate(sochdb.ConsolidationConfig{
+    MergeThreshold: 0.9,
+})
+```
+
+### Hybrid Retrieval
+
+```go
+retriever := sochdb.NewHybridRetriever(db, "memory", sochdb.RetrievalConfig{
+    VectorWeight:  0.7,
+    KeywordWeight: 0.3,
+})
+
+memories, err := retriever.Retrieve(sochdb.RetrievalRequest{
+    Query:       "What did Alice buy?",
+    QueryVector: queryEmbedding,
+    K:           10,
+})
+
+for _, memory := range memories {
+    fmt.Printf("%s (score: %.3f)\n", memory.Content, memory.Score)
+}
+```
+
+---
+
+## Semantic Cache
+
+**New in v0.4.3** — Cache LLM responses with semantic similarity.
+
+```go
+cache := sochdb.NewSemanticCache(db, "llm_cache", sochdb.CacheConfig{
+    Dimension:           1536,
+    SimilarityThreshold: 0.95,
+    TTL:                 time.Hour,
+})
+
+// Check cache
+hit, err := cache.Get(queryEmbedding)
+if hit != nil {
+    fmt.Println("Cache hit:", hit.Response)
+} else {
+    response := callLLM(query)
+    cache.Set(queryEmbedding, response, map[string]string{"query": query})
+    fmt.Println("Cache miss, stored:", response)
+}
+```
+
+---
+
+## Context Builder
+
+**New in v0.4.3** — Token-aware context assembly.
+
+```go
+builder := sochdb.NewContextBuilder(sochdb.ContextConfig{
+    MaxTokens: 4000,
+    Format:    sochdb.FormatTOON,
+})
+
+context, err := builder.
+    AddSection("user", userData).
+    AddSection("history", historyData).
+    AddSection("knowledge", searchResults).
+    Build()
+
+fmt.Printf("Tokens used: %d\n", context.TokenCount)
 ```
 
 ---
@@ -893,7 +1157,8 @@ go test -run TestScan -v
 
 ## Resources
 
-- [Go SDK GitHub](https://github.com/sochdb/sochdb/tree/main/sochdb-go)
+- [Go SDK GitHub](https://github.com/sochdb/sochdb-go)
+- [pkg.go.dev](https://pkg.go.dev/github.com/sochdb/sochdb-go)
 - [API Reference](../api-reference/go-api.md)
 - [Python SDK](./python-sdk.md)
 - [JavaScript SDK](./nodejs-sdk.md)
@@ -901,4 +1166,4 @@ go test -run TestScan -v
 
 ---
 
-*Last updated: January 2026 (v0.2.9)*
+*Last updated: January 2026 (v0.4.3)*

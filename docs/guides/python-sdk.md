@@ -1,11 +1,11 @@
 # Python SDK Guide
 
-> **Version:** 0.3.1  
-> **Time:** 35 minutes  
+> **Version:** 0.4.7  
+> **Time:** 45 minutes  
 > **Difficulty:** Beginner to Intermediate  
 > **Prerequisites:** Python 3.9+
 
-Complete guide to SochDB's Python SDK covering SQL, key-value operations, advanced features (TOON format, batched scanning, plugins), bulk operations, and multi-process modes.
+Complete guide to SochDB's Python SDK covering dual-mode architecture (embedded FFI + server gRPC), namespaces, collections, vector search, priority queues, and advanced features.
 
 ---
 
@@ -13,49 +13,61 @@ Complete guide to SochDB's Python SDK covering SQL, key-value operations, advanc
 
 1. [Installation](#installation)
 2. [Quick Start](#quick-start)
-3. [SQL Database](#sql-database)
-4. [Key-Value Operations](#key-value-operations)
-5. [Path API](#path-api)
-6. [Prefix Scanning](#prefix-scanning)
-7. [Transactions](#transactions)
-8. [Query Builder](#query-builder)
-9. [Vector Search](#vector-search)
-10. [IPC Mode](#ipc-mode)
-11. [CLI Tools](#cli-tools)
-    - [sochdb-server](#sochdb-server-options)
-    - [sochdb-bulk](#sochdb-bulk)
-    - [sochdb-grpc-server](#sochdb-grpc-server)
-12. [Advanced Features](#advanced-features)
+3. [Architecture: Dual-Mode](#architecture-dual-mode)
+4. [Namespace & Collections](#namespace--collections)
+5. [Vector Search](#vector-search)
+6. [Priority Queue](#priority-queue)
+7. [SQL Database](#sql-database)
+8. [Key-Value Operations](#key-value-operations)
+9. [Path API](#path-api)
+10. [Prefix Scanning](#prefix-scanning)
+11. [Transactions](#transactions)
+12. [Graph Overlay](#graph-overlay)
+13. [Temporal Graph](#temporal-graph)
+14. [Server Mode (gRPC/IPC)](#server-mode-grpcipc)
+15. [CLI Tools](#cli-tools)
+16. [Advanced Features](#advanced-features)
     - [TOON Format](#toon-format)
     - [Batched Scanning](#batched-scanning)
     - [Statistics & Monitoring](#statistics--monitoring)
     - [Manual Checkpoint](#manual-checkpoint)
-    - [Python Plugins](#python-plugins)
-    - [Transaction Advanced](#transaction-advanced)
-13. [Best Practices](#best-practices)
-14. [Complete Examples](#complete-examples)
+17. [Error Handling](#error-handling)
+18. [Best Practices](#best-practices)
+19. [Complete Examples](#complete-examples)
 
 ---
 
 ## Installation
 
 ```bash
-pip install sochdb-client
+pip install sochdb
 ```
 
-**What's New in 0.2.7:**
-- ✅ Full SQL engine support (CREATE, INSERT, SELECT, UPDATE, DELETE)
-- ✅ SQL in transactions via Transaction.execute()
-- ✅ SQL WHERE clauses with multiple operators
-- ✅ SQL ORDER BY, LIMIT, OFFSET support
+**What's New in 0.4.7:**
+- ✅ Improved FFI stability and error messages
+- ✅ Better platform detection for native libraries
 
-**What's New in 0.2.6:**
-- ✅ Enhanced `scan_prefix()` method for multi-tenant isolation
-- ✅ Bulk vector operations (~1,600 vec/s)
-- ✅ Zero-compilation with pre-built binaries
-- ✅ Improved FFI performance
+**What's New in 0.4.6:**
+- ✅ Temporal Graph API for time-aware relationships
+- ✅ Enhanced Graph Overlay with BFS/DFS traversal
 
-> **Import Note:** Install with `pip install sochdb-client`, import as `from sochdb import Database`
+**What's New in 0.4.3:**
+- ✅ Priority Queue API with ordered-key task entries
+- ✅ Streaming TopK for efficient ORDER BY + LIMIT
+- ✅ Backend-agnostic queue (FFI, gRPC, In-Memory)
+
+**What's New in 0.4.1:**
+- ✅ Namespace API for multi-tenant isolation
+- ✅ Collection API with auto-dimension vectors
+- ✅ Lock error types (DatabaseLockedError, LockTimeoutError)
+- ✅ Concurrent mode support
+
+**What's New in 0.4.0:**
+- ✅ Project rename: ToonDB → SochDB
+- ✅ Dual-mode architecture: Embedded (FFI) + Server (gRPC)
+- ✅ VectorIndex class with native HNSW
+
+> **Import Note:** Install with `pip install sochdb`, import as `from sochdb import Database`
 
 **Pre-built for:**
 - Linux (x86_64, aarch64)
@@ -83,6 +95,309 @@ with Database.open("./my_database") as db:
 **Output:**
 ```
 {"name":"Alice","age":30}
+```
+
+---
+
+## Architecture: Dual-Mode
+
+SochDB Python SDK supports **two deployment modes**:
+
+### Embedded Mode (FFI) - Recommended for Single Process
+
+Direct FFI bindings to Rust libraries. No server required.
+
+```python
+from sochdb import Database
+
+# Direct FFI - no server needed
+with Database.open("./mydb") as db:
+    db.put(b"key", b"value")
+    value = db.get(b"key")
+```
+
+**Best for:** Local development, notebooks, simple apps, edge deployments.
+
+### Server Mode (gRPC) - For Distributed Systems
+
+Thin client connecting to sochdb-grpc server.
+
+```python
+from sochdb import SochDBClient
+
+# Connect to server
+client = SochDBClient("localhost:50051")
+client.put_kv("namespace", "key", b"value")
+value = client.get_kv("namespace", "key")
+client.close()
+```
+
+**Best for:** Production, multi-language environments, microservices.
+
+### Concurrent Mode (v0.4.1+)
+
+Multi-process access to the same database with MVCC.
+
+```python
+from sochdb import Database
+
+# Multiple processes can access simultaneously
+db = Database.open_concurrent("./shared_db")
+print(f"Concurrent mode: {db.is_concurrent}")  # True
+```
+
+---
+
+## Namespace & Collections
+
+**New in v0.4.1** — Type-safe multi-tenant isolation with vector collections.
+
+### Creating Namespaces
+
+```python
+from sochdb import Database, NamespaceConfig
+
+with Database.open("./multi_tenant") as db:
+    # Create namespace for tenant
+    config = NamespaceConfig(
+        name="tenant_123",
+        display_name="Acme Corp",
+        labels={"tier": "enterprise"},
+    )
+    ns = db.create_namespace(config)
+    
+    # Or get existing
+    ns = db.namespace("tenant_123")
+```
+
+### Creating Collections
+
+```python
+from sochdb import CollectionConfig, DistanceMetric
+
+# Create vector collection
+config = CollectionConfig(
+    name="documents",
+    dimension=384,  # None = auto-infer from first vector
+    metric=DistanceMetric.COSINE,
+    m=16,
+    ef_construction=100,
+)
+collection = ns.create_collection(config)
+
+# Or simpler
+collection = ns.create_collection("embeddings", dimension=768)
+```
+
+### Vector Operations
+
+```python
+# Insert vectors with metadata
+collection.insert(
+    vector=[0.1, 0.2, 0.3, ...],  # 384-dim
+    metadata={"source": "web", "url": "https://..."},
+    id="doc_001"  # Optional, auto-generated if omitted
+)
+
+# Batch insert
+collection.insert_batch(
+    vectors=[[0.1, ...], [0.2, ...], [0.3, ...]],
+    metadatas=[{"type": "a"}, {"type": "b"}, {"type": "c"}],
+    ids=["doc_1", "doc_2", "doc_3"]
+)
+```
+
+### Unified Search API
+
+```python
+from sochdb import SearchRequest
+
+# Vector search
+results = collection.search(
+    SearchRequest(
+        vector=query_embedding,
+        k=10,
+        filter={"source": "web"},
+    )
+)
+
+for result in results:
+    print(f"ID: {result.id}, Score: {result.score:.4f}")
+
+# Keyword search (if hybrid enabled)
+results = collection.search(
+    SearchRequest(
+        text_query="machine learning",
+        k=10,
+    )
+)
+
+# Hybrid search (RRF fusion)
+results = collection.search(
+    SearchRequest(
+        vector=query_embedding,
+        text_query="ML algorithms",
+        k=10,
+        alpha=0.7,  # 0.7 vector + 0.3 keyword
+    )
+)
+```
+
+### Convenience Methods
+
+```python
+# Quick vector search
+results = collection.vector_search(query_embedding, k=10)
+
+# Quick keyword search
+results = collection.keyword_search("neural networks", k=10)
+
+# Quick hybrid search
+results = collection.hybrid_search(query_embedding, "deep learning", k=10)
+```
+
+---
+
+## Vector Search
+
+### Native VectorIndex (HNSW)
+
+```python
+from sochdb import VectorIndex
+
+# Create index
+index = VectorIndex(
+    dimension=768,
+    metric="cosine",  # cosine, euclidean, dot_product
+    m=16,
+    ef_construction=100,
+)
+
+# Insert vectors
+import numpy as np
+embeddings = np.random.randn(10000, 768).astype(np.float32)
+
+for i, vec in enumerate(embeddings):
+    index.insert(f"doc_{i}", vec)
+
+# Or batch insert (faster)
+ids = [f"doc_{i}" for i in range(len(embeddings))]
+index.insert_batch(ids, embeddings)  # ~15,000 vec/s with FFI
+
+# Search
+query = np.random.randn(768).astype(np.float32)
+results = index.search(query, k=10, ef_search=64)
+
+for id, distance in results:
+    print(f"{id}: {distance:.4f}")
+```
+
+### Bulk Operations (Legacy)
+
+```python
+from sochdb.bulk import bulk_build_index, bulk_query_index
+
+# Build HNSW index
+stats = bulk_build_index(
+    embeddings,
+    output="my_index.hnsw",
+    m=16,
+    ef_construction=100,
+    metric="cosine"
+)
+print(f"Built {stats.vectors} vectors at {stats.rate:.0f} vec/s")
+
+# Query
+results = bulk_query_index(
+    index="my_index.hnsw",
+    query=query,
+    k=10,
+    ef_search=64
+)
+```
+
+---
+
+## Priority Queue
+
+**New in v0.4.3** — First-class queue API with ordered-key task entries.
+
+### Creating Queues
+
+```python
+from sochdb import Database
+from sochdb.queue import PriorityQueue, QueueConfig
+
+db = Database.open("./queue_db")
+
+# Create queue with config
+config = QueueConfig(
+    visibility_timeout_ms=30000,  # 30s lease
+    max_attempts=3,
+    dead_letter_queue="failed_tasks",
+)
+queue = PriorityQueue.from_database(db, "tasks", config)
+```
+
+### Enqueue Tasks
+
+```python
+# Enqueue with priority (lower = higher priority)
+task_id = queue.enqueue(
+    priority=1,  # High priority
+    payload=b'{"action": "process_order", "order_id": 123}',
+    metadata={"source": "api"},
+)
+print(f"Enqueued task: {task_id}")
+
+# Delayed task
+import time
+queue.enqueue(
+    priority=5,
+    payload=b"delayed task",
+    delay_ms=60000,  # Visible in 1 minute
+)
+```
+
+### Dequeue and Process
+
+```python
+# Dequeue (claims task with lease)
+task = queue.dequeue(worker_id="worker-1")
+
+if task:
+    try:
+        # Process task
+        payload = task.payload
+        print(f"Processing: {payload}")
+        
+        # Acknowledge completion
+        queue.ack(task.task_id)
+    except Exception as e:
+        # Negative ack (retry or dead-letter)
+        queue.nack(task.task_id)
+```
+
+### Queue Statistics
+
+```python
+stats = queue.stats()
+print(f"Pending: {stats.pending}")
+print(f"In-flight: {stats.claimed}")
+print(f"Dead-lettered: {stats.dead_lettered}")
+```
+
+### Streaming TopK
+
+For efficient ORDER BY + LIMIT queries:
+
+```python
+from sochdb.queue import StreamingTopK
+
+# Get top 100 highest priority tasks
+top_tasks = queue.top_k(k=100)
+for task in top_tasks:
+    print(f"Priority {task.priority}: {task.task_id}")
 ```
 
 ---
@@ -363,6 +678,129 @@ key2: value2
 
 ---
 
+## Graph Overlay
+
+**New in v0.3.3** — Lightweight graph layer for agent memory relationships.
+
+### Creating Nodes and Edges
+
+```python
+from sochdb import Database
+
+with Database.open("./agent_memory") as db:
+    # Create nodes
+    db.graph_add_node(
+        namespace="agent_001",
+        node_id="user_alice",
+        node_type="User",
+        properties={"name": "Alice", "role": "admin"}
+    )
+    
+    db.graph_add_node(
+        namespace="agent_001",
+        node_id="conv_123",
+        node_type="Conversation",
+        properties={"topic": "Support request"}
+    )
+    
+    # Create edge
+    db.graph_add_edge(
+        namespace="agent_001",
+        from_id="user_alice",
+        edge_type="STARTED",
+        to_id="conv_123",
+        properties={"timestamp": "2026-01-15T10:30:00Z"}
+    )
+```
+
+### Traversal
+
+```python
+# BFS traversal from a node
+results = db.graph_traverse(
+    namespace="agent_001",
+    start_node="user_alice",
+    max_depth=3,
+    order="bfs"  # or "dfs"
+)
+
+for node in results:
+    print(f"Node: {node['id']} ({node['type']})")
+```
+
+---
+
+## Temporal Graph
+
+**New in v0.4.6** — Time-aware relationships for historical queries.
+
+### Adding Temporal Edges
+
+```python
+from sochdb import Database
+
+with Database.open("./temporal_db") as db:
+    # Add temporal edge with validity period
+    db.add_temporal_edge(
+        namespace="org",
+        from_id="alice",
+        edge_type="WORKS_AT",
+        to_id="acme_corp",
+        valid_from=1704067200000,  # 2024-01-01 (ms)
+        valid_until=1735689600000,  # 2025-01-01 (ms)
+        properties={"role": "Engineer"}
+    )
+    
+    # Add another edge (current)
+    db.add_temporal_edge(
+        namespace="org",
+        from_id="alice",
+        edge_type="WORKS_AT",
+        to_id="globex_inc",
+        valid_from=1735689600000,  # 2025-01-01
+        valid_until=0,  # 0 = no end (current)
+        properties={"role": "Senior Engineer"}
+    )
+```
+
+### Querying at a Point in Time
+
+```python
+# Query: "Where did Alice work on 2024-06-15?"
+timestamp = 1718409600000  # 2024-06-15 in ms
+
+results = db.query_temporal_graph(
+    namespace="org",
+    node="alice",
+    mode="point_in_time",
+    timestamp=timestamp,
+    edge_type="WORKS_AT"
+)
+
+for edge in results:
+    print(f"Worked at: {edge['to_id']} as {edge['properties']['role']}")
+# Output: Worked at: acme_corp as Engineer
+```
+
+### Querying a Time Range
+
+```python
+# Query: "All jobs Alice had in 2024"
+results = db.query_temporal_graph(
+    namespace="org",
+    node="alice",
+    mode="range",
+    start_time=1704067200000,  # 2024-01-01
+    end_time=1735689599999,    # 2024-12-31
+    edge_type="WORKS_AT"
+)
+
+for edge in results:
+    print(f"{edge['to_id']}: {edge['valid_from']} - {edge['valid_until']}")
+```
+
+---
+
 ## Query Builder
 
 Returns results in **TOON format** (token-optimized for LLMs):
@@ -452,7 +890,64 @@ Top 10 nearest neighbors:
 
 ---
 
-## IPC Mode
+## Server Mode (gRPC/IPC)
+
+For distributed systems and multi-process applications.
+
+### gRPC Client
+
+```python
+from sochdb import SochDBClient
+
+# Connect to gRPC server
+client = SochDBClient("localhost:50051")
+
+# Key-Value operations
+client.put_kv("my_namespace", "user:123", b'{"name": "Alice"}')
+value = client.get_kv("my_namespace", "user:123")
+print(value.decode())
+
+# Vector search
+results = client.vector_search(
+    namespace="my_namespace",
+    collection="documents",
+    query=[0.1, 0.2, 0.3, ...],
+    k=10
+)
+
+# Graph operations
+client.add_graph_node(
+    namespace="agent",
+    node_id="user_1",
+    node_type="User",
+    properties={"name": "Alice"}
+)
+
+client.close()
+```
+
+### IPC Client (Unix Socket)
+
+For multi-process applications on the same machine:
+
+```bash
+# Start IPC server
+sochdb-server --db ./my_database
+```
+
+```python
+from sochdb import IpcClient
+
+client = IpcClient.connect("./my_database/sochdb.sock")
+
+client.put(b"key", b"value")
+value = client.get(b"key")
+print(value.decode())
+
+client.close()
+```
+
+### IPC Mode (Legacy)
 
 For multi-process applications, SochDB provides a high-performance IPC server with Unix domain socket communication.
 
@@ -886,6 +1381,88 @@ with Database.open("./my_db") as db:
 
 ---
 
+## Error Handling
+
+**New in v0.4.1** — Comprehensive error types for production applications.
+
+### Error Hierarchy
+
+```python
+from sochdb.errors import (
+    SochDBError,           # Base error
+    DatabaseError,         # General database errors
+    TransactionError,      # Transaction failures
+    ConnectionError,       # Connection issues
+    ProtocolError,         # Wire protocol errors
+    
+    # Namespace errors
+    NamespaceNotFoundError,
+    NamespaceExistsError,
+    
+    # Collection errors
+    CollectionNotFoundError,
+    CollectionExistsError,
+    CollectionConfigError,
+    
+    # Validation errors
+    ValidationError,
+    DimensionMismatchError,
+    
+    # Lock errors (v0.4.1)
+    LockError,
+    DatabaseLockedError,
+    LockTimeoutError,
+    EpochMismatchError,
+    SplitBrainError,
+)
+```
+
+### Handling Lock Errors
+
+```python
+from sochdb import Database
+from sochdb.errors import DatabaseLockedError, LockTimeoutError
+
+try:
+    db = Database.open("./shared_db")
+except DatabaseLockedError as e:
+    print(f"Database locked by another process: {e}")
+    # Retry with concurrent mode
+    db = Database.open_concurrent("./shared_db")
+except LockTimeoutError as e:
+    print(f"Timed out waiting for lock: {e}")
+```
+
+### Handling Namespace Errors
+
+```python
+from sochdb.errors import NamespaceNotFoundError, NamespaceExistsError
+
+try:
+    ns = db.namespace("tenant_999")
+except NamespaceNotFoundError:
+    # Create if not exists
+    ns = db.create_namespace("tenant_999")
+
+try:
+    db.create_namespace("tenant_123")
+except NamespaceExistsError:
+    print("Namespace already exists")
+```
+
+### Handling Vector Dimension Errors
+
+```python
+from sochdb.errors import DimensionMismatchError
+
+try:
+    collection.insert([1.0, 2.0, 3.0])  # 3-dim
+except DimensionMismatchError as e:
+    print(f"Expected {e.expected} dimensions, got {e.actual}")
+```
+
+---
+
 ## Best Practices
 
 ### 1. Use SQL for Structured Data
@@ -1131,6 +1708,56 @@ Electronics: 2 orders, $2124.98
 | `commit() -> int` | Commit, returns LSN |
 | `abort()` | Abort/rollback |
 
+### Namespace
+
+| Method | Description |
+|--------|-------------|
+| `db.create_namespace(config)` | Create new namespace |
+| `db.namespace(name)` | Get existing namespace |
+| `db.list_namespaces()` | List all namespaces |
+| `db.delete_namespace(name)` | Delete namespace |
+| `ns.create_collection(config)` | Create collection |
+| `ns.collection(name)` | Get collection |
+| `ns.list_collections()` | List collections |
+
+### Collection
+
+| Method | Description |
+|--------|-------------|
+| `insert(vector, metadata, id)` | Insert single vector |
+| `insert_batch(vectors, metadatas, ids)` | Batch insert |
+| `search(request)` | Unified search |
+| `vector_search(vector, k)` | Vector similarity search |
+| `keyword_search(text, k)` | BM25 keyword search |
+| `hybrid_search(vector, text, k)` | RRF fusion search |
+| `delete(id)` | Delete by ID |
+| `count()` | Vector count |
+
+### PriorityQueue
+
+| Method | Description |
+|--------|-------------|
+| `PriorityQueue.from_database(db, name)` | Create from database |
+| `PriorityQueue.from_client(client, name)` | Create from gRPC client |
+| `enqueue(priority, payload, ...)` | Add task |
+| `dequeue(worker_id)` | Claim task |
+| `ack(task_id)` | Acknowledge completion |
+| `nack(task_id)` | Negative ack (retry) |
+| `stats()` | Queue statistics |
+| `top_k(k)` | Get top K tasks |
+
+### SochDBClient (gRPC)
+
+| Method | Description |
+|--------|-------------|
+| `SochDBClient(address)` | Connect to server |
+| `put_kv(namespace, key, value)` | Put key-value |
+| `get_kv(namespace, key)` | Get value |
+| `vector_search(namespace, collection, query, k)` | Vector search |
+| `add_graph_node(...)` | Add graph node |
+| `add_graph_edge(...)` | Add graph edge |
+| `close()` | Close connection |
+
 ### IpcClient
 
 | Method | Description |
@@ -1139,6 +1766,18 @@ Electronics: 2 orders, $2124.98
 | `ping() -> float` | Check latency |
 | `query(prefix: str)` | Create query builder |
 | `scan(prefix: str)` | Scan prefix |
+
+### VectorIndex
+
+| Method | Description |
+|--------|-------------|
+| `VectorIndex(dimension, metric, m, ef_construction)` | Create index |
+| `insert(id, vector)` | Insert single vector |
+| `insert_batch(ids, vectors)` | Batch insert (~15K vec/s) |
+| `search(vector, k, ef_search)` | Search k-NN |
+| `delete(id)` | Delete by ID |
+| `save(path)` | Save to disk |
+| `load(path)` | Load from disk |
 
 ### Bulk API
 
@@ -1180,8 +1819,8 @@ pytest --cov=sochdb tests/
 
 ## Resources
 
-- [Python SDK GitHub](https://github.com/sochdb/sochdb/tree/main/sochdb-python-sdk)
-- [PyPI Package](https://pypi.org/project/sochdb-client/)
+- [Python SDK GitHub](https://github.com/sochdb/sochdb-python-sdk)
+- [PyPI Package](https://pypi.org/project/sochdb/)
 - [API Reference](../api-reference/python-api.md)
 - [Go SDK](./go-sdk.md)
 - [JavaScript SDK](./nodejs-sdk.md)
@@ -1189,4 +1828,4 @@ pytest --cov=sochdb tests/
 
 ---
 
-*Last updated: January 2026 (v0.3.1)*
+*Last updated: January 2026 (v0.4.7)*

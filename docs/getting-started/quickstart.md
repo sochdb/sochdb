@@ -23,7 +23,7 @@ Get SochDB running in 5 minutes.
 ### Python
 
 ```bash
-pip install sochdb-client
+pip install sochdb
 ```
 
 ### Node.js / TypeScript
@@ -38,13 +38,13 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sochdb = "0.2"
+sochdb = "0.4"
 ```
 
 ### Go
 
 ```bash
-go get github.com/sochdb/sochdb-go@v0.3.1
+go get github.com/sochdb/sochdb-go@v0.4.3
 ```
 
 ### Build from Source
@@ -81,18 +81,18 @@ db.close()
 ### Node.js / TypeScript
 
 ```typescript
-import { SochDatabase } from '@sochdb/sochdb';
+import { Database } from '@sochdb/sochdb';
 
 // Open database
-const db = new SochDatabase('./my_first_db');
+const db = Database.open('./my_first_db');
 
 // Store data
-await db.put('users/alice/name', 'Alice Smith');
-await db.put('users/alice/email', 'alice@example.com');
+await db.put(Buffer.from('users/alice/name'), Buffer.from('Alice Smith'));
+await db.put(Buffer.from('users/alice/email'), Buffer.from('alice@example.com'));
 
 // Retrieve data
-const name = await db.get('users/alice/name');
-console.log(`Name: ${name}`);  // Output: Name: Alice Smith
+const name = await db.get(Buffer.from('users/alice/name'));
+console.log(`Name: ${name?.toString()}`);  // Output: Name: Alice Smith
 
 await db.close();
 ```
@@ -233,7 +233,7 @@ max_connections = 100
 #### Python: `ModuleNotFoundError: No module named 'sochdb'`
 
 ```bash
-pip install --upgrade sochdb-client
+pip install --upgrade sochdb
 ```
 
 #### Rust: `error: linking with 'cc' failed`
