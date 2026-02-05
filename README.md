@@ -12,31 +12,29 @@ SochDB is a **single database** that replaces your vector DB + relational DB + p
 
 ### Database + retrieval layer
 
-| Feature | SochDB | SQLite + vec | Postgres + pgvector | Chroma | LanceDB |
-|---------|--------|--------|----------------------|--------|---------|
-| Embedded | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Vector search | ✅ HNSW | ⚠️ (via extension) | ✅ (HNSW / IVFFlat) | ✅ | ✅ |
-| Full SQL (user-facing) | ✅ SQL-92 | ✅ | ✅ | ❌ | ✅ |
-| Hybrid search (vector + keyword) | ✅ | ⚠️ (DIY) | ⚠️ (DIY) | ⚠️ (limited) | ✅ |
-| Context builder | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Token budgeting | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Graph overlay | ✅ | ❌ | ❌ | ❌ | ❌ |
-| ACID transactions | ✅ | ✅ | ✅ | ⚠️ (limited) | ❌ |
-| Columnar storage | ✅ | ❌ | ❌ | ❌ | ✅ |
-
+| Feature                          | SochDB    | SQLite + vec       | Postgres + pgvector | Chroma       | LanceDB |
+| -------------------------------- | --------- | ------------------ | ------------------- | ------------ | ------- |
+| Embedded                         | ✅        | ✅                 | ❌                  | ✅           | ✅      |
+| Vector search                    | ✅ HNSW   | ⚠️ (via extension) | ✅ (HNSW / IVFFlat) | ✅           | ✅      |
+| Full SQL (user-facing)           | ✅ SQL-92 | ✅                 | ✅                  | ❌           | ✅      |
+| Hybrid search (vector + keyword) | ✅        | ⚠️ (DIY)           | ⚠️ (DIY)            | ⚠️ (limited) | ✅      |
+| Context builder                  | ✅        | ❌                 | ❌                  | ❌           | ❌      |
+| Token budgeting                  | ✅        | ❌                 | ❌                  | ❌           | ❌      |
+| Graph overlay                    | ✅        | ❌                 | ❌                  | ❌           | ❌      |
+| ACID transactions                | ✅        | ✅                 | ✅                  | ⚠️ (limited) | ❌      |
+| Columnar storage                 | ✅        | ❌                 | ❌                  | ❌           | ✅      |
 
 ### Memory / agent-memory layer
 
-| Feature | SochDB | Mem0 | Letta | Graphiti |
-|--------|--------|------|-------|----------|
-| Primary focus | DB + retrieval + context | Memory layer | Agent framework + memory | Temporal knowledge-graph memory |
-| Long-term memory primitives | ✅ | ✅ | ✅ | ✅ |
-| Token-aware context budgeting | ✅ | ❌ | ❌ | ❌ |
-| Graph-based memory | ✅ | ❌ | ❌ | ✅ |
-| Built-in vector store | ✅ | ❌ (BYO) | ❌ (BYO) | ❌ (BYO) |
-| Built-in agent runtime | ❌ | ❌ | ✅ | ❌ |
-| Drop-in “memory add-on” to existing apps | ✅ | ✅ | ⚠️ | ✅ |
-
+| Feature                                  | SochDB                   | Mem0         | Letta                    | Graphiti                        |
+| ---------------------------------------- | ------------------------ | ------------ | ------------------------ | ------------------------------- |
+| Primary focus                            | DB + retrieval + context | Memory layer | Agent framework + memory | Temporal knowledge-graph memory |
+| Long-term memory primitives              | ✅                       | ✅           | ✅                       | ✅                              |
+| Token-aware context budgeting            | ✅                       | ❌           | ❌                       | ❌                              |
+| Graph-based memory                       | ✅                       | ❌           | ❌                       | ✅                              |
+| Built-in vector store                    | ✅                       | ❌ (BYO)     | ❌ (BYO)                 | ❌ (BYO)                        |
+| Built-in agent runtime                   | ❌                       | ❌           | ✅                       | ❌                              |
+| Drop-in “memory add-on” to existing apps | ✅                       | ✅           | ⚠️                       | ✅                              |
 
 **Quick links:** [📚 Documentation](https://sochdb.dev) • [Quick Start](#-quick-start) • [Architecture](#-architecture) • [TOON Format](#-toon-format) • [Benchmarks](#-benchmarks) • [RFD](docs/rfds/RFD-001-ai-native-database.md)
 
@@ -105,14 +103,14 @@ SochDB is a **single database** that replaces your vector DB + relational DB + p
 
 ### The Problem → Solution
 
-| Challenge | Traditional Stack | SochDB |
-|-----------|------------------|--------|
-| **Token waste** | JSON/SQL bloat in prompts | TOON format for dense output |
-| **RAG plumbing** | Separate vector DB + glue code | Built-in HNSW with hybrid search |
-| **Context assembly** | Custom packer per use case | One query with token budget |
-| **I/O overhead** | Multiple DB round-trips | Single columnar read |
-| **Consistency** | Distributed transaction headaches | Local ACID guarantees |
-| **Deployment** | Manage 4 services | Single binary, embed anywhere |
+| Challenge            | Traditional Stack                 | SochDB                           |
+| -------------------- | --------------------------------- | -------------------------------- |
+| **Token waste**      | JSON/SQL bloat in prompts         | TOON format for dense output     |
+| **RAG plumbing**     | Separate vector DB + glue code    | Built-in HNSW with hybrid search |
+| **Context assembly** | Custom packer per use case        | One query with token budget      |
+| **I/O overhead**     | Multiple DB round-trips           | Single columnar read             |
+| **Consistency**      | Distributed transaction headaches | Local ACID guarantees            |
+| **Deployment**       | Manage 4 services                 | Single binary, embed anywhere    |
 
 ---
 
@@ -123,7 +121,7 @@ SochDB is a **single database** that replaces your vector DB + relational DB + p
 🕸️ **Graph Overlay** — Lightweight relationship tracking for agent memory  
 ⚡ **Embedded-First** — ~700KB binary, no runtime dependencies, SQLite-style simplicity  
 🔒 **Full ACID** — MVCC + WAL + Serializable Snapshot Isolation  
-📊 **Columnar Storage** — Read only the columns you need  
+📊 **Columnar Storage** — Read only the columns you need
 
 ---
 
@@ -131,14 +129,14 @@ SochDB is a **single database** that replaces your vector DB + relational DB + p
 
 Most "agent stacks" still glue together:
 
-* a KV store (sessions / state)
-* a vector DB (retrieval)
-* a prompt packer (context budgeting, truncation)
-* a relational DB (metadata)
+- a KV store (sessions / state)
+- a vector DB (retrieval)
+- a prompt packer (context budgeting, truncation)
+- a relational DB (metadata)
 
 …and then spend weeks maintaining brittle context assembly and token budgeting.
 
-**SochDB collapses that stack into one LLM‑native substrate**: you store structured data + embeddings + history *and* ask the DB to produce a token‑efficient context payload.
+**SochDB collapses that stack into one LLM‑native substrate**: you store structured data + embeddings + history _and_ ask the DB to produce a token‑efficient context payload.
 
 ---
 
@@ -182,6 +180,7 @@ Most "agent stacks" still glue together:
 ### Known limits
 
 - **Single-node only** (no replication / clustering yet)
+
 ---
 
 ## SochDB in one picture
@@ -199,6 +198,76 @@ Most "agent stacks" still glue together:
 
 ### Installation
 
+### Quick Setup
+
+#### One-Command Setup (Recommended)
+
+```bash
+# Clone, build, and test in one go
+git clone https://github.com/sochdb/sochdb.git && \
+cd sochdb && \
+make setup
+```
+
+The `make setup` command:
+
+1. Installs required Rust toolchain
+2. Installs development tools (clippy, rustfmt, cargo-watch)
+3. Builds all crates
+4. Runs the test suite
+5. Sets up git hooks
+
+### Manual Setup
+
+If you prefer manual setup or `make setup` fails:
+
+#### Prerequisites
+
+| Requirement | Version                  | Check              | Install                         |
+| ----------- | ------------------------ | ------------------ | ------------------------------- |
+| **Rust**    | ≥1.75.0 (2024 edition)   | `rustc --version`  | [rustup.rs](https://rustup.rs/) |
+| **Git**     | Any recent               | `git --version`    | OS package manager              |
+| **Clang**   | ≥14 (optional, for SIMD) | `clang --version`  | OS package manager              |
+| **Python**  | ≥3.9 (for SDK)           | `python --version` | OS package manager              |
+
+#### Steps
+
+```bash
+# 1. Fork and clone
+git clone https://github.com/YOUR_USERNAME/sochdb.git
+cd sochdb
+git remote add upstream https://github.com/sochdb/sochdb.git
+
+# 2. Install Rust (if needed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+# 3. Install development tools
+cargo install cargo-watch cargo-criterion cargo-deny cargo-udeps
+
+# 4. Build and test
+cargo build --all
+cargo test --all
+
+# 5. Verify clippy passes
+cargo clippy --all -- -D warnings
+```
+
+---
+
+## Development Environment
+
+### Recommended Tools
+
+```bash
+# Install useful development tools
+cargo install cargo-watch     # Auto-rebuild on changes
+cargo install cargo-criterion # Benchmarking
+cargo install cargo-deny      # Dependency auditing
+cargo install cargo-udeps     # Find unused dependencies
+cargo install cargo-expand    # Macro expansion
+```
+
 Choose your preferred SDK:
 
 ```bash
@@ -210,9 +279,12 @@ sochdb = "0.2"
 
 Language SDKs are maintained in separate repositories with their own release cycles:
 
-| Language | Repository | Installation |
-|----------|------------|-------------|
-| **Python** | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb` |
+| Language             | Repository                                                       | Installation                 |
+| -------------------- | ---------------------------------------------------------------- | ---------------------------- |
+| **Python**           | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb`         |
+| **Node.js/TypeScript** | [sochdb-nodejs-sdk](https://github.com/sochdb/sochdb-nodejs-sdk) | `npm install @sochdb/sochdb` |
+| **Go**              | [sochdb-go](https://github.com/sochdb/sochdb-go)                 | `go get github.com/sochdb/sochdb-go@latest` |
+| **Rust**            | This repository                                                  | `cargo add sochdb`           |
 
 ### 🐳 Docker Deployment
 
@@ -231,6 +303,7 @@ docker compose up -d
 **Docker Hub:** [`sushanth53/sochdb`](https://hub.docker.com/r/sushanth53/sochdb)
 
 **Features:**
+
 - ✅ Production-ready image (159MB)
 - ✅ High availability setup with Traefik
 - ✅ Prometheus + Grafana monitoring
@@ -238,14 +311,12 @@ docker compose up -d
 - ✅ Comprehensive test suite included
 
 **Performance (tested on Apple M-series):**
+
 - Single-threaded: ~2K ops/sec
-- Concurrent (10 threads): ~10.5K ops/sec  
+- Concurrent (10 threads): ~10.5K ops/sec
 - Latency p99: <2.2ms
 
 See [docker/README.md](docker/README.md) for full documentation.
-| **Node.js/TypeScript** | [sochdb-nodejs-sdk](https://github.com/sochdb/sochdb-nodejs-sdk) | `npm install @sochdb/sochdb` |
-| **Go** | [sochdb-go](https://github.com/sochdb/sochdb-go) | `go get github.com/sochdb/sochdb-go@latest` |
-| **Rust** | This repository | `cargo add sochdb` |
 
 ### Examples
 
@@ -273,11 +344,11 @@ db.close()
 #### Node.js / TypeScript
 
 ```typescript
-import { SochDatabase } from '@sochdb/sochdb';
+import { SochDatabase } from "@sochdb/sochdb";
 
-const db = new SochDatabase('./my_db');
-await db.put('users/alice', 'Alice Smith');
-console.log(await db.get('users/alice'));  // "Alice Smith"
+const db = new SochDatabase("./my_db");
+await db.put("users/alice", "Alice Smith");
+console.log(await db.get("users/alice")); // "Alice Smith"
 await db.close();
 ```
 
@@ -294,7 +365,7 @@ import (
 func main() {
     db, _ := sochdb.Open("./my_db")
     defer db.Close()
-    
+
     db.Put([]byte("users/alice"), []byte("Alice Smith"))
     value, _ := db.Get([]byte("users/alice"))
     fmt.Println(string(value))  // "Alice Smith"
@@ -308,7 +379,7 @@ use sochdb::Database;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::open("./my_db")?;
-    
+
     db.put(b"users/alice", b"Alice Smith")?;
     if let Some(value) = db.get(b"users/alice")? {
         println!("{}", String::from_utf8_lossy(&value));  // "Alice Smith"
@@ -364,9 +435,9 @@ import (
 func main() {
     db, _ := sochdb.Open("./my_db")
     defer db.Close()
-    
+
     graph := sochdb.NewGraphOverlay(db, "agent_memory")
-    
+
     // Build agent action graph
     graph.AddNode("action_1", map[string]interface{}{
         "type": "search", "query": "best restaurants",
@@ -374,11 +445,11 @@ func main() {
     graph.AddNode("action_2", map[string]interface{}{
         "type": "filter", "criteria": "italian",
     })
-    
+
     graph.AddEdge("action_1", "action_2", map[string]interface{}{
         "relationship": "feeds_into",
     })
-    
+
     // Find dependencies (DFS)
     deps := graph.DFS("action_1", 10)
     fmt.Printf("Action dependencies: %v\n", deps)
@@ -388,27 +459,35 @@ func main() {
 #### Node.js/TypeScript
 
 ```typescript
-import { Database, GraphOverlay } from '@sochdb/sochdb';
+import { Database, GraphOverlay } from "@sochdb/sochdb";
 
-const db = await Database.open('./my_db');
-const graph = new GraphOverlay(db, 'agent_memory');
+const db = await Database.open("./my_db");
+const graph = new GraphOverlay(db, "agent_memory");
 
 // Track entity relationships
-await graph.addNode('entity_alice', { type: 'person', name: 'Alice' });
-await graph.addNode('entity_acme', { type: 'company', name: 'Acme Corp' });
-await graph.addNode('entity_project', { type: 'project', name: 'AI Initiative' });
+await graph.addNode("entity_alice", { type: "person", name: "Alice" });
+await graph.addNode("entity_acme", { type: "company", name: "Acme Corp" });
+await graph.addNode("entity_project", {
+  type: "project",
+  name: "AI Initiative",
+});
 
-await graph.addEdge('entity_alice', 'entity_acme', { relationship: 'works_at' });
-await graph.addEdge('entity_alice', 'entity_project', { relationship: 'leads' });
+await graph.addEdge("entity_alice", "entity_acme", {
+  relationship: "works_at",
+});
+await graph.addEdge("entity_alice", "entity_project", {
+  relationship: "leads",
+});
 
 // Find all entities Alice is connected to
-const connections = await graph.getNeighbors('entity_alice');
+const connections = await graph.getNeighbors("entity_alice");
 console.log(`Alice is connected to: ${connections.length} entities`);
 
 await db.close();
 ```
 
 **Use Cases:**
+
 - Agent conversation history with causal chains
 - Entity relationship tracking across sessions
 - Action dependency graphs for planning
@@ -435,7 +514,7 @@ with db.use_namespace("tenant_acme") as ns:
             content_field="text"
         )
     )
-    
+
     # Insert multi-vector document (e.g., chunked document)
     collection.insert_multi(
         id="doc_123",
@@ -444,7 +523,7 @@ with db.use_namespace("tenant_acme") as ns:
         chunk_texts=["Intro text", "Body text", "Conclusion"],
         aggregate="max"  # Use max score across chunks
     )
-    
+
     # Hybrid search: vector + keyword with RRF fusion
     results = collection.hybrid_search(
         vector=query_embedding,
@@ -521,35 +600,35 @@ print(results)  # [{'id': '1', 'distance': 0.23}, ...]
 #### Node.js / TypeScript
 
 ```typescript
-import { VectorIndex } from '@sochdb/sochdb';
+import { VectorIndex } from "@sochdb/sochdb";
 
 // Instantiate VectorIndex with path and config
-const index = new VectorIndex('./vectors', {
+const index = new VectorIndex("./vectors", {
   dimension: 384,
-  metric: 'cosine'
+  metric: "cosine",
 });
 
 // Add vectors and build index
-await index.add('doc1', embedding1);
-await index.add('doc2', embedding2);
+await index.add("doc1", embedding1);
+await index.add("doc2", embedding2);
 await index.build();
 
 // Search
 const results = await index.search(queryEmbedding, 10);
-console.log(results);  // [{ id: 'doc1', distance: 0.23 }, ...]
+console.log(results); // [{ id: 'doc1', distance: 0.23 }, ...]
 ```
 
 ### SDK Feature Matrix
 
-| Feature | Python | Node.js | Go | Rust |
-|---------|--------|---------|-----|------|
-| Basic KV | ✅ | ✅ | ✅ | ✅ |
-| Transactions | ✅ | ✅ | ✅ | ✅ |
-| SQL Operations | ✅ | ✅ | ✅ | ✅ |
-| Vector Search | ✅ | ✅ | ✅ | ✅ |
-| Path API | ✅ | ✅ | ✅ | ✅ |
-| Prefix Scanning | ✅ | ✅ | ✅ | ✅ |
-| Query Builder | ✅ | ✅ | ✅ | ✅ |
+| Feature         | Python | Node.js | Go  | Rust |
+| --------------- | ------ | ------- | --- | ---- |
+| Basic KV        | ✅     | ✅      | ✅  | ✅   |
+| Transactions    | ✅     | ✅      | ✅  | ✅   |
+| SQL Operations  | ✅     | ✅      | ✅  | ✅   |
+| Vector Search   | ✅     | ✅      | ✅  | ✅   |
+| Path API        | ✅     | ✅      | ✅  | ✅   |
+| Prefix Scanning | ✅     | ✅      | ✅  | ✅   |
+| Query Builder   | ✅     | ✅      | ✅  | ✅   |
 
 > **Note:** While SDKs are maintained in separate repositories, they share the same core functionality and API design. Refer to individual SDK repositories for language-specific documentation and examples.
 
@@ -570,15 +649,15 @@ App / Agent Runtime
 
 ### Crate Overview
 
-| Crate | Description | Key Components |
-|-------|-------------|----------------|
-| `sochdb-core` | Core types and TOON format | `SochValue`, `SochSchema`, `SochTable`, codec |
-| `sochdb-kernel` | Database kernel | WAL, MVCC, transactions, catalog |
-| `sochdb-storage` | Storage engine | LSCS columnar, mmap, block checksums |
-| `sochdb-index` | Index structures | B-Tree, HNSW vector index |
-| `sochdb-query` | Query execution | Cost optimizer, context builder, SOCH-QL |
-| `sochdb-client` | Client SDK | `SochConnection`, `PathQuery`, `BatchWriter` |
-| `sochdb-plugin-logging` | Logging plugin | Structured logging, tracing |
+| Crate                   | Description                | Key Components                                |
+| ----------------------- | -------------------------- | --------------------------------------------- |
+| `sochdb-core`           | Core types and TOON format | `SochValue`, `SochSchema`, `SochTable`, codec |
+| `sochdb-kernel`         | Database kernel            | WAL, MVCC, transactions, catalog              |
+| `sochdb-storage`        | Storage engine             | LSCS columnar, mmap, block checksums          |
+| `sochdb-index`          | Index structures           | B-Tree, HNSW vector index                     |
+| `sochdb-query`          | Query execution            | Cost optimizer, context builder, SOCH-QL      |
+| `sochdb-client`         | Client SDK                 | `SochConnection`, `PathQuery`, `BatchWriter`  |
+| `sochdb-plugin-logging` | Logging plugin             | Structured logging, tracing                   |
 
 ---
 
@@ -624,16 +703,16 @@ value        ::= null | bool | number | string | array | ref
 
 ### TOON Value Types
 
-| Type | TOON Syntax | Example |
-|------|-------------|---------|
-| Null | `∅` | `∅` |
-| Boolean | `T` / `F` | `T` |
-| Integer | number | `42`, `-17` |
-| Float | decimal | `3.14159` |
-| String | text or `"quoted"` | `Alice`, `"hello, world"` |
-| Array | `[items]` | `[1,2,3]` |
-| Reference | `ref(table,id)` | `ref(users,42)` |
-| Binary | `b64:data` | `b64:SGVsbG8=` |
+| Type      | TOON Syntax        | Example                   |
+| --------- | ------------------ | ------------------------- |
+| Null      | `∅`                | `∅`                       |
+| Boolean   | `T` / `F`          | `T`                       |
+| Integer   | number             | `42`, `-17`               |
+| Float     | decimal            | `3.14159`                 |
+| String    | text or `"quoted"` | `Alice`, `"hello, world"` |
+| Array     | `[items]`          | `[1,2,3]`                 |
+| Reference | `ref(table,id)`    | `ref(users,42)`           |
+| Binary    | `b64:data`         | `b64:SGVsbG8=`            |
 
 ---
 
@@ -681,21 +760,21 @@ for result in results {
 
 ### Distance Metrics
 
-| Metric | Use Case | Formula |
-|--------|----------|---------|
-| `Cosine` | Text embeddings, normalized vectors | `1 - (a·b)/(‖a‖‖b‖)` |
-| `Euclidean` | Spatial data, unnormalized | `√Σ(aᵢ-bᵢ)²` |
-| `DotProduct` | When vectors are pre-normalized | `-a·b` |
+| Metric       | Use Case                            | Formula              |
+| ------------ | ----------------------------------- | -------------------- |
+| `Cosine`     | Text embeddings, normalized vectors | `1 - (a·b)/(‖a‖‖b‖)` |
+| `Euclidean`  | Spatial data, unnormalized          | `√Σ(aᵢ-bᵢ)²`         |
+| `DotProduct` | When vectors are pre-normalized     | `-a·b`               |
 
 ### Vector Quantization
 
 SochDB supports optional quantization to reduce memory usage with minimal recall loss:
 
-| Precision | Memory | Search Latency | Use Case |
-|-----------|--------|----------------|----------|
-| `F32` | 100% (baseline) | Baseline | Maximum precision |
-| `F16` | 50% | ~Same | General embeddings |
-| `BF16` | 50% | ~Same | ML model compatibility |
+| Precision | Memory          | Search Latency | Use Case               |
+| --------- | --------------- | -------------- | ---------------------- |
+| `F32`     | 100% (baseline) | Baseline       | Maximum precision      |
+| `F16`     | 50%             | ~Same          | General embeddings     |
+| `BF16`    | 50%             | ~Same          | ML model compatibility |
 
 > **Tip**: F16 typically provides 50% memory reduction with <1% recall degradation for most embedding models.
 
@@ -707,12 +786,12 @@ SochDB provides **ACID transactions** with MVCC (Multi-Version Concurrency Contr
 
 ### ACID Guarantees
 
-| Property | Implementation |
-|----------|----------------|
-| **Atomicity** | Buffered writes with all-or-nothing commit |
-| **Consistency** | Schema validation before commit |
-| **Isolation** | MVCC snapshots with read/write set tracking |
-| **Durability** | WAL with fsync, group commit support |
+| Property        | Implementation                              |
+| --------------- | ------------------------------------------- |
+| **Atomicity**   | Buffered writes with all-or-nothing commit  |
+| **Consistency** | Schema validation before commit             |
+| **Isolation**   | MVCC snapshots with read/write set tracking |
+| **Durability**  | WAL with fsync, group commit support        |
 
 ### Transaction Modes
 
@@ -739,11 +818,11 @@ conn.commit(txn)?;
 
 ### Isolation Levels
 
-| Level | Description | Status |
-|-------|-------------|--------|
-| `ReadCommitted` | Sees committed data at statement start | ✅ Implemented |
-| `SnapshotIsolation` | Reads see consistent point-in-time view | ✅ Implemented |
-| `Serializable` | SSI with rw-antidependency cycle detection | ✅ Implemented |
+| Level               | Description                                | Status         |
+| ------------------- | ------------------------------------------ | -------------- |
+| `ReadCommitted`     | Sees committed data at statement start     | ✅ Implemented |
+| `SnapshotIsolation` | Reads see consistent point-in-time view    | ✅ Implemented |
+| `Serializable`      | SSI with rw-antidependency cycle detection | ✅ Implemented |
 
 ### WAL Sync Modes
 
@@ -762,11 +841,11 @@ let config = DatabaseConfig {
 
 SochDB provides pre-configured durability settings for common use cases:
 
-| Preset | Sync Mode | Group Commit | Best For |
-|--------|-----------|--------------|----------|
-| `throughput_optimized()` | Normal | Large batches | High-volume ingestion |
-| `latency_optimized()` | Full | Small batches | Real-time applications |
-| `max_durability()` | Full | Disabled | Financial/critical data |
+| Preset                   | Sync Mode | Group Commit  | Best For                |
+| ------------------------ | --------- | ------------- | ----------------------- |
+| `throughput_optimized()` | Normal    | Large batches | High-volume ingestion   |
+| `latency_optimized()`    | Full      | Small batches | Real-time applications  |
+| `max_durability()`       | Full      | Disabled      | Financial/critical data |
 
 ```rust
 use sochdb::ConnectionConfig;
@@ -830,7 +909,7 @@ let results = PathQuery::from_path(&conn, "users")
 
 ```
 Path: "users/1/name"
-      
+
       TCH Resolution (O(3) = O(|path|))
       ┌─────────────────────────────────┐
       │  users  →  1  →  name           │
@@ -838,7 +917,7 @@ Path: "users/1/name"
       │  Table   Row   Column           │
       │  Lookup  Index  Access          │
       └─────────────────────────────────┘
-      
+
 vs    B-Tree (O(log N))
       ┌─────────────────────────────────┐
       │  Binary search through          │
@@ -862,10 +941,10 @@ config.enable_ordered_index = false;
 // Note: scan_prefix becomes O(N) instead of O(log N + K)
 ```
 
-| Mode | Write Speed | Prefix Scan | Use Case |
-|------|-------------|-------------|----------|
-| Ordered index **on** | Baseline | O(log N + K) | Read-heavy, prefix queries |
-| Ordered index **off** | ~20% faster | O(N) | Write-heavy, point lookups |
+| Mode                  | Write Speed | Prefix Scan  | Use Case                   |
+| --------------------- | ----------- | ------------ | -------------------------- |
+| Ordered index **on**  | Baseline    | O(log N + K) | Read-heavy, prefix queries |
+| Ordered index **off** | ~20% faster | O(N)         | Write-heavy, point lookups |
 
 ---
 
@@ -880,27 +959,27 @@ use sochdb::ContextQueryBuilder;
 let context = ContextQueryBuilder::new()
     .for_session("session_123")
     .with_budget(4096)  // Token budget
-    
+
     // System prompt (highest priority)
     .literal("SYSTEM", -1, "You are a helpful assistant")
-    
+
     // User profile from database
     .section("USER", 0)
         .get("user.profile.{name, email, preferences}")
         .done()
-    
+
     // Recent conversation history
     .section("HISTORY", 1)
         .last(10, "messages")
         .where_eq("session_id", session_id)
         .done()
-    
+
     // Relevant documents via vector search
     .section("DOCS", 2)
         .search("knowledge_base", "query_embedding", 5)
         .min_score(0.7)
         .done()
-    
+
     .truncation(TruncationStrategy::PriorityDrop)
     .format(ContextFormat::Soch)
     .execute()?;
@@ -917,12 +996,12 @@ SochDB uses a plugin architecture for extensibility without dependency bloat.
 
 ### Extension Types
 
-| Extension | Purpose | Example |
-|-----------|---------|---------|
-| `StorageExtension` | Alternative backends | RocksDB, LSCS |
-| `IndexExtension` | Custom indexes | Learned index, full-text |
-| `ObservabilityExtension` | Metrics/tracing | Prometheus, DataDog |
-| `CompressionExtension` | Compression algos | LZ4, Zstd |
+| Extension                | Purpose              | Example                  |
+| ------------------------ | -------------------- | ------------------------ |
+| `StorageExtension`       | Alternative backends | RocksDB, LSCS            |
+| `IndexExtension`         | Custom indexes       | Learned index, full-text |
+| `ObservabilityExtension` | Metrics/tracing      | Prometheus, DataDog      |
+| `CompressionExtension`   | Compression algos    | LZ4, Zstd                |
 
 ### Implementing a Plugin
 
@@ -941,7 +1020,7 @@ impl Extension for PrometheusMetrics {
             capabilities: vec![ExtensionCapability::Observability],
         }
     }
-    
+
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 }
@@ -950,15 +1029,15 @@ impl ObservabilityExtension for PrometheusMetrics {
     fn counter_inc(&self, name: &str, value: u64, labels: &[(&str, &str)]) {
         // Push to Prometheus
     }
-    
+
     fn gauge_set(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
         // Set gauge value
     }
-    
+
     fn histogram_observe(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
         // Record histogram
     }
-    
+
     // ... tracing methods
 }
 
@@ -986,7 +1065,7 @@ let result = conn.batch()
     // ... more inserts
     .execute()?;
 
-println!("Executed: {}, Failed: {}, Duration: {}ms", 
+println!("Executed: {}, Failed: {}, Duration: {}ms",
     result.ops_executed, result.ops_failed, result.duration_ms);
 
 // Bulk insert for large datasets
@@ -1018,6 +1097,7 @@ Where:
 We benchmarked SochDB's HNSW index against ChromaDB and LanceDB using **real embeddings from Azure OpenAI** (not synthetic vectors). This provides realistic performance numbers for production RAG applications.
 
 #### Test Setup
+
 - **Corpus**: 1,000 documents (generated technical content)
 - **Queries**: 100 search queries
 - **Embedding Model**: Azure OpenAI `text-embedding-3-small` (1536 dimensions)
@@ -1026,13 +1106,14 @@ We benchmarked SochDB's HNSW index against ChromaDB and LanceDB using **real emb
 
 #### Vector Database Comparison
 
-| Database | Insert 1K Vectors | Insert Rate | Search p50 | Search p99 |
-|----------|-------------------|-------------|------------|------------|
-| **SochDB** | 133.3ms | 7,502 vec/s | **0.45ms** ✅ | **0.61ms** ✅ |
-| ChromaDB | 308.9ms | 3,237 vec/s | 1.37ms | 1.73ms |
-| LanceDB | 55.2ms | 18,106 vec/s | 9.86ms | 21.63ms |
+| Database   | Insert 1K Vectors | Insert Rate  | Search p50    | Search p99    |
+| ---------- | ----------------- | ------------ | ------------- | ------------- |
+| **SochDB** | 133.3ms           | 7,502 vec/s  | **0.45ms** ✅ | **0.61ms** ✅ |
+| ChromaDB   | 308.9ms           | 3,237 vec/s  | 1.37ms        | 1.73ms        |
+| LanceDB    | 55.2ms            | 18,106 vec/s | 9.86ms        | 21.63ms       |
 
 **Key Findings**:
+
 - **SochDB search is 3x faster than ChromaDB** (0.45ms vs 1.37ms p50)
 - **SochDB search is 22x faster than LanceDB** (0.45ms vs 9.86ms p50)
 - LanceDB has fastest inserts (columnar-optimized), but slowest search
@@ -1040,11 +1121,11 @@ We benchmarked SochDB's HNSW index against ChromaDB and LanceDB using **real emb
 
 #### End-to-End RAG Bottleneck Analysis
 
-| Component | Time | % of Total |
-|-----------|------|------------|
-| **Embedding API (Azure OpenAI)** | 59.5s | **99.7%** |
-| SochDB Insert (1K vectors) | 0.133s | 0.2% |
-| SochDB Search (100 queries) | 0.046s | 0.1% |
+| Component                        | Time   | % of Total |
+| -------------------------------- | ------ | ---------- |
+| **Embedding API (Azure OpenAI)** | 59.5s  | **99.7%**  |
+| SochDB Insert (1K vectors)       | 0.133s | 0.2%       |
+| SochDB Search (100 queries)      | 0.046s | 0.1%       |
 
 > 🎯 **The embedding API is 333x slower than SochDB operations.** In production RAG systems, the database is never the bottleneck—your LLM API calls are.
 
@@ -1055,21 +1136,23 @@ We benchmarked SochDB's HNSW index against ChromaDB and LanceDB using **real emb
 SochDB's HNSW index achieves **>98% recall@10** with sub-millisecond latency using real Azure OpenAI embeddings.
 
 #### Test Methodology
+
 - Ground truth computed via brute-force cosine similarity
 - Recall@k = (# correct results in top-k) / k
 - Tested across multiple HNSW configurations
 
 #### Results by HNSW Configuration
 
-| Configuration | Search (ms) | R@1 | R@5 | R@10 | R@20 | R@50 |
-|---------------|-------------|-----|-----|------|------|------|
-| **M=8, ef_c=50** | **0.42** | 0.990 | **0.994** | **0.991** | 0.994 | 0.991 |
-| M=16, ef_c=100 | 0.47 | 0.980 | 0.986 | 0.982 | 0.984 | 0.986 |
-| M=16, ef_c=200 | 0.44 | 0.970 | 0.984 | 0.988 | 0.990 | 0.986 |
-| M=32, ef_c=200 | 0.47 | 0.980 | 0.982 | 0.981 | 0.984 | 0.985 |
-| M=32, ef_c=400 | 0.52 | 0.990 | 0.986 | 0.983 | 0.979 | 0.981 |
+| Configuration    | Search (ms) | R@1   | R@5       | R@10      | R@20  | R@50  |
+| ---------------- | ----------- | ----- | --------- | --------- | ----- | ----- |
+| **M=8, ef_c=50** | **0.42**    | 0.990 | **0.994** | **0.991** | 0.994 | 0.991 |
+| M=16, ef_c=100   | 0.47        | 0.980 | 0.986     | 0.982     | 0.984 | 0.986 |
+| M=16, ef_c=200   | 0.44        | 0.970 | 0.984     | 0.988     | 0.990 | 0.986 |
+| M=32, ef_c=200   | 0.47        | 0.980 | 0.982     | 0.981     | 0.984 | 0.985 |
+| M=32, ef_c=400   | 0.52        | 0.990 | 0.986     | 0.983     | 0.979 | 0.981 |
 
 **Key Insights**:
+
 - All configurations achieve **>98% recall@10** with real embeddings
 - **Best recall**: 99.1% @ 0.42ms (M=8, ef_c=50)
 - **Recommended for RAG**: M=16, ef_c=100 (balanced speed + quality)
@@ -1077,31 +1160,31 @@ SochDB's HNSW index achieves **>98% recall@10** with sub-millisecond latency usi
 
 #### Recommended HNSW Settings
 
-| Use Case | M | ef_construction | Expected Recall@10 | Latency |
-|----------|---|-----------------|-------------------|---------|
-| **Real-time RAG** | 8 | 50 | ~99% | <0.5ms |
-| **Balanced** | 16 | 100 | ~98% | <0.5ms |
-| **Maximum Quality** | 16 | 200 | ~99% | <0.5ms |
-| **Large-scale (10M+)** | 32 | 200 | ~97% | <1ms |
+| Use Case               | M   | ef_construction | Expected Recall@10 | Latency |
+| ---------------------- | --- | --------------- | ------------------ | ------- |
+| **Real-time RAG**      | 8   | 50              | ~99%               | <0.5ms  |
+| **Balanced**           | 16  | 100             | ~98%               | <0.5ms  |
+| **Maximum Quality**    | 16  | 200             | ~99%               | <0.5ms  |
+| **Large-scale (10M+)** | 32  | 200             | ~97%               | <1ms    |
 
 ---
 
 ### Token Efficiency (TOON vs JSON)
 
-| Dataset | JSON Tokens | TOON Tokens | Reduction |
-|---------|-------------|-------------|-----------|
-| Users (100 rows, 5 cols) | 2,340 | 782 | **66.6%** |
-| Events (1000 rows, 3 cols) | 18,200 | 7,650 | **58.0%** |
-| Products (500 rows, 8 cols) | 15,600 | 5,980 | **61.7%** |
+| Dataset                     | JSON Tokens | TOON Tokens | Reduction |
+| --------------------------- | ----------- | ----------- | --------- |
+| Users (100 rows, 5 cols)    | 2,340       | 782         | **66.6%** |
+| Events (1000 rows, 3 cols)  | 18,200      | 7,650       | **58.0%** |
+| Products (500 rows, 8 cols) | 15,600      | 5,980       | **61.7%** |
 
 ---
 
 ### I/O Reduction (Columnar Storage)
 
-| Query | Row Store | SochDB Columnar | Reduction |
-|-------|-----------|-----------------|-----------| 
-| SELECT 2 of 10 cols | 100% | 20% | **80%** |
-| SELECT 1 of 20 cols | 100% | 5% | **95%** |
+| Query               | Row Store | SochDB Columnar | Reduction |
+| ------------------- | --------- | --------------- | --------- |
+| SELECT 2 of 10 cols | 100%      | 20%             | **80%**   |
+| SELECT 1 of 20 cols | 100%      | 5%              | **95%**   |
 
 ---
 
@@ -1109,12 +1192,12 @@ SochDB's HNSW index achieves **>98% recall@10** with sub-millisecond latency usi
 
 > **Methodology**: SochDB vs SQLite under similar durability settings (`WAL` mode, `synchronous=NORMAL`). Results on Apple M-series hardware, 100k records.
 
-| Database | Mode | Insert Rate | Notes |
-|----------|------|-------------|-------|
-| **SQLite** | File (WAL) | ~1.16M ops/sec | Industry standard |
-| **SochDB** | Embedded (WAL) | ~760k ops/sec | Group commit disabled |
-| **SochDB** | put_raw | ~1.30M ops/sec | Direct storage layer |
-| **SochDB** | insert_row_slice | ~1.29M ops/sec | Zero-allocation API |
+| Database   | Mode             | Insert Rate    | Notes                 |
+| ---------- | ---------------- | -------------- | --------------------- |
+| **SQLite** | File (WAL)       | ~1.16M ops/sec | Industry standard     |
+| **SochDB** | Embedded (WAL)   | ~760k ops/sec  | Group commit disabled |
+| **SochDB** | put_raw          | ~1.30M ops/sec | Direct storage layer  |
+| **SochDB** | insert_row_slice | ~1.29M ops/sec | Zero-allocation API   |
 
 ---
 
@@ -1155,19 +1238,19 @@ cargo run -p benchmarks --release
 pub struct DatabaseConfig {
     /// Enable group commit for better throughput
     pub group_commit: bool,           // default: true
-    
+
     /// WAL sync mode
     pub sync_mode: SyncMode,          // default: Normal
-    
+
     /// Maximum WAL size before checkpoint
     pub max_wal_size: u64,            // default: 64MB
-    
+
     /// Memtable size before flush
     pub memtable_size: usize,         // default: 4MB
-    
+
     /// Block cache size
     pub block_cache_size: usize,      // default: 64MB
-    
+
     /// Compression algorithm
     pub compression: Compression,      // default: LZ4
 }
@@ -1179,19 +1262,19 @@ pub struct DatabaseConfig {
 pub struct HNSWConfig {
     /// Max connections per node per layer
     pub m: usize,                     // default: 16
-    
+
     /// Max connections at layer 0
     pub m_max: usize,                 // default: 32
-    
+
     /// Construction-time search width
     pub ef_construction: usize,       // default: 200
-    
+
     /// Query-time search width (adjustable)
     pub ef_search: usize,             // default: 50
-    
+
     /// Distance metric
     pub metric: DistanceMetric,       // default: Cosine
-    
+
     /// Level multiplier (mL = 1/ln(M))
     pub ml: f32,                      // default: calculated
 }
@@ -1203,70 +1286,70 @@ pub struct HNSWConfig {
 
 ### SochConnection
 
-| Method | Description | Returns |
-|--------|-------------|---------|
-| `open(path)` | Open/create database | `Result<SochConnection>` |
-| `create_table(schema)` | Create a new table | `Result<CreateResult>` |
-| `drop_table(name)` | Drop a table | `Result<DropResult>` |
-| `batch()` | Start a batch writer | `BatchWriter` |
-| `put(path, value)` | Put value at path | `Result<()>` |
-| `get(path)` | Get value at path | `Result<Option<Vec<u8>>>` |
-| `delete(path)` | Delete at path | `Result<()>` |
-| `scan(prefix)` | Scan path prefix | `Result<Vec<(String, Vec<u8>)>>` |
-| `begin()` | Begin transaction | `Result<TxnHandle>` |
-| `commit(txn)` | Commit transaction | `Result<()>` |
-| `rollback(txn)` | Rollback transaction | `Result<()>` |
-| `vector_insert(...)` | Insert vector | `Result<()>` |
-| `vector_search(...)` | Search similar vectors | `Result<Vec<SearchResult>>` |
-| `fsync()` | Force sync to disk | `Result<()>` |
-| `checkpoint()` | Create checkpoint | `Result<u64>` |
-| `stats()` | Get statistics | `ClientStats` |
+| Method                 | Description            | Returns                          |
+| ---------------------- | ---------------------- | -------------------------------- |
+| `open(path)`           | Open/create database   | `Result<SochConnection>`         |
+| `create_table(schema)` | Create a new table     | `Result<CreateResult>`           |
+| `drop_table(name)`     | Drop a table           | `Result<DropResult>`             |
+| `batch()`              | Start a batch writer   | `BatchWriter`                    |
+| `put(path, value)`     | Put value at path      | `Result<()>`                     |
+| `get(path)`            | Get value at path      | `Result<Option<Vec<u8>>>`        |
+| `delete(path)`         | Delete at path         | `Result<()>`                     |
+| `scan(prefix)`         | Scan path prefix       | `Result<Vec<(String, Vec<u8>)>>` |
+| `begin()`              | Begin transaction      | `Result<TxnHandle>`              |
+| `commit(txn)`          | Commit transaction     | `Result<()>`                     |
+| `rollback(txn)`        | Rollback transaction   | `Result<()>`                     |
+| `vector_insert(...)`   | Insert vector          | `Result<()>`                     |
+| `vector_search(...)`   | Search similar vectors | `Result<Vec<SearchResult>>`      |
+| `fsync()`              | Force sync to disk     | `Result<()>`                     |
+| `checkpoint()`         | Create checkpoint      | `Result<u64>`                    |
+| `stats()`              | Get statistics         | `ClientStats`                    |
 
 ### PathQuery
 
-| Method | Description | Returns |
-|--------|-------------|---------|
-| `from_path(conn, path)` | Create query from path | `PathQuery` |
-| `select(cols)` | Select columns | `Self` |
-| `project(cols)` | Alias for select | `Self` |
-| `where_eq(field, val)` | Equality filter | `Self` |
-| `where_gt(field, val)` | Greater than filter | `Self` |
-| `where_like(field, pat)` | Pattern match | `Self` |
-| `order_by(field, dir)` | Sort results | `Self` |
-| `limit(n)` | Limit results | `Self` |
-| `offset(n)` | Skip results | `Self` |
-| `execute()` | Execute query | `Result<QueryResult>` |
-| `execute_toon()` | Execute and return TOON | `Result<String>` |
+| Method                   | Description             | Returns               |
+| ------------------------ | ----------------------- | --------------------- |
+| `from_path(conn, path)`  | Create query from path  | `PathQuery`           |
+| `select(cols)`           | Select columns          | `Self`                |
+| `project(cols)`          | Alias for select        | `Self`                |
+| `where_eq(field, val)`   | Equality filter         | `Self`                |
+| `where_gt(field, val)`   | Greater than filter     | `Self`                |
+| `where_like(field, pat)` | Pattern match           | `Self`                |
+| `order_by(field, dir)`   | Sort results            | `Self`                |
+| `limit(n)`               | Limit results           | `Self`                |
+| `offset(n)`              | Skip results            | `Self`                |
+| `execute()`              | Execute query           | `Result<QueryResult>` |
+| `execute_toon()`         | Execute and return TOON | `Result<String>`      |
 
 ### SochValue
 
-| Variant | Rust Type | Description |
-|---------|-----------|-------------|
-| `Null` | — | Null value |
-| `Bool(bool)` | `bool` | Boolean |
-| `Int(i64)` | `i64` | Signed integer |
-| `UInt(u64)` | `u64` | Unsigned integer |
-| `Float(f64)` | `f64` | 64-bit float |
-| `Text(String)` | `String` | UTF-8 string |
-| `Binary(Vec<u8>)` | `Vec<u8>` | Binary data |
-| `Array(Vec<SochValue>)` | `Vec<SochValue>` | Array of values |
-| `Object(HashMap<String, SochValue>)` | `HashMap` | Key-value object |
-| `Ref { table, id }` | — | Foreign key reference |
+| Variant                              | Rust Type        | Description           |
+| ------------------------------------ | ---------------- | --------------------- |
+| `Null`                               | —                | Null value            |
+| `Bool(bool)`                         | `bool`           | Boolean               |
+| `Int(i64)`                           | `i64`            | Signed integer        |
+| `UInt(u64)`                          | `u64`            | Unsigned integer      |
+| `Float(f64)`                         | `f64`            | 64-bit float          |
+| `Text(String)`                       | `String`         | UTF-8 string          |
+| `Binary(Vec<u8>)`                    | `Vec<u8>`        | Binary data           |
+| `Array(Vec<SochValue>)`              | `Vec<SochValue>` | Array of values       |
+| `Object(HashMap<String, SochValue>)` | `HashMap`        | Key-value object      |
+| `Ref { table, id }`                  | —                | Foreign key reference |
 
 ### SochType
 
-| Type | Description |
-|------|-------------|
-| `Int` | 64-bit signed integer |
-| `UInt` | 64-bit unsigned integer |
-| `Float` | 64-bit float |
-| `Text` | UTF-8 string |
-| `Bool` | Boolean |
-| `Bytes` | Binary data |
-| `Vector(dim)` | Float vector with dimension |
-| `Array(inner)` | Array of inner type |
-| `Optional(inner)` | Nullable type |
-| `Ref(table)` | Foreign key to table |
+| Type              | Description                 |
+| ----------------- | --------------------------- |
+| `Int`             | 64-bit signed integer       |
+| `UInt`            | 64-bit unsigned integer     |
+| `Float`           | 64-bit float                |
+| `Text`            | UTF-8 string                |
+| `Bool`            | Boolean                     |
+| `Bytes`           | Binary data                 |
+| `Vector(dim)`     | Float vector with dimension |
+| `Array(inner)`    | Array of inner type         |
+| `Optional(inner)` | Nullable type               |
+| `Ref(table)`      | Foreign key to table        |
 
 ---
 
@@ -1296,29 +1379,29 @@ cargo bench
 
 ### Feature Flags
 
-| Feature | Crate | Description |
-|---------|-------|-------------|
-| `simd` | sochdb-client | SIMD optimizations for column access |
-| `embedded` | sochdb-client | Use kernel directly (no IPC) |
-| `full` | sochdb-kernel | All kernel features |
+| Feature    | Crate         | Description                          |
+| ---------- | ------------- | ------------------------------------ |
+| `simd`     | sochdb-client | SIMD optimizations for column access |
+| `embedded` | sochdb-client | Use kernel directly (no IPC)         |
+| `full`     | sochdb-kernel | All kernel features                  |
 
 ---
 
 ## ⚠️ Before heavy production use
 
-* **Single node** (no replication / clustering)
-* **WAL growth**: call `checkpoint()` periodically for long-running services
-* **Group commit**: tune per workload (disable for strictly sequential writes)
+- **Single node** (no replication / clustering)
+- **WAL growth**: call `checkpoint()` periodically for long-running services
+- **Group commit**: tune per workload (disable for strictly sequential writes)
 
 ---
 
 ## 🚧 Roadmap (high level)
 
-* Cost-based optimizer: experimental
-* Agent flow metadata schema: planned
-* Agent runtime library: planned
-* Adaptive group commit: planned
-* WAL compaction / auto-truncation: planned
+- Cost-based optimizer: experimental
+- Agent flow metadata schema: planned
+- Agent runtime library: planned
+- Adaptive group commit: planned
+- WAL compaction / auto-truncation: planned
 
 ---
 
@@ -1349,13 +1432,13 @@ SochDB is designed to be the **brain, memory, and registry** for AI agents—not
 
 ### What SochDB Stores
 
-| Table | Purpose |
-|-------|---------|
-| `agent_flows` | Flow definitions: name, entry node, version |
-| `agent_nodes` | Nodes: LLM steps, tool calls, decisions, loops, reflections |
-| `agent_edges` | Edges with conditions for routing |
-| `agent_sessions` | Runtime state per user/conversation |
-| `agent_reflections` | Feedback and learning data |
+| Table               | Purpose                                                     |
+| ------------------- | ----------------------------------------------------------- |
+| `agent_flows`       | Flow definitions: name, entry node, version                 |
+| `agent_nodes`       | Nodes: LLM steps, tool calls, decisions, loops, reflections |
+| `agent_edges`       | Edges with conditions for routing                           |
+| `agent_sessions`    | Runtime state per user/conversation                         |
+| `agent_reflections` | Feedback and learning data                                  |
 
 ### Node Types
 
@@ -1399,13 +1482,13 @@ This keeps prompts small and stable. The runtime handles control flow.
 
 ### Why This Approach
 
-| Benefit | Description |
-|---------|-------------|
-| **Separation of concerns** | SochDB = data, Runtime = execution, LLM = reasoning |
-| **Language-agnostic** | Rust, Python, TypeScript runtimes share the same flows |
-| **Debuggable** | Every step, state change, and decision is in the DB |
-| **Learnable** | Reflection nodes + stored feedback enable continuous improvement |
-| **No prompt injection risk** | LLM never sees "execute this code"—just structured tasks |
+| Benefit                      | Description                                                      |
+| ---------------------------- | ---------------------------------------------------------------- |
+| **Separation of concerns**   | SochDB = data, Runtime = execution, LLM = reasoning              |
+| **Language-agnostic**        | Rust, Python, TypeScript runtimes share the same flows           |
+| **Debuggable**               | Every step, state change, and decision is in the DB              |
+| **Learnable**                | Reflection nodes + stored feedback enable continuous improvement |
+| **No prompt injection risk** | LLM never sees "execute this code"—just structured tasks         |
 
 ### Built-in Patterns (Planned)
 
@@ -1426,10 +1509,10 @@ These ship as rows in `agent_flows` / `agent_nodes` that you can clone and custo
 
 SochDB is currently a **local-first, embedded database** — and it's working great! Based on the success of this MVP, I'm exploring a cloud offering:
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| **Local MVP** | ✅ Live | Embedded + IPC modes, full ACID, vector search |
-| **Cloud (SochDB Cloud)** | 🚧 On the way | Hosted, managed SochDB with sync |
+| Phase                    | Status        | Description                                    |
+| ------------------------ | ------------- | ---------------------------------------------- |
+| **Local MVP**            | ✅ Live       | Embedded + IPC modes, full ACID, vector search |
+| **Cloud (SochDB Cloud)** | 🚧 On the way | Hosted, managed SochDB with sync               |
 
 **Your feedback shapes the cloud roadmap.** If you're interested in a hosted solution, let us know what you need!
 
@@ -1439,11 +1522,12 @@ SochDB is currently a **local-first, embedded database** — and it's working gr
 
 > **This is an MVP — and your support makes it better.**
 
-SochDB started as an experiment: *what if databases were designed for LLMs from day one?* The result is what you see here — a working, tested, and (I hope) useful database.
+SochDB started as an experiment: _what if databases were designed for LLMs from day one?_ The result is what you see here — a working, tested, and (I hope) useful database.
 
 But here's the thing: **software gets better with users.** Every bug report, feature request, and "hey, this broke" message helps SochDB become more robust. You might find rough edges. You might encounter surprises. That's expected — and fixable!
 
 **What I need from you:**
+
 - 🐛 **Report bugs** — even small ones
 - 💡 **Request features** — what's missing for your use case?
 - ⭐ **Star the repo** — it helps others discover SochDB
@@ -1453,7 +1537,7 @@ Your usage and feedback don't just help me — they help everyone building with 
 
 > **Note:** SochDB is a **single-person project** built over weekends and spare time. I'm the sole developer, architect, and maintainer. This means you might find rough edges, incomplete features, or areas that need polish. The good news? Your contributions can make a real impact. More hands on this project means more advanced features, better stability, and faster progress. Every PR, issue report, and suggestion directly shapes what SochDB becomes.
 
-*— Sushanth*
+_— Sushanth_
 
 ---
 
@@ -1485,6 +1569,7 @@ This project is licensed under the **GNU Affero General Public License v3.0 or l
 See the [LICENSE](LICENSE) file for the full text.
 
 **What this means:**
+
 - ✅ You can use, modify, and distribute SochDB freely
 - ✅ You must share your modifications under AGPL-3.0
 - ✅ If you run SochDB as a network service, you must share your source code
