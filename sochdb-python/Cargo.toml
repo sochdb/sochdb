@@ -1,9 +1,9 @@
 [package]
 name = "sochdb-python"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
-license = "Apache-2.0"
+license.workspace = true
 description = "SochDB Python native extension with PyO3 - zero-copy vector operations"
 
 [lib]

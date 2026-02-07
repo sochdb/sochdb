@@ -139,16 +139,32 @@ impl Default for LsmConfig {
 /// Vector key type
 pub type VectorKey = u64;
 
-/// WAL record types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-enum WalRecordType {
-    Insert = 1,
-    #[allow(dead_code)]
-    Delete = 2,
-    SealStart = 3,
-    SealComplete = 4,
+/// WAL record types for vector LSM operations.
+///
+/// Uses the canonical `sochdb_core::txn::WalRecordType` for the logical
+/// record classification, with a local disk-format mapping to preserve
+/// backward compatibility with existing WAL files.
+///
+/// Disk byte mapping (DO NOT CHANGE without migration):
+///   Data (Insert)  = 1
+///   Delete         = 2  
+///   Flush (Seal)   = 3
+///   Compaction     = 4
+mod wal_record_compat {
+    use sochdb_core::txn::WalRecordType;
+    
+    /// Map canonical WalRecordType to on-disk byte (vector WAL format).
+    pub(super) fn to_disk_byte(rt: WalRecordType) -> u8 {
+        match rt {
+            WalRecordType::Data => 1,       // Insert
+            WalRecordType::Delete => 2,     // Delete
+            WalRecordType::Flush => 3,      // SealStart
+            WalRecordType::Compaction => 4, // SealComplete
+            _ => 0xFF, // Unknown — should not appear in vector WAL
+        }
+    }
 }
+use sochdb_core::txn::WalRecordType;
 
 /// WAL record header
 #[repr(C, packed)]
@@ -207,7 +223,7 @@ impl WriteAheadLog {
         
         // Write header
         let header = WalHeader {
-            record_type: WalRecordType::Insert as u8,
+            record_type: wal_record_compat::to_disk_byte(WalRecordType::Data),
             key,
             dim,
             checksum,
@@ -245,7 +261,7 @@ impl WriteAheadLog {
     /// Write seal start marker
     pub fn write_seal_start(&mut self, segment_id: u64) -> std::io::Result<()> {
         let header = WalHeader {
-            record_type: WalRecordType::SealStart as u8,
+            record_type: wal_record_compat::to_disk_byte(WalRecordType::Flush),
             key: segment_id,
             dim: 0,
             checksum: 0,
@@ -266,7 +282,7 @@ impl WriteAheadLog {
     /// Write seal complete marker
     pub fn write_seal_complete(&mut self, segment_id: u64) -> std::io::Result<()> {
         let header = WalHeader {
-            record_type: WalRecordType::SealComplete as u8,
+            record_type: wal_record_compat::to_disk_byte(WalRecordType::Compaction),
             key: segment_id,
             dim: 0,
             checksum: 0,

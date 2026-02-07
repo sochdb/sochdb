@@ -12,9 +12,9 @@ path = "src/lib.rs"
 
 [dependencies]
 # SochDB dependencies
-sochdb-core = { version = "0.4.4", path = "../sochdb-core" }
-sochdb-storage = { version = "0.4.4", path = "../sochdb-storage" }
-sochdb-index = { version = "0.4.4", path = "../sochdb-index" }
+sochdb-core = { version = "0.4.5", path = "../sochdb-core" }
+sochdb-storage = { version = "0.4.5", path = "../sochdb-storage" }
+sochdb-index = { version = "0.4.5", path = "../sochdb-index" }
 
 # Memory mapping for segment files
 memmap2 = "0.9"
@@ -61,6 +61,8 @@ proptest = "1.4"
 
 [features]
 default = []
+# Unified SIMD feature flag (workspace-consistent name)
+simd = ["simd-kernels"]
 # Pure Rust SIMD implementations (always available, no C++ needed)
 simd-kernels = []
 # Portable SIMD using core::simd (requires nightly Rust)

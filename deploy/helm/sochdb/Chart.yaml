@@ -1,0 +1,22 @@
+apiVersion: v2
+name: sochdb
+description: SochDB - LLM-Optimized Embedded Database for Kubernetes
+type: application
+version: 0.4.5
+appVersion: "0.4.5"
+keywords:
+  - database
+  - llm
+  - ai
+  - vector-search
+  - embedded
+home: https://sochdb.dev
+sources:
+  - https://github.com/sochdb/sochdb
+maintainers:
+  - name: Sushanth Reddy Vanagala
+    email: sushanth@sochdb.dev
+icon: https://sochdb.dev/icon.svg
+annotations:
+  category: Database
+  licenses: AGPL-3.0-or-later

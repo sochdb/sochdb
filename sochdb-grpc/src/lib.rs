@@ -57,6 +57,12 @@ pub mod proto {
 pub mod server;
 pub mod error;
 
+// Production hardening modules (Tasks 1-3, 8-9)
+pub mod blocking_pool; // Async boundary hardening with bounded pools
+pub mod health_service; // Probe semantics + degraded mode + watchdog
+pub mod observability; // Observability hardening: cardinality, slow query, SLOs
+pub mod security; // Security baseline: mTLS, AuthZ, audit, rate limiting
+
 // Service implementations
 pub mod graph_server;
 pub mod policy_server;
@@ -71,3 +77,7 @@ pub mod kv_server;
 
 pub use server::VectorIndexServer;
 pub use error::GrpcError;
+pub use blocking_pool::{BlockingPool, BlockingPoolConfig, BlockingPoolManager, PoolType};
+pub use health_service::{HealthService, HealthServiceConfig, HealthCheckResult, DegradedCondition};
+pub use security::{SecurityService, SecurityConfig, Principal, Capability, AuthError};
+

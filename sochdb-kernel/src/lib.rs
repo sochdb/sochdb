@@ -68,6 +68,7 @@
 //! - Hot-reload without restart
 
 pub mod atomic_claim; // Atomic claim protocol for queue operations (Task: Linearizable Dequeue)
+pub mod boot_fsm; // Deterministic Boot FSM with migration + recovery budgets (Production Task 1)
 pub mod error;
 pub mod kernel_api;
 pub mod page;
@@ -90,6 +91,12 @@ pub use plugin::{
 };
 pub use transaction::{IsolationLevel, TransactionId, TransactionState, TxnManager};
 pub use wal::{LogSequenceNumber, WalManager, WalRecord, WalRecordType};
+
+// Boot FSM for production-grade lifecycle management
+pub use boot_fsm::{
+    BootBudgets, BootError, BootMetrics, BootOrchestrator, BootPhase, BootStateMachine,
+    HealthStatus, PhaseProgress, PreloadHints, RecoveryMode,
+};
 
 // Atomic claim protocol for queue operations
 pub use atomic_claim::{

@@ -1,0 +1,231 @@
+# SochDB Helm Chart Values
+# Production-ready defaults with Day-2 operations in mind
+
+# Image configuration
+image:
+  repository: ghcr.io/sochdb/sochdb
+  tag: ""  # Defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Replica count (single-node initially, scale-out planned)
+replicaCount: 1
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod-level settings
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# Resource limits
+# IMPORTANT: requests == limits for memory to prevent OOM killer surprises
+resources:
+  requests:
+    memory: "2Gi"
+    cpu: "1000m"
+  limits:
+    memory: "2Gi"  # Match requests - OOM killer is not autoscaling
+    cpu: "4000m"
+
+# Persistence configuration
+persistence:
+  enabled: true
+  storageClass: ""  # Use default storage class
+  accessModes:
+    - ReadWriteOnce
+  size: 50Gi
+  annotations: {}
+
+# Service configuration
+service:
+  type: ClusterIP
+  grpcPort: 50051
+  httpPort: 8080
+  annotations: {}
+
+# Health probes aligned with Boot FSM
+probes:
+  # startupProbe: Tolerates long recovery (WAL replay, migrations)
+  startup:
+    enabled: true
+    tcpSocket:
+      port: 50051
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 60  # 10 minutes total (60 * 10s)
+    successThreshold: 1
+
+  # readinessProbe: True only when FSM is Ready
+  readiness:
+    enabled: true
+    tcpSocket:
+      port: 50051
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+
+  # livenessProbe: Based on external watchdog heartbeat
+  liveness:
+    enabled: true
+    tcpSocket:
+      port: 50051
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+# Boot FSM configuration
+boot:
+  # Time budgets for each phase (must match startupProbe total)
+  budgets:
+    initSeconds: 30
+    migrateSeconds: 120
+    recoverSeconds: 300
+    warmupSeconds: 60
+  # Recovery mode: normal, readonly, force
+  recoveryMode: normal
+
+# Durability configuration
+durability:
+  # Level: durable, group_commit, periodic (UNSAFE), nosync (UNSAFE)
+  level: group_commit
+  groupCommit:
+    maxBatch: 128
+    flushIntervalMs: 10
+  # WAL archiving for PITR
+  archiving:
+    enabled: false
+    destination: ""  # e.g., s3://bucket/wal-archive
+
+# Checkpointing
+checkpoint:
+  # Mode: full, incremental, copy_on_write
+  mode: incremental
+  walSizeTriggerMB: 128
+  maxDurationSeconds: 30
+
+# Admission control
+admissionControl:
+  enabled: true
+  queueDepthWarning: 100
+  queueDepthRejection: 1000
+  allowPartialResults: false
+
+# Security configuration
+security:
+  # TLS configuration
+  tls:
+    enabled: false
+    certSecretName: ""
+    # Enable mTLS for client authentication
+    mtls: false
+  # JWT/JWKS authentication
+  auth:
+    enabled: false
+    jwksUrl: ""
+    issuer: ""
+
+# Network Policy
+networkPolicy:
+  enabled: true
+  # Allow ingress only from pods with specific labels
+  ingressLabels: {}
+  # Allow egress (e.g., for WAL archiving)
+  egressEnabled: true
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  # For single-node: minAvailable=0 allows maintenance
+  # For multi-node (future): minAvailable=1
+  minAvailable: 0
+
+# Topology spread for multi-AZ (future-proofing)
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: sochdb
+
+# Anti-affinity (spread across nodes)
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: sochdb
+          topologyKey: kubernetes.io/hostname
+
+# Init container for fs checks
+initContainers:
+  fsCheck:
+    enabled: true
+    image: busybox:1.36
+
+# Sidecar containers
+sidecars:
+  # Log shipper (optional)
+  logShipper:
+    enabled: false
+    image: fluent/fluent-bit:2.2
+  # Backup coordinator (optional)
+  backupCoordinator:
+    enabled: false
+    image: ""
+
+# Observability
+observability:
+  # Prometheus metrics
+  metrics:
+    enabled: true
+    port: 9090
+    path: /metrics
+    serviceMonitor:
+      enabled: false
+      interval: 15s
+  # Tracing
+  tracing:
+    enabled: false
+    endpoint: ""
+    samplingRate: 0.1
+
+# Extra environment variables
+extraEnv: []
+
+# Extra volume mounts
+extraVolumeMounts: []
+
+# Extra volumes
+extraVolumes: []
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []

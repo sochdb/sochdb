@@ -71,3 +71,5 @@ demo_sql_db/
 task.md
 sochdb_agent_memory/
 toondb_rust.txt
+test_k8s_concurrency.py
+test_k8s_deployment.py

@@ -50,12 +50,13 @@ allow = [
     "CC0-1.0",
     "Unlicense",
     "MPL-2.0",
+    # The workspace itself is AGPL-3.0-or-later
+    "AGPL-3.0-or-later",
 ]
-# Deny copyleft licenses that would require source disclosure
+# Deny copyleft licenses from external dependencies
 deny = [
     "GPL-2.0",
     "GPL-3.0",
-    "AGPL-3.0",
     "LGPL-2.0",
     "LGPL-2.1",
     "LGPL-3.0",

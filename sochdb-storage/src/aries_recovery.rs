@@ -429,6 +429,15 @@ impl AriesRecoveryManager {
                 WalRecordType::SchemaChange => {
                     // Schema changes treated like data for recovery
                 }
+                // New canonical variants not directly used in ARIES analysis pass.
+                // Savepoint/RollbackToSavepoint/TxnEnd/Delete are handled by
+                // the redo/undo passes if they appear in the WAL.
+                _ => {
+                    // Track last_lsn for any unrecognized data-bearing record
+                    if let Some(txn_entry) = transaction_table.get_mut(&entry.txn_id) {
+                        txn_entry.last_lsn = current_lsn;
+                    }
+                }
             }
 
             wal_records.push(entry);

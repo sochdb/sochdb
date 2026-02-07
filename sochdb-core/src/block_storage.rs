@@ -608,10 +608,14 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-/// WAL record types
+/// Block-storage WAL record types (distinct on-disk format from transaction WAL)
+///
+/// NOTE: This enum is intentionally separate from `crate::txn::WalRecordType`
+/// because block_storage uses its own fixed 33-byte header format with
+/// incompatible discriminant values. Do NOT unify without a migration path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum WalRecordType {
+pub enum BlockWalRecordType {
     /// Block write record
     BlockWrite = 1,
     /// Checkpoint marker
@@ -622,13 +626,13 @@ pub enum WalRecordType {
     TxnBegin = 4,
 }
 
-impl WalRecordType {
+impl BlockWalRecordType {
     fn from_byte(b: u8) -> Option<Self> {
         match b {
-            1 => Some(WalRecordType::BlockWrite),
-            2 => Some(WalRecordType::Checkpoint),
-            3 => Some(WalRecordType::Commit),
-            4 => Some(WalRecordType::TxnBegin),
+            1 => Some(BlockWalRecordType::BlockWrite),
+            2 => Some(BlockWalRecordType::Checkpoint),
+            3 => Some(BlockWalRecordType::Commit),
+            4 => Some(BlockWalRecordType::TxnBegin),
             _ => None,
         }
     }
@@ -651,7 +655,7 @@ impl WalRecordType {
 pub struct WalRecordHeader {
     pub lsn: u64,
     pub txn_id: u64,
-    pub record_type: WalRecordType,
+    pub record_type: BlockWalRecordType,
     pub page_id: u64,
     pub data_len: u32,
     pub crc32: u32,
@@ -682,7 +686,7 @@ impl WalRecordHeader {
             )));
         }
 
-        let record_type = WalRecordType::from_byte(buf[16]).ok_or_else(|| {
+        let record_type = BlockWalRecordType::from_byte(buf[16]).ok_or_else(|| {
             SochDBError::Corruption(format!("Invalid WAL record type: {}", buf[16]))
         })?;
 
@@ -752,7 +756,7 @@ impl WalWriter {
     pub fn append(
         &mut self,
         txn_id: u64,
-        record_type: WalRecordType,
+        record_type: BlockWalRecordType,
         page_id: u64,
         data: &[u8],
     ) -> Result<u64> {
@@ -936,7 +940,7 @@ impl DurableBlockStore {
         // Write to WAL first
         {
             let mut wal = self.wal.lock();
-            wal.append(txn_id, WalRecordType::BlockWrite, page_id, data)?;
+            wal.append(txn_id, BlockWalRecordType::BlockWrite, page_id, data)?;
             wal.sync()?; // Durability point
         }
 
@@ -957,7 +961,7 @@ impl DurableBlockStore {
     /// Commit a transaction
     pub fn commit(&self, txn_id: u64) -> Result<u64> {
         let mut wal = self.wal.lock();
-        let lsn = wal.append(txn_id, WalRecordType::Commit, 0, &[])?;
+        let lsn = wal.append(txn_id, BlockWalRecordType::Commit, 0, &[])?;
         wal.sync()?; // Durability point for commit
         Ok(lsn)
     }
@@ -988,7 +992,7 @@ impl DurableBlockStore {
         // Write checkpoint marker
         let lsn = {
             let mut wal = self.wal.lock();
-            let lsn = wal.append(0, WalRecordType::Checkpoint, 0, &[])?;
+            let lsn = wal.append(0, BlockWalRecordType::Checkpoint, 0, &[])?;
             wal.sync()?;
             lsn
         };
@@ -1022,21 +1026,21 @@ impl DurableBlockStore {
             stats.records_read += 1;
 
             match header.record_type {
-                WalRecordType::BlockWrite => {
+                BlockWalRecordType::BlockWrite => {
                     pending_txns
                         .entry(header.txn_id)
                         .or_default()
                         .push((header.page_id, data));
                 }
-                WalRecordType::Commit => {
+                BlockWalRecordType::Commit => {
                     committed_txns.insert(header.txn_id);
                     stats.txns_committed += 1;
                 }
-                WalRecordType::Checkpoint => {
+                BlockWalRecordType::Checkpoint => {
                     self.checkpoint_lsn.store(header.lsn, Ordering::SeqCst);
                     stats.checkpoints_found += 1;
                 }
-                WalRecordType::TxnBegin => {
+                BlockWalRecordType::TxnBegin => {
                     // Just track
                 }
             }
@@ -1473,7 +1477,7 @@ mod tests {
         let original = WalRecordHeader {
             lsn: 12345,
             txn_id: 67890,
-            record_type: WalRecordType::BlockWrite,
+            record_type: BlockWalRecordType::BlockWrite,
             page_id: 42,
             data_len: 4096,
             crc32: 0xDEADBEEF,
@@ -1495,7 +1499,7 @@ mod tests {
         let header = WalRecordHeader {
             lsn: 100,
             txn_id: 1,
-            record_type: WalRecordType::BlockWrite,
+            record_type: BlockWalRecordType::BlockWrite,
             page_id: 0,
             data_len: 4,
             crc32: 0,
@@ -1614,14 +1618,14 @@ mod tests {
         // Write records
         {
             let mut writer = WalWriter::open(&wal_path).unwrap();
-            writer.append(1, WalRecordType::TxnBegin, 0, &[]).unwrap();
+            writer.append(1, BlockWalRecordType::TxnBegin, 0, &[]).unwrap();
             writer
-                .append(1, WalRecordType::BlockWrite, 0, b"data1")
+                .append(1, BlockWalRecordType::BlockWrite, 0, b"data1")
                 .unwrap();
             writer
-                .append(1, WalRecordType::BlockWrite, 1, b"data2")
+                .append(1, BlockWalRecordType::BlockWrite, 1, b"data2")
                 .unwrap();
-            writer.append(1, WalRecordType::Commit, 0, &[]).unwrap();
+            writer.append(1, BlockWalRecordType::Commit, 0, &[]).unwrap();
             writer.sync().unwrap();
         }
 
@@ -1634,12 +1638,12 @@ mod tests {
             }
 
             assert_eq!(records.len(), 4);
-            assert_eq!(records[0].0.record_type, WalRecordType::TxnBegin);
-            assert_eq!(records[1].0.record_type, WalRecordType::BlockWrite);
+            assert_eq!(records[0].0.record_type, BlockWalRecordType::TxnBegin);
+            assert_eq!(records[1].0.record_type, BlockWalRecordType::BlockWrite);
             assert_eq!(records[1].1, b"data1");
-            assert_eq!(records[2].0.record_type, WalRecordType::BlockWrite);
+            assert_eq!(records[2].0.record_type, BlockWalRecordType::BlockWrite);
             assert_eq!(records[2].1, b"data2");
-            assert_eq!(records[3].0.record_type, WalRecordType::Commit);
+            assert_eq!(records[3].0.record_type, BlockWalRecordType::Commit);
         }
     }
 }

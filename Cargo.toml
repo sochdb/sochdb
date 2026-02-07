@@ -18,8 +18,40 @@ members = [
 exclude = ["sochdb-python"]
 resolver = "2"
 
+# =============================================================================
+# WORKSPACE FEATURE FLAGS — Central Registry
+# =============================================================================
+#
+# Cargo doesn't support [workspace.features]. This comment serves as the
+# canonical registry. All feature additions MUST be documented here.
+#
+# ┌─────────────────┬──────────┬─────────┬─────────┬────────┬────────┬────────┐
+# │ Feature         │ core     │ storage │ kernel  │ client │ vector │ index  │
+# ├─────────────────┼──────────┼─────────┼─────────┼────────┼────────┼────────┤
+# │ simd            │          │         │         │ ✓      │ ✓*     │        │
+# │ async (tokio)   │          │ ✓       │         │        │        │ ✓**    │
+# │ embedded-sync   │          │ ✓       │         │ ✓      │        │        │
+# │ jemalloc        │ ✓        │         │         │        │        │        │
+# │ analytics       │ ✓        │         │         │        │        │        │
+# │ dynamic-plugins │          │         │ ✓       │        │        │        │
+# │ wasm-plugins    │          │         │ ✓       │        │        │        │
+# │ local-embed     │          │         │         │        │        │ ✓      │
+# │ fastembed       │          │         │         │        │        │ ✓      │
+# │ ffi             │          │ ✓       │         │        │        │        │
+# └─────────────────┴──────────┴─────────┴─────────┴────────┴────────┴────────┘
+#
+# * sochdb-vector uses "simd-kernels" and "portable-simd" — should align to "simd"
+# ** sochdb-index uses "llm-embeddings" which enables tokio
+#
+# RULES:
+# 1. Same concept → same feature name across crates (e.g., "simd" not "simd-kernels")
+# 2. Tokio must always be opt-in via "async" feature
+# 3. No default features should pull in large optional deps
+# 4. Feature names must be kebab-case
+# =============================================================================
+
 [workspace.package]
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
 license = "AGPL-3.0-or-later"

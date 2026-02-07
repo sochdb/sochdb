@@ -1,0 +1,296 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 880" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="sochdb-best" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="sochdb-base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="sochdb-rerank" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a5b4fc"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+    <linearGradient id="mem0" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="104%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.1"/>
+    </filter>
+    <style>
+      .title { font-size: 19px; font-weight: 700; fill: #1e293b; }
+      .subtitle { font-size: 11px; fill: #64748b; }
+      .section-title { font-size: 14px; font-weight: 600; fill: #334155; }
+      .label { font-size: 11px; fill: #475569; }
+      .value { font-size: 11px; font-weight: 600; }
+      .value-best { fill: #4f46e5; }
+      .value-base { fill: #6366f1; }
+      .value-rerank { fill: #818cf8; }
+      .value-mem0 { fill: #ea580c; }
+      .axis-label { font-size: 10px; fill: #94a3b8; }
+      .legend-text { font-size: 11px; fill: #334155; }
+      .metric-unit { font-size: 9px; fill: #94a3b8; }
+      .note-text { font-size: 10px; fill: #64748b; font-style: italic; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="940" height="880" rx="12" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+
+  <!-- Title -->
+  <text x="470" y="32" text-anchor="middle" class="title">SochDB vs Mem0 — Memory Agent Benchmark</text>
+  <text x="470" y="49" text-anchor="middle" class="subtitle">MemoryAgentBench (UCSD) • Ruler QA1 197K • gpt-4.1-mini • 20 queries • Azure OpenAI</text>
+
+  <!-- Legend -->
+  <rect x="135" y="60" width="14" height="14" rx="3" fill="url(#sochdb-best)"/>
+  <text x="153" y="72" class="legend-text">SochDB + HyDE</text>
+  <rect x="280" y="60" width="14" height="14" rx="3" fill="url(#sochdb-rerank)"/>
+  <text x="298" y="72" class="legend-text">SochDB + Rerank</text>
+  <rect x="435" y="60" width="14" height="14" rx="3" fill="url(#sochdb-base)"/>
+  <text x="453" y="72" class="legend-text">SochDB (gpt-4.1)</text>
+  <rect x="590" y="60" width="14" height="14" rx="3" fill="url(#mem0)"/>
+  <text x="608" y="72" class="legend-text">Mem0</text>
+
+  <!-- ═══════════════ CHART 1: Exact Match ═══════════════ -->
+  <text x="235" y="108" text-anchor="middle" class="section-title">🎯 Exact Match % (higher is better)</text>
+
+  <text x="55" y="138" text-anchor="start" class="label">SochDB+HyDE</text>
+  <rect x="145" y="125" width="210" height="20" rx="4" fill="url(#sochdb-best)" filter="url(#shadow)"/>
+  <text x="359" y="139" class="value value-best">30.0% ✦</text>
+
+  <text x="55" y="163" text-anchor="start" class="label">SochDB+Rerank</text>
+  <rect x="145" y="150" width="175" height="20" rx="4" fill="url(#sochdb-rerank)" filter="url(#shadow)"/>
+  <text x="324" y="164" class="value value-rerank">25.0%</text>
+
+  <text x="55" y="188" text-anchor="start" class="label">SochDB (4.1)</text>
+  <rect x="145" y="175" width="140" height="20" rx="4" fill="url(#sochdb-base)" filter="url(#shadow)"/>
+  <text x="289" y="189" class="value value-base">20.0%</text>
+
+  <text x="55" y="213" text-anchor="start" class="label">Mem0</text>
+  <rect x="145" y="200" width="35" height="20" rx="4" fill="url(#mem0)" filter="url(#shadow)"/>
+  <text x="184" y="214" class="value value-mem0">5.0%</text>
+
+  <line x1="145" y1="228" x2="495" y2="228" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="145" y="241" class="axis-label">0%</text>
+  <text x="250" y="241" class="axis-label">15%</text>
+  <text x="355" y="241" class="axis-label">30%</text>
+  <text x="460" y="241" class="axis-label">45%</text>
+
+  <!-- ═══════════════ CHART 2: F1 Score ═══════════════ -->
+  <text x="710" y="108" text-anchor="middle" class="section-title">📊 F1 Score % (higher is better)</text>
+
+  <text x="530" y="138" text-anchor="start" class="label">SochDB+HyDE</text>
+  <rect x="625" y="125" width="249" height="20" rx="4" fill="url(#sochdb-best)" filter="url(#shadow)"/>
+  <text x="878" y="139" class="value value-best">42.6% ✦</text>
+
+  <text x="530" y="163" text-anchor="start" class="label">SochDB+Rerank</text>
+  <rect x="625" y="150" width="235" height="20" rx="4" fill="url(#sochdb-rerank)" filter="url(#shadow)"/>
+  <text x="864" y="164" class="value value-rerank">40.2%</text>
+
+  <text x="530" y="188" text-anchor="start" class="label">SochDB (4.1)</text>
+  <rect x="625" y="175" width="177" height="20" rx="4" fill="url(#sochdb-base)" filter="url(#shadow)"/>
+  <text x="806" y="189" class="value value-base">30.3%</text>
+
+  <text x="530" y="213" text-anchor="start" class="label">Mem0</text>
+  <rect x="625" y="200" width="108" height="20" rx="4" fill="url(#mem0)" filter="url(#shadow)"/>
+  <text x="737" y="214" class="value value-mem0">18.5%</text>
+
+  <line x1="625" y1="228" x2="925" y2="228" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="625" y="241" class="axis-label">0%</text>
+  <text x="713" y="241" class="axis-label">15%</text>
+  <text x="800" y="241" class="axis-label">30%</text>
+  <text x="888" y="241" class="axis-label">45%</text>
+
+  <!-- ═══════════════ DIVIDER ═══════════════ -->
+  <line x1="30" y1="258" x2="910" y2="258" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,4"/>
+
+  <!-- ═══════════════ CHART 3: Substring Exact Match ═══════════════ -->
+  <text x="235" y="286" text-anchor="middle" class="section-title">🔍 Substring Match % (higher is better)</text>
+
+  <text x="55" y="316" text-anchor="start" class="label">SochDB+Rerank</text>
+  <rect x="145" y="303" width="292" height="20" rx="4" fill="url(#sochdb-rerank)" filter="url(#shadow)"/>
+  <text x="441" y="317" class="value value-rerank">50.0% ✦</text>
+
+  <text x="55" y="341" text-anchor="start" class="label">SochDB+HyDE</text>
+  <rect x="145" y="328" width="263" height="20" rx="4" fill="url(#sochdb-best)" filter="url(#shadow)"/>
+  <text x="412" y="342" class="value value-best">45.0%</text>
+
+  <text x="55" y="366" text-anchor="start" class="label">Mem0</text>
+  <rect x="145" y="353" width="175" height="20" rx="4" fill="url(#mem0)" filter="url(#shadow)"/>
+  <text x="324" y="367" class="value value-mem0">30.0%</text>
+
+  <text x="55" y="391" text-anchor="start" class="label">SochDB (4.1)</text>
+  <rect x="145" y="378" width="117" height="20" rx="4" fill="url(#sochdb-base)" filter="url(#shadow)"/>
+  <text x="266" y="392" class="value value-base">20.0%</text>
+
+  <line x1="145" y1="406" x2="495" y2="406" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="145" y="419" class="axis-label">0%</text>
+  <text x="250" y="419" class="axis-label">15%</text>
+  <text x="355" y="419" class="axis-label">30%</text>
+  <text x="460" y="419" class="axis-label">45%</text>
+
+  <!-- ═══════════════ CHART 4: Memory Construction Time ═══════════════ -->
+  <text x="710" y="286" text-anchor="middle" class="section-title">⚡ Memory Build Time (lower is better)</text>
+
+  <text x="530" y="316" text-anchor="start" class="label">SochDB (4.1)</text>
+  <rect x="625" y="303" width="8" height="20" rx="4" fill="url(#sochdb-base)" filter="url(#shadow)"/>
+  <text x="637" y="317" class="value value-base">0.01s ✦</text>
+
+  <text x="530" y="341" text-anchor="start" class="label">SochDB+HyDE</text>
+  <rect x="625" y="328" width="19" height="20" rx="4" fill="url(#sochdb-best)" filter="url(#shadow)"/>
+  <text x="648" y="342" class="value value-best">3.3s</text>
+
+  <text x="530" y="366" text-anchor="start" class="label">SochDB+Rerank</text>
+  <rect x="625" y="353" width="18" height="20" rx="4" fill="url(#sochdb-rerank)" filter="url(#shadow)"/>
+  <text x="647" y="367" class="value value-rerank">3.2s</text>
+
+  <text x="530" y="391" text-anchor="start" class="label">Mem0</text>
+  <rect x="625" y="378" width="290" height="20" rx="4" fill="url(#mem0)" filter="url(#shadow)"/>
+  <text x="780" y="392" class="value" fill="white" font-weight="600">51.7s</text>
+
+  <line x1="625" y1="406" x2="925" y2="406" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="625" y="419" class="axis-label">0s</text>
+  <text x="725" y="419" class="axis-label">15s</text>
+  <text x="825" y="419" class="axis-label">30s</text>
+  <text x="910" y="419" class="axis-label">52s</text>
+
+  <!-- ═══════════════ DIVIDER ═══════════════ -->
+  <line x1="30" y1="435" x2="910" y2="435" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,4"/>
+
+  <!-- ═══════════════ SPEEDUP CALLOUTS ═══════════════ -->
+  <text x="250" y="465" text-anchor="middle" class="section-title">🏆 SochDB vs Mem0 — Key Advantages</text>
+
+  <rect x="40" y="480" width="155" height="90" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1" filter="url(#shadow)"/>
+  <text x="117" y="503" text-anchor="middle" font-size="10" fill="#64748b">Exact Match</text>
+  <text x="117" y="533" text-anchor="middle" font-size="26" font-weight="800" fill="#4f46e5">6×</text>
+  <text x="117" y="553" text-anchor="middle" font-size="10" fill="#64748b">higher (30% vs 5%)</text>
+
+  <rect x="210" y="480" width="155" height="90" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1" filter="url(#shadow)"/>
+  <text x="287" y="503" text-anchor="middle" font-size="10" fill="#64748b">F1 Score</text>
+  <text x="287" y="533" text-anchor="middle" font-size="26" font-weight="800" fill="#4f46e5">2.3×</text>
+  <text x="287" y="553" text-anchor="middle" font-size="10" fill="#64748b">higher (42.6% vs 18.5%)</text>
+
+  <rect x="380" y="480" width="155" height="90" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1" filter="url(#shadow)"/>
+  <text x="457" y="503" text-anchor="middle" font-size="10" fill="#64748b">Memory Build</text>
+  <text x="457" y="533" text-anchor="middle" font-size="26" font-weight="800" fill="#4f46e5">5,170×</text>
+  <text x="457" y="553" text-anchor="middle" font-size="10" fill="#64748b">faster (0.01s vs 51.7s)</text>
+
+  <!-- ═══════════════ MULTI-DATASET TABLE ═══════════════ -->
+  <text x="720" y="465" text-anchor="middle" class="section-title">📋 SochDB Across Datasets (gpt-4.1-mini / gpt-4.1)</text>
+
+  <rect x="565" y="478" width="350" height="22" rx="4" fill="#f1f5f9"/>
+  <text x="610" y="493" text-anchor="start" font-size="10" font-weight="600" fill="#334155">Dataset</text>
+  <text x="735" y="493" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">EM %</text>
+  <text x="800" y="493" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">F1 %</text>
+  <text x="870" y="493" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">Queries</text>
+
+  <text x="575" y="515" text-anchor="start" font-size="10" fill="#475569">QA1 197K +HyDE</text>
+  <text x="735" y="515" text-anchor="middle" font-size="10" font-weight="600" fill="#4f46e5">30.0</text>
+  <text x="800" y="515" text-anchor="middle" font-size="10" font-weight="600" fill="#4f46e5">42.6</text>
+  <text x="870" y="515" text-anchor="middle" font-size="10" fill="#475569">20</text>
+
+  <text x="575" y="533" text-anchor="start" font-size="10" fill="#475569">QA1 197K (gpt-4.1)</text>
+  <text x="735" y="533" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">20.0</text>
+  <text x="800" y="533" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">30.3</text>
+  <text x="870" y="533" text-anchor="middle" font-size="10" fill="#475569">20</text>
+
+  <text x="575" y="551" text-anchor="start" font-size="10" fill="#475569">QA2 421K</text>
+  <text x="735" y="551" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">31.0</text>
+  <text x="800" y="551" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">42.7</text>
+  <text x="870" y="551" text-anchor="middle" font-size="10" fill="#475569">100</text>
+
+  <text x="575" y="569" text-anchor="start" font-size="10" fill="#475569">LongMemEval</text>
+  <text x="735" y="569" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">3.3</text>
+  <text x="800" y="569" text-anchor="middle" font-size="10" font-weight="600" fill="#6366f1">9.7</text>
+  <text x="870" y="569" text-anchor="middle" font-size="10" fill="#475569">5</text>
+
+  <rect x="565" y="478" width="350" height="100" rx="4" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+  <line x1="565" y1="500" x2="915" y2="500" stroke="#e2e8f0" stroke-width="1"/>
+
+  <!-- ═══════════════ DIVIDER ═══════════════ -->
+  <line x1="30" y1="590" x2="910" y2="590" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,4"/>
+
+  <!-- ═══════════════ CONFIGURATION COMPARISON TABLE ═══════════════ -->
+  <text x="470" y="618" text-anchor="middle" class="section-title">⚙️ SochDB Configuration Comparison — Ruler QA1 197K (20 queries each)</text>
+
+  <rect x="40" y="628" width="860" height="22" rx="4" fill="#f1f5f9"/>
+  <text x="95" y="643" text-anchor="start" font-size="10" font-weight="600" fill="#334155">Configuration</text>
+  <text x="270" y="643" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">EM %</text>
+  <text x="340" y="643" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">F1 %</text>
+  <text x="420" y="643" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">Sub-EM %</text>
+  <text x="510" y="643" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">ROUGE-L</text>
+  <text x="600" y="643" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">Build (s)</text>
+  <text x="690" y="643" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">Query (s)</text>
+  <text x="810" y="643" text-anchor="middle" font-size="10" font-weight="600" fill="#334155">Best For</text>
+
+  <!-- Row 1: HyDE-only -->
+  <rect x="50" y="653" width="8" height="14" rx="2" fill="url(#sochdb-best)"/>
+  <text x="65" y="665" text-anchor="start" font-size="10" fill="#475569">SochDB + HyDE</text>
+  <text x="270" y="665" text-anchor="middle" font-size="10" font-weight="700" fill="#4f46e5">30.0</text>
+  <text x="340" y="665" text-anchor="middle" font-size="10" font-weight="700" fill="#4f46e5">42.6</text>
+  <text x="420" y="665" text-anchor="middle" font-size="10" fill="#475569">45.0</text>
+  <text x="510" y="665" text-anchor="middle" font-size="10" fill="#475569">44.0</text>
+  <text x="600" y="665" text-anchor="middle" font-size="10" fill="#475569">3.29</text>
+  <text x="690" y="665" text-anchor="middle" font-size="10" fill="#475569">37.0</text>
+  <text x="810" y="665" text-anchor="middle" font-size="9" font-weight="600" fill="#4f46e5">Max Accuracy</text>
+
+  <!-- Row 2: Rerank-only -->
+  <rect x="50" y="670" width="8" height="14" rx="2" fill="url(#sochdb-rerank)"/>
+  <text x="65" y="682" text-anchor="start" font-size="10" fill="#475569">SochDB + Rerank</text>
+  <text x="270" y="682" text-anchor="middle" font-size="10" fill="#475569">25.0</text>
+  <text x="340" y="682" text-anchor="middle" font-size="10" fill="#475569">40.2</text>
+  <text x="420" y="682" text-anchor="middle" font-size="10" font-weight="700" fill="#4f46e5">50.0</text>
+  <text x="510" y="682" text-anchor="middle" font-size="10" fill="#475569">42.9</text>
+  <text x="600" y="682" text-anchor="middle" font-size="10" fill="#475569">3.24</text>
+  <text x="690" y="682" text-anchor="middle" font-size="10" fill="#475569">27.9</text>
+  <text x="810" y="682" text-anchor="middle" font-size="9" font-weight="600" fill="#818cf8">Best Balanced</text>
+
+  <!-- Row 3: gpt-4.1 baseline -->
+  <rect x="50" y="687" width="8" height="14" rx="2" fill="url(#sochdb-base)"/>
+  <text x="65" y="699" text-anchor="start" font-size="10" fill="#475569">SochDB (gpt-4.1)</text>
+  <text x="270" y="699" text-anchor="middle" font-size="10" fill="#475569">20.0</text>
+  <text x="340" y="699" text-anchor="middle" font-size="10" fill="#475569">30.3</text>
+  <text x="420" y="699" text-anchor="middle" font-size="10" fill="#475569">20.0</text>
+  <text x="510" y="699" text-anchor="middle" font-size="10" fill="#475569">29.5</text>
+  <text x="600" y="699" text-anchor="middle" font-size="10" font-weight="700" fill="#4f46e5">0.01</text>
+  <text x="690" y="699" text-anchor="middle" font-size="10" font-weight="700" fill="#4f46e5">6.6</text>
+  <text x="810" y="699" text-anchor="middle" font-size="9" font-weight="600" fill="#6366f1">Max Speed</text>
+
+  <rect x="40" y="628" width="860" height="78" rx="4" fill="none" stroke="#e2e8f0" stroke-width="1"/>
+  <line x1="40" y1="650" x2="900" y2="650" stroke="#e2e8f0" stroke-width="1"/>
+
+  <!-- ═══════════════ DIVIDER ═══════════════ -->
+  <line x1="30" y1="718" x2="910" y2="718" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,4"/>
+
+  <!-- ═══════════════ DEVELOPER DECISION GUIDE ═══════════════ -->
+  <text x="470" y="745" text-anchor="middle" class="section-title">📘 Developer Decision Guide — Which Config to Use?</text>
+
+  <!-- Card 1: Real-time / Latency-sensitive -->
+  <rect x="40" y="758" width="270" height="100" rx="8" fill="white" stroke="#6366f1" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="55" y="778" font-size="11" font-weight="700" fill="#4f46e5">⚡ Real-Time / Latency-Sensitive</text>
+  <text x="55" y="795" font-size="10" fill="#475569">Use: SochDB baseline (vector-only)</text>
+  <text x="55" y="810" font-size="10" fill="#475569">Build: 0.01s  •  Query: 6.6s  •  EM: 20%</text>
+  <text x="55" y="828" font-size="9" fill="#64748b">When speed is critical. Model size doesn't</text>
+  <text x="55" y="840" font-size="9" fill="#64748b">matter — retrieval strategy does.</text>
+
+  <!-- Card 2: Best Accuracy -->
+  <rect x="335" y="758" width="270" height="100" rx="8" fill="white" stroke="#4f46e5" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="350" y="778" font-size="11" font-weight="700" fill="#4f46e5">🎯 Maximum Accuracy</text>
+  <text x="350" y="795" font-size="10" fill="#475569">Use: SochDB + HyDE</text>
+  <text x="350" y="810" font-size="10" fill="#475569">EM: 30%  •  F1: 42.6%  •  Sub-EM: 45%</text>
+  <text x="350" y="828" font-size="9" fill="#64748b">HyDE bridges the vocabulary gap between</text>
+  <text x="350" y="840" font-size="9" fill="#64748b">questions and documents. +50% EM uplift.</text>
+
+  <!-- Card 3: Balanced -->
+  <rect x="630" y="758" width="270" height="100" rx="8" fill="white" stroke="#818cf8" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="645" y="778" font-size="11" font-weight="700" fill="#818cf8">🏆 Best Overall (Recommended)</text>
+  <text x="645" y="795" font-size="10" fill="#475569">Use: SochDB + Rerank</text>
+  <text x="645" y="810" font-size="10" fill="#475569">EM: 25%  •  F1: 40.2%  •  Sub-EM: 50%</text>
+  <text x="645" y="828" font-size="9" fill="#64748b">Best substring match + strong F1. Faster</text>
+  <text x="645" y="840" font-size="9" fill="#64748b">than HyDE. Don't stack both — use one.</text>
+
+  <!-- Footer -->
+  <text x="470" y="878" text-anchor="middle" class="axis-label">✦ = winner  |  MemoryAgentBench (UCSD, arXiv:2507.05257)  |  Accurate Retrieval task  |  February 2026</text>
+</svg>

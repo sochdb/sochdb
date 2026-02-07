@@ -50,6 +50,7 @@
 
 use clap::Parser;
 use tonic::transport::Server;
+use tonic_health::server::health_reporter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use sochdb_grpc::{
@@ -116,6 +117,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mcp_server = McpServer::new();
     let kv_server = KvServer::new();
     
+    // Create gRPC health service for Kubernetes probes
+    let (mut health_reporter, health_service) = health_reporter();
+    
+    // Mark the overall service as serving (empty service name = overall health)
+    // The empty string "" represents overall server health
+    health_reporter.set_service_status("", tonic_health::ServingStatus::Serving).await;
+    
     tracing::info!("Starting SochDB gRPC server on {}", addr);
     tracing::info!("Server version: {}", env!("CARGO_PKG_VERSION"));
     
@@ -146,6 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     
     Server::builder()
+        .add_service(health_service)
         .add_service(vector_server.into_service())
         .add_service(graph_server.into_service())
         .add_service(policy_server.into_service())
