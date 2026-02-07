@@ -561,19 +561,36 @@ impl TxnWal {
     }
 
     /// Recover state (next txn ID, sequence) from existing WAL
+    ///
+    /// To avoid txn_id collisions when multiple processes open the same
+    /// WAL concurrently, we incorporate the PID into the starting txn_id.
+    /// Format: upper 32 bits = PID, lower 32 bits = counter.
+    /// This guarantees uniqueness across processes without coordination.
     fn recover_state(&self) -> Result<()> {
         let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
-        let mut max_txn_id: u64 = 0;
         let mut count: u64 = 0;
+
+        // Track the max counter (lower 32 bits) for OUR PID only.
+        // Each process owns its own txn_id space: upper 32 bits = PID.
+        // We must NOT use max_txn_id across ALL PIDs, because that would
+        // place us into another PID's ID space and cause collisions.
+        let our_pid = std::process::id() as u64;
+        let pid_base = our_pid << 32;
+        let mut max_our_counter: u64 = 0;
 
         loop {
             match TxnWalEntry::from_reader(&mut reader) {
                 Ok(entry) => {
-                    if entry.txn_id > max_txn_id {
-                        max_txn_id = entry.txn_id;
-                    }
                     count += 1;
+                    // Only track counters from entries that belong to our PID
+                    let entry_pid = entry.txn_id >> 32;
+                    if entry_pid == our_pid {
+                        let entry_counter = entry.txn_id & 0xFFFF_FFFF;
+                        if entry_counter > max_our_counter {
+                            max_our_counter = entry_counter;
+                        }
+                    }
                 }
                 Err(SochDBError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     break;
@@ -585,7 +602,14 @@ impl TxnWal {
             }
         }
 
-        self.next_txn_id.store(max_txn_id + 1, Ordering::SeqCst);
+        // Start from pid_base + (max counter we've seen for our PID + 1).
+        // This ensures:
+        //   1. Unique across processes (different PID → different upper 32 bits)
+        //   2. Unique within this process even if PID is recycled (we skip
+        //      over any counters already used by a previous process with our PID)
+        let next_id = pid_base + max_our_counter + 1;
+
+        self.next_txn_id.store(next_id, Ordering::SeqCst);
         self.sequence.store(count, Ordering::SeqCst);
 
         Ok(())
@@ -880,17 +904,25 @@ impl TxnWal {
         let mut pending_writes: std::collections::HashMap<u64, Vec<(Vec<u8>, Vec<u8>)>> =
             std::collections::HashMap::new();
 
-        // First pass: find committed transactions
+        // Single pass: collect all entries
         loop {
             match TxnWalEntry::from_reader(&mut reader) {
                 Ok(entry) => match entry.record_type {
                     WalRecordType::TxnBegin => {
-                        pending_writes.insert(entry.txn_id, Vec::new());
+                        // Use entry() to avoid overwriting existing data if a
+                        // duplicate TxnBegin appears (e.g., from PID recycling).
+                        pending_writes
+                            .entry(entry.txn_id)
+                            .or_insert_with(Vec::new);
                     }
                     WalRecordType::Data => {
-                        if let Some(writes) = pending_writes.get_mut(&entry.txn_id) {
-                            writes.push((entry.key, entry.value));
-                        }
+                        // Accept data for any txn_id we've seen a Begin for,
+                        // and also for txn_ids without a Begin (they might have
+                        // their Begin later in the WAL due to buffered writes).
+                        pending_writes
+                            .entry(entry.txn_id)
+                            .or_insert_with(Vec::new)
+                            .push((entry.key, entry.value));
                     }
                     WalRecordType::TxnCommit => {
                         committed_txns.insert(entry.txn_id);

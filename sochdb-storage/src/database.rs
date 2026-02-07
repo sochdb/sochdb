@@ -1108,11 +1108,40 @@ impl Database {
     }
 
     /// Commit a transaction
+    ///
+    /// In concurrent mode, acquires the shared writer lock to ensure
+    /// WAL writes are serialized across processes, and forces a flush+sync
+    /// so that subsequent processes see the committed data.
     pub fn commit(&self, txn: TxnHandle) -> Result<u64> {
         self.stats
             .transactions_committed
             .fetch_add(1, Ordering::Relaxed);
-        self.storage.commit(txn.txn_id)
+
+        // In concurrent mode, acquire the cross-process writer lock
+        // to serialize WAL commits across processes
+        let _writer_guard = if let Some(ref mvcc) = self.concurrent_mvcc {
+            Some(mvcc.acquire_writer(std::time::Duration::from_secs(5))?)
+        } else {
+            None
+        };
+
+        let commit_ts = self.storage.commit(txn.txn_id)?;
+
+        // In concurrent mode, force flush+sync so other processes can see
+        // the committed data when they open the DB or run recovery.
+        // Without this, the BufWriter may hold data that isn't visible
+        // to other processes reading the WAL file.
+        if self.is_concurrent {
+            self.storage.flush_wal()?;
+            self.storage.fsync()?;
+        }
+
+        // Notify concurrent MVCC of commit for GC tracking
+        if let Some(ref mvcc) = self.concurrent_mvcc {
+            mvcc.on_commit();
+        }
+
+        Ok(commit_ts)
     }
 
     /// Abort a transaction
@@ -1171,10 +1200,21 @@ impl Database {
     // =========================================================================
 
     /// Put a key-value pair
+    ///
+    /// In concurrent mode, acquires the shared writer lock to ensure
+    /// WAL writes are serialized across processes.
     pub fn put(&self, txn: TxnHandle, key: &[u8], value: &[u8]) -> Result<()> {
         self.stats
             .bytes_written
             .fetch_add((key.len() + value.len()) as u64, Ordering::Relaxed);
+
+        // In concurrent mode, acquire cross-process writer lock
+        let _writer_guard = if let Some(ref mvcc) = self.concurrent_mvcc {
+            Some(mvcc.acquire_writer(std::time::Duration::from_secs(5))?)
+        } else {
+            None
+        };
+
         // Use write_refs to avoid unnecessary allocations
         self.storage.write_refs(txn.txn_id, key, value)
     }
@@ -1204,6 +1244,14 @@ impl Database {
             .map(|(k, v)| (k.len() + v.len()) as u64)
             .sum();
         self.stats.bytes_written.fetch_add(bytes, Ordering::Relaxed);
+
+        // In concurrent mode, acquire cross-process writer lock
+        let _writer_guard = if let Some(ref mvcc) = self.concurrent_mvcc {
+            Some(mvcc.acquire_writer(std::time::Duration::from_secs(5))?)
+        } else {
+            None
+        };
+
         self.storage.write_batch_refs(txn.txn_id, writes)
     }
 
