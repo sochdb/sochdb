@@ -279,12 +279,13 @@ sochdb = "0.2"
 
 Language SDKs are maintained in separate repositories with their own release cycles:
 
-| Language             | Repository                                                       | Installation                 |
-| -------------------- | ---------------------------------------------------------------- | ---------------------------- |
-| **Python**           | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb`         |
-| **Node.js/TypeScript** | [sochdb-nodejs-sdk](https://github.com/sochdb/sochdb-nodejs-sdk) | `npm install @sochdb/sochdb` |
-| **Go**              | [sochdb-go](https://github.com/sochdb/sochdb-go)                 | `go get github.com/sochdb/sochdb-go@latest` |
-| **Rust**            | This repository                                                  | `cargo add sochdb`           |
+| Language             | Repository                                                       | Installation                 | Type |
+| -------------------- | ---------------------------------------------------------------- | ---------------------------- | ---- |
+| **Python**           | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb`         | Native (PyO3) |
+| **Node.js/TypeScript** | [sochdb-nodejs-sdk](https://github.com/sochdb/sochdb-nodejs-sdk) | `npm install @sochdb/sochdb` | Native (Neon) |
+| **Java**             | `sochdb-java-sdk/` (this repo)                                   | Local build (see README)     | Native (JNI) |
+| **Go**              | [sochdb-go](https://github.com/sochdb/sochdb-go)                 | `go get github.com/sochdb/sochdb-go@latest` | Native (CGO) |
+| **Rust**            | This repository                                                  | `cargo add sochdb`           | Native |
 
 ### 🐳 Docker Deployment
 
@@ -372,6 +373,22 @@ func main() {
 }
 ```
 
+#### Java
+
+```java
+import dev.sochdb.Database;
+
+public class Example {
+    public static void main(String[] args) {
+        try (Database db = Database.open("./my_db")) {
+            db.put("users/alice".getBytes(), "Alice Smith".getBytes());
+            byte[] value = db.get("users/alice".getBytes());
+            System.out.println(new String(value));  // "Alice Smith"
+        }
+    }
+}
+```
+
 #### Rust
 
 ```rust
@@ -379,7 +396,7 @@ use sochdb::Database;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::open("./my_db")?;
-
+    
     db.put(b"users/alice", b"Alice Smith")?;
     if let Some(value) = db.get(b"users/alice")? {
         println!("{}", String::from_utf8_lossy(&value));  // "Alice Smith"
