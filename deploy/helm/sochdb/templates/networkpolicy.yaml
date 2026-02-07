@@ -1,0 +1,59 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sochdb.fullname" . }}
+  labels:
+    {{- include "sochdb.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sochdb.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from pods with specified labels
+    - from:
+        {{- if .Values.networkPolicy.ingressLabels }}
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressLabels | nindent 14 }}
+        {{- else }}
+        # Default: allow from same namespace
+        - podSelector: {}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.grpcPort }}
+        - protocol: TCP
+          port: {{ .Values.service.httpPort }}
+        {{- if .Values.observability.metrics.enabled }}
+        - protocol: TCP
+          port: {{ .Values.observability.metrics.port }}
+        {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egressEnabled }}
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow egress for WAL archiving (if enabled)
+    {{- if .Values.durability.archiving.enabled }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- else }}
+    # Deny all egress
+    []
+    {{- end }}
+{{- end }}

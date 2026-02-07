@@ -1,0 +1,13 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "sochdb.fullname" . }}
+  labels:
+    {{- include "sochdb.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "sochdb.selectorLabels" . | nindent 6 }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+{{- end }}

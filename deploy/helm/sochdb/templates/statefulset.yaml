@@ -1,0 +1,184 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "sochdb.fullname" . }}
+  labels:
+    {{- include "sochdb.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  serviceName: {{ include "sochdb.fullname" . }}-headless
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "sochdb.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        # Force pod restart on config change
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "sochdb.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "sochdb.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 120
+      {{- if .Values.initContainers.fsCheck.enabled }}
+      initContainers:
+        - name: fs-check
+          image: {{ .Values.initContainers.fsCheck.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Checking filesystem permissions..."
+              touch /data/.healthcheck && rm /data/.healthcheck
+              echo "Checking for WAL corruption markers..."
+              if [ -f /data/wal/.corrupted ]; then
+                echo "ERROR: WAL corruption detected. Manual intervention required."
+                exit 1
+              fi
+              echo "Filesystem checks passed."
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+      {{- end }}
+      containers:
+        - name: sochdb
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "sochdb.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.grpcPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+              protocol: TCP
+            {{- if .Values.observability.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.observability.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: SOCHDB_DATA_DIR
+              value: /data
+            - name: SOCHDB_GRPC_PORT
+              value: {{ .Values.service.grpcPort | quote }}
+            - name: SOCHDB_HTTP_PORT
+              value: {{ .Values.service.httpPort | quote }}
+            - name: SOCHDB_DURABILITY_LEVEL
+              value: {{ .Values.durability.level }}
+            - name: SOCHDB_BOOT_RECOVERY_MODE
+              value: {{ .Values.boot.recoveryMode }}
+            - name: SOCHDB_BOOT_INIT_BUDGET_SECS
+              value: {{ .Values.boot.budgets.initSeconds | quote }}
+            - name: SOCHDB_BOOT_MIGRATE_BUDGET_SECS
+              value: {{ .Values.boot.budgets.migrateSeconds | quote }}
+            - name: SOCHDB_BOOT_RECOVER_BUDGET_SECS
+              value: {{ .Values.boot.budgets.recoverSeconds | quote }}
+            - name: SOCHDB_BOOT_WARMUP_BUDGET_SECS
+              value: {{ .Values.boot.budgets.warmupSeconds | quote }}
+            - name: SOCHDB_ADMISSION_QUEUE_DEPTH_REJECTION
+              value: {{ .Values.admissionControl.queueDepthRejection | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            {{- omit .Values.probes.startup "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            {{- omit .Values.probes.readiness "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            {{- omit .Values.probes.liveness "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/sochdb
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- if .Values.sidecars.logShipper.enabled }}
+        - name: log-shipper
+          image: {{ .Values.sidecars.logShipper.image }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              readOnly: true
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "sochdb.fullname" . }}-config
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

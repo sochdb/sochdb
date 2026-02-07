@@ -418,6 +418,94 @@ pub unsafe extern "C" fn hnsw_search_ultra(
     }
 }
 
+/// Exact (brute-force) search for perfect recall.
+/// 
+/// Computes distances to ALL vectors in the index and returns the true k-nearest neighbors.
+/// This guarantees recall@k = 1.0 but is O(n) per query.
+/// Use for benchmarking ground truth or when perfect recall is required.
+/// 
+/// # Safety
+/// All pointers must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hnsw_search_exact(
+    ptr: *mut HnswIndexPtr,
+    query: *const c_float,
+    query_len: usize,
+    k: usize,
+    results_out: *mut CSearchResult,
+    num_results_out: *mut usize,
+) -> c_int {
+    if ptr.is_null() || query.is_null() || results_out.is_null() || num_results_out.is_null() {
+        return -1;
+    }
+    
+    unsafe {
+        let index = &(*ptr).0;
+        let query_vec = slice::from_raw_parts(query, query_len);
+        
+        match index.search_exact(query_vec, k) {
+            Ok(results) => {
+                let num = results.len().min(k);
+                *num_results_out = num;
+                
+                for (i, (id, distance)) in results.into_iter().take(k).enumerate() {
+                    *results_out.add(i) = CSearchResult {
+                        id_lo: id as u64,
+                        id_hi: (id >> 64) as u64,
+                        distance: distance as c_float,
+                    };
+                }
+                0
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
+/// Exact (brute-force) search using f64 precision for distance computation.
+/// 
+/// Computes distances in f64 to match ground truth (e.g., numpy f64 arithmetic).
+/// This eliminates f32 tie-breaking mismatches at the k-th boundary,
+/// guaranteeing precision@k = 1.0 against f64-computed ground truth.
+/// 
+/// # Safety
+/// All pointers must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hnsw_search_exact_f64(
+    ptr: *mut HnswIndexPtr,
+    query: *const c_float,
+    query_len: usize,
+    k: usize,
+    results_out: *mut CSearchResult,
+    num_results_out: *mut usize,
+) -> c_int {
+    if ptr.is_null() || query.is_null() || results_out.is_null() || num_results_out.is_null() {
+        return -1;
+    }
+    
+    unsafe {
+        let index = &(*ptr).0;
+        let query_vec = slice::from_raw_parts(query, query_len);
+        
+        match index.search_exact_f64(query_vec, k) {
+            Ok(results) => {
+                let num = results.len().min(k);
+                *num_results_out = num;
+                
+                for (i, (id, distance)) in results.into_iter().take(k).enumerate() {
+                    *results_out.add(i) = CSearchResult {
+                        id_lo: id as u64,
+                        id_hi: (id >> 64) as u64,
+                        distance: distance as c_float,
+                    };
+                }
+                0
+            }
+            Err(_) => -1,
+        }
+    }
+}
+
 /// Build flat neighbor cache for ultra-fast search
 /// 
 /// Call this after bulk inserts. Pre-flattens all layer-0 neighbors

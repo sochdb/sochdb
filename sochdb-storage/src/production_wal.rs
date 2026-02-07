@@ -52,24 +52,63 @@ pub type TxnId = u64;
 /// Page ID for tracking dirty pages
 pub type PageId = u64;
 
-/// WAL record types following ARIES protocol
+/// WAL record types following ARIES protocol.
+///
+/// This is a local enum with on-disk byte values (1-7) for backward
+/// compatibility with existing WAL files. Use `to_canonical()` / `from_canonical()`
+/// to convert to/from `sochdb_core::txn::WalRecordType` (the canonical superset).
+///
+/// Disk byte mapping (DO NOT CHANGE without migration):
+///   Update=1, Commit=2, Abort=3, Clr=4, Checkpoint=5, Begin=6, End=7
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WalRecordType {
-    /// Data modification (contains before/after images for UNDO/REDO)
+    /// Data modification with before/after images (canonical: PageUpdate)
     Update = 1,
-    /// Transaction commit
+    /// Transaction commit (canonical: TxnCommit)
     Commit = 2,
-    /// Transaction abort
+    /// Transaction abort (canonical: TxnAbort)
     Abort = 3,
-    /// Compensation Log Record (for UNDO operations)
+    /// Compensation Log Record for UNDO (canonical: CompensationLogRecord)
     Clr = 4,
-    /// Checkpoint record
+    /// Checkpoint record (canonical: Checkpoint)
     Checkpoint = 5,
-    /// Begin transaction
+    /// Begin transaction (canonical: TxnBegin)
     Begin = 6,
-    /// End transaction (after all resources released)
+    /// End transaction — resources released (canonical: TxnEnd)
     End = 7,
+}
+
+impl WalRecordType {
+    /// Convert to the canonical `sochdb_core::txn::WalRecordType`.
+    pub fn to_canonical(self) -> sochdb_core::txn::WalRecordType {
+        use sochdb_core::txn::WalRecordType as C;
+        match self {
+            Self::Update => C::PageUpdate,
+            Self::Commit => C::TxnCommit,
+            Self::Abort => C::TxnAbort,
+            Self::Clr => C::CompensationLogRecord,
+            Self::Checkpoint => C::Checkpoint,
+            Self::Begin => C::TxnBegin,
+            Self::End => C::TxnEnd,
+        }
+    }
+
+    /// Convert from the canonical `sochdb_core::txn::WalRecordType`.
+    /// Returns `None` for variants not used in production WAL operations.
+    pub fn from_canonical(rt: sochdb_core::txn::WalRecordType) -> Option<Self> {
+        use sochdb_core::txn::WalRecordType as C;
+        match rt {
+            C::PageUpdate => Some(Self::Update),
+            C::TxnCommit => Some(Self::Commit),
+            C::TxnAbort => Some(Self::Abort),
+            C::CompensationLogRecord => Some(Self::Clr),
+            C::Checkpoint => Some(Self::Checkpoint),
+            C::TxnBegin => Some(Self::Begin),
+            C::TxnEnd => Some(Self::End),
+            _ => None,
+        }
+    }
 }
 
 impl TryFrom<u8> for WalRecordType {
@@ -599,7 +638,7 @@ impl WriteAheadLog {
         let record = WalRecord::begin(lsn, txn_id);
 
         {
-            let mut prev_lsn = self.txn_prev_lsn.write().unwrap();
+            let mut prev_lsn = self.txn_prev_lsn.write().unwrap_or_else(|e| e.into_inner());
             prev_lsn.insert(txn_id, lsn);
         }
 
@@ -618,14 +657,14 @@ impl WriteAheadLog {
     ) -> Result<Lsn, WalError> {
         let lsn = self.next_lsn();
         let prev_lsn = {
-            let prev_lsn = self.txn_prev_lsn.read().unwrap();
+            let prev_lsn = self.txn_prev_lsn.read().unwrap_or_else(|e| e.into_inner());
             prev_lsn.get(&txn_id).copied().unwrap_or(0)
         };
 
         let record = WalRecord::update(lsn, txn_id, prev_lsn, page_id, offset, before, after);
 
         {
-            let mut prev_lsn_map = self.txn_prev_lsn.write().unwrap();
+            let mut prev_lsn_map = self.txn_prev_lsn.write().unwrap_or_else(|e| e.into_inner());
             prev_lsn_map.insert(txn_id, lsn);
         }
 
@@ -637,7 +676,7 @@ impl WriteAheadLog {
     pub fn commit_txn(&self, txn_id: TxnId) -> Result<Lsn, WalError> {
         let lsn = self.next_lsn();
         let prev_lsn = {
-            let prev_lsn = self.txn_prev_lsn.read().unwrap();
+            let prev_lsn = self.txn_prev_lsn.read().unwrap_or_else(|e| e.into_inner());
             prev_lsn.get(&txn_id).copied().unwrap_or(0)
         };
 
@@ -647,7 +686,7 @@ impl WriteAheadLog {
         let (tx, rx) = std::sync::mpsc::channel();
 
         {
-            let mut buffer = self.buffer.lock().unwrap();
+            let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
             buffer.add_record(record);
             buffer.add_waiter(txn_id, tx);
 
@@ -658,7 +697,7 @@ impl WriteAheadLog {
 
         // Clean up prev_lsn tracking
         {
-            let mut prev_lsn_map = self.txn_prev_lsn.write().unwrap();
+            let mut prev_lsn_map = self.txn_prev_lsn.write().unwrap_or_else(|e| e.into_inner());
             prev_lsn_map.remove(&txn_id);
         }
 
@@ -671,14 +710,14 @@ impl WriteAheadLog {
     pub fn abort_txn(&self, txn_id: TxnId) -> Result<Lsn, WalError> {
         let lsn = self.next_lsn();
         let prev_lsn = {
-            let prev_lsn = self.txn_prev_lsn.read().unwrap();
+            let prev_lsn = self.txn_prev_lsn.read().unwrap_or_else(|e| e.into_inner());
             prev_lsn.get(&txn_id).copied().unwrap_or(0)
         };
 
         let record = WalRecord::abort(lsn, txn_id, prev_lsn);
 
         {
-            let mut prev_lsn_map = self.txn_prev_lsn.write().unwrap();
+            let mut prev_lsn_map = self.txn_prev_lsn.write().unwrap_or_else(|e| e.into_inner());
             prev_lsn_map.remove(&txn_id);
         }
 
@@ -689,7 +728,7 @@ impl WriteAheadLog {
 
     /// Append a record to the buffer
     fn append(&self, record: WalRecord) -> Result<(), WalError> {
-        let mut buffer = self.buffer.lock().unwrap();
+        let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         buffer.add_record(record);
 
         if buffer.should_flush(&self.config) {
@@ -701,7 +740,7 @@ impl WriteAheadLog {
 
     /// Force flush the buffer
     pub fn force_flush(&self) -> Result<Lsn, WalError> {
-        let mut buffer = self.buffer.lock().unwrap();
+        let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         if !buffer.records.is_empty() {
             self.flush_buffer_locked(&mut buffer)?;
         }
@@ -727,7 +766,7 @@ impl WriteAheadLog {
 
         // Write to file
         {
-            let mut file = self.file.lock().unwrap();
+            let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
             file.write_all(&data)
                 .map_err(|e| WalError::Io(e.to_string()))?;
 
@@ -918,8 +957,10 @@ impl WriteAheadLog {
                     Ok(WalRecordType::Clr) => {
                         // Get undo_next_lsn from after_image
                         if record.after_image.len() >= 8 {
-                            let undo_next =
-                                u64::from_le_bytes(record.after_image[0..8].try_into().unwrap());
+                            let bytes: [u8; 8] = record.after_image[0..8]
+                                .try_into()
+                                .unwrap_or([0; 8]);
+                            let undo_next = u64::from_le_bytes(bytes);
                             if undo_next > 0 {
                                 undo_list.push_back((undo_next, txn_id));
                                 undo_list.make_contiguous().sort_by(|a, b| b.0.cmp(&a.0));
@@ -1057,7 +1098,11 @@ impl Iterator for WalIterator {
         full_buf.extend_from_slice(&header_buf);
         full_buf.extend_from_slice(&data_buf[..data_len]);
 
-        let expected_crc = u32::from_le_bytes(data_buf[data_len..data_len + 4].try_into().unwrap());
+        let crc_bytes: [u8; 4] = match data_buf[data_len..data_len + 4].try_into() {
+            Ok(b) => b,
+            Err(_) => return Some(Err(WalError::Corruption("CRC bytes truncated".to_string()))),
+        };
+        let expected_crc = u32::from_le_bytes(crc_bytes);
         let actual_crc = crc32_of(&full_buf);
 
         if expected_crc != actual_crc {

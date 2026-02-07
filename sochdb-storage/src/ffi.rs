@@ -2409,6 +2409,121 @@ pub unsafe extern "C" fn sochdb_collection_insert(
     0
 }
 
+/// Batch insert vectors into a collection.
+///
+/// Takes parallel arrays of ids, vectors, and optional metadata.
+/// Uses a single transaction for all inserts → much faster than per-vector.
+///
+/// # Returns
+/// - >= 0: Number of successfully inserted vectors
+/// - -1: Error
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sochdb_collection_insert_batch(
+    ptr: *mut DatabasePtr,
+    namespace: *const c_char,
+    collection: *const c_char,
+    ids: *const *const c_char,        // Array of C strings
+    vectors: *const f32,               // Flat array: count * dimension floats
+    dimension: usize,
+    metadata_jsons: *const *const c_char, // Array of C strings (nullable entries)
+    count: usize,
+) -> c_int {
+    if ptr.is_null() || namespace.is_null() || collection.is_null()
+        || ids.is_null() || vectors.is_null() || count == 0
+    {
+        return -1;
+    }
+
+    let ns = match unsafe { CStr::from_ptr(namespace) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let col = match unsafe { CStr::from_ptr(collection) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let db = unsafe { &(*ptr).0 };
+
+    let (expected_dim, metric) = match resolve_collection_config(db, ns, col) {
+        Some(config) => config,
+        None => (dimension, DistanceMetric::Cosine),
+    };
+    if dimension != expected_dim {
+        return -1;
+    }
+
+    // Single transaction for the entire batch
+    let txn = match db.begin_transaction() {
+        Ok(t) => t,
+        Err(_) => return -1,
+    };
+
+    let ids_slice = unsafe { slice::from_raw_parts(ids, count) };
+    let vectors_flat = unsafe { slice::from_raw_parts(vectors, count * dimension) };
+
+    let mut inserted = 0i32;
+    let mut id_hashes = Vec::with_capacity(count);
+    let mut vector_copies = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let doc_id = match unsafe { CStr::from_ptr(ids_slice[i]) }.to_str() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let vec_start = i * dimension;
+        let vector = &vectors_flat[vec_start..vec_start + dimension];
+
+        let id_hash = hash_id_to_u128(doc_id);
+        let vec_key = vector_bin_key(ns, col, id_hash);
+        let vec_value = serialize_vector_binary(vector);
+
+        if db.put(txn, vec_key.as_bytes(), &vec_value).is_err() {
+            continue;
+        }
+
+        // Metadata
+        let metadata = if !metadata_jsons.is_null() {
+            let meta_ptr = unsafe { *metadata_jsons.add(i) };
+            if !meta_ptr.is_null() {
+                match unsafe { CStr::from_ptr(meta_ptr) }.to_str() {
+                    Ok(s) => s.to_string(),
+                    Err(_) => "{}".to_string(),
+                }
+            } else {
+                "{}".to_string()
+            }
+        } else {
+            "{}".to_string()
+        };
+
+        let metadata_value = match serde_json::from_str::<serde_json::Value>(&metadata) {
+            Ok(value) => serde_json::json!({"id": doc_id, "metadata": value}),
+            Err(_) => serde_json::json!({"id": doc_id, "metadata": serde_json::json!({})}),
+        };
+        let meta_key = metadata_key(ns, col, id_hash);
+        if let Ok(meta_bytes) = serde_json::to_vec(&metadata_value) {
+            let _ = db.put(txn, meta_key.as_bytes(), &meta_bytes);
+        }
+
+        id_hashes.push(id_hash);
+        vector_copies.push(vector.to_vec());
+        inserted += 1;
+    }
+
+    // Commit single transaction for entire batch
+    if db.commit(txn).is_err() {
+        return -1;
+    }
+
+    // Insert into HNSW index (after commit succeeds)
+    let index = ensure_collection_index(db, ns, col, dimension, metric);
+    for (id_hash, vector) in id_hashes.into_iter().zip(vector_copies.into_iter()) {
+        let _ = index.index.insert(id_hash, vector);
+    }
+
+    inserted
+}
+
 /// C-compatible search result
 #[repr(C)]
 pub struct CSearchResult {

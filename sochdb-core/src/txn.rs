@@ -39,27 +39,57 @@ pub enum TxnState {
 }
 
 /// WAL record types for ACID transactions (ARIES-style)
+///
+/// This is the **canonical** definition. All crates SHOULD use this type
+/// via `use sochdb_core::txn::WalRecordType` rather than defining their own.
+///
+/// # Discriminant Scheme
+///
+/// Values use hex categories for logical grouping:
+/// - `0x01-0x0F`: Data operations
+/// - `0x10-0x1F`: Transaction lifecycle
+/// - `0x20-0x2F`: Checkpoint/recovery
+/// - `0x30-0x3F`: Schema operations  
+/// - `0x40-0x4F`: ARIES-specific records
+/// - `0x50-0x5F`: LSM/compaction operations
+/// - `0x60-0x6F`: Atomic batch operations
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WalRecordType {
     /// Data write within transaction
     Data = 0x01,
+    /// Page update with before/after images
+    PageUpdate = 0x02,
+    /// Delete operation
+    Delete = 0x03,
     /// Transaction begin marker
     TxnBegin = 0x10,
     /// Transaction commit marker
     TxnCommit = 0x11,
     /// Transaction abort marker
     TxnAbort = 0x12,
+    /// Savepoint within a transaction
+    Savepoint = 0x13,
+    /// Rollback to savepoint
+    RollbackToSavepoint = 0x14,
+    /// Transaction end (resource cleanup after commit/abort)
+    TxnEnd = 0x15,
     /// Checkpoint for recovery optimization
     Checkpoint = 0x20,
+    /// End of checkpoint (contains active transactions and dirty pages)
+    CheckpointEnd = 0x21,
     /// Schema change (DDL)
     SchemaChange = 0x30,
     /// Compensation Log Record (CLR) for ARIES undo operations
     CompensationLogRecord = 0x40,
-    /// End of checkpoint (contains active transactions and dirty pages)
-    CheckpointEnd = 0x21,
-    /// Page update with before/after images
-    PageUpdate = 0x02,
+    /// LSM compaction record
+    Compaction = 0x50,
+    /// LSM flush (memtable to SSTable)
+    Flush = 0x51,
+    /// Atomic batch begin
+    BatchBegin = 0x60,
+    /// Atomic batch commit  
+    BatchCommit = 0x61,
 }
 
 impl TryFrom<u8> for WalRecordType {
@@ -68,14 +98,22 @@ impl TryFrom<u8> for WalRecordType {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0x01 => Ok(WalRecordType::Data),
+            0x02 => Ok(WalRecordType::PageUpdate),
+            0x03 => Ok(WalRecordType::Delete),
             0x10 => Ok(WalRecordType::TxnBegin),
             0x11 => Ok(WalRecordType::TxnCommit),
             0x12 => Ok(WalRecordType::TxnAbort),
+            0x13 => Ok(WalRecordType::Savepoint),
+            0x14 => Ok(WalRecordType::RollbackToSavepoint),
+            0x15 => Ok(WalRecordType::TxnEnd),
             0x20 => Ok(WalRecordType::Checkpoint),
             0x21 => Ok(WalRecordType::CheckpointEnd),
             0x30 => Ok(WalRecordType::SchemaChange),
             0x40 => Ok(WalRecordType::CompensationLogRecord),
-            0x02 => Ok(WalRecordType::PageUpdate),
+            0x50 => Ok(WalRecordType::Compaction),
+            0x51 => Ok(WalRecordType::Flush),
+            0x60 => Ok(WalRecordType::BatchBegin),
+            0x61 => Ok(WalRecordType::BatchCommit),
             _ => Err(()),
         }
     }
@@ -364,7 +402,10 @@ impl TxnWalEntry {
     }
 
     fn serialize_for_checksum(&self) -> Vec<u8> {
-        // Serialize without checksum field
+        // Serialize all fields except checksum for CRC32 computation.
+        // IMPORTANT: This MUST include ALL ARIES fields to prevent silent
+        // data corruption during crash recovery. If a field is not checksummed,
+        // it can be corrupted without detection, breaking ARIES undo/redo chains.
         let mut buf = Vec::new();
         buf.push(self.record_type as u8);
         buf.extend(&self.txn_id.to_le_bytes());
@@ -387,43 +428,118 @@ impl TxnWalEntry {
         } else {
             buf.extend(&0u32.to_le_bytes());
         }
+        // ARIES fields — critical for recovery correctness
+        buf.extend(&self.lsn.to_le_bytes());
+        // prev_lsn: 0 = None, 1 + value = Some(value)
+        match self.prev_lsn {
+            Some(lsn) => {
+                buf.push(1u8);
+                buf.extend(&lsn.to_le_bytes());
+            }
+            None => buf.push(0u8),
+        }
+        // page_id: same encoding
+        match self.page_id {
+            Some(pid) => {
+                buf.push(1u8);
+                buf.extend(&pid.to_le_bytes());
+            }
+            None => buf.push(0u8),
+        }
+        // undo_info: length-prefixed optional blob
+        if let Some(ref undo) = self.undo_info {
+            buf.extend(&(undo.len() as u32).to_le_bytes());
+            buf.extend(undo);
+        } else {
+            buf.extend(&0u32.to_le_bytes());
+        }
+        // undo_next_lsn: same encoding as prev_lsn
+        match self.undo_next_lsn {
+            Some(lsn) => {
+                buf.push(1u8);
+                buf.extend(&lsn.to_le_bytes());
+            }
+            None => buf.push(0u8),
+        }
         buf
     }
 
-    /// Serialize to bytes
+    /// Wire format version for forward/backward compatibility.
+    ///
+    /// - V0 (0x00): Legacy 6-field format (record_type, txn_id, timestamp_us, key, value, table, checksum).
+    ///              ARIES fields are NOT serialized; from_bytes() defaults them to zero/None.
+    /// - V1 (0x01): Full ARIES format. All fields serialized including lsn, prev_lsn,
+    ///              page_id, undo_info, undo_next_lsn. Checksum covers ALL fields.
+    pub const FORMAT_VERSION: u8 = 0x01;
+
+    /// Serialize to bytes (versioned wire format)
+    ///
+    /// Format V1 layout:
+    /// ```text
+    /// [version:1] [serialize_for_checksum payload] [crc32:4]
+    /// ```
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = self.serialize_for_checksum();
+        let payload = self.serialize_for_checksum();
+        let mut buf = Vec::with_capacity(1 + payload.len() + 4);
+        buf.push(Self::FORMAT_VERSION);
+        buf.extend(&payload);
         buf.extend(&self.checksum.to_le_bytes());
         buf
     }
 
     /// Deserialize from bytes with proper error propagation
     ///
+    /// Supports both wire format versions:
+    /// - V0 (legacy): No version byte; first byte is a valid WalRecordType discriminant.
+    ///   ARIES fields default to zero/None.
+    /// - V1: First byte is 0x01 (FORMAT_VERSION). All ARIES fields deserialized.
+    ///
     /// Returns an error if:
-    /// - Data is too short (minimum 21 bytes)
+    /// - Data is too short
     /// - Record type is invalid
     /// - Data is truncated mid-field
     /// - UTF-8 encoding is invalid for table name
     /// - Checksum validation fails
     pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
-        // Fixed header: 1 (type) + 8 (txn_id) + 8 (timestamp) + 4 (checksum minimum) = 21
-        if data.len() < 21 {
+        if data.is_empty() {
+            return Err("WAL entry empty".to_string());
+        }
+
+        // Detect format version: V1 starts with 0x01 which is also WalRecordType::Data,
+        // so we use a heuristic: V1 has version byte 0x01 followed by another record_type byte.
+        // V0 has no version byte, first byte IS the record type.
+        // Disambiguation: if first byte is 0x01 (FORMAT_VERSION/Data) AND data.len() >= 2
+        // AND second byte is a valid WalRecordType, then it's V1.
+        // Otherwise, treat as V0 for backward compatibility.
+        let (version, payload_start) = if data.len() >= 2
+            && data[0] == Self::FORMAT_VERSION
+            && WalRecordType::try_from(data[1]).is_ok()
+        {
+            (1u8, 1usize) // V1: skip version byte
+        } else {
+            (0u8, 0usize) // V0: no version byte
+        };
+
+        let payload = &data[payload_start..];
+
+        // Fixed header: 1 (type) + 8 (txn_id) + 8 (timestamp) = 17 minimum before variable fields
+        if payload.len() < 21 {
             return Err(format!(
                 "WAL entry too short: {} bytes, need at least 21",
-                data.len()
+                payload.len()
             ));
         }
 
-        let record_type = WalRecordType::try_from(data[0])
-            .map_err(|_| format!("Invalid WAL record type: {}", data[0]))?;
+        let record_type = WalRecordType::try_from(payload[0])
+            .map_err(|_| format!("Invalid WAL record type: {}", payload[0]))?;
 
         let txn_id = u64::from_le_bytes(
-            data[1..9]
+            payload[1..9]
                 .try_into()
                 .map_err(|_| "Failed to parse txn_id: slice too short")?,
         );
         let timestamp_us = u64::from_le_bytes(
-            data[9..17]
+            payload[9..17]
                 .try_into()
                 .map_err(|_| "Failed to parse timestamp: slice too short")?,
         );
@@ -431,91 +547,91 @@ impl TxnWalEntry {
         let mut offset = 17;
 
         // Parse key with bounds checking
-        if offset + 4 > data.len() {
+        if offset + 4 > payload.len() {
             return Err(format!(
                 "WAL entry truncated at key_len: offset {} + 4 > {}",
                 offset,
-                data.len()
+                payload.len()
             ));
         }
         let key_len = u32::from_le_bytes(
-            data[offset..offset + 4]
+            payload[offset..offset + 4]
                 .try_into()
                 .map_err(|_| "Failed to parse key_len")?,
         ) as usize;
         offset += 4;
 
-        if offset + key_len > data.len() {
+        if offset + key_len > payload.len() {
             return Err(format!(
                 "WAL entry truncated at key: need {} bytes at offset {}, have {}",
                 key_len,
                 offset,
-                data.len()
+                payload.len()
             ));
         }
         let key = if key_len > 0 {
-            Some(data[offset..offset + key_len].to_vec())
+            Some(payload[offset..offset + key_len].to_vec())
         } else {
             None
         };
         offset += key_len;
 
         // Parse value with bounds checking
-        if offset + 4 > data.len() {
+        if offset + 4 > payload.len() {
             return Err(format!(
                 "WAL entry truncated at value_len: offset {} + 4 > {}",
                 offset,
-                data.len()
+                payload.len()
             ));
         }
         let value_len = u32::from_le_bytes(
-            data[offset..offset + 4]
+            payload[offset..offset + 4]
                 .try_into()
                 .map_err(|_| "Failed to parse value_len")?,
         ) as usize;
         offset += 4;
 
-        if offset + value_len > data.len() {
+        if offset + value_len > payload.len() {
             return Err(format!(
                 "WAL entry truncated at value: need {} bytes at offset {}, have {}",
                 value_len,
                 offset,
-                data.len()
+                payload.len()
             ));
         }
         let value = if value_len > 0 {
-            Some(data[offset..offset + value_len].to_vec())
+            Some(payload[offset..offset + value_len].to_vec())
         } else {
             None
         };
         offset += value_len;
 
         // Parse table name with bounds checking
-        if offset + 4 > data.len() {
+        if offset + 4 > payload.len() {
             return Err(format!(
                 "WAL entry truncated at table_len: offset {} + 4 > {}",
                 offset,
-                data.len()
+                payload.len()
             ));
         }
         let table_len = u32::from_le_bytes(
-            data[offset..offset + 4]
+            payload[offset..offset + 4]
                 .try_into()
                 .map_err(|_| "Failed to parse table_len")?,
         ) as usize;
         offset += 4;
 
-        if offset + table_len > data.len() {
+        if offset + table_len > payload.len() {
             return Err(format!(
                 "WAL entry truncated at table: need {} bytes at offset {}, have {}",
                 table_len,
                 offset,
-                data.len()
+                payload.len()
             ));
         }
         let table = if table_len > 0 {
             Some(
-                String::from_utf8(data[offset..offset + table_len].to_vec())
+                String::from_utf8(payload[offset..offset + table_len].to_vec())
                     .map_err(|e| format!("Invalid UTF-8 in table name: {}", e))?,
             )
         } else {
@@ -523,16 +639,123 @@ impl TxnWalEntry {
         };
         offset += table_len;
 
+        // Parse ARIES fields for V1, default for V0
+        let (lsn, prev_lsn, page_id, undo_info, undo_next_lsn) = if version >= 1 {
+            // V1: ARIES fields follow table
+            if offset + 8 > payload.len() {
+                return Err(format!(
+                    "WAL V1 entry truncated at lsn: offset {} + 8 > {}",
+                    offset,
+                    payload.len()
+                ));
+            }
+            let lsn = u64::from_le_bytes(
+                payload[offset..offset + 8]
+                    .try_into()
+                    .map_err(|_| "Failed to parse lsn")?,
+            );
+            offset += 8;
+
+            // prev_lsn: tag byte + optional u64
+            if offset >= payload.len() {
+                return Err("WAL V1 entry truncated at prev_lsn tag".to_string());
+            }
+            let prev_lsn = if payload[offset] == 1 {
+                offset += 1;
+                if offset + 8 > payload.len() {
+                    return Err("WAL V1 entry truncated at prev_lsn value".to_string());
+                }
+                let v = u64::from_le_bytes(
+                    payload[offset..offset + 8]
+                        .try_into()
+                        .map_err(|_| "Failed to parse prev_lsn")?,
+                );
+                offset += 8;
+                Some(v)
+            } else {
+                offset += 1;
+                None
+            };
+
+            // page_id: tag byte + optional u64
+            if offset >= payload.len() {
+                return Err("WAL V1 entry truncated at page_id tag".to_string());
+            }
+            let page_id = if payload[offset] == 1 {
+                offset += 1;
+                if offset + 8 > payload.len() {
+                    return Err("WAL V1 entry truncated at page_id value".to_string());
+                }
+                let v = u64::from_le_bytes(
+                    payload[offset..offset + 8]
+                        .try_into()
+                        .map_err(|_| "Failed to parse page_id")?,
+                );
+                offset += 8;
+                Some(v)
+            } else {
+                offset += 1;
+                None
+            };
+
+            // undo_info: length-prefixed optional blob
+            if offset + 4 > payload.len() {
+                return Err("WAL V1 entry truncated at undo_info_len".to_string());
+            }
+            let undo_len = u32::from_le_bytes(
+                payload[offset..offset + 4]
+                    .try_into()
+                    .map_err(|_| "Failed to parse undo_info_len")?,
+            ) as usize;
+            offset += 4;
+            let undo_info = if undo_len > 0 {
+                if offset + undo_len > payload.len() {
+                    return Err("WAL V1 entry truncated at undo_info data".to_string());
+                }
+                let v = payload[offset..offset + undo_len].to_vec();
+                offset += undo_len;
+                Some(v)
+            } else {
+                None
+            };
+
+            // undo_next_lsn: tag byte + optional u64
+            if offset >= payload.len() {
+                return Err("WAL V1 entry truncated at undo_next_lsn tag".to_string());
+            }
+            let undo_next_lsn = if payload[offset] == 1 {
+                offset += 1;
+                if offset + 8 > payload.len() {
+                    return Err("WAL V1 entry truncated at undo_next_lsn value".to_string());
+                }
+                let v = u64::from_le_bytes(
+                    payload[offset..offset + 8]
+                        .try_into()
+                        .map_err(|_| "Failed to parse undo_next_lsn")?,
+                );
+                offset += 8;
+                Some(v)
+            } else {
+                offset += 1;
+                None
+            };
+
+            (lsn, prev_lsn, page_id, undo_info, undo_next_lsn)
+        } else {
+            // V0: ARIES fields default to zero/None for backward compatibility
+            (0u64, None, None, None, None)
+        };
+
         // Parse checksum with bounds checking
-        if offset + 4 > data.len() {
+        if offset + 4 > payload.len() {
             return Err(format!(
                 "WAL entry truncated at checksum: offset {} + 4 > {}",
                 offset,
-                data.len()
+                payload.len()
             ));
         }
         let checksum = u32::from_le_bytes(
-            data[offset..offset + 4]
+            payload[offset..offset + 4]
                 .try_into()
                 .map_err(|_| "Failed to parse checksum")?,
         );
@@ -545,12 +768,11 @@ impl TxnWalEntry {
             value,
             table,
             checksum,
-            // ARIES fields default to zero/None for backward compatibility
-            lsn: 0,
-            prev_lsn: None,
-            page_id: None,
-            undo_info: None,
-            undo_next_lsn: None,
+            lsn,
+            prev_lsn,
+            page_id,
+            undo_info,
+            undo_next_lsn,
         };
 
         // Verify checksum to detect corruption
@@ -820,6 +1042,81 @@ mod tests {
     }
 
     #[test]
+    fn test_wal_entry_aries_roundtrip() {
+        // Verify ARIES fields survive serialization round-trip (T1-T2 fix)
+        let mut entry = TxnWalEntry::new_aries_data(
+            99,
+            9999999,
+            "orders".to_string(),
+            vec![10, 20],
+            Some(vec![30, 40, 50]),
+            42,           // page_id
+            Some(100),    // prev_lsn
+            Some(vec![0xDE, 0xAD]), // undo_info
+        );
+        entry.lsn = 200;
+        entry.undo_next_lsn = Some(50);
+        entry.compute_checksum();
+
+        let bytes = entry.to_bytes();
+        let parsed = TxnWalEntry::from_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.txn_id, 99);
+        assert_eq!(parsed.lsn, 200);
+        assert_eq!(parsed.prev_lsn, Some(100));
+        assert_eq!(parsed.page_id, Some(42));
+        assert_eq!(parsed.undo_info, Some(vec![0xDE, 0xAD]));
+        assert_eq!(parsed.undo_next_lsn, Some(50));
+        assert_eq!(parsed.key, Some(vec![10, 20]));
+        assert_eq!(parsed.value, Some(vec![30, 40, 50]));
+        assert!(parsed.verify_checksum());
+    }
+
+    #[test]
+    fn test_wal_entry_clr_roundtrip() {
+        let mut entry = TxnWalEntry::new_clr(
+            77,
+            5555555,
+            "inventory".to_string(),
+            vec![1],
+            Some(vec![2]),
+            10,     // page_id
+            300,    // prev_lsn
+            250,    // undo_next_lsn
+        );
+        entry.lsn = 400;
+        entry.compute_checksum();
+
+        let bytes = entry.to_bytes();
+        let parsed = TxnWalEntry::from_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.record_type, WalRecordType::CompensationLogRecord);
+        assert_eq!(parsed.lsn, 400);
+        assert_eq!(parsed.prev_lsn, Some(300));
+        assert_eq!(parsed.page_id, Some(10));
+        assert_eq!(parsed.undo_next_lsn, Some(250));
+        assert!(parsed.undo_info.is_none()); // CLRs have no undo_info
+        assert!(parsed.verify_checksum());
+    }
+
+    #[test]
+    fn test_wal_entry_none_aries_fields_roundtrip() {
+        // Entry with all ARIES fields as None/0
+        let mut entry = TxnWalEntry::new_begin(1, 100);
+        entry.compute_checksum();
+
+        let bytes = entry.to_bytes();
+        let parsed = TxnWalEntry::from_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.lsn, 0);
+        assert_eq!(parsed.prev_lsn, None);
+        assert_eq!(parsed.page_id, None);
+        assert_eq!(parsed.undo_info, None);
+        assert_eq!(parsed.undo_next_lsn, None);
+        assert!(parsed.verify_checksum());
+    }
+
+    #[test]
     fn test_transaction_stats() {
         let mgr = TransactionManager::new();
 
@@ -838,7 +1135,7 @@ mod tests {
 
     #[test]
     fn test_wal_entry_error_too_short() {
-        // Less than minimum 21 bytes
+        // Less than minimum required bytes
         let short_data = vec![0u8; 10];
         let result = TxnWalEntry::from_bytes(&short_data);
         assert!(result.is_err());

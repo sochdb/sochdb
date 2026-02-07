@@ -8,7 +8,7 @@ title: Introduction
 
 Welcome to the official SochDB documentation. SochDB is **The LLM-Native Database** — a high-performance embedded database designed specifically for AI applications.
 
-**Current Version:** v0.4.4 (Core) | Python SDK v0.4.7 | Node.js SDK v0.5.1 | Go SDK v0.4.3
+**Current Version:** v0.4.5 (Core) | Python SDK v0.4.7 | Node.js SDK v0.5.1 | Go SDK v0.4.3
 
 ---
 

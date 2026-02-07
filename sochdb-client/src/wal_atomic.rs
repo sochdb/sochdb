@@ -87,20 +87,52 @@ impl Lsn {
 // WAL Record Types
 // ============================================================================
 
-/// Type of WAL record
+/// Type of WAL record for atomic operations.
+///
+/// This is a local enum with bincode-compatible variant indices for backward
+/// compatibility with existing WAL files. Use `to_canonical()` / `from_canonical()`
+/// to convert to/from `sochdb_core::txn::WalRecordType`.
+///
+/// See also: `sochdb_core::txn::WalRecordType` (the canonical superset enum)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum WalRecordType {
-    /// Intent: start of atomic operation
+    /// Intent: start of atomic operation (canonical: TxnBegin)
     Intent = 1,
-    /// Single operation within intent
+    /// Single operation within intent (canonical: Data)
     Operation = 2,
-    /// Commit: all operations completed
+    /// Commit: all operations completed (canonical: TxnCommit)
     Commit = 3,
-    /// Abort: intent should be rolled back
+    /// Abort: intent should be rolled back (canonical: TxnAbort)
     Abort = 4,
-    /// Checkpoint: consistent point for recovery
+    /// Checkpoint: consistent point for recovery (canonical: Checkpoint)
     Checkpoint = 5,
+}
+
+impl WalRecordType {
+    /// Convert to the canonical `sochdb_core::txn::WalRecordType`.
+    pub fn to_canonical(self) -> sochdb_core::txn::WalRecordType {
+        match self {
+            Self::Intent => sochdb_core::txn::WalRecordType::TxnBegin,
+            Self::Operation => sochdb_core::txn::WalRecordType::Data,
+            Self::Commit => sochdb_core::txn::WalRecordType::TxnCommit,
+            Self::Abort => sochdb_core::txn::WalRecordType::TxnAbort,
+            Self::Checkpoint => sochdb_core::txn::WalRecordType::Checkpoint,
+        }
+    }
+
+    /// Convert from the canonical `sochdb_core::txn::WalRecordType`.
+    /// Returns `None` for variants not used in atomic WAL operations.
+    pub fn from_canonical(rt: sochdb_core::txn::WalRecordType) -> Option<Self> {
+        match rt {
+            sochdb_core::txn::WalRecordType::TxnBegin => Some(Self::Intent),
+            sochdb_core::txn::WalRecordType::Data => Some(Self::Operation),
+            sochdb_core::txn::WalRecordType::TxnCommit => Some(Self::Commit),
+            sochdb_core::txn::WalRecordType::TxnAbort => Some(Self::Abort),
+            sochdb_core::txn::WalRecordType::Checkpoint => Some(Self::Checkpoint),
+            _ => None,
+        }
+    }
 }
 
 /// A WAL record

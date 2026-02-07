@@ -74,15 +74,19 @@
 
 // New TOON-native storage components
 pub mod actor; // Actor-based connection manager (mm.md Task 7.2)
+pub mod admission_control; // Admission control with cost model + tenant fairness (Task 6)
 pub mod aries_recovery; // ARIES-style crash recovery (Task 1)
 pub mod checkpoint; // ARIES-style checkpointing with WAL truncation (mm.md Task 1.4)
 pub mod columnar_compression;
+pub mod correctness_testing; // Property-based correctness testing (Task 13)
 pub mod database; // Database Kernel (shared by embedded + server)
 pub mod durable_storage; // Fully wired durable storage with MVCC
+pub mod durability_contract; // Durability contract hardening (Task 4)
 pub mod ffi;
 pub mod group_commit; // Event-driven Group Commit (Task 4)
 pub mod hlc; // Hybrid Logical Clock for commit timestamps (mm.md Task 1.3)
 pub mod hybrid_store; // PAX hybrid row-column storage (mm.md Task 4.1)
+pub mod io_isolation; // I/O isolation policy with cache partitioning (Task 5)
 pub mod ipc; // IPC Protocol with multiplexing (mm.md Task 7.1)
 #[cfg(unix)]
 pub mod ipc_server; // Unix Socket IPC Server (Task 3)
@@ -93,13 +97,16 @@ pub mod mvcc_concurrent; // Concurrent MVCC for multi-reader single-writer (Task
 pub mod mvcc_new;
 pub mod mvcc_snapshot;
 pub mod page_manager;
+pub mod pitr; // Point-in-Time Recovery with WAL archiving (Task 11)
 pub mod production_wal; // Production WAL with ARIES recovery (mm.md Task 3)
 pub mod ssi; // Serializable Snapshot Isolation (Task 2)
+pub mod ssi_scaling; // SSI scaling guardrails with range locks (Task 7)
 pub mod storage_engine;
 pub mod streaming_iterator; // Streaming Iterator Architecture (mm.md Task 4)
 pub mod transaction; // Unified Transaction Coordinator trait and types
 pub mod txn_arena; // Transaction-scoped arena with zero-copy key/value plumbing
 pub mod txn_wal;
+pub mod upgrade_contract; // Upgrade compatibility contract (Task 12)
 pub mod wal_fencing; // Epoch-based WAL fencing for split-brain detection
 pub mod wal_integration;
 pub mod zero_copy_safety; // Zero-Copy Validation Layer (Task 5) // FFI bindings for Python SDK

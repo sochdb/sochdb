@@ -61,32 +61,77 @@ impl std::fmt::Display for LogSequenceNumber {
     }
 }
 
-/// WAL record types
+/// WAL record types for kernel-level operations.
+///
+/// This is a local enum with on-disk byte values (1-11) for backward
+/// compatibility with existing WAL files. Use `to_canonical()` / `from_canonical()`
+/// to convert to/from `sochdb_core::txn::WalRecordType` (the canonical superset).
+///
+/// Disk byte mapping (DO NOT CHANGE without migration):
+///   Begin=1, Commit=2, Abort=3, Update=4, Insert=5, Delete=6,
+///   Clr=7, CheckpointBegin=8, CheckpointEnd=9, AllocPage=10, FreePage=11
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WalRecordType {
-    /// Transaction begin
+    /// Transaction begin (canonical: TxnBegin)
     Begin = 1,
-    /// Transaction commit
+    /// Transaction commit (canonical: TxnCommit)
     Commit = 2,
-    /// Transaction abort
+    /// Transaction abort (canonical: TxnAbort)
     Abort = 3,
-    /// Data update (with undo info)
+    /// Data update with undo info (canonical: PageUpdate)
     Update = 4,
-    /// Data insert
+    /// Data insert (canonical: Data)
     Insert = 5,
-    /// Data delete
+    /// Data delete (canonical: Delete)
     Delete = 6,
-    /// Compensation log record (for rollback)
+    /// Compensation log record for rollback (canonical: CompensationLogRecord)
     Clr = 7,
-    /// Checkpoint begin
+    /// Checkpoint begin (canonical: Checkpoint)
     CheckpointBegin = 8,
-    /// Checkpoint end
+    /// Checkpoint end (canonical: CheckpointEnd)
     CheckpointEnd = 9,
-    /// Page allocation
+    /// Page allocation (no canonical equivalent yet)
     AllocPage = 10,
-    /// Page deallocation
+    /// Page deallocation (no canonical equivalent yet)
     FreePage = 11,
+}
+
+impl WalRecordType {
+    /// Convert to the canonical `sochdb_core::txn::WalRecordType`.
+    /// Returns `None` for variants without a canonical equivalent (AllocPage, FreePage).
+    pub fn to_canonical(self) -> Option<sochdb_core::txn::WalRecordType> {
+        use sochdb_core::txn::WalRecordType as C;
+        match self {
+            Self::Begin => Some(C::TxnBegin),
+            Self::Commit => Some(C::TxnCommit),
+            Self::Abort => Some(C::TxnAbort),
+            Self::Update => Some(C::PageUpdate),
+            Self::Insert => Some(C::Data),
+            Self::Delete => Some(C::Delete),
+            Self::Clr => Some(C::CompensationLogRecord),
+            Self::CheckpointBegin => Some(C::Checkpoint),
+            Self::CheckpointEnd => Some(C::CheckpointEnd),
+            Self::AllocPage | Self::FreePage => None,
+        }
+    }
+
+    /// Convert from the canonical `sochdb_core::txn::WalRecordType`.
+    pub fn from_canonical(rt: sochdb_core::txn::WalRecordType) -> Option<Self> {
+        use sochdb_core::txn::WalRecordType as C;
+        match rt {
+            C::TxnBegin => Some(Self::Begin),
+            C::TxnCommit => Some(Self::Commit),
+            C::TxnAbort => Some(Self::Abort),
+            C::PageUpdate => Some(Self::Update),
+            C::Data => Some(Self::Insert),
+            C::Delete => Some(Self::Delete),
+            C::CompensationLogRecord => Some(Self::Clr),
+            C::Checkpoint => Some(Self::CheckpointBegin),
+            C::CheckpointEnd => Some(Self::CheckpointEnd),
+            _ => None,
+        }
+    }
 }
 
 impl TryFrom<u8> for WalRecordType {

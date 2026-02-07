@@ -14,11 +14,13 @@ description = "SochDB gRPC services for cross-language clients (Thick Server / T
 readme = "README.md"
 
 [dependencies]
-sochdb-index = { version = "0.4.4", path = "../sochdb-index" }
-sochdb-core = { version = "0.4.4", path = "../sochdb-core", features = ["analytics"] }
+sochdb-index = { version = "0.4.5", path = "../sochdb-index" }
+sochdb-core = { version = "0.4.5", path = "../sochdb-core", features = ["analytics"] }
+sochdb-kernel = { version = "0.4.5", path = "../sochdb-kernel" }
 
 # gRPC / Protocol Buffers
 tonic = "0.13"
+tonic-health = "0.13"
 prost = "0.13"
 
 # Async runtime - gRPC server requires tokio
@@ -32,6 +34,8 @@ dashmap = { workspace = true }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
+crossbeam-channel = { workspace = true }
+num_cpus = { workspace = true }
 
 # Additional dependencies for services
 serde = { workspace = true }

@@ -1,9 +1,9 @@
 [package]
 name = "sochdb-plugin-logging"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 description = "JSON structured logging plugin for SochDB"
-license = "Apache-2.0"
+license.workspace = true
 
 [dependencies]
 sochdb-kernel = { version = "0.4.1", path = "../sochdb-kernel" }
