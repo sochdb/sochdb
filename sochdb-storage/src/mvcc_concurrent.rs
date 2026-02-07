@@ -200,6 +200,16 @@ impl From<HlcTimestamp> for u64 {
 ///
 /// Each active reader registers in a slot to prevent GC from
 /// reclaiming versions it might need.
+///
+/// Layout (with #[repr(C, align(64))]):
+///   pid:            AtomicU32 (4 bytes)
+///   <pad>:          4 bytes   (alignment for AtomicU64)
+///   snapshot_ts:    AtomicU64 (8 bytes)
+///   epoch:          AtomicU32 (4 bytes)
+///   <pad>:          4 bytes   (alignment for AtomicU64)
+///   last_heartbeat: AtomicU64 (8 bytes)
+///   _reserved:      [u8; 32]  (pad to 64 bytes total)
+///   Total: 64 bytes — fits exactly in one cache line
 #[repr(C, align(64))]
 #[derive(Debug)]
 pub struct ReaderSlot {
@@ -211,8 +221,8 @@ pub struct ReaderSlot {
     pub epoch: AtomicU32,
     /// Last heartbeat (microseconds since epoch)
     pub last_heartbeat: AtomicU64,
-    /// Reserved for future use
-    _reserved: [u8; 36],
+    /// Reserved for future use (sized to make struct exactly 64 bytes)
+    _reserved: [u8; 32],
 }
 
 impl ReaderSlot {
@@ -223,7 +233,7 @@ impl ReaderSlot {
             snapshot_ts: AtomicU64::new(0),
             epoch: AtomicU32::new(0),
             last_heartbeat: AtomicU64::new(0),
-            _reserved: [0u8; 36],
+            _reserved: [0u8; 32],
         }
     }
 
@@ -697,14 +707,31 @@ impl Default for VersionStore {
 /// - Writer locking (single-writer)
 /// - Version store access
 /// - Garbage collection
+///
+/// The MVCC header (writer_lock, current_ts, current_epoch) is stored in
+/// a memory-mapped file so that AtomicU32/AtomicU64 CAS operations work
+/// correctly across independent OS processes. Without mmap, each process
+/// would have its own copy of these atomics, making cross-process
+/// coordination impossible.
 pub struct ConcurrentMvcc {
     /// Path to database
     path: PathBuf,
-    /// MVCC header (in-memory, synced from mmap'd file)
-    header: MvccHeader,
-    /// Reader slots
-    reader_slots: Vec<ReaderSlot>,
-    /// Version store
+    /// Memory-mapped metadata file (keeps mmap alive)
+    /// SAFETY: The mmap is opened with read-write access and the header
+    /// pointer below points into this mapping. The mapping must outlive
+    /// all references to `header`.
+    _mmap: memmap2::MmapMut,
+    /// Pointer to the MVCC header inside the mmap'd region
+    /// SAFETY: Valid for the lifetime of `_mmap`. The header is repr(C)
+    /// and the mmap region is at least METADATA_SIZE bytes.
+    header: *const MvccHeader,
+    /// Pointer to reader slots inside the mmap'd region  
+    /// SAFETY: Valid for the lifetime of `_mmap`. Points to the region
+    /// starting at offset HEADER_SIZE within the mapping.
+    reader_slots_ptr: *const ReaderSlot,
+    /// Number of reader slots
+    num_reader_slots: usize,
+    /// Version store (in-process — versions are rebuilt from WAL on open)
     version_store: VersionStore,
     /// Our process ID
     our_pid: u32,
@@ -712,89 +739,123 @@ pub struct ConcurrentMvcc {
     our_slot: RwLock<Option<usize>>,
 }
 
+// SAFETY: The mmap'd region contains only atomic types (AtomicU32, AtomicU64)
+// which are inherently safe for concurrent access from multiple threads.
+// The mmap itself is backed by a file that is shared across processes.
+unsafe impl Send for ConcurrentMvcc {}
+unsafe impl Sync for ConcurrentMvcc {}
+
 impl ConcurrentMvcc {
-    /// Open or create MVCC manager
+    /// Open or create MVCC manager with shared memory-mapped metadata
+    ///
+    /// The metadata file (.mvcc_metadata) is mmap'd so that the writer_lock,
+    /// current_ts, and reader slots are shared across all processes that open
+    /// the same database. This enables true cross-process atomic coordination.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         std::fs::create_dir_all(&path)?;
 
         let metadata_path = path.join(".mvcc_metadata");
-        let header = if metadata_path.exists() {
-            // Load existing header
-            Self::load_header(&metadata_path)?
-        } else {
-            // Create new metadata file
-            let header = MvccHeader::new();
-            Self::save_header(&metadata_path, &header)?;
-            header
-        };
+        let is_new = !metadata_path.exists();
 
-        // Initialize reader slots
-        let mut reader_slots = Vec::with_capacity(MAX_READERS);
-        for _ in 0..MAX_READERS {
-            reader_slots.push(ReaderSlot::empty());
+        // Create or open the metadata file at the required size
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&metadata_path)?;
+
+        // Ensure file is the correct size (header + reader slots)
+        let required_size = METADATA_SIZE as u64;
+        if file.metadata()?.len() < required_size {
+            file.set_len(required_size)?;
         }
+
+        // Memory-map the file
+        // SAFETY: The file is opened read-write and we control its contents.
+        // Multiple processes may mmap the same file simultaneously — this is
+        // the intended usage pattern. The atomics in the header ensure safe
+        // concurrent access.
+        let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
+
+        if is_new || mmap.len() < METADATA_SIZE {
+            // Initialize fresh metadata
+            let header = MvccHeader::new();
+            let header_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    &header as *const MvccHeader as *const u8,
+                    std::mem::size_of::<MvccHeader>(),
+                )
+            };
+            mmap[..header_bytes.len()].copy_from_slice(header_bytes);
+
+            // Zero-initialize reader slots (already zero from set_len, but be explicit)
+            for i in 0..MAX_READERS {
+                let offset = HEADER_SIZE + i * READER_SLOT_SIZE;
+                let end = offset + READER_SLOT_SIZE;
+                if end <= mmap.len() {
+                    mmap[offset..end].fill(0);
+                }
+            }
+
+            mmap.flush()?;
+        } else {
+            // Validate existing header
+            let header_ref = unsafe { &*(mmap.as_ptr() as *const MvccHeader) };
+            header_ref.validate()?;
+        }
+
+        // Get pointers into the mmap'd region
+        let header = mmap.as_ptr() as *const MvccHeader;
+        let reader_slots_ptr = unsafe {
+            mmap.as_ptr().add(HEADER_SIZE) as *const ReaderSlot
+        };
 
         Ok(Self {
             path,
+            _mmap: mmap,
             header,
-            reader_slots,
+            reader_slots_ptr,
+            num_reader_slots: MAX_READERS,
             version_store: VersionStore::new(),
             our_pid: std::process::id(),
             our_slot: RwLock::new(None),
         })
     }
 
-    /// Load header from file
-    fn load_header(path: &Path) -> Result<MvccHeader> {
-        use std::io::Read;
-        let mut file = File::open(path)?;
-        let mut buf = vec![0u8; std::mem::size_of::<MvccHeader>()];
-        file.read_exact(&mut buf)?;
-
-        // SAFETY: MvccHeader is repr(C) with no padding issues
-        let header: MvccHeader = unsafe { std::ptr::read(buf.as_ptr() as *const MvccHeader) };
-        header.validate()?;
-        Ok(header)
+    /// Get reference to the shared header
+    ///
+    /// SAFETY: The header pointer is valid for the lifetime of self._mmap
+    #[inline]
+    fn header(&self) -> &MvccHeader {
+        unsafe { &*self.header }
     }
 
-    /// Save header to file
-    fn save_header(path: &Path, header: &MvccHeader) -> Result<()> {
-        use std::io::Write;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(path)?;
-
-        // SAFETY: MvccHeader is repr(C)
-        let buf = unsafe {
-            std::slice::from_raw_parts(
-                header as *const MvccHeader as *const u8,
-                std::mem::size_of::<MvccHeader>(),
-            )
-        };
-        file.write_all(buf)?;
-        file.sync_all()?;
-        Ok(())
+    /// Get reference to a reader slot
+    ///
+    /// SAFETY: The pointer is valid for the lifetime of self._mmap
+    #[inline]
+    fn reader_slot(&self, idx: usize) -> &ReaderSlot {
+        assert!(idx < self.num_reader_slots);
+        unsafe { &*self.reader_slots_ptr.add(idx) }
     }
 
     /// Allocate next timestamp
     #[inline]
     pub fn allocate_timestamp(&self) -> HlcTimestamp {
-        HlcTimestamp::allocate_next(&self.header.current_ts)
+        HlcTimestamp::allocate_next(&self.header().current_ts)
     }
 
     /// Get current timestamp without advancing
     #[inline]
     pub fn current_timestamp(&self) -> HlcTimestamp {
-        HlcTimestamp::read_current(&self.header.current_ts)
+        HlcTimestamp::read_current(&self.header().current_ts)
     }
 
     /// Get current epoch
     #[inline]
     pub fn current_epoch(&self) -> u64 {
-        self.header.current_epoch.load(Ordering::Acquire)
+        self.header().current_epoch.load(Ordering::Acquire)
     }
 
     /// Register as active reader
@@ -805,8 +866,9 @@ impl ConcurrentMvcc {
         let snapshot_ts = self.current_timestamp().raw();
         let epoch = self.current_epoch() as u32;
 
-        // Find free slot
-        for (i, slot) in self.reader_slots.iter().enumerate() {
+        // Find free slot in shared mmap'd reader table
+        for i in 0..self.num_reader_slots {
+            let slot = self.reader_slot(i);
             if slot.try_claim(self.our_pid, snapshot_ts, epoch) {
                 *self.our_slot.write() = Some(i);
                 return Ok(i);
@@ -820,8 +882,8 @@ impl ConcurrentMvcc {
 
     /// Unregister as reader
     pub fn unregister_reader(&self, slot_idx: usize) {
-        if slot_idx < self.reader_slots.len() {
-            self.reader_slots[slot_idx].release(self.our_pid);
+        if slot_idx < self.num_reader_slots {
+            self.reader_slot(slot_idx).release(self.our_pid);
             *self.our_slot.write() = None;
         }
     }
@@ -830,12 +892,12 @@ impl ConcurrentMvcc {
     ///
     /// Returns WriterGuard on success, which releases lock on drop.
     pub fn try_acquire_writer(&self) -> Result<WriterGuard<'_>> {
-        let current = self.header.writer_lock.load(Ordering::Acquire);
+        let current = self.header().writer_lock.load(Ordering::Acquire);
 
         if current == 0 {
-            // Try to acquire
+            // Try to acquire (CAS on shared mmap'd atomic)
             if self
-                .header
+                .header()
                 .writer_lock
                 .compare_exchange(0, self.our_pid, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
@@ -870,9 +932,9 @@ impl ConcurrentMvcc {
 
     /// Release writer lock
     fn release_writer(&self) {
-        let current = self.header.writer_lock.load(Ordering::Acquire);
+        let current = self.header().writer_lock.load(Ordering::Acquire);
         if current == self.our_pid {
-            self.header.writer_lock.store(0, Ordering::Release);
+            self.header().writer_lock.store(0, Ordering::Release);
         }
     }
 
@@ -885,7 +947,8 @@ impl ConcurrentMvcc {
     pub fn min_active_snapshot(&self) -> u64 {
         let mut min_ts = u64::MAX;
 
-        for slot in &self.reader_slots {
+        for i in 0..self.num_reader_slots {
+            let slot = self.reader_slot(i);
             let pid = slot.pid.load(Ordering::Acquire);
             if pid != 0 {
                 let ts = slot.snapshot_ts.load(Ordering::Acquire);
@@ -902,7 +965,8 @@ impl ConcurrentMvcc {
     pub fn min_active_epoch(&self) -> u32 {
         let mut min_epoch = u32::MAX;
 
-        for slot in &self.reader_slots {
+        for i in 0..self.num_reader_slots {
+            let slot = self.reader_slot(i);
             let pid = slot.pid.load(Ordering::Acquire);
             if pid != 0 {
                 let epoch = slot.epoch.load(Ordering::Acquire);
@@ -932,7 +996,7 @@ impl ConcurrentMvcc {
 
     /// Check if GC should run (based on commit count)
     pub fn should_run_gc(&self) -> bool {
-        self.header
+        self.header()
             .commits_since_gc
             .load(Ordering::Relaxed)
             >= GC_COMMIT_INTERVAL
@@ -941,12 +1005,12 @@ impl ConcurrentMvcc {
     /// Increment commit count and maybe run GC
     pub fn on_commit(&self) {
         let count = self
-            .header
+            .header()
             .commits_since_gc
             .fetch_add(1, Ordering::Relaxed);
 
         if count >= GC_COMMIT_INTERVAL {
-            self.header.commits_since_gc.store(0, Ordering::Relaxed);
+            self.header().commits_since_gc.store(0, Ordering::Relaxed);
             let _ = self.run_gc();
         }
     }
@@ -956,7 +1020,8 @@ impl ConcurrentMvcc {
         let now = current_time_us();
         let mut cleaned = 0;
 
-        for slot in &self.reader_slots {
+        for i in 0..self.num_reader_slots {
+            let slot = self.reader_slot(i);
             if slot.is_stale(now) {
                 slot.pid.store(0, Ordering::Release);
                 cleaned += 1;
@@ -968,7 +1033,7 @@ impl ConcurrentMvcc {
 
     /// Advance epoch (called on recovery)
     pub fn advance_epoch(&self) -> u64 {
-        self.header.current_epoch.fetch_add(1, Ordering::AcqRel) + 1
+        self.header().current_epoch.fetch_add(1, Ordering::AcqRel) + 1
     }
 }
 
@@ -1055,6 +1120,24 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
+
+    #[test]
+    fn test_struct_sizes() {
+        eprintln!("MvccHeader size: {}", std::mem::size_of::<MvccHeader>());
+        eprintln!("MvccHeader align: {}", std::mem::align_of::<MvccHeader>());
+        eprintln!("ReaderSlot size: {}", std::mem::size_of::<ReaderSlot>());
+        eprintln!("ReaderSlot align: {}", std::mem::align_of::<ReaderSlot>());
+        eprintln!("HEADER_SIZE constant: {}", HEADER_SIZE);
+        eprintln!("READER_SLOT_SIZE constant: {}", READER_SLOT_SIZE);
+        eprintln!("METADATA_SIZE constant: {}", METADATA_SIZE);
+
+        assert_eq!(std::mem::size_of::<MvccHeader>(), HEADER_SIZE,
+            "MvccHeader size mismatch! Actual: {}, Expected: {}",
+            std::mem::size_of::<MvccHeader>(), HEADER_SIZE);
+        assert_eq!(std::mem::size_of::<ReaderSlot>(), READER_SLOT_SIZE,
+            "ReaderSlot size mismatch! Actual: {}, Expected: {}",
+            std::mem::size_of::<ReaderSlot>(), READER_SLOT_SIZE);
+    }
 
     #[test]
     fn test_hlc_timestamp_ordering() {

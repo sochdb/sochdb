@@ -11,6 +11,7 @@
 #
 # Platforms supported:
 #   - Linux x86_64 (manylinux)
+#   - Linux aarch64 (ARM64) — AWS Graviton, Ampere Altra
 #   - macOS ARM64 (Apple Silicon)
 #   - macOS x86_64 (Intel)
 #   - Windows x64
@@ -81,6 +82,12 @@ jobs:
           # Linux x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            binary_ext: ""
+            lib_ext: ".so"
+
+          # Linux aarch64 (ARM64) — AWS Graviton, Ampere Altra, RPi
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
             binary_ext: ""
             lib_ext: ".so"
             
@@ -269,7 +276,7 @@ jobs:
         run: |
           mkdir -p release-assets
           
-          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
             if [ -d "release-binaries/$target" ]; then
               cd release-binaries
               if [ "$target" = "x86_64-pc-windows-msvc" ]; then
@@ -323,6 +330,7 @@ jobs:
             
             This release includes pre-built binaries for:
             - Linux x86_64
+            - Linux aarch64 (ARM64) — AWS Graviton, Ampere Altra
             - macOS ARM64 (Apple Silicon) - Intel Macs use Rosetta 2
             - Windows x64
             
@@ -366,5 +374,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Platforms Built" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Linux x86_64" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Linux aarch64 (ARM64)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ macOS ARM64 (Apple Silicon)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Windows x64" >> $GITHUB_STEP_SUMMARY

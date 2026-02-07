@@ -233,6 +233,11 @@ pub struct DatabaseLock {
 impl DatabaseLock {
     /// Acquire exclusive lock on a database directory
     ///
+    /// Uses the default timeout (5 seconds) to allow concurrent processes
+    /// to wait for the lock, similar to SQLite's busy timeout behavior.
+    /// This enables multi-process patterns like ProcessPoolExecutor where
+    /// each worker serializes database access through lock contention.
+    ///
     /// # Arguments
     ///
     /// * `db_path` - Path to the database directory
@@ -240,7 +245,9 @@ impl DatabaseLock {
     /// # Returns
     ///
     /// Returns `Ok(DatabaseLock)` if lock acquired successfully.
-    /// Returns `Err(LockError::DatabaseLocked)` if another process holds the lock.
+    /// Returns `Err(LockError::Timeout)` if lock not acquired within 5 seconds.
+    /// Returns `Err(LockError::DatabaseLocked)` if another process holds the lock
+    /// and stale lock detection fails.
     ///
     /// # Example
     ///
@@ -249,6 +256,14 @@ impl DatabaseLock {
     /// // Lock is held until `lock` is dropped
     /// ```
     pub fn acquire<P: AsRef<Path>>(db_path: P) -> std::result::Result<Self, LockError> {
+        Self::acquire_with_config(db_path, &LockConfig::default())
+    }
+
+    /// Acquire exclusive lock without waiting (fail immediately if locked)
+    ///
+    /// Use this only when you want to detect if another process has the
+    /// database open, without blocking.
+    pub fn acquire_no_wait<P: AsRef<Path>>(db_path: P) -> std::result::Result<Self, LockError> {
         Self::acquire_with_config(db_path, &LockConfig::no_wait())
     }
 
@@ -833,14 +848,43 @@ mod tests {
         let lock1 = DatabaseLock::acquire(db_path);
         assert!(lock1.is_ok());
 
-        // Second lock should fail immediately
-        let lock2 = DatabaseLock::acquire(db_path);
+        // Second lock should fail immediately when using no_wait
+        let lock2 = DatabaseLock::acquire_no_wait(db_path);
         assert!(matches!(lock2, Err(LockError::DatabaseLocked { .. })));
 
         // After releasing first lock, second should succeed
         drop(lock1);
         let lock3 = DatabaseLock::acquire(db_path);
         assert!(lock3.is_ok());
+    }
+
+    #[test]
+    fn test_acquire_default_timeout() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().to_path_buf();
+
+        // Acquire lock
+        let _lock = DatabaseLock::acquire(&db_path).unwrap();
+
+        // acquire() with default config should timeout (5s), not fail immediately
+        // Spawn a thread that releases the lock after 200ms
+        let db_path2 = db_path.clone();
+        let lock_holder = _lock;
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            drop(lock_holder);
+        });
+
+        // Second acquire should succeed within 5s (lock released after 200ms)
+        let start = Instant::now();
+        let result = DatabaseLock::acquire(&db_path2);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok(), "acquire() should succeed after lock is released");
+        assert!(elapsed >= Duration::from_millis(100), "should have waited for lock");
+        assert!(elapsed < Duration::from_secs(2), "should not wait too long");
+
+        handle.join().unwrap();
     }
 
     #[test]

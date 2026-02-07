@@ -286,12 +286,14 @@ pub unsafe extern "C" fn sochdb_open_concurrent(path: *const c_char) -> *mut Dat
         Err(_) => return ptr::null_mut(),
     };
 
-    match Database::open_concurrent(path_str) {
-        Ok(db) => {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Database::open_concurrent(path_str)
+    })) {
+        Ok(Ok(db)) => {
             let ptr = Box::new(DatabasePtr(db));
             Box::into_raw(ptr)
         }
-        Err(_) => ptr::null_mut(),
+        Ok(Err(_)) | Err(_) => ptr::null_mut(),
     }
 }
 

@@ -2982,6 +2982,16 @@ impl DurableStorage {
     }
 
     /// Force fsync to disk
+    /// Flush the WAL's in-memory buffer to the OS
+    ///
+    /// This ensures all buffered writes are pushed from the BufWriter
+    /// into the OS page cache. Call this before `fsync()` to ensure
+    /// all data is durable.
+    pub fn flush_wal(&self) -> Result<()> {
+        self.wal.flush()
+    }
+
+    /// Force sync the WAL to disk (fsync)
     pub fn fsync(&self) -> Result<()> {
         self.wal.sync()
     }
