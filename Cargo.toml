@@ -51,7 +51,7 @@ resolver = "2"
 # =============================================================================
 
 [workspace.package]
-version = "0.4.6"
+version = "0.4.7"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
 license = "AGPL-3.0-or-later"

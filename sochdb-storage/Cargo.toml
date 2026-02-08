@@ -28,8 +28,8 @@ async = ["tokio"]
 embedded-sync = []
 
 [dependencies]
-sochdb-core = { version = "0.4.6", path = "../sochdb-core" }
-sochdb-index = { version = "0.4.6", path = "../sochdb-index" }
+sochdb-core = { version = "0.4.7", path = "../sochdb-core" }
+sochdb-index = { version = "0.4.7", path = "../sochdb-index" }
 # Tokio is optional - only included when "async" feature is enabled
 tokio = { version = "1.35", features = ["sync", "time", "macros", "rt"], optional = true }
 serde = { workspace = true }
