@@ -953,28 +953,27 @@ impl LscsStorage {
     }
 
     /// Extract all entries from an SstHandle into a Vec<SstEntry>.
-    /// For disk-backed SSTables, this reads the block data back into memory.
-    ///
-    /// NOTE: For disk-backed SSTables, the block-level iterator in sochdb-storage
-    /// returns raw block data. Full key-value iteration requires the complete
-    /// BlockIterator implementation. Until then, disk-backed SSTable compaction
-    /// is deferred — L0 disk SSTables accumulate and reads scan all of them.
+    /// For disk-backed SSTables, reads all blocks using the SSTableIterator.
     fn drain_sst_entries(sst: SstHandle, out: &mut Vec<SstEntry>) {
         match sst {
             SstHandle::InMemory(s) => {
                 out.extend(s.entries);
             }
-            SstHandle::OnDisk { reader, min_key, max_key, .. } => {
-                // TODO(T3): Implement full SSTable scanning for disk-backed compaction.
-                // For now, we log that this SSTable's entries could not be compacted.
-                // The SSTable file remains on disk and is accessible for point reads.
-                eprintln!(
-                    "sochdb: skipping compaction of disk SSTable at {:?} (key range {:?}..{:?}) — \
-                     SSTableIterator not yet fully implemented",
-                    reader.path(),
-                    String::from_utf8_lossy(&min_key),
-                    String::from_utf8_lossy(&max_key),
-                );
+            SstHandle::OnDisk { reader, seq_num, .. } => {
+                // Iterate through all entries in the on-disk SSTable
+                let mut iter = reader.iter();
+                while iter.valid() {
+                    if let (Some(key), Some(val)) = (iter.key(), iter.value()) {
+                        let deleted = val.is_empty(); // empty value = tombstone
+                        out.push(SstEntry {
+                            key: key.to_vec(),
+                            value: val.to_vec(),
+                            timestamp: seq_num, // use seq_num as ordering timestamp
+                            deleted,
+                        });
+                    }
+                    iter.next();
+                }
             }
         }
     }
@@ -1214,12 +1213,51 @@ impl LscsStorage {
                             }
                         }
                         SstHandle::OnDisk { reader, min_key, max_key, .. } => {
-                            // For disk-backed SSTables, use point lookups for keys
-                            // we've already discovered in memtables/earlier levels.
-                            // Full range scan of disk SSTables requires the complete
-                            // BlockIterator implementation (TODO: T3 follow-up).
-                            // For now, disk SSTables are covered by point reads in get().
-                            let _ = (reader, min_key, max_key); // suppress unused warnings
+                            // Skip SSTables whose key range doesn't overlap [start_key, end_key]
+                            if max_key.as_slice() < start_key || min_key.as_slice() > end_key {
+                                continue;
+                            }
+
+                            // Use the SSTableIterator to scan the on-disk SSTable.
+                            // Seek to start_key, then iterate until we pass end_key.
+                            let mut sst_iter = reader.iter();
+                            sst_iter.seek(start_key);
+
+                            while sst_iter.valid() {
+                                let key = match sst_iter.key() {
+                                    Some(k) => k,
+                                    None => break,
+                                };
+
+                                // Past end of range — done with this SSTable
+                                if key > end_key {
+                                    break;
+                                }
+
+                                let val = sst_iter.value().unwrap_or(&[]);
+                                // Empty value = tombstone for disk SSTables
+                                let deleted = val.is_empty();
+
+                                let key_vec = key.to_vec();
+                                let val_vec = val.to_vec();
+
+                                // Use SSTable seq_num as the "timestamp" for
+                                // shadowing: newer SSTables have higher seq_num
+                                // but for on-disk entries we use 0 as a
+                                // conservative timestamp so memtable entries
+                                // (which always have real timestamps) win.
+                                // Within the SSTable tier, iteration order
+                                // is newest-first (rev), and `.entry().and_modify`
+                                // only replaces if timestamp is strictly greater.
+                                results
+                                    .entry(key_vec)
+                                    .and_modify(|e: &mut (Vec<u8>, u64, bool)| {
+                                        // Keep the existing (newer) entry
+                                    })
+                                    .or_insert_with(|| (val_vec, 0, deleted));
+
+                                sst_iter.next();
+                            }
                         }
                     }
                 }
@@ -2721,6 +2759,26 @@ impl EmbeddedConnection {
             .map_err(|e| ClientError::Storage(e.to_string()))
     }
 
+    /// Scan a key range [start, end) using lexicographic ordering.
+    ///
+    /// Returns all key-value pairs where `start <= key < end`.
+    /// Much more efficient than prefix scan + post-filter for time-range queries
+    /// when keys encode timestamps in lexicographic order (e.g., zero-padded).
+    pub fn scan_range(&self, start: &str, end: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        self.queries_executed.fetch_add(1, Ordering::Relaxed);
+        let txn = self.ensure_txn()?;
+        let results = self.db
+            .scan_range(txn, start.as_bytes(), end.as_bytes())
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        // Convert byte keys to strings
+        Ok(results
+            .into_iter()
+            .filter_map(|(k, v)| {
+                String::from_utf8(k).ok().map(|s| (s, v))
+            })
+            .collect())
+    }
+
     /// Query data and return structured results
     pub fn query(&self, path_prefix: &str) -> EmbeddedQueryBuilder<'_> {
         EmbeddedQueryBuilder::new(self, path_prefix.to_string())
@@ -2808,6 +2866,16 @@ impl EmbeddedConnection {
     pub fn checkpoint(&self) -> Result<u64> {
         self.db
             .checkpoint()
+            .map_err(|e| ClientError::Storage(e.to_string()))
+    }
+
+    /// Truncate the WAL file after checkpoint, reclaiming disk space.
+    ///
+    /// The in-memory data remains available for the current session.
+    /// Data will NOT survive a crash or restart after truncation.
+    pub fn truncate_wal(&self) -> Result<()> {
+        self.db
+            .truncate_wal()
             .map_err(|e| ClientError::Storage(e.to_string()))
     }
 
@@ -4255,6 +4323,99 @@ mod tests {
         // After checkpoint, no recovery needed
         storage.force_checkpoint().unwrap();
         assert!(!storage.needs_recovery());
+    }
+
+    #[test]
+    fn test_lscs_scan_across_sstables() {
+        // Write enough data to trigger memtable flush, then scan across both
+        // memtable and on-disk SSTables.
+        let storage = LscsStorage::new();
+
+        // Write 10000 entries to ensure memtable flushes to SSTables
+        for i in 0..10000 {
+            let key = format!("scankey{:06}", i);
+            let value = format!("scanval{:06}", i);
+            storage.put(key.as_bytes(), value.as_bytes()).unwrap();
+        }
+
+        // Force flush to SSTable
+        storage.fsync().unwrap();
+
+        // Write a few more entries into the active memtable
+        for i in 10000..10010 {
+            let key = format!("scankey{:06}", i);
+            let value = format!("scanval{:06}", i);
+            storage.put(key.as_bytes(), value.as_bytes()).unwrap();
+        }
+
+        // Scan a range that spans both SSTables and memtable
+        let results = storage
+            .scan(b"scankey000000", b"scankey010009", 20000)
+            .unwrap();
+
+        // All 10010 entries should be visible
+        assert_eq!(
+            results.len(),
+            10010,
+            "scan should return entries from both SSTables and memtable, got {}",
+            results.len()
+        );
+
+        // Verify first and last entries
+        assert_eq!(results[0].0, b"scankey000000");
+        assert_eq!(results[0].1, b"scanval000000");
+        assert_eq!(results.last().unwrap().0, b"scankey010009");
+
+        // Verify entries in the middle (likely from SSTable)
+        let mid_key = b"scankey005000".to_vec();
+        let mid_val = b"scanval005000".to_vec();
+        let found = results.iter().find(|(k, _)| k == &mid_key);
+        assert!(
+            found.is_some(),
+            "mid-range key from SSTable should be visible"
+        );
+        assert_eq!(found.unwrap().1, mid_val);
+    }
+
+    #[test]
+    fn test_lscs_scan_tombstone_shadowing() {
+        // Write data, delete some, flush, and verify scan omits deleted entries.
+        let storage = LscsStorage::new();
+
+        for i in 0..100 {
+            let key = format!("ts_key{:04}", i);
+            let value = format!("ts_val{:04}", i);
+            storage.put(key.as_bytes(), value.as_bytes()).unwrap();
+        }
+
+        // Delete entries 50..60
+        for i in 50..60 {
+            let key = format!("ts_key{:04}", i);
+            storage.delete(key.as_bytes()).unwrap();
+        }
+
+        // Scan full range
+        let results = storage
+            .scan(b"ts_key0000", b"ts_key0099", 200)
+            .unwrap();
+
+        // Should have 90 entries (100 - 10 deleted)
+        assert_eq!(
+            results.len(),
+            90,
+            "scan should omit tombstoned entries, got {}",
+            results.len()
+        );
+
+        // Verify deleted keys are absent
+        for i in 50..60 {
+            let del_key = format!("ts_key{:04}", i).into_bytes();
+            assert!(
+                !results.iter().any(|(k, _)| k == &del_key),
+                "deleted key ts_key{:04} should not appear in scan",
+                i
+            );
+        }
     }
 }
 

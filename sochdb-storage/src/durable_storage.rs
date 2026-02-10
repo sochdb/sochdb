@@ -3005,6 +3005,19 @@ impl DurableStorage {
         Ok(lsn)
     }
 
+    /// Truncate the WAL file after checkpoint.
+    ///
+    /// This physically truncates the WAL file to 0 bytes, reclaiming disk
+    /// space. The in-memory memtable retains all data for the current
+    /// session, but a crash after truncation will result in data loss
+    /// since the WAL is the only persistence mechanism for DurableStorage.
+    ///
+    /// Call after `checkpoint()` when WAL durability across restarts is
+    /// not required (e.g. desktop telemetry viewers, caches).
+    pub fn truncate_wal(&self) -> Result<()> {
+        self.wal.truncate()
+    }
+
     /// Get storage statistics
     pub fn stats(&self) -> StorageStats {
         // Get WAL size from the WAL manager

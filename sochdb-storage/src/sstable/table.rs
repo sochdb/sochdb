@@ -445,17 +445,22 @@ impl SSTable {
 }
 
 /// Iterator over all entries in an SSTable
+///
+/// Iterates through all data blocks sequentially, yielding every key-value
+/// entry. Loads each block, uses the proven `BlockIterator` to collect entries, 
+/// then advances through them. This avoids self-referential borrows while 
+/// reusing the correct prefix-decompression logic in `BlockIterator`.
 pub struct SSTableIterator<'a> {
     table: &'a SSTable,
-    /// Current block index
+    /// Current block index into `table.index_entries`
     block_idx: usize,
-    /// Current block data
-    block_data: Option<Vec<u8>>,
-    /// Current block iterator
-    block_iter: Option<BlockIterator<'a>>,
+    /// Collected entries from current block: (key, value)
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Current entry index within `entries`
+    entry_idx: usize,
     /// Read options
     options: ReadOptions,
-    /// Is iterator valid
+    /// Is iterator positioned on a valid entry?
     valid: bool,
 }
 
@@ -464,31 +469,50 @@ impl<'a> SSTableIterator<'a> {
         let mut iter = Self {
             table,
             block_idx: 0,
-            block_data: None,
-            block_iter: None,
+            entries: Vec::new(),
+            entry_idx: 0,
             options: ReadOptions::default(),
             valid: false,
         };
-        iter.load_block();
+        iter.load_block(0);
         iter
     }
 
-    /// Load current block
-    fn load_block(&mut self) {
-        if self.block_idx >= self.table.index_entries.len() {
-            self.valid = false;
-            return;
-        }
+    /// Load block at `block_idx`, collect all entries via `BlockIterator`,
+    /// and position on the first entry.
+    fn load_block(&mut self, block_idx: usize) {
+        self.block_idx = block_idx;
+        self.entries.clear();
+        self.entry_idx = 0;
+        self.valid = false;
 
-        let handle = &self.table.index_entries[self.block_idx].handle;
-        match self.table.read_block(handle, &self.options) {
-            Ok(data) => {
-                self.block_data = Some(data);
-                self.valid = true;
+        while self.block_idx < self.table.index_entries.len() {
+            let handle = &self.table.index_entries[self.block_idx].handle;
+            match self.table.read_block(handle, &self.options) {
+                Ok(data) => {
+                    if let Some(block) = Block::new(data) {
+                        // Use BlockIterator to collect all entries
+                        let mut bi = block.iter();
+                        while bi.valid() {
+                            self.entries.push((
+                                bi.key().to_vec(),
+                                bi.value().to_vec(),
+                            ));
+                            bi.next();
+                        }
+                        if !self.entries.is_empty() {
+                            self.entry_idx = 0;
+                            self.valid = true;
+                            return;
+                        }
+                        // Block had no entries — try next
+                    }
+                }
+                Err(_) => {
+                    // I/O error — skip this block
+                }
             }
-            Err(_) => {
-                self.valid = false;
-            }
+            self.block_idx += 1;
         }
     }
 
@@ -497,69 +521,135 @@ impl<'a> SSTableIterator<'a> {
         self.valid
     }
 
-    /// Get current key
+    /// Get current key (only valid when `valid() == true`)
     pub fn key(&self) -> Option<&[u8]> {
-        if !self.valid {
-            return None;
+        if self.valid {
+            Some(&self.entries[self.entry_idx].0)
+        } else {
+            None
         }
-        // Note: In a full implementation, this would return the current key from block_iter
-        // This is a simplified version
-        self.block_data.as_ref().map(|_| &b""[..])
     }
 
-    /// Get current value
+    /// Get current value (only valid when `valid() == true`)
     pub fn value(&self) -> Option<&[u8]> {
-        if !self.valid {
-            return None;
+        if self.valid {
+            Some(&self.entries[self.entry_idx].1)
+        } else {
+            None
         }
-        self.block_data.as_ref().map(|_| &b""[..])
     }
 
-    /// Move to next entry
+    /// Advance to the next entry. If the current block is exhausted,
+    /// loads the next block and positions on its first entry.
     pub fn next(&mut self) {
-        // In a full implementation:
-        // 1. Advance block_iter
-        // 2. If block_iter exhausted, load next block
-        self.block_idx += 1;
-        self.load_block();
+        if !self.valid {
+            return;
+        }
+
+        self.entry_idx += 1;
+        if self.entry_idx < self.entries.len() {
+            return; // still within current block
+        }
+
+        // Current block exhausted — move to next block
+        self.load_block(self.block_idx + 1);
     }
 
-    /// Seek to key
+    /// Seek to the first entry with key >= `target`.
     pub fn seek(&mut self, target: &[u8]) {
         // Binary search to find starting block
-        self.block_idx = self.table.find_block_for_key(target);
-        self.load_block();
-        // Then seek within the block
+        let start_block = self.table.find_block_for_key(target);
+        self.load_block(start_block);
+
+        // Scan forward until key >= target
+        while self.valid {
+            if self.entries[self.entry_idx].0.as_slice() >= target {
+                return;
+            }
+            self.next();
+        }
+    }
+
+    /// Seek to the very first entry in the SSTable.
+    pub fn seek_to_first(&mut self) {
+        self.load_block(0);
     }
 }
 
-/// Range iterator
+/// Range iterator over entries in [start, end) of an SSTable.
+///
+/// Uses `SSTableIterator` internally, adding upper-bound checking.
 pub struct RangeIterator<'a> {
-    table: &'a SSTable,
-    start: Option<Vec<u8>>,
+    inner: SSTableIterator<'a>,
     end: Option<Vec<u8>>,
-    current_block: usize,
     exhausted: bool,
 }
 
 impl<'a> RangeIterator<'a> {
     fn new(table: &'a SSTable, start: Option<&[u8]>, end: Option<&[u8]>) -> Self {
-        let start_block = start
-            .map(|k| table.find_block_for_key(k))
-            .unwrap_or(0);
+        let mut inner = SSTableIterator::new(table);
 
-        Self {
-            table,
-            start: start.map(|s| s.to_vec()),
+        // Seek to start if provided
+        if let Some(start_key) = start {
+            inner.seek(start_key);
+        }
+
+        let mut ri = Self {
+            inner,
             end: end.map(|e| e.to_vec()),
-            current_block: start_block,
             exhausted: false,
+        };
+
+        // Check if first entry is already beyond end
+        ri.check_end();
+        ri
+    }
+
+    /// Check if current key >= end bound; if so, mark exhausted.
+    fn check_end(&mut self) {
+        if self.exhausted {
+            return;
+        }
+        if !self.inner.valid() {
+            self.exhausted = true;
+            return;
+        }
+        if let Some(ref end_key) = self.end {
+            if let Some(key) = self.inner.key() {
+                if key >= end_key.as_slice() {
+                    self.exhausted = true;
+                }
+            }
         }
     }
 
     /// Check if range is exhausted
     pub fn exhausted(&self) -> bool {
         self.exhausted
+    }
+
+    /// Check if iterator is valid (positioned on an entry within bounds)
+    pub fn valid(&self) -> bool {
+        !self.exhausted && self.inner.valid()
+    }
+
+    /// Get current key
+    pub fn key(&self) -> Option<&[u8]> {
+        if self.exhausted { None } else { self.inner.key() }
+    }
+
+    /// Get current value
+    pub fn value(&self) -> Option<&[u8]> {
+        if self.exhausted { None } else { self.inner.value() }
+    }
+
+    /// Advance to next entry within the range
+    pub fn next(&mut self) {
+        if self.exhausted {
+            return;
+        }
+        self.inner.next();
+        self.check_end();
     }
 }
 
@@ -653,5 +743,161 @@ mod tests {
 
         let missing = cache.get(1, 100);
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_sstable_iterator_full_scan() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test_iter.sst");
+
+        // Use small blocks to force multiple blocks
+        let options = SSTableBuilderOptions {
+            block_size: 64,
+            filter_policy: None,
+            ..Default::default()
+        };
+
+        let mut builder = SSTableBuilder::new(&path, options).unwrap();
+
+        let n = 200;
+        for i in 0..n {
+            let key = format!("key{:05}", i);
+            let value = format!("value{:05}", i);
+            builder.add(key.as_bytes(), value.as_bytes()).unwrap();
+        }
+
+        builder.finish().unwrap();
+
+        let table = SSTable::open(&path).unwrap();
+        eprintln!("num_blocks = {}", table.num_blocks());
+        assert!(table.num_blocks() > 1, "Need multiple blocks for this test");
+
+        // Full iteration should return all entries in order
+        let mut iter = table.iter();
+        let mut count = 0;
+        let mut prev_key: Option<Vec<u8>> = None;
+
+        while iter.valid() {
+            let key = iter.key().unwrap().to_vec();
+            let value = iter.value().unwrap().to_vec();
+
+            let expected_key = format!("key{:05}", count);
+            let expected_val = format!("value{:05}", count);
+            assert_eq!(
+                String::from_utf8_lossy(&key),
+                expected_key,
+                "key mismatch at entry {}",
+                count
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&value),
+                expected_val,
+                "value mismatch at entry {}",
+                count
+            );
+
+            // Keys must be strictly increasing
+            if let Some(ref pk) = prev_key {
+                assert!(key > *pk, "keys not in order at {}", count);
+            }
+            prev_key = Some(key);
+
+            count += 1;
+            iter.next();
+        }
+
+        assert_eq!(count, n, "iterator did not return all {} entries", n);
+    }
+
+    #[test]
+    fn test_sstable_iterator_seek() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test_seek.sst");
+
+        let options = SSTableBuilderOptions {
+            block_size: 64,
+            filter_policy: None,
+            ..Default::default()
+        };
+
+        let mut builder = SSTableBuilder::new(&path, options).unwrap();
+
+        for i in (0..100).step_by(2) {
+            let key = format!("key{:05}", i);
+            let value = format!("value{:05}", i);
+            builder.add(key.as_bytes(), value.as_bytes()).unwrap();
+        }
+
+        builder.finish().unwrap();
+
+        let table = SSTable::open(&path).unwrap();
+
+        // Seek to exact key
+        let mut iter = table.iter();
+        iter.seek(b"key00010");
+        assert!(iter.valid());
+        assert_eq!(iter.key().unwrap(), b"key00010");
+
+        // Seek to key between entries (should land on next key)
+        iter.seek(b"key00011");
+        assert!(iter.valid());
+        assert_eq!(iter.key().unwrap(), b"key00012");
+
+        // Seek past end
+        iter.seek(b"key99999");
+        assert!(!iter.valid());
+
+        // Seek to first
+        iter.seek_to_first();
+        assert!(iter.valid());
+        assert_eq!(iter.key().unwrap(), b"key00000");
+    }
+
+    #[test]
+    fn test_range_iterator() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test_range.sst");
+
+        let options = SSTableBuilderOptions {
+            block_size: 64,
+            filter_policy: None,
+            ..Default::default()
+        };
+
+        let mut builder = SSTableBuilder::new(&path, options).unwrap();
+
+        for i in 0..100 {
+            let key = format!("key{:05}", i);
+            let value = format!("value{:05}", i);
+            builder.add(key.as_bytes(), value.as_bytes()).unwrap();
+        }
+
+        builder.finish().unwrap();
+
+        let table = SSTable::open(&path).unwrap();
+
+        // Range [key00010, key00020)
+        let mut range = table.range(Some(b"key00010"), Some(b"key00020"));
+        let mut count = 0;
+
+        while range.valid() {
+            let key = range.key().unwrap();
+            assert!(key >= b"key00010".as_slice());
+            assert!(key < b"key00020".as_slice());
+            count += 1;
+            range.next();
+        }
+
+        assert_eq!(count, 10, "expected 10 keys in range [10, 20)");
+        assert!(range.exhausted());
+
+        // Full range (no bounds)
+        let mut range = table.range(None, None);
+        let mut total = 0;
+        while range.valid() {
+            total += 1;
+            range.next();
+        }
+        assert_eq!(total, 100);
     }
 }

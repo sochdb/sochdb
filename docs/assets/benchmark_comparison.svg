@@ -36,7 +36,7 @@
 
   <!-- Title -->
   <text x="450" y="35" text-anchor="middle" class="title">SochDB vs ChromaDB vs LanceDB — Vector Search Benchmark</text>
-  <text x="450" y="52" text-anchor="middle" class="subtitle">VectorDBBench • 50K vectors × 1536D • HNSW (m=16, ef_c=200, ef_s=500) • Apple M1 Pro</text>
+  <text x="450" y="52" text-anchor="middle" class="subtitle">VectorDBBench • 50K vectors × 1536D • SochDB/ChromaDB: HNSW (m=16, ef_c=200, ef_s=500) • LanceDB: IVF_PQ • Apple M1 Ultra</text>
 
   <!-- Legend -->
   <rect x="270" y="62" width="14" height="14" rx="3" fill="url(#sochdb)"/>
@@ -44,84 +44,84 @@
   <rect x="370" y="62" width="14" height="14" rx="3" fill="url(#chromadb)"/>
   <text x="388" y="74" class="legend-text">ChromaDB</text>
   <rect x="480" y="62" width="14" height="14" rx="3" fill="url(#lancedb)"/>
-  <text x="498" y="74" class="legend-text">LanceDB</text>
+  <text x="498" y="74" class="legend-text">LanceDB (IVF_PQ)</text>
 
   <!-- ═══════════════ CHART 1: Search Latency ═══════════════ -->
   <text x="230" y="108" text-anchor="middle" class="section-title">⚡ Search Latency (lower is better)</text>
 
   <!-- Avg Latency -->
   <text x="55" y="140" text-anchor="start" class="label">Avg</text>
-  <!-- SochDB: 3.2ms — scale: max ~27ms maps to width 350 -->
-  <rect x="80" y="127" width="41" height="16" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
-  <text x="125" y="139" class="value value-sochdb">3.2 ms ✦</text>
-  <!-- ChromaDB: 15.2ms -->
-  <rect x="80" y="147" width="197" height="16" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
-  <text x="281" y="159" class="value value-chroma">15.2 ms</text>
-  <!-- LanceDB: 9.6ms -->
-  <rect x="80" y="167" width="124" height="16" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
-  <text x="208" y="179" class="value value-lance">9.6 ms</text>
+  <!-- SochDB: 3.3ms — scale: max ~25ms maps to width 350, 14px/ms -->
+  <rect x="80" y="127" width="46" height="16" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
+  <text x="130" y="139" class="value value-sochdb">3.3 ms ✦</text>
+  <!-- ChromaDB: 15.4ms -->
+  <rect x="80" y="147" width="216" height="16" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
+  <text x="300" y="159" class="value value-chroma">15.4 ms</text>
+  <!-- LanceDB: 5.6ms -->
+  <rect x="80" y="167" width="78" height="16" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
+  <text x="162" y="179" class="value value-lance">5.6 ms</text>
 
   <!-- P95 Latency -->
   <text x="55" y="208" text-anchor="start" class="label">P95</text>
-  <rect x="80" y="195" width="54" height="16" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
-  <text x="138" y="207" class="value value-sochdb">4.2 ms ✦</text>
-  <rect x="80" y="215" width="238" height="16" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
-  <text x="322" y="227" class="value value-chroma">18.4 ms</text>
-  <rect x="80" y="235" width="136" height="16" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
-  <text x="220" y="247" class="value value-lance">10.5 ms</text>
+  <rect x="80" y="195" width="58" height="16" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
+  <text x="142" y="207" class="value value-sochdb">4.2 ms ✦</text>
+  <rect x="80" y="215" width="257" height="16" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
+  <text x="341" y="227" class="value value-chroma">18.4 ms</text>
+  <rect x="80" y="235" width="82" height="16" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
+  <text x="166" y="247" class="value value-lance">5.9 ms</text>
 
   <!-- P99 Latency -->
   <text x="55" y="276" text-anchor="start" class="label">P99</text>
-  <rect x="80" y="263" width="63" height="16" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
-  <text x="147" y="275" class="value value-sochdb">4.9 ms ✦</text>
-  <rect x="80" y="283" width="342" height="16" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
-  <text x="426" y="295" class="value value-chroma">26.4 ms</text>
-  <rect x="80" y="303" width="158" height="16" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
-  <text x="242" y="315" class="value value-lance">12.2 ms</text>
+  <rect x="80" y="263" width="83" height="16" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
+  <text x="167" y="275" class="value value-sochdb">5.9 ms ✦</text>
+  <rect x="80" y="283" width="312" height="16" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
+  <text x="396" y="295" class="value value-chroma">22.3 ms</text>
+  <rect x="80" y="303" width="171" height="16" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
+  <text x="255" y="315" class="value value-lance">12.2 ms</text>
 
   <!-- Axis -->
   <line x1="80" y1="325" x2="430" y2="325" stroke="#e2e8f0" stroke-width="1"/>
   <text x="80" y="338" class="axis-label">0</text>
-  <text x="210" y="338" class="axis-label">10 ms</text>
-  <text x="340" y="338" class="axis-label">20 ms</text>
-  <text x="420" y="338" class="axis-label">30 ms</text>
+  <text x="220" y="338" class="axis-label">10 ms</text>
+  <text x="360" y="338" class="axis-label">20 ms</text>
+  <text x="420" y="338" class="axis-label">25 ms</text>
 
   <!-- ═══════════════ CHART 2: Insert & Load ═══════════════ -->
   <text x="680" y="108" text-anchor="middle" class="section-title">🚀 Throughput (lower is better)</text>
 
-  <!-- Insert Duration — scale: max ~65s maps to width 350 -->
+  <!-- Insert Duration — scale: max ~80s maps to width 350, 4.375px/s -->
   <text x="505" y="150" text-anchor="start" class="label">Insert</text>
   <text x="505" y="162" text-anchor="start" class="metric-unit">(50K vecs)</text>
-  <!-- SochDB: 5.1s -->
-  <rect x="555" y="140" width="27" height="20" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
-  <text x="586" y="155" class="value value-sochdb">5.1 s ✦</text>
-  <!-- ChromaDB: 64.7s -->
-  <rect x="555" y="164" width="348" height="20" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
-  <text x="700" y="179" class="value" fill="white" font-weight="600">64.7 s</text>
-  <!-- LanceDB: 7.0s -->
-  <rect x="555" y="188" width="38" height="20" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
-  <text x="597" y="203" class="value value-lance">7.0 s</text>
+  <!-- SochDB: 0.1s (BatchAccumulator) -->
+  <rect x="555" y="140" width="4" height="20" rx="2" fill="url(#sochdb)" filter="url(#shadow)"/>
+  <text x="563" y="155" class="value value-sochdb">0.1 s ✦</text>
+  <!-- ChromaDB: 76.9s -->
+  <rect x="555" y="164" width="336" height="20" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
+  <text x="700" y="179" class="value" fill="white" font-weight="600">76.9 s</text>
+  <!-- LanceDB: 0.4s -->
+  <rect x="555" y="188" width="4" height="20" rx="2" fill="url(#lancedb)" filter="url(#shadow)"/>
+  <text x="563" y="203" class="value value-lance">0.4 s</text>
 
   <!-- Total Load -->
   <text x="505" y="240" text-anchor="start" class="label">Total</text>
   <text x="505" y="252" text-anchor="start" class="metric-unit">Load</text>
-  <!-- SochDB: 17.4s -->
-  <rect x="555" y="230" width="94" height="20" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
-  <text x="653" y="245" class="value value-sochdb">17.4 s ✦</text>
-  <!-- ChromaDB: 64.7s -->
-  <rect x="555" y="254" width="348" height="20" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
-  <text x="700" y="269" class="value" fill="white" font-weight="600">64.7 s</text>
-  <!-- LanceDB: 30.2s -->
-  <rect x="555" y="278" width="162" height="20" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
-  <text x="721" y="293" class="value value-lance">30.2 s</text>
+  <!-- SochDB: 13.7s -->
+  <rect x="555" y="230" width="60" height="20" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
+  <text x="619" y="245" class="value value-sochdb">13.7 s ✦</text>
+  <!-- ChromaDB: 76.9s -->
+  <rect x="555" y="254" width="336" height="20" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
+  <text x="700" y="269" class="value" fill="white" font-weight="600">76.9 s</text>
+  <!-- LanceDB: 21.0s -->
+  <rect x="555" y="278" width="92" height="20" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
+  <text x="651" y="293" class="value value-lance">21.0 s</text>
 
   <!-- Axis -->
   <line x1="555" y1="305" x2="905" y2="305" stroke="#e2e8f0" stroke-width="1"/>
   <text x="555" y="318" class="axis-label">0</text>
-  <text x="635" y="318" class="axis-label">15 s</text>
-  <text x="715" y="318" class="axis-label">30 s</text>
-  <text x="795" y="318" class="axis-label">45 s</text>
-  <text x="875" y="318" class="axis-label">65 s</text>
+  <text x="643" y="318" class="axis-label">20 s</text>
+  <text x="731" y="318" class="axis-label">40 s</text>
+  <text x="819" y="318" class="axis-label">60 s</text>
+  <text x="880" y="318" class="axis-label">80 s</text>
 
   <!-- ═══════════════ DIVIDER ═══════════════ -->
   <line x1="30" y1="350" x2="870" y2="350" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,4"/>
@@ -129,26 +129,26 @@
   <!-- ═══════════════ CHART 3: Recall ═══════════════ -->
   <text x="230" y="380" text-anchor="middle" class="section-title">🎯 Recall@100 (higher is better)</text>
 
-  <!-- Recall bars — scale: 0.95 to 1.0 range, width 350 maps to 0.05 -->
-  <!-- SochDB: 0.9898 → (0.9898-0.95)/0.05 * 350 = 279 -->
+  <!-- Recall bars — scale: 0.60 to 1.0 range, width 350 maps to 0.40 (875px per unit) -->
+  <!-- SochDB: 0.9899 → (0.9899-0.60)/0.40 * 350 = 341 -->
   <text x="55" y="415" text-anchor="start" class="label">SochDB</text>
-  <rect x="110" y="402" width="279" height="22" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
-  <text x="393" y="417" class="value value-sochdb">0.9898</text>
+  <rect x="110" y="402" width="341" height="22" rx="4" fill="url(#sochdb)" filter="url(#shadow)"/>
+  <text x="455" y="417" class="value value-sochdb">0.9899</text>
 
-  <!-- ChromaDB: 0.9967 → (0.9967-0.95)/0.05 * 350 = 327 -->
+  <!-- ChromaDB: 0.9966 → (0.9966-0.60)/0.40 * 350 = 347 -->
   <text x="55" y="443" text-anchor="start" class="label">ChromaDB</text>
-  <rect x="110" y="430" width="327" height="22" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
-  <text x="441" y="445" class="value value-chroma">0.9967 ✦</text>
+  <rect x="110" y="430" width="347" height="22" rx="4" fill="url(#chromadb)" filter="url(#shadow)"/>
+  <text x="461" y="445" class="value value-chroma">0.9966 ✦</text>
 
-  <!-- LanceDB: 0.9671 → (0.9671-0.95)/0.05 * 350 = 120 -->
+  <!-- LanceDB: 0.6574 → (0.6574-0.60)/0.40 * 350 = 50 -->
   <text x="55" y="471" text-anchor="start" class="label">LanceDB</text>
-  <rect x="110" y="458" width="120" height="22" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
-  <text x="234" y="473" class="value value-lance">0.9671</text>
+  <rect x="110" y="458" width="50" height="22" rx="4" fill="url(#lancedb)" filter="url(#shadow)"/>
+  <text x="164" y="473" class="value value-lance">0.6574 *</text>
 
   <!-- Axis -->
   <line x1="110" y1="486" x2="460" y2="486" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="110" y="499" class="axis-label">0.950</text>
-  <text x="285" y="499" class="axis-label">0.975</text>
+  <text x="110" y="499" class="axis-label">0.600</text>
+  <text x="285" y="499" class="axis-label">0.800</text>
   <text x="455" y="499" class="axis-label">1.000</text>
 
   <!-- ═══════════════ SPEEDUP CALLOUTS ═══════════════ -->
@@ -158,27 +158,28 @@
   <!-- vs ChromaDB -->
   <rect x="530" y="395" width="135" height="80" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1" filter="url(#shadow)"/>
   <text x="597" y="418" text-anchor="middle" font-size="10" fill="#64748b">vs ChromaDB</text>
-  <text x="597" y="445" text-anchor="middle" font-size="24" font-weight="800" fill="#4f46e5">4.75×</text>
+  <text x="597" y="445" text-anchor="middle" font-size="24" font-weight="800" fill="#4f46e5">4.7×</text>
   <text x="597" y="464" text-anchor="middle" font-size="10" fill="#64748b">faster search</text>
 
   <!-- vs LanceDB -->
   <rect x="685" y="395" width="135" height="80" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1" filter="url(#shadow)"/>
   <text x="752" y="418" text-anchor="middle" font-size="10" fill="#64748b">vs LanceDB</text>
-  <text x="752" y="445" text-anchor="middle" font-size="24" font-weight="800" fill="#4f46e5">3×</text>
+  <text x="752" y="445" text-anchor="middle" font-size="24" font-weight="800" fill="#4f46e5">1.7×</text>
   <text x="752" y="464" text-anchor="middle" font-size="10" fill="#64748b">faster search</text>
 
-  <!-- Insert speedup -->
+  <!-- Total load speedup vs Chroma -->
   <rect x="530" y="485" width="135" height="80" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1" filter="url(#shadow)"/>
-  <text x="597" y="508" text-anchor="middle" font-size="10" fill="#64748b">Insert vs Chroma</text>
-  <text x="597" y="535" text-anchor="middle" font-size="24" font-weight="800" fill="#4f46e5">12.7×</text>
-  <text x="597" y="554" text-anchor="middle" font-size="10" fill="#64748b">faster insert</text>
+  <text x="597" y="508" text-anchor="middle" font-size="10" fill="#64748b">Total Load</text>
+  <text x="597" y="535" text-anchor="middle" font-size="24" font-weight="800" fill="#4f46e5">5.6×</text>
+  <text x="597" y="554" text-anchor="middle" font-size="10" fill="#64748b">faster than Chroma</text>
 
-  <!-- Total load speedup -->
+  <!-- Total load speedup vs LanceDB -->
   <rect x="685" y="485" width="135" height="80" rx="8" fill="white" stroke="#e2e8f0" stroke-width="1" filter="url(#shadow)"/>
   <text x="752" y="508" text-anchor="middle" font-size="10" fill="#64748b">Total Load</text>
-  <text x="752" y="535" text-anchor="middle" font-size="24" font-weight="800" fill="#4f46e5">3.7×</text>
-  <text x="752" y="554" text-anchor="middle" font-size="10" fill="#64748b">faster than Chroma</text>
+  <text x="752" y="535" text-anchor="middle" font-size="24" font-weight="800" fill="#4f46e5">1.5×</text>
+  <text x="752" y="554" text-anchor="middle" font-size="10" fill="#64748b">faster than LanceDB</text>
 
   <!-- Footer -->
-  <text x="450" y="600" text-anchor="middle" class="axis-label">✦ = winner  |  VectorDBBench (Zilliz)  |  February 2026  |  All databases: embedded mode, HNSW index</text>
+  <text x="450" y="595" text-anchor="middle" class="axis-label">✦ = winner  |  * = IVF_PQ index (lower recall expected)  |  VectorDBBench (Zilliz)  |  February 2026</text>
+  <text x="450" y="610" text-anchor="middle" class="axis-label">All databases: embedded mode  |  SochDB/ChromaDB: HNSW  |  LanceDB: IVF_PQ</text>
 </svg>

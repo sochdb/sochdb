@@ -258,22 +258,23 @@ See [docker/README.md](docker/README.md) for full documentation.
 
 For performance comparisons and benchmarks, see [sochdb-benchmarks](https://github.com/sochdb/sochdb-benchmarks).
 
-#### Vector Search — VectorDBBench (OpenAI/COHERE 50K × 1536D, Apple M1 Pro)
+#### Vector Search — VectorDBBench (OpenAI 50K × 1536D, Apple M1 Ultra)
 
 <p align="center">
   <img src="docs/assets/benchmark_comparison.svg" alt="SochDB vs ChromaDB vs LanceDB benchmark comparison" width="800" />
 </p>
 
-| Metric | SochDB | ChromaDB | LanceDB |
+| Metric | SochDB | ChromaDB | LanceDB (IVF_PQ) |
 |--------|--------|----------|---------|
-| Recall@100 | 0.9898 | 0.9967 | 0.9671 |
-| Avg Latency | **3.2 ms** | 15.2 ms | 9.6 ms |
-| P95 Latency | **4.2 ms** | 18.4 ms | 10.5 ms |
-| P99 Latency | **4.9 ms** | 26.4 ms | 12.2 ms |
-| Insert (50K vecs) | **5.1 s** | 64.7 s | 7.0 s |
-| Total Load | **17.4 s** | 64.7 s | 30.2 s |
+| Recall@100 | 0.9899 | 0.9966 | 0.6574 * |
+| Avg Latency | **3.3 ms** | 15.4 ms | 5.6 ms |
+| P95 Latency | **4.2 ms** | 18.4 ms | 5.9 ms |
+| P99 Latency | **5.9 ms** | 22.3 ms | 12.2 ms |
+| Insert (50K vecs) | **0.1 s** | 76.9 s | 0.4 s |
+| Total Load | **13.7 s** | 76.9 s | 21.0 s |
 
-> SochDB HNSW config: m=16, ef_construction=200, ef_search=500.
+> SochDB/ChromaDB HNSW config: m=16, ef_construction=200, ef_search=500. LanceDB uses IVF_PQ index.
+> * LanceDB recall is lower due to IVF_PQ (lossy compression) vs HNSW (graph-based).
 > Insert uses the Python SDK's `BatchAccumulator` for deferred graph construction
 > (zero FFI during accumulation, single bulk `insert_batch()` with Rayon parallelism).
 > See [full benchmark details](#-benchmarks) for methodology and analysis.
@@ -1107,12 +1108,12 @@ Where:
 
 ## 📈 Benchmarks
 
-> **Version**: 0.4.0+ | **Benchmark Date**: February 2026 | **Hardware**: Apple M1 Pro (ARM64)
+> **Version**: 0.5.1 | **Benchmark Date**: February 2026 | **Hardware**: Apple M1 Ultra (ARM64)
 > **Vector Search**: [VectorDBBench](https://github.com/zilliztech/VectorDBBench) (Zilliz) | **Memory Agent**: [MemoryAgentBench](https://arxiv.org/abs/2507.05257) (UCSD)
 
 ### VectorDBBench: 50K-Vector Comparison (SochDB vs ChromaDB vs LanceDB)
 
-We benchmarked SochDB against ChromaDB and LanceDB using **[VectorDBBench](https://github.com/zilliztech/VectorDBBench)** — the industry-standard open-source benchmark from Zilliz. All databases ran on the same hardware with their recommended HNSW configurations.
+We benchmarked SochDB against ChromaDB and LanceDB using **[VectorDBBench](https://github.com/zilliztech/VectorDBBench)** — the industry-standard open-source benchmark from Zilliz. All databases ran on the same hardware in embedded mode. SochDB and ChromaDB use HNSW indexes; LanceDB uses IVF_PQ.
 
 <p align="center">
   <img src="docs/assets/benchmark_comparison.svg" alt="SochDB vs ChromaDB vs LanceDB benchmark comparison" width="800" />
@@ -1129,31 +1130,33 @@ We benchmarked SochDB against ChromaDB and LanceDB using **[VectorDBBench](https
 
 | Parameter | SochDB | ChromaDB | LanceDB |
 |-----------|--------|----------|----------|
-| Index Type | HNSW | HNSW | IVF_HNSW_SQ |
+| Index Type | HNSW | HNSW | IVF_PQ |
 | M | 16 | 16 | — |
 | ef_construction | 200 | 200 | — |
 | ef_search | 500 | 500 | — |
-| Version | 0.4.9 (SDK) | 1.4.1 | 0.19.0 |
+| Version | 0.5.1 (SDK) | 0.4.22 | 0.19.0 |
 
 #### Results
 
-| Metric | SochDB | ChromaDB | LanceDB |
+| Metric | SochDB | ChromaDB | LanceDB (IVF_PQ) |
 |--------|--------|----------|----------|
-| **Recall@100** | 0.9898 | 0.9967 | 0.9671 |
-| **Avg Latency** | **3.2 ms** ✅ | 15.2 ms | 9.6 ms |
-| **P95 Latency** | **4.2 ms** ✅ | 18.4 ms | 10.5 ms |
-| **P99 Latency** | **4.9 ms** ✅ | 26.4 ms | 12.2 ms |
-| **Insert (50K vecs)** | **5.1 s** ✅ | 64.7 s | 7.0 s |
-| **Total Load** | **17.4 s** ✅ | 64.7 s | 30.2 s |
+| **Recall@100** | 0.9899 | 0.9966 | 0.6574 * |
+| **Avg Latency** | **3.3 ms** ✅ | 15.4 ms | 5.6 ms |
+| **P95 Latency** | **4.2 ms** ✅ | 18.4 ms | 5.9 ms |
+| **P99 Latency** | **5.9 ms** ✅ | 22.3 ms | 12.2 ms |
+| **Insert (50K vecs)** | **0.1 s** ✅ | 76.9 s | 0.4 s |
+| **Total Load** | **13.7 s** ✅ | 76.9 s | 21.0 s |
+
+> \* LanceDB recall is lower due to IVF_PQ (lossy compression) vs HNSW (graph-based exact search).
 
 #### Key Findings
 
-- 🏎️ **SochDB search is 4.75× faster than ChromaDB** (3.2 ms vs 15.2 ms average)
-- 🏎️ **SochDB search is 3× faster than LanceDB** (3.2 ms vs 9.6 ms average)
-- ⚡ **SochDB insert is 12.7× faster than ChromaDB** (5.1 s vs 64.7 s for 50K vectors)
-- ⚡ **SochDB insert is 1.4× faster than LanceDB** (5.1 s vs 7.0 s)
-- 📐 **SochDB total load is 1.7× faster than LanceDB, 3.7× faster than ChromaDB**
-- 🎯 **SochDB recall (98.98%)** is within 1% of ChromaDB while being 4.75× faster
+- 🏎️ **SochDB search is 4.7× faster than ChromaDB** (3.3 ms vs 15.4 ms average)
+- 🏎️ **SochDB search is 1.7× faster than LanceDB** (3.3 ms vs 5.6 ms average)
+- ⚡ **SochDB total load is 5.6× faster than ChromaDB** (13.7 s vs 76.9 s)
+- ⚡ **SochDB total load is 1.5× faster than LanceDB** (13.7 s vs 21.0 s)
+- 🎯 **SochDB recall (98.99%)** is within 1% of ChromaDB while being 4.7× faster
+- ⚠️ **LanceDB recall (65.74%)** is significantly lower due to IVF_PQ lossy compression vs HNSW
 
 #### How SochDB Achieves Fast Inserts: `BatchAccumulator`
 
@@ -1168,8 +1171,8 @@ SochDB's Python SDK includes a **`BatchAccumulator`** API that separates data ac
 │  • add(ids, vecs)     │  • Single insert_batch() FFI call        │
 │  • Pure numpy memcpy  │  • Full Rayon parallel HNSW build        │
 │  • Zero FFI calls     │  • Wave-parallel (32-node waves)         │
-│  • ~0.1 s for 50K     │  • Adaptive ef (capped at 48)            │
-│                       │  • ~13 s for 50K vectors                 │
+│  • ~0.05 s for 50K    │  • Adaptive ef (capped at 48)            │
+│                       │  • ~13.7 s for 50K vectors               │
 └───────────────────────┴──────────────────────────────────────────┘
 ```
 
@@ -1181,8 +1184,8 @@ index = VectorIndex(dimension=1536, max_connections=16, ef_construction=200)
 # Deferred insert: zero FFI, pure numpy memcpy
 with index.batch_accumulator(estimated_size=50_000) as acc:
     for batch_ids, batch_vecs in data_loader:
-        acc.add(batch_ids, batch_vecs)       # ~0.1s total
-    # flush() called automatically → single bulk HNSW build (~13s)
+        acc.add(batch_ids, batch_vecs)       # ~0.05s total
+    # flush() called automatically → single bulk HNSW build (~13.7s)
 ```
 
 #### End-to-End RAG Bottleneck Analysis
