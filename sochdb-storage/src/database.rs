@@ -1676,6 +1676,13 @@ impl Database {
         self.storage.checkpoint()
     }
 
+    /// Truncate the WAL file after a checkpoint.
+    ///
+    /// See [`DurableStorage::truncate_wal`] for safety notes.
+    pub fn truncate_wal(&self) -> Result<()> {
+        self.storage.truncate_wal()
+    }
+
     /// Run garbage collection
     pub fn gc(&self) -> usize {
         self.storage.gc()

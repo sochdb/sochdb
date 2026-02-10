@@ -986,8 +986,19 @@ impl TxnWal {
     }
 
     /// Truncate WAL (called after successful checkpoint)
+    ///
+    /// Flushes any buffered writes, truncates the file to 0 bytes,
+    /// and resets sequence counters. The file is opened in `O_APPEND`
+    /// mode so subsequent writes will correctly start at offset 0.
+    ///
+    /// **WARNING**: After truncation, all data durability is lost.
+    /// The in-memory memtable still holds data for the current session,
+    /// but a crash after truncation means the data cannot be recovered
+    /// from the WAL.
     pub fn truncate(&self) -> Result<()> {
-        let writer = self.writer.lock();
+        let mut writer = self.writer.lock();
+        // Flush BufWriter so no stale data is written after truncation
+        writer.flush()?;
         let file = writer.get_ref();
         file.set_len(0)?;
         file.sync_all()?;

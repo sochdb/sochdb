@@ -232,25 +232,50 @@ jobs:
           
           publish_crate() {
             local crate=$1
-            echo "📦 Publishing $crate..."
+            local pkg_name=${2:-$1}  # Allow override for crates published under different name
+            echo "📦 Publishing $crate (as $pkg_name)..."
             cd $crate
             if [ "$DRY_RUN" = "true" ]; then
               cargo publish --dry-run --allow-dirty
             else
-              cargo publish --allow-dirty || echo "⚠️ $crate may already be published"
-              sleep 30  # Wait for crates.io to index
+              cargo publish --allow-dirty || echo "⚠️ $pkg_name may already be published"
+              # Wait for crates.io to index — dependents need this available
+              echo "⏳ Waiting for $pkg_name to be indexed on crates.io..."
+              sleep 45
             fi
             cd ..
           }
           
-          # Publish in dependency order
+          # ── Publish in STRICT dependency order ──
+          # The graph is:
+          #   sochdb-core       → (no sochdb deps)
+          #   sochdb-kernel     → core
+          #   sochdb-index      → core
+          #   sochdb-storage    → core, index
+          #   sochdb-query      → core, storage, index
+          #   sochdb-client     → core, storage, index, query  (published as 'sochdb')
+          #   sochdb-grpc       → core, index, kernel
+          #   sochdb-mcp        → client(sochdb), core, query
+          
+          # Layer 0: no internal deps
           publish_crate sochdb-core
-          publish_crate sochdb-storage
+          
+          # Layer 1: depends only on core
+          publish_crate sochdb-kernel
           publish_crate sochdb-index
+          
+          # Layer 2: depends on core + index
+          publish_crate sochdb-storage
+          
+          # Layer 3: depends on core + storage + index
           publish_crate sochdb-query
-          publish_crate sochdb-client  # Published as 'sochdb' on crates.io
-          publish_crate sochdb-grpc    # gRPC server with temporal graph support
-          publish_crate sochdb-mcp     # MCP server binary crate
+          
+          # Layer 4: depends on everything above
+          publish_crate sochdb-client sochdb  # Published as 'sochdb' on crates.io
+          publish_crate sochdb-grpc
+          
+          # Layer 5: depends on client
+          publish_crate sochdb-mcp
 
   # ===========================================================================
   # Create GitHub Release with all artifacts

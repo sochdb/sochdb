@@ -378,10 +378,16 @@ impl Block {
 
         let restarts_offset = data.len() - 4 - num_restarts * 4;
 
-        // TODO: Detect and parse hash index if present
-        // For now, assume no hash index
-        let num_hash_buckets = 0;
-        let hash_index_offset = restarts_offset;
+        // Detect hash index if present.
+        // Block format WITH hash index:
+        //   [entries][hash_buckets (N bytes)][num_buckets: u32][restart_offsets][num_restarts: u32]
+        // Block format WITHOUT hash index:
+        //   [entries][restart_offsets][num_restarts: u32]
+        //
+        // Detection: read candidate num_buckets from 4 bytes before restart offsets.
+        // Verify that (a) it fits, and (b) all bucket bytes are 0xFF (empty) or
+        // valid restart indices (< num_restarts).
+        let (num_hash_buckets, hash_index_offset) = Self::detect_hash_index(&data, restarts_offset, num_restarts);
 
         Some(Self {
             data,
@@ -390,6 +396,47 @@ impl Block {
             num_hash_buckets,
             hash_index_offset,
         })
+    }
+
+    /// Detect hash index between entry data and restart offsets.
+    ///
+    /// Returns `(num_buckets, entries_end_offset)`. If no hash index is
+    /// detected, returns `(0, restarts_offset)`.
+    fn detect_hash_index(data: &[u8], restarts_offset: usize, num_restarts: usize) -> (usize, usize) {
+        // Need at least 4 bytes before restarts for the num_buckets field
+        if restarts_offset < 4 {
+            return (0, restarts_offset);
+        }
+
+        // Read candidate num_buckets (u32 LE) just before restart offsets
+        let nb_offset = restarts_offset - 4;
+        let candidate = u32::from_le_bytes([
+            data[nb_offset],
+            data[nb_offset + 1],
+            data[nb_offset + 2],
+            data[nb_offset + 3],
+        ]) as usize;
+
+        // Sanity: num_buckets must be > 0 and the hash buckets must fit
+        if candidate == 0 || candidate > nb_offset {
+            return (0, restarts_offset);
+        }
+
+        let hash_start = nb_offset - candidate;
+
+        // Verify every bucket byte is either 0xFF (empty) or a valid
+        // restart index (< num_restarts).  This is the distinguishing
+        // property of the hash index — regular entry data almost never
+        // satisfies this for all bytes.
+        let all_valid = data[hash_start..nb_offset]
+            .iter()
+            .all(|&b| b == 0xFF || (b as usize) < num_restarts);
+
+        if all_valid {
+            (candidate, hash_start)
+        } else {
+            (0, restarts_offset)
+        }
     }
 
     /// Get restart point offset at given index
@@ -456,7 +503,7 @@ impl Block {
 
     /// Read the full key at a given offset (must be at a restart point)
     fn read_key_at(&self, offset: usize) -> Vec<u8> {
-        let mut cursor = Cursor::new(&self.data[offset..self.restarts_offset]);
+        let mut cursor = Cursor::new(&self.data[offset..self.hash_index_offset]);
         
         let shared = decode_varint(&mut cursor).unwrap_or(0) as usize;
         let non_shared = decode_varint(&mut cursor).unwrap_or(0) as usize;
@@ -540,12 +587,16 @@ impl<'a> BlockIterator<'a> {
 
     /// Parse entry at current offset
     fn parse_entry(&mut self) {
-        if self.offset >= self.block.restarts_offset {
+        // Use hash_index_offset as the boundary — entry data ends before the
+        // hash index (if present), not at restarts_offset.
+        let entries_end = self.block.hash_index_offset;
+
+        if self.offset >= entries_end {
             self.valid = false;
             return;
         }
 
-        let mut cursor = Cursor::new(&self.block.data[self.offset..self.block.restarts_offset]);
+        let mut cursor = Cursor::new(&self.block.data[self.offset..entries_end]);
 
         // Read header
         let shared = match decode_varint(&mut cursor) {
@@ -574,7 +625,7 @@ impl<'a> BlockIterator<'a> {
         let data_start = self.offset + header_len;
 
         // Bounds check
-        if data_start + non_shared + value_len > self.block.restarts_offset {
+        if data_start + non_shared + value_len > entries_end {
             self.valid = false;
             return;
         }
