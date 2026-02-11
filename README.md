@@ -1108,7 +1108,7 @@ Where:
 
 ## 📈 Benchmarks
 
-> **Version**: 0.5.1 | **Benchmark Date**: February 2026 | **Hardware**: Apple M1 Ultra (ARM64)
+> **Version**: 0.5.3 | **Benchmark Date**: February 2026 | **Hardware**: Apple M1 Ultra (ARM64)
 > **Vector Search**: [VectorDBBench](https://github.com/zilliztech/VectorDBBench) (Zilliz) | **Memory Agent**: [MemoryAgentBench](https://arxiv.org/abs/2507.05257) (UCSD)
 
 ### VectorDBBench: 50K-Vector Comparison (SochDB vs ChromaDB vs LanceDB)
@@ -1134,7 +1134,7 @@ We benchmarked SochDB against ChromaDB and LanceDB using **[VectorDBBench](https
 | M | 16 | 16 | — |
 | ef_construction | 200 | 200 | — |
 | ef_search | 500 | 500 | — |
-| Version | 0.5.1 (SDK) | 0.4.22 | 0.19.0 |
+| Version | 0.5.3 (SDK) | 0.4.22 | 0.19.0 |
 
 #### Results
 
@@ -1589,18 +1589,18 @@ cargo bench
 ## ⚠️ Before heavy production use
 
 * **Single node** (no replication / clustering)
-* **WAL growth**: call `checkpoint()` periodically for long-running services
+* **WAL growth**: call `checkpoint()` periodically for long-running services (auto-trigger config available via `CheckpointConfig`)
 * **Group commit**: tune per workload (disable for strictly sequential writes)
 
 ---
 
 ## 🚧 Roadmap (high level)
 
-* Cost-based optimizer: experimental
+* Cost-based optimizer: **production-ready** — full cost model, cardinality estimation (HLL + histograms), join order DP, token-budget planning, plan caching
+* Adaptive group commit: **implemented** — Little's Law-based batch sizing with EMA arrival-rate tracking
+* WAL compaction / auto-truncation: **partially implemented** — manual `checkpoint()` + `truncate_wal()` works end-to-end; automatic background compaction planned
 * Agent flow metadata schema: planned
 * Agent runtime library: planned
-* Adaptive group commit: planned
-* WAL compaction / auto-truncation: planned
 
 ---
 

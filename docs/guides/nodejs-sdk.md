@@ -3,7 +3,7 @@
 > **🔧 Skill Level:** Beginner  
 > **⏱️ Time Required:** 30 minutes  
 > **📦 Requirements:** Node.js 18+, TypeScript 5+
-> **Version:** 0.5.1
+> **Version:** 0.5.2
 
 Complete guide to SochDB's JavaScript SDK with dual-mode architecture (embedded FFI + server gRPC), namespaces, collections, vector search, priority queues, MCP integration, and advanced features.
 
@@ -36,6 +36,10 @@ npm install @sochdb/sochdb
 # or
 yarn add @sochdb/sochdb
 ```
+
+**What's New in 0.5.2:**
+- ✅ Engine status documentation (cost optimizer, group commit, WAL compaction)
+- ✅ Version bump aligned with core 0.4.9
 
 **What's New in 0.5.1:**
 - ✅ Improved TypeScript definitions
@@ -1261,4 +1265,4 @@ const end = Buffer.from('users;'); // ';' is after '/' in ASCII
 
 ---
 
-*Last updated: January 2026 (v0.5.1)*
+*Last updated: February 2026 (v0.5.2)*

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.9] - 2026-02-10
+
+### Changed
+
+#### Cost-Based Optimizer: Production-Ready
+
+- **Key range derivation** — `derive_key_range()` extracts bounds from Eq/Lt/Gt/Between predicates instead of falling back to `KeyRange::all()`
+- **Scan cost accuracy** — full table scans now correctly read all blocks regardless of predicate selectivity
+- **Projection pushdown** — cost reduction is proportional to `selected_columns / total_columns` instead of a fixed 80% cut
+- **Token budget safety** — `saturating_sub` with `.max(1.0)` floor prevents underflow panics
+- **Plan caching** — configurable TTL-based plan cache with `invalidate_plan_cache()` and `stats_age_us()` APIs
+- **Auto stats collection** — `collect_stats()` builds histograms, MCV lists, and distinct counts from live data
+
+#### Adaptive Group Commit: Implemented
+
+- Little's Law-based batch sizing with EMA arrival-rate tracking
+- Automatic write throughput optimization
+
+#### WAL Compaction: Partially Implemented
+
+- Manual `checkpoint()` + `truncate_wal()` works end-to-end
+- Automatic background compaction planned for future release
+
+#### Query Optimizer Upgrade
+
+- `query_optimizer.rs` upgraded from heuristic stub to cost-based planning
+- Scores each predicate against candidate indexes, compares to full-scan baseline
+- Selects cheapest access path automatically
+
+### Added
+
+- 12 new production-grade tests for the cost optimizer:
+  `token_budget_underflow_safety`, `index_seek_derives_key_range`, `range_predicate_key_range`, `projection_pushdown_proportional_reduction`, `collect_stats_builds_histogram`, `plan_cache_invalidation`, `stats_age_tracking`, `scan_cost_reads_all_blocks`, `index_wins_over_scan_for_point_lookup`, `no_stats_defaults_to_scan`, `compound_predicate_selectivity`, `join_order_optimizer`
+
+---
+
 ## [0.4.1] - 2026-01-19
 
 ### Added

@@ -15,10 +15,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! Query Optimizer (stub for Task 10 integration)
+//! Query Optimizer with Cost-Based Planning
 //!
 //! Provides cost-based query optimization for SOCH-QL.
-//! This is a stub implementation that will be fully implemented later.
+//! Selects index, estimates cardinality, and chooses the cheapest plan.
 
 use std::collections::HashMap;
 
@@ -213,27 +213,108 @@ impl QueryOptimizer {
         self.cardinality_hints.insert(column.to_string(), hint);
     }
 
-    /// Plan a query
+    /// Plan a query using cost-based index selection
+    ///
+    /// Evaluates each candidate index against a full scan, choosing the
+    /// cheapest access path based on selectivity × row count.
     pub fn plan_query(&self, predicates: &[QueryPredicate], limit: Option<usize>) -> QueryPlan {
-        // Simple heuristic: use index if we have predicates, otherwise full scan
-        let (index, operation) = if predicates.is_empty() {
-            (IndexSelection::FullScan, QueryOperation::FullScan)
-        } else {
-            // Check for primary key lookup
-            let has_eq = predicates
-                .iter()
-                .any(|p| matches!(p, QueryPredicate::Eq(_, _)));
-            if has_eq {
-                (IndexSelection::PrimaryKey, QueryOperation::PointLookup)
-            } else {
-                (IndexSelection::FullScan, QueryOperation::RangeScan)
-            }
-        };
+        if predicates.is_empty() {
+            return self.build_plan(
+                IndexSelection::FullScan,
+                QueryOperation::FullScan,
+                predicates,
+                limit,
+            );
+        }
 
+        // Score each candidate index
+        let mut candidates: Vec<(IndexSelection, QueryOperation, f64, usize)> = Vec::new();
+
+        for pred in predicates {
+            let sel = self.estimate_selectivity(pred);
+            let est_rows = (self.total_edges as f64 * sel).max(1.0) as usize;
+
+            match pred {
+                QueryPredicate::Eq(_, _) => {
+                    let cost = self.cost_model.index_lookup_cost;
+                    candidates.push((IndexSelection::PrimaryKey, QueryOperation::PointLookup, cost, 1));
+                }
+                QueryPredicate::TimeRange(start, end) => {
+                    let cost = est_rows as f64 * self.cost_model.row_read_cost;
+                    candidates.push((
+                        IndexSelection::TimeIndex,
+                        QueryOperation::LsmRangeScan {
+                            start_us: *start,
+                            end_us: *end,
+                        },
+                        cost,
+                        est_rows,
+                    ));
+                }
+                QueryPredicate::Range { .. } | QueryPredicate::Prefix(_, _) => {
+                    let cost = est_rows as f64 * self.cost_model.row_read_cost;
+                    candidates.push((
+                        IndexSelection::LsmScan,
+                        QueryOperation::RangeScan,
+                        cost,
+                        est_rows,
+                    ));
+                }
+                QueryPredicate::Project(_) => {
+                    let cost = est_rows as f64 * self.cost_model.index_lookup_cost;
+                    candidates.push((
+                        IndexSelection::ProjectIndex,
+                        QueryOperation::RangeScan,
+                        cost,
+                        est_rows,
+                    ));
+                }
+                QueryPredicate::Tenant(_) | QueryPredicate::SpanType(_) | QueryPredicate::In(_, _) => {
+                    let cost = est_rows as f64 * self.cost_model.row_read_cost;
+                    candidates.push((
+                        IndexSelection::FullScan,
+                        QueryOperation::RangeScan,
+                        cost,
+                        est_rows,
+                    ));
+                }
+            }
+        }
+
+        // Full scan baseline
+        let full_scan_cost = self.total_edges.max(1) as f64 * self.cost_model.seq_scan_cost;
+        candidates.push((
+            IndexSelection::FullScan,
+            QueryOperation::FullScan,
+            full_scan_cost,
+            self.total_edges.max(1),
+        ));
+
+        // Choose cheapest
+        candidates.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        let (index, operation, _cost, _rows) = candidates.into_iter().next().unwrap();
+
+        self.build_plan(index, operation, predicates, limit)
+    }
+
+    /// Build a QueryPlan from chosen access path
+    fn build_plan(
+        &self,
+        index: IndexSelection,
+        operation: QueryOperation,
+        predicates: &[QueryPredicate],
+        limit: Option<usize>,
+    ) -> QueryPlan {
         let estimated_rows = match &index {
             IndexSelection::PrimaryKey => 1,
-            IndexSelection::FullScan => self.total_edges.max(1000),
-            _ => self.total_edges / 10,
+            IndexSelection::FullScan => self.total_edges.max(1),
+            _ => {
+                let sel: f64 = predicates
+                    .iter()
+                    .map(|p| self.estimate_selectivity(p))
+                    .product();
+                (self.total_edges as f64 * sel).max(1.0) as usize
+            }
         };
 
         let estimated_cost = match &operation {
@@ -241,7 +322,8 @@ impl QueryOptimizer {
             QueryOperation::RangeScan => estimated_rows as f64 * self.cost_model.row_read_cost,
             QueryOperation::FullScan => self.total_edges as f64 * self.cost_model.seq_scan_cost,
             QueryOperation::VectorSearch { .. } => self.cost_model.vector_search_cost,
-            _ => estimated_rows as f64 * self.cost_model.row_read_cost,
+            QueryOperation::LsmRangeScan { .. } => estimated_rows as f64 * self.cost_model.row_read_cost,
+            QueryOperation::GraphTraversal { .. } => estimated_rows as f64 * self.cost_model.row_read_cost,
         };
 
         QueryPlan {
