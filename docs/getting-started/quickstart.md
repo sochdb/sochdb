@@ -44,7 +44,7 @@ sochdb = "0.4"
 ### Go
 
 ```bash
-go get github.com/sochdb/sochdb-go@v0.4.3
+go get github.com/sochdb/sochdb-go@v0.4.4
 ```
 
 ### Build from Source

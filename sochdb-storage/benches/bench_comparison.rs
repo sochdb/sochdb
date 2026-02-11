@@ -17,12 +17,11 @@
 
 //! Competitive Performance Comparison Benchmark
 //!
-//! Compares SochDB DurableStorage against:
+//! Compares SochDB DurableStorage against other approaches.
 //!
 //! | Engine | Type | Notes |
 //! |--------|------|-------|
 //! | SochDB | LSM + MVCC | Our engine |
-//! | Sled | LSM | Pure Rust embedded DB |
 //!
 //! Uses identical workloads for fair comparison.
 //!
@@ -32,7 +31,6 @@ mod measurement_harness;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use measurement_harness::{generate_key, generate_value};
-use sled;
 use tempfile::TempDir;
 use sochdb_storage::{DurableStorage, TransactionMode};
 
@@ -72,25 +70,6 @@ fn bench_compare_writes(c: &mut Criterion) {
         });
     }
 
-    // Sled
-    {
-        let temp_dir = TempDir::new().unwrap();
-        let db = sled::open(temp_dir.path()).unwrap();
-
-        let mut idx = 0;
-
-        group.bench_function("sled", |b| {
-            b.iter(|| {
-                for _ in 0..100 {
-                    let key = generate_key(idx, KEY_SIZE);
-                    let value = generate_value(idx, VALUE_SIZE, 42);
-                    db.insert(key, value).unwrap();
-                    idx += 1;
-                }
-            });
-        });
-    }
-
     group.finish();
 }
 
@@ -117,27 +96,6 @@ fn bench_compare_batch_writes(c: &mut Criterion) {
                     storage.write(txn_id, key, value).unwrap();
                 }
                 storage.commit(txn_id).unwrap();
-                base_idx += 100;
-            });
-        });
-    }
-
-    // Sled batch
-    {
-        let temp_dir = TempDir::new().unwrap();
-        let db = sled::open(temp_dir.path()).unwrap();
-
-        let mut base_idx = 0;
-
-        group.bench_function("sled", |b| {
-            b.iter(|| {
-                let mut batch = sled::Batch::default();
-                for i in 0..100 {
-                    let key = generate_key(base_idx + i, KEY_SIZE);
-                    let value = generate_value(base_idx + i, VALUE_SIZE, 42);
-                    batch.insert(key, value);
-                }
-                db.apply_batch(batch).unwrap();
                 base_idx += 100;
             });
         });
@@ -179,30 +137,6 @@ fn bench_compare_point_reads(c: &mut Criterion) {
                 let txn_id = storage.begin_with_mode(TransactionMode::ReadOnly).unwrap();
                 let result = storage.read(txn_id, &key).unwrap();
                 storage.commit(txn_id).unwrap();
-                idx += 1;
-                black_box(result)
-            });
-        });
-    }
-
-    // Sled
-    {
-        let temp_dir = TempDir::new().unwrap();
-        let db = sled::open(temp_dir.path()).unwrap();
-
-        // Preload
-        for i in 0..DATASET_SIZE {
-            let key = generate_key(i, KEY_SIZE);
-            let value = generate_value(i, VALUE_SIZE, 42);
-            db.insert(key, value).unwrap();
-        }
-
-        let mut idx = 0;
-
-        group.bench_function("sled", |b| {
-            b.iter(|| {
-                let key = generate_key(idx % DATASET_SIZE, KEY_SIZE);
-                let result = db.get(&key).unwrap();
                 idx += 1;
                 black_box(result)
             });
@@ -263,40 +197,6 @@ fn bench_compare_mixed(c: &mut Criterion) {
         });
     }
 
-    // Sled
-    {
-        let temp_dir = TempDir::new().unwrap();
-        let db = sled::open(temp_dir.path()).unwrap();
-
-        // Preload
-        for i in 0..DATASET_SIZE {
-            let key = generate_key(i, KEY_SIZE);
-            let value = generate_value(i, VALUE_SIZE, 42);
-            db.insert(key, value).unwrap();
-        }
-
-        let mut read_idx = 0;
-        let mut write_idx = DATASET_SIZE;
-
-        group.bench_function("sled", |b| {
-            b.iter(|| {
-                for _ in 0..50 {
-                    // Read
-                    let key = generate_key(read_idx % DATASET_SIZE, KEY_SIZE);
-                    let _ = db.get(&key);
-                    read_idx += 1;
-                }
-                for _ in 0..50 {
-                    // Write
-                    let key = generate_key(write_idx, KEY_SIZE);
-                    let value = generate_value(write_idx, VALUE_SIZE, 42);
-                    db.insert(key, value).unwrap();
-                    write_idx += 1;
-                }
-            });
-        });
-    }
-
     group.finish();
 }
 
@@ -339,35 +239,6 @@ fn bench_compare_scans(c: &mut Criterion) {
                         let txn_id = storage.begin_with_mode(TransactionMode::ReadOnly).unwrap();
                         let results = storage.scan_range(txn_id, &start_key, &end_key).unwrap();
                         storage.commit(txn_id).unwrap();
-                        start_idx += 1;
-                        black_box(results.len())
-                    });
-                },
-            );
-        }
-
-        // Sled
-        {
-            let temp_dir = TempDir::new().unwrap();
-            let db = sled::open(temp_dir.path()).unwrap();
-
-            // Preload
-            for i in 0..DATASET_SIZE {
-                let key = generate_key(i, KEY_SIZE);
-                let value = generate_value(i, VALUE_SIZE, 42);
-                db.insert(key, value).unwrap();
-            }
-
-            group.bench_with_input(
-                BenchmarkId::new("sled", scan_size),
-                &scan_size,
-                |b, &scan_size| {
-                    let mut start_idx = 0;
-
-                    b.iter(|| {
-                        let max_start = DATASET_SIZE.saturating_sub(scan_size);
-                        let start_key = generate_key(start_idx % max_start, KEY_SIZE);
-                        let results: Vec<_> = db.range(start_key..).take(scan_size).collect();
                         start_idx += 1;
                         black_box(results.len())
                     });

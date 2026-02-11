@@ -28,6 +28,8 @@
 //! - Thread-safe concurrent access
 //! - Memory-mapped for fast reads
 
+mod disk_hash_index;
+
 use memmap2::MmapOptions;
 use parking_lot::RwLock;
 use std::fs::{File, OpenOptions};
@@ -35,6 +37,8 @@ use std::io::{Read, Seek, SeekFrom, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sochdb_core::{Result, SochDBError};
+
+use disk_hash_index::DiskHashIndex;
 
 /// Compression type for payloads
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -71,7 +75,7 @@ pub struct PayloadMeta {
 
 /// Pluggable trait for payload index storage
 ///
-/// Allows switching between in-memory (HashMap) and disk-backed (sled) implementations.
+/// Allows switching between in-memory (HashMap) and disk-backed (DiskHash) implementations.
 pub trait PayloadIndex: Send + Sync {
     fn insert(&self, edge_id: u128, meta: PayloadMeta) -> Result<()>;
     fn get(&self, edge_id: u128) -> Result<Option<PayloadMeta>>;
@@ -245,82 +249,17 @@ impl PayloadIndex for HashMapIndex {
     }
 }
 
-/// Disk-backed sled index (scales to billions, minimal RAM)
-struct SledIndex {
-    db: sled::Db,
-}
-
-impl SledIndex {
-    fn new(index_path: PathBuf) -> Result<Self> {
-        let db = sled::open(index_path)
-            .map_err(|e| SochDBError::Internal(format!("Failed to open sled: {}", e)))?;
-        Ok(Self { db })
-    }
-}
-
-impl PayloadIndex for SledIndex {
-    fn insert(&self, edge_id: u128, meta: PayloadMeta) -> Result<()> {
-        let key = edge_id.to_le_bytes();
-        let value = bincode::serialize(&meta)
-            .map_err(|e| SochDBError::Corruption(format!("Serialization failed: {}", e)))?;
-        self.db
-            .insert(&key[..], value.as_slice())
-            .map_err(|e| SochDBError::Internal(format!("Sled insert failed: {}", e)))?;
-        Ok(())
-    }
-
-    fn get(&self, edge_id: u128) -> Result<Option<PayloadMeta>> {
-        let key = edge_id.to_le_bytes();
-        let value = self
-            .db
-            .get(&key[..])
-            .map_err(|e| SochDBError::Internal(format!("Sled get failed: {}", e)))?;
-        match value {
-            Some(bytes) => {
-                let meta: PayloadMeta = bincode::deserialize(&bytes).map_err(|e| {
-                    SochDBError::Corruption(format!("Deserialization failed: {}", e))
-                })?;
-                Ok(Some(meta))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn contains_key(&self, edge_id: u128) -> bool {
-        let key = edge_id.to_le_bytes();
-        self.db.contains_key(&key[..]).unwrap_or(false)
-    }
-
-    fn len(&self) -> usize {
-        self.db.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.db.is_empty()
-    }
-
-    fn iter_values(&self) -> Box<dyn Iterator<Item = PayloadMeta> + '_> {
-        Box::new(self.db.iter().filter_map(|result| {
-            result
-                .ok()
-                .and_then(|(_, value)| bincode::deserialize::<PayloadMeta>(&value).ok())
-        }))
-    }
-
-    fn save(&self) -> Result<()> {
-        self.db
-            .flush()
-            .map_err(|e| SochDBError::Internal(format!("Sled flush failed: {}", e)))?;
-        Ok(())
-    }
-}
+// DiskHashIndex is defined in disk_hash_index.rs and imported at the top of this module.
 
 /// Index backend type
 pub enum IndexBackend {
     /// In-memory HashMap (default, fast but uses ~50MB per 1M payloads)
     HashMap,
-    /// Disk-backed sled (scales to billions, ~5-10MB RAM)
-    Sled,
+    /// Disk-backed hash table (scales to billions, minimal RAM)
+    /// Uses a memory-mapped open-addressing hash table with linear probing.
+    /// Zero external dependencies — replaces sled with a purpose-built
+    /// structure optimized for fixed-size PayloadMeta records.
+    DiskHash,
 }
 
 /// Payload storage engine
@@ -339,7 +278,7 @@ pub enum IndexBackend {
 /// **SCALABILITY:**
 /// - **HashMap backend (default)**: Fast but uses ~50MB RAM per 1M payloads (32 bytes per entry + overhead).
 ///   Suitable for < 10M traces.
-/// - **Sled backend**: Disk-backed B-Tree scales to billions with ~5-10MB RAM.
+/// - **DiskHash backend**: Disk-backed hash table scales to billions with minimal RAM.
 ///   Recommended for 10M+ traces.
 ///
 /// **Usage:**
@@ -349,8 +288,8 @@ pub enum IndexBackend {
 /// // Default: in-memory HashMap
 /// let store = PayloadStore::open("./data").unwrap();
 ///
-/// // For 10M+ scale: disk-backed sled
-/// let store = PayloadStore::open_with_backend("./data", IndexBackend::Sled).unwrap();
+/// // For 10M+ scale: disk-backed hash table
+/// let store = PayloadStore::open_with_backend("./data", IndexBackend::DiskHash).unwrap();
 /// ```
 pub struct PayloadStore {
     data_file: Arc<RwLock<File>>,
@@ -379,7 +318,7 @@ impl PayloadStore {
         let data_path = data_dir.join("payload.data");
         let index_path = match backend {
             IndexBackend::HashMap => data_dir.join("payload.index"),
-            IndexBackend::Sled => data_dir.join("payload_sled"),
+            IndexBackend::DiskHash => data_dir.join("payload_disk_hash.idx"),
         };
 
         // Open or create data file
@@ -395,7 +334,7 @@ impl PayloadStore {
         // Create index based on backend type
         let index: Arc<dyn PayloadIndex> = match backend {
             IndexBackend::HashMap => Arc::new(HashMapIndex::new(index_path)?),
-            IndexBackend::Sled => Arc::new(SledIndex::new(index_path)?),
+            IndexBackend::DiskHash => Arc::new(DiskHashIndex::new(index_path)?),
         };
 
         // Create memory map if file has data
@@ -520,8 +459,8 @@ impl PayloadStore {
                     payload_count = count,
                     estimated_ram_mb = count * 50 / 1_000_000,
                     "CRITICAL: PayloadStore has 10M+ entries (~500MB RAM). \
-                     Strongly recommend switching to Sled backend to prevent OOM. \
-                     Use PayloadStore::open_with_backend(path, IndexBackend::Sled)"
+                     Strongly recommend switching to DiskHash backend to prevent OOM. \
+                     Use PayloadStore::open_with_backend(path, IndexBackend::DiskHash)"
                 );
             } else if count >= 5_000_000 && !warnings.1 {
                 warnings.1 = true;
@@ -529,8 +468,8 @@ impl PayloadStore {
                     payload_count = count,
                     estimated_ram_mb = count * 50 / 1_000_000,
                     "WARNING: PayloadStore has 5M+ entries (~250MB RAM). \
-                     Consider switching to Sled backend for better memory efficiency. \
-                     Use PayloadStore::open_with_backend(path, IndexBackend::Sled)"
+                     Consider switching to DiskHash backend for better memory efficiency. \
+                     Use PayloadStore::open_with_backend(path, IndexBackend::DiskHash)"
                 );
             } else if count >= 1_000_000 && !warnings.0 {
                 warnings.0 = true;
@@ -538,7 +477,7 @@ impl PayloadStore {
                     payload_count = count,
                     estimated_ram_mb = count * 50 / 1_000_000,
                     "INFO: PayloadStore has reached 1M entries (~50MB RAM). \
-                     Memory usage will grow linearly. Consider Sled backend for 10M+ scale."
+                     Memory usage will grow linearly. Consider DiskHash backend for 10M+ scale."
                 );
             }
         }
@@ -785,11 +724,11 @@ mod tests {
     }
 
     #[test]
-    fn test_sled_backend_basic() {
+    fn test_disk_hash_backend_basic() {
         let dir = tempdir().unwrap();
-        let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::Sled).unwrap();
+        let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
 
-        let data = b"Hello from Sled!";
+        let data = b"Hello from DiskHash!";
         let (offset, length, _) = store.append(1, data, None).unwrap();
 
         assert_eq!(offset, 0);
@@ -800,24 +739,24 @@ mod tests {
     }
 
     #[test]
-    fn test_sled_backend_persistence() {
+    fn test_disk_hash_backend_persistence() {
         let dir = tempdir().unwrap();
 
-        let data1 = b"First sled payload";
-        let data2 = b"Second sled payload";
+        let data1 = b"First disk hash payload";
+        let data2 = b"Second disk hash payload";
 
-        // Write with sled backend
+        // Write with DiskHash backend
         {
-            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::Sled).unwrap();
+            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
             store.append(1, data1, None).unwrap();
             store.append(2, data2, None).unwrap();
             // Explicit save (though Drop also saves)
             store.save_index().unwrap();
         }
 
-        // Reopen with sled and verify
+        // Reopen with DiskHash and verify
         {
-            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::Sled).unwrap();
+            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
             assert_eq!(store.get(1).unwrap().unwrap(), data1);
             assert_eq!(store.get(2).unwrap().unwrap(), data2);
             assert_eq!(store.len(), 2);
@@ -825,9 +764,9 @@ mod tests {
     }
 
     #[test]
-    fn test_sled_backend_large_dataset() {
+    fn test_disk_hash_backend_large_dataset() {
         let dir = tempdir().unwrap();
-        let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::Sled).unwrap();
+        let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
 
         // Simulate large dataset
         for i in 0..1000 {
@@ -856,14 +795,14 @@ mod tests {
         }
 
         // Payload data file is shared, but indexes are separate
-        // Sled backend starts fresh (no cross-backend index migration)
+        // DiskHash backend starts fresh (no cross-backend index migration)
         {
-            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::Sled).unwrap();
-            // Sled has its own index, so it won't see HashMap's entry
+            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
+            // DiskHash has its own index, so it won't see HashMap's entry
             assert_eq!(store.len(), 0);
 
-            // Add new entry with sled
-            store.append(2, b"Sled data", None).unwrap();
+            // Add new entry with DiskHash
+            store.append(2, b"DiskHash data", None).unwrap();
             assert_eq!(store.len(), 1);
         }
     }

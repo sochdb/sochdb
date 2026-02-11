@@ -8,7 +8,7 @@ title: Introduction
 
 Welcome to the official SochDB documentation. SochDB is **The LLM-Native Database** — a high-performance embedded database designed specifically for AI applications.
 
-**Current Version:** v0.4.5 (Core) | Python SDK v0.4.7 | Node.js SDK v0.5.1 | Go SDK v0.4.3
+**Current Version:** v0.4.9 (Core) | Python SDK v0.5.3 | Node.js SDK v0.5.2 | Go SDK v0.4.4
 
 ---
 
@@ -113,7 +113,7 @@ await db.close();
 <TabItem value="go" label="Go">
 
 ```bash
-go get github.com/sochdb/sochdb-go@v0.4.3
+go get github.com/sochdb/sochdb-go@v0.4.4
 ```
 
 ```go
@@ -159,8 +159,8 @@ Task-oriented guides for specific use cases.
 **Language SDKs:**
 - [Rust SDK](/guides/rust-sdk) — Native Rust guide
 - [Python SDK](/guides/python-sdk) — Complete Python guide (v0.4.7)
-- [Node.js SDK](/guides/nodejs-sdk) — TypeScript/JavaScript guide (v0.5.1)
-- [Go SDK](/guides/go-sdk) — Go client guide (v0.4.3)
+- [Node.js SDK](/guides/nodejs-sdk) — TypeScript/JavaScript guide (v0.5.2)
+- [Go SDK](/guides/go-sdk) — Go client guide (v0.4.4)
 
 **Features:**
 - [SQL Guide](/guides/sql-guide) — Working with SQL queries

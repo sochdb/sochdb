@@ -1,6 +1,6 @@
 # Python SDK Guide
 
-> **Version:** 0.4.7  
+> **Version:** 0.5.3  
 > **Time:** 45 minutes  
 > **Difficulty:** Beginner to Intermediate  
 > **Prerequisites:** Python 3.9+
@@ -1828,4 +1828,4 @@ pytest --cov=sochdb tests/
 
 ---
 
-*Last updated: January 2026 (v0.4.7)*
+*Last updated: February 2026 (v0.5.3)*

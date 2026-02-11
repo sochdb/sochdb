@@ -1,12 +1,12 @@
 [package]
 name = "sochdb-plugin-logging"
-version = "0.4.8"
+version = "0.4.9"
 edition = "2024"
 description = "JSON structured logging plugin for SochDB"
 license.workspace = true
 
 [dependencies]
-sochdb-kernel = { version = "0.4.8", path = "../sochdb-kernel" }
+sochdb-kernel = { version = "0.4.9", path = "../sochdb-kernel" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"

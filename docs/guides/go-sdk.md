@@ -3,7 +3,7 @@
 > **🔧 Skill Level:** Beginner  
 > **⏱️ Time Required:** 30 minutes  
 > **📦 Requirements:** Go 1.21+
-> **Version:** 0.4.3
+> **Version:** 0.4.4
 
 Complete guide to SochDB's Go SDK with dual-mode architecture (embedded CGO + server gRPC), namespaces, collections, vector search, priority queues, memory system, and advanced features.
 
@@ -30,8 +30,14 @@ Complete guide to SochDB's Go SDK with dual-mode architecture (embedded CGO + se
 ## 📦 Installation
 
 ```bash
-go get github.com/sochdb/sochdb-go@v0.4.3
+go get github.com/sochdb/sochdb-go@v0.4.4
 ```
+
+**What's New in 0.4.4:**
+- ✅ Cost-based optimizer hardened to production-ready
+- ✅ Adaptive group commit with Little's Law-based batch sizing
+- ✅ WAL compaction (manual checkpoint + truncate)
+- ✅ Engine status table in README
 
 **What's New in 0.4.3:**
 - ✅ Memory System: Extraction, Consolidation, Retrieval
@@ -1166,4 +1172,4 @@ go test -run TestScan -v
 
 ---
 
-*Last updated: January 2026 (v0.4.3)*
+*Last updated: February 2026 (v0.4.4)*

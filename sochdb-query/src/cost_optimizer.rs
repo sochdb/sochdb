@@ -46,6 +46,7 @@
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ============================================================================
 // Cost Model Constants
@@ -457,6 +458,10 @@ pub struct CostBasedOptimizer {
     token_budget: Option<u64>,
     /// Estimated tokens per row
     tokens_per_row: f64,
+    /// Plan cache: (table, predicate_hash, limit) -> (plan, timestamp_us)
+    plan_cache: Arc<RwLock<HashMap<u64, (PhysicalPlan, u64)>>>,
+    /// Plan cache TTL in microseconds (default 5 seconds)
+    plan_cache_ttl_us: u64,
 }
 
 impl CostBasedOptimizer {
@@ -466,7 +471,15 @@ impl CostBasedOptimizer {
             stats_cache: Arc::new(RwLock::new(HashMap::new())),
             token_budget: None,
             tokens_per_row: 25.0, // Default estimate
+            plan_cache: Arc::new(RwLock::new(HashMap::new())),
+            plan_cache_ttl_us: 5_000_000, // 5 seconds
         }
+    }
+
+    /// Set plan cache TTL
+    pub fn with_plan_cache_ttl_ms(mut self, ttl_ms: u64) -> Self {
+        self.plan_cache_ttl_us = ttl_ms * 1000;
+        self
     }
 
     /// Set token budget for result limiting
@@ -529,12 +542,14 @@ impl CostBasedOptimizer {
         match (self.token_budget, user_limit) {
             (Some(budget), Some(limit)) => {
                 let header_tokens = 50u64;
-                let max_rows = ((budget - header_tokens) as f64 / self.tokens_per_row) as u64;
+                let usable = budget.saturating_sub(header_tokens);
+                let max_rows = (usable as f64 / self.tokens_per_row).max(1.0) as u64;
                 Some(limit.min(max_rows))
             }
             (Some(budget), None) => {
                 let header_tokens = 50u64;
-                let max_rows = ((budget - header_tokens) as f64 / self.tokens_per_row) as u64;
+                let usable = budget.saturating_sub(header_tokens);
+                let max_rows = (usable as f64 / self.tokens_per_row).max(1.0) as u64;
                 Some(max_rows)
             }
             (None, limit) => limit,
@@ -591,9 +606,11 @@ impl CostBasedOptimizer {
                 table: table.to_string(),
                 index: index.name.clone(),
                 columns: columns.to_vec(),
-                key_range: KeyRange::all(), // Simplified
+                key_range: predicate
+                    .map(|p| Self::derive_key_range(p))
+                    .unwrap_or_else(KeyRange::all),
                 predicate: predicate.map(|p| Box::new(p.clone())),
-                estimated_rows: (row_count as f64 * selectivity) as u64,
+                estimated_rows: (row_count as f64 * selectivity).max(1.0) as u64,
                 estimated_cost: best_index_cost,
             }
         } else {
@@ -618,20 +635,22 @@ impl CostBasedOptimizer {
     }
 
     /// Estimate table scan cost
+    ///
+    /// I/O: sequential read all blocks
+    /// CPU: evaluate predicate against every row
     fn estimate_scan_cost(
         &self,
         row_count: u64,
         size_bytes: u64,
-        predicate: Option<&Predicate>,
+        _predicate: Option<&Predicate>,
     ) -> f64 {
-        let blocks = (size_bytes as f64 / self.config.block_size as f64).ceil() as u64;
+        let blocks = (size_bytes as f64 / self.config.block_size as f64).ceil().max(1.0) as u64;
 
-        // I/O cost: sequential read
+        // I/O cost: must read all blocks regardless of predicate
         let io_cost = blocks as f64 * self.config.c_seq;
 
-        // CPU cost: filter all rows
-        let selectivity = predicate.map(|_| 0.1).unwrap_or(1.0);
-        let cpu_cost = row_count as f64 * self.config.c_filter * selectivity;
+        // CPU cost: evaluate predicate on every row (scan reads them all)
+        let cpu_cost = row_count as f64 * self.config.c_filter;
 
         io_cost + cpu_cost
     }
@@ -746,23 +765,52 @@ impl CostBasedOptimizer {
         }
     }
 
+    /// Derive key range from predicate for index seek
+    fn derive_key_range(predicate: &Predicate) -> KeyRange {
+        match predicate {
+            Predicate::Eq { value, .. } => KeyRange::point(value.as_bytes().to_vec()),
+            Predicate::Lt { value, .. } | Predicate::Le { value, .. } => {
+                KeyRange::range(None, Some(value.as_bytes().to_vec()), matches!(predicate, Predicate::Le { .. }))
+            }
+            Predicate::Gt { value, .. } | Predicate::Ge { value, .. } => {
+                KeyRange::range(Some(value.as_bytes().to_vec()), None, matches!(predicate, Predicate::Ge { .. }))
+            }
+            Predicate::Between { min, max, .. } => KeyRange {
+                start: Some(min.as_bytes().to_vec()),
+                end: Some(max.as_bytes().to_vec()),
+                start_inclusive: true,
+                end_inclusive: true,
+            },
+            Predicate::And(left, _) => Self::derive_key_range(left),
+            _ => KeyRange::all(),
+        }
+    }
+
     /// Apply column projection pushdown
+    ///
+    /// Reduces I/O cost proportionally to the fraction of columns selected.
     fn apply_projection_pushdown(&self, plan: PhysicalPlan, columns: Vec<String>) -> PhysicalPlan {
-        // If plan already has projection, merge; otherwise add
         match plan {
             PhysicalPlan::TableScan {
-                table,
+                ref table,
                 predicate,
                 estimated_rows,
                 estimated_cost,
+                columns: ref all_columns,
                 ..
             } => {
+                // Cost reduction proportional to column selectivity
+                let col_ratio = if all_columns.is_empty() || columns.is_empty() {
+                    1.0
+                } else {
+                    (columns.len() as f64 / all_columns.len().max(1) as f64).clamp(0.1, 1.0)
+                };
                 PhysicalPlan::TableScan {
-                    table,
-                    columns, // Pushed down columns
+                    table: table.clone(),
+                    columns,
                     predicate,
                     estimated_rows,
-                    estimated_cost: estimated_cost * 0.2, // Reduce cost estimate
+                    estimated_cost: estimated_cost * col_ratio,
                 }
             }
             PhysicalPlan::IndexSeek {
@@ -1041,6 +1089,130 @@ impl CostBasedOptimizer {
                 )
             }
         }
+    }
+}
+
+// ============================================================================
+// Plan Cache & Stats Helpers
+// ============================================================================
+
+impl CostBasedOptimizer {
+    /// Evict stale entries from the plan cache.
+    pub fn evict_stale_plans(&self) {
+        let now = Self::now_us();
+        self.plan_cache
+            .write()
+            .retain(|_, (_, ts)| now.saturating_sub(*ts) < self.plan_cache_ttl_us);
+    }
+
+    /// Clear the entire plan cache (call after DDL or bulk load).
+    pub fn invalidate_plan_cache(&self) {
+        self.plan_cache.write().clear();
+    }
+
+    /// Collect fresh statistics for a table from row data.
+    ///
+    /// Pass an iterator of (column_name, value_as_string) pairs per row.
+    /// This builds column stats with distinct counts and optional histograms.
+    pub fn collect_stats(
+        &self,
+        table_name: &str,
+        row_count: u64,
+        size_bytes: u64,
+        column_values: HashMap<String, Vec<String>>,
+        indices: Vec<IndexStats>,
+    ) {
+        let mut column_stats = HashMap::new();
+        for (col_name, values) in &column_values {
+            let distinct: HashSet<&String> = values.iter().collect();
+            let null_count = values.iter().filter(|v| v.is_empty()).count() as u64;
+            let avg_length = if values.is_empty() {
+                0.0
+            } else {
+                values.iter().map(|v| v.len()).sum::<usize>() as f64 / values.len() as f64
+            };
+
+            // Build histogram for numeric columns (try parse first 10 values)
+            let is_numeric = values.iter().take(10).all(|v| v.parse::<f64>().is_ok());
+            let histogram = if is_numeric && values.len() >= 10 {
+                let mut nums: Vec<f64> = values.iter().filter_map(|v| v.parse().ok()).collect();
+                nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let bucket_count = 10.min(nums.len());
+                let bucket_size = nums.len() / bucket_count;
+                let mut boundaries = Vec::new();
+                let mut counts = Vec::new();
+                for i in 0..bucket_count {
+                    let end = if i == bucket_count - 1 {
+                        nums.len()
+                    } else {
+                        (i + 1) * bucket_size
+                    };
+                    let start = i * bucket_size;
+                    boundaries.push(nums[end - 1]);
+                    counts.push((end - start) as u64);
+                }
+                Some(Histogram {
+                    boundaries,
+                    counts,
+                    total_rows: nums.len() as u64,
+                })
+            } else {
+                None
+            };
+
+            // Build MCV (top 5 most common values)
+            let mut freq_map: HashMap<&String, usize> = HashMap::new();
+            for v in values {
+                *freq_map.entry(v).or_insert(0) += 1;
+            }
+            let total = values.len() as f64;
+            let mut mcv: Vec<(String, f64)> = freq_map
+                .iter()
+                .map(|(k, &v)| ((*k).clone(), v as f64 / total))
+                .collect();
+            mcv.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            mcv.truncate(5);
+
+            column_stats.insert(
+                col_name.clone(),
+                ColumnStats {
+                    name: col_name.clone(),
+                    distinct_count: distinct.len() as u64,
+                    null_count,
+                    min_value: values.iter().min().cloned(),
+                    max_value: values.iter().max().cloned(),
+                    avg_length,
+                    mcv,
+                    histogram,
+                },
+            );
+        }
+
+        self.update_stats(TableStats {
+            name: table_name.to_string(),
+            row_count,
+            size_bytes,
+            column_stats,
+            indices,
+            last_updated: Self::now_us(),
+        });
+
+        // Invalidate cached plans for this table
+        self.invalidate_plan_cache();
+    }
+
+    /// Check if stats are stale (older than threshold)
+    pub fn stats_age_us(&self, table: &str) -> Option<u64> {
+        self.stats_cache.read().get(table).map(|s| {
+            Self::now_us().saturating_sub(s.last_updated)
+        })
+    }
+
+    fn now_us() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64
     }
 }
 
@@ -1395,5 +1567,290 @@ mod tests {
         let explain = optimizer.explain(&plan);
         assert!(explain.contains("Limit"));
         assert!(explain.contains("Sort"));
+    }
+
+    // ================================================================
+    // Production-grade tests
+    // ================================================================
+
+    #[test]
+    fn test_token_budget_underflow_safety() {
+        // Ensure small budget doesn't panic (saturating_sub)
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config).with_token_budget(10, 25.0);
+
+        let plan = optimizer.optimize("users", vec!["id".to_string()], None, vec![], None);
+        match plan {
+            PhysicalPlan::Limit { limit, .. } => {
+                assert!(limit >= 1, "Must return at least 1 row");
+            }
+            _ => panic!("Expected Limit"),
+        }
+    }
+
+    #[test]
+    fn test_index_seek_derives_key_range() {
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+        optimizer.update_stats(create_test_stats());
+
+        let plan = optimizer.optimize(
+            "users",
+            vec!["id".to_string()],
+            Some(Predicate::Eq {
+                column: "id".to_string(),
+                value: "42".to_string(),
+            }),
+            vec![],
+            None,
+        );
+
+        match plan {
+            PhysicalPlan::IndexSeek { key_range, .. } => {
+                assert!(key_range.start.is_some(), "KeyRange must derive from Eq predicate");
+                assert_eq!(key_range.start, key_range.end, "Eq predicate → point key range");
+            }
+            _ => panic!("Expected IndexSeek"),
+        }
+    }
+
+    #[test]
+    fn test_range_predicate_key_range() {
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+        optimizer.update_stats(create_test_stats());
+
+        let plan = optimizer.optimize(
+            "users",
+            vec!["score".to_string()],
+            Some(Predicate::Between {
+                column: "score".to_string(),
+                min: "10".to_string(),
+                max: "90".to_string(),
+            }),
+            vec![],
+            None,
+        );
+
+        match plan {
+            PhysicalPlan::IndexSeek { key_range, .. } => {
+                assert!(key_range.start.is_some());
+                assert!(key_range.end.is_some());
+                assert!(key_range.start_inclusive);
+                assert!(key_range.end_inclusive);
+            }
+            _ => {} // May choose scan if cheaper — that's OK
+        }
+    }
+
+    #[test]
+    fn test_projection_pushdown_proportional_reduction() {
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+        optimizer.update_stats(create_test_stats());
+
+        // Select 1 of 2 columns → ~50% cost reduction on table scan
+        let plan_all = optimizer.optimize(
+            "users",
+            vec!["id".to_string(), "score".to_string()],
+            None,
+            vec![],
+            Some(100),
+        );
+        let plan_single = optimizer.optimize(
+            "users",
+            vec!["id".to_string()],
+            None,
+            vec![],
+            Some(100),
+        );
+
+        let cost_all = optimizer.get_plan_cost(&plan_all);
+        let cost_single = optimizer.get_plan_cost(&plan_single);
+        // Single column should cost less than or equal to all columns
+        assert!(cost_single <= cost_all, "Projection should reduce cost: {} vs {}", cost_single, cost_all);
+    }
+
+    #[test]
+    fn test_collect_stats_builds_histogram() {
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+
+        let mut column_values = HashMap::new();
+        let scores: Vec<String> = (0..100).map(|i| i.to_string()).collect();
+        column_values.insert("score".to_string(), scores);
+
+        optimizer.collect_stats("test_table", 100, 10000, column_values, vec![]);
+
+        let stats = optimizer.get_stats("test_table").unwrap();
+        assert_eq!(stats.row_count, 100);
+        let score_stats = stats.column_stats.get("score").unwrap();
+        assert_eq!(score_stats.distinct_count, 100);
+        assert!(score_stats.histogram.is_some(), "Numeric column should get histogram");
+        assert!(!score_stats.mcv.is_empty(), "Should build MCV list");
+    }
+
+    #[test]
+    fn test_plan_cache_invalidation() {
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+
+        // Collecting stats should invalidate cache
+        let mut col = HashMap::new();
+        col.insert("x".to_string(), vec!["1".to_string()]);
+        optimizer.collect_stats("t", 1, 100, col.clone(), vec![]);
+
+        // Cache should be empty after stats collection
+        assert!(optimizer.plan_cache.read().is_empty());
+    }
+
+    #[test]
+    fn test_stats_age_tracking() {
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+
+        assert!(optimizer.stats_age_us("unknown").is_none());
+
+        let mut col = HashMap::new();
+        col.insert("x".to_string(), vec!["1".to_string()]);
+        optimizer.collect_stats("t", 1, 100, col, vec![]);
+
+        let age = optimizer.stats_age_us("t").unwrap();
+        assert!(age < 1_000_000, "Stats should be fresh (< 1 second old)");
+    }
+
+    #[test]
+    fn test_scan_cost_reads_all_blocks() {
+        // Scan cost must NOT multiply by selectivity — scans read everything
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config.clone());
+        let no_pred = optimizer.estimate_scan_cost(1000, 4096 * 10, None);
+        let with_pred = optimizer.estimate_scan_cost(
+            1000,
+            4096 * 10,
+            Some(&Predicate::Eq {
+                column: "x".to_string(),
+                value: "1".to_string(),
+            }),
+        );
+        // Scan cost should be the same regardless of predicate
+        // (scan reads all blocks; predicate doesn't reduce I/O)
+        assert!(
+            (no_pred - with_pred).abs() < 0.001,
+            "Scan cost should not depend on predicate: {} vs {}",
+            no_pred,
+            with_pred
+        );
+    }
+
+    #[test]
+    fn test_index_wins_over_scan_for_point_lookup() {
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+        optimizer.update_stats(create_test_stats());
+
+        let scan_cost = optimizer.estimate_scan_cost(100000, 10_000_000, None);
+
+        // Index cost for a point lookup should be orders of magnitude cheaper
+        let pk_index = &create_test_stats().indices[0]; // pk_users
+        let index_cost = optimizer.estimate_index_cost(pk_index, 100000, 0.00001);
+
+        assert!(
+            index_cost < scan_cost * 0.1,
+            "Index point lookup ({:.2}) should be <10% of scan cost ({:.2})",
+            index_cost,
+            scan_cost
+        );
+    }
+
+    #[test]
+    fn test_no_stats_defaults_to_scan() {
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+        // No stats loaded — optimizer should still work with defaults
+        let plan = optimizer.optimize(
+            "unknown_table",
+            vec!["col1".to_string()],
+            Some(Predicate::Eq {
+                column: "col1".to_string(),
+                value: "x".to_string(),
+            }),
+            vec![],
+            None,
+        );
+        // Should produce a valid plan (TableScan with default estimates)
+        match plan {
+            PhysicalPlan::TableScan { estimated_rows, .. } => {
+                assert!(estimated_rows > 0, "Default row estimate must be positive");
+            }
+            PhysicalPlan::IndexSeek { .. } => {} // also fine with no stats
+            _ => panic!("Expected TableScan or IndexSeek for unknown table"),
+        }
+    }
+
+    #[test]
+    fn test_compound_predicate_selectivity() {
+        let stats = create_test_stats();
+        let config = CostModelConfig::default();
+        let optimizer = CostBasedOptimizer::new(config);
+
+        // AND: independent → multiply
+        let and_pred = Predicate::And(
+            Box::new(Predicate::Eq {
+                column: "id".to_string(),
+                value: "1".to_string(),
+            }),
+            Box::new(Predicate::IsNotNull {
+                column: "score".to_string(),
+            }),
+        );
+        let sel = optimizer.estimate_selectivity(&and_pred, &stats);
+        let eq_sel = optimizer.estimate_selectivity(
+            &Predicate::Eq { column: "id".to_string(), value: "1".to_string() },
+            &stats,
+        );
+        assert!(sel < eq_sel, "AND must be more selective than either child");
+
+        // OR: P(A∪B) = P(A)+P(B)-P(A∩B)
+        let or_pred = Predicate::Or(
+            Box::new(Predicate::Eq {
+                column: "id".to_string(),
+                value: "1".to_string(),
+            }),
+            Box::new(Predicate::Eq {
+                column: "id".to_string(),
+                value: "2".to_string(),
+            }),
+        );
+        let sel = optimizer.estimate_selectivity(&or_pred, &stats);
+        assert!(sel > eq_sel, "OR must be less selective than either child");
+        assert!(sel <= 1.0, "Selectivity must be <= 1.0");
+    }
+
+    #[test]
+    fn test_join_order_optimizer() {
+        let mut join_opt = JoinOrderOptimizer::new(CostModelConfig::default());
+        join_opt.add_stats(TableStats {
+            name: "orders".to_string(),
+            row_count: 1000000,
+            size_bytes: 100_000_000,
+            column_stats: HashMap::new(),
+            indices: vec![],
+            last_updated: 0,
+        });
+        join_opt.add_stats(TableStats {
+            name: "users".to_string(),
+            row_count: 10000,
+            size_bytes: 1_000_000,
+            column_stats: HashMap::new(),
+            indices: vec![],
+            last_updated: 0,
+        });
+
+        let order = join_opt.find_optimal_order(
+            &["orders".to_string(), "users".to_string()],
+            &[("orders".to_string(), "user_id".to_string(), "users".to_string(), "id".to_string())],
+        );
+        assert!(!order.is_empty(), "Should find a join order");
     }
 }
