@@ -646,6 +646,67 @@ impl TypedColumn {
             } => values.len() * 8 + validity.bits.len() * 8,
         }
     }
+
+    /// Extract value at row `idx` as a `SochValue`.
+    ///
+    /// Returns `SochValue::Null` for invalid (NULL) entries or out-of-bounds indices.
+    /// This avoids the per-row `HashMap` overhead of the row-oriented `QueryResult`
+    /// by materialising only the requested cell.
+    pub fn value_at(&self, idx: usize) -> crate::SochValue {
+        use crate::SochValue;
+        match self {
+            TypedColumn::Int64 { values, validity, .. } => {
+                if idx < values.len() && validity.is_valid(idx) {
+                    SochValue::Int(values[idx])
+                } else {
+                    SochValue::Null
+                }
+            }
+            TypedColumn::UInt64 { values, validity, .. } => {
+                if idx < values.len() && validity.is_valid(idx) {
+                    SochValue::UInt(values[idx])
+                } else {
+                    SochValue::Null
+                }
+            }
+            TypedColumn::Float64 { values, validity, .. } => {
+                if idx < values.len() && validity.is_valid(idx) {
+                    SochValue::Float(values[idx])
+                } else {
+                    SochValue::Null
+                }
+            }
+            TypedColumn::Text { offsets, data, validity, .. } => {
+                if idx + 1 < offsets.len() && validity.is_valid(idx) {
+                    let start = offsets[idx] as usize;
+                    let end = offsets[idx + 1] as usize;
+                    std::str::from_utf8(&data[start..end])
+                        .map(|s| SochValue::Text(s.to_owned()))
+                        .unwrap_or(SochValue::Null)
+                } else {
+                    SochValue::Null
+                }
+            }
+            TypedColumn::Binary { offsets, data, validity, .. } => {
+                if idx + 1 < offsets.len() && validity.is_valid(idx) {
+                    let start = offsets[idx] as usize;
+                    let end = offsets[idx + 1] as usize;
+                    SochValue::Binary(data[start..end].to_vec())
+                } else {
+                    SochValue::Null
+                }
+            }
+            TypedColumn::Bool { values, validity, len, .. } => {
+                if idx < *len && validity.is_valid(idx) {
+                    let word = idx / 64;
+                    let bit = idx % 64;
+                    SochValue::Bool((values[word] >> bit) & 1 == 1)
+                } else {
+                    SochValue::Null
+                }
+            }
+        }
+    }
 }
 
 /// Column type enum for schema definition
@@ -1176,5 +1237,45 @@ mod tests {
         assert_eq!(stats.max_i64, Some(50));
         assert_eq!(stats.null_count, 1);
         assert_eq!(stats.row_count, 5);
+    }
+
+    #[test]
+    fn test_typed_column_value_at() {
+        use crate::SochValue;
+
+        // Int64
+        let mut col = TypedColumn::new_int64();
+        col.push_i64(Some(42));
+        col.push_i64(None);
+        col.push_i64(Some(-7));
+        assert_eq!(col.value_at(0), SochValue::Int(42));
+        assert_eq!(col.value_at(1), SochValue::Null);
+        assert_eq!(col.value_at(2), SochValue::Int(-7));
+        assert_eq!(col.value_at(99), SochValue::Null); // out of bounds
+
+        // Float64
+        let mut fcol = TypedColumn::new_float64();
+        fcol.push_f64(Some(3.14));
+        fcol.push_f64(None);
+        assert_eq!(fcol.value_at(0), SochValue::Float(3.14));
+        assert_eq!(fcol.value_at(1), SochValue::Null);
+
+        // Text
+        let mut tcol = TypedColumn::new_text();
+        tcol.push_text(Some("hello"));
+        tcol.push_text(None);
+        tcol.push_text(Some("world"));
+        assert_eq!(tcol.value_at(0), SochValue::Text("hello".to_string()));
+        assert_eq!(tcol.value_at(1), SochValue::Null);
+        assert_eq!(tcol.value_at(2), SochValue::Text("world".to_string()));
+
+        // Bool
+        let mut bcol = TypedColumn::new_bool();
+        bcol.push_bool(Some(true));
+        bcol.push_bool(Some(false));
+        bcol.push_bool(None);
+        assert_eq!(bcol.value_at(0), SochValue::Bool(true));
+        assert_eq!(bcol.value_at(1), SochValue::Bool(false));
+        assert_eq!(bcol.value_at(2), SochValue::Null);
     }
 }

@@ -39,7 +39,7 @@ yarn add @sochdb/sochdb
 
 **What's New in 0.5.2:**
 - ✅ Engine status documentation (cost optimizer, group commit, WAL compaction)
-- ✅ Version bump aligned with core 0.4.9
+- ✅ Version bump aligned with core 0.5.0
 
 **What's New in 0.5.1:**
 - ✅ Improved TypeScript definitions

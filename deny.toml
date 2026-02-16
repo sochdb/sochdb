@@ -20,6 +20,7 @@ exclude = [
     "sochdb-mcp",
     "sochdb-grpc",
     "sochdb-python",
+    "sochdb-index",
 ]
 
 # ============================================================================

@@ -16,7 +16,7 @@ description = "SochDB indexing (HNSW vector index and related utilities)"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-sochdb-core = { version = "0.4.9", path = "../sochdb-core" }
+sochdb-core = { version = "0.5.0", path = "../sochdb-core" }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 moka = { workspace = true }  # LRU cache for path resolution
@@ -48,7 +48,7 @@ crossbeam-channel = "0.5" # MPMC channels for embedding pipeline
 sha2 = "0.10" # SHA-256 for model checksums
 dirs = "5.0" # Platform-specific directories
 tokio = { version = "1.0", features = ["rt-multi-thread", "sync"], optional = true } # Async runtime
-async-trait = "0.1" # Async trait support
+async-trait = { version = "0.1", optional = true } # Async trait support
 fastembed = { version = "4", optional = true } # Local ONNX embeddings
 
 # LLM crate for external embedding providers (OpenAI, Ollama, etc.)
@@ -59,7 +59,9 @@ crc32fast = "1.5.0"
 default = ["local-embeddings"]
 local-embeddings = []
 fastembed-embeddings = ["dep:fastembed"]
-llm-embeddings = ["dep:llm", "dep:tokio"]
+# Tokio opt-in via "async" (workspace Rule #2)
+async = ["llm-embeddings"]
+llm-embeddings = ["dep:llm", "dep:tokio", "dep:async-trait"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

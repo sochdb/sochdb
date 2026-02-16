@@ -1202,7 +1202,7 @@ with index.batch_accumulator(estimated_size=50_000) as acc:
 
 ### MemoryAgentBench: Head-to-Head RAG Comparison
 
-> **Version**: 0.4.9 | **Benchmark Date**: February 2026 | **LLM**: Azure OpenAI gpt-4.1-mini | **Framework**: [MemoryAgentBench](https://arxiv.org/abs/2507.05257) (UCSD)
+> **Version**: 0.5.0 | **Benchmark Date**: February 2026 | **LLM**: Azure OpenAI gpt-4.1-mini | **Framework**: [MemoryAgentBench](https://arxiv.org/abs/2507.05257) (UCSD)
 
 We evaluated SochDB head-to-head against **7 RAG competitors** using **MemoryAgentBench** — an academic benchmark from UCSD that tests how well memory systems help LLMs retrieve facts from multi-turn conversations over long contexts (up to 197K+ tokens).
 

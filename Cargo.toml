@@ -6,6 +6,7 @@ members = [
     "sochdb-storage",
     "sochdb-index",
     "sochdb-query",
+    "sochdb-fusion",
     "sochdb-client",
     "sochdb-mcp",
     "sochdb-grpc",
@@ -28,8 +29,8 @@ resolver = "2"
 # ┌─────────────────┬──────────┬─────────┬─────────┬────────┬────────┬────────┐
 # │ Feature         │ core     │ storage │ kernel  │ client │ vector │ index  │
 # ├─────────────────┼──────────┼─────────┼─────────┼────────┼────────┼────────┤
-# │ simd            │          │         │         │ ✓      │ ✓*     │        │
-# │ async (tokio)   │          │ ✓       │         │        │        │ ✓**    │
+# │ simd            │          │         │         │ ✓      │ ✓      │        │
+# │ async (tokio)   │          │ ✓       │         │        │        │ ✓      │
 # │ embedded-sync   │          │ ✓       │         │ ✓      │        │        │
 # │ jemalloc        │ ✓        │         │         │        │        │        │
 # │ analytics       │ ✓        │         │         │        │        │        │
@@ -40,8 +41,10 @@ resolver = "2"
 # │ ffi             │          │ ✓       │         │        │        │        │
 # └─────────────────┴──────────┴─────────┴─────────┴────────┴────────┴────────┘
 #
-# * sochdb-vector uses "simd-kernels" and "portable-simd" — should align to "simd"
-# ** sochdb-index uses "llm-embeddings" which enables tokio
+# v0.5.0 hygiene fixes applied:
+#   - sochdb-vector: "simd-kernels" consolidated → "simd" (deprecated alias kept)
+#   - sochdb-index: "async" feature added as tokio opt-in gate
+#   - sochdb-index: async-trait made optional behind llm-embeddings
 #
 # RULES:
 # 1. Same concept → same feature name across crates (e.g., "simd" not "simd-kernels")
@@ -51,7 +54,7 @@ resolver = "2"
 # =============================================================================
 
 [workspace.package]
-version = "0.4.9"
+version = "0.5.0"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
 license = "AGPL-3.0-or-later"
