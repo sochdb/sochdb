@@ -1,0 +1,40 @@
+[package]
+name = "sochdb-fusion"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Fused compositional query execution for Knowledge Fabric — ART + HNSW + CSR in a single pipeline"
+
+[dependencies]
+sochdb-core = { path = "../sochdb-core" }
+sochdb-storage = { path = "../sochdb-storage" }
+sochdb-index = { path = "../sochdb-index" }
+
+# Data structures
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+bincode = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+blake3 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { workspace = true }
+rand = { workspace = true }

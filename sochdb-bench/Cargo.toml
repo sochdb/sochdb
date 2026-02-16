@@ -1,0 +1,57 @@
+[workspace]
+
+[package]
+name = "sochdb-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "SochDB comparative benchmark suite — SochDB vs SQLite vs DuckDB vs LanceDB"
+
+[[bin]]
+name = "sochdb-bench"
+path = "src/main.rs"
+
+[dependencies]
+# ── SochDB ──
+sochdb-storage = { path = "../sochdb-storage", features = ["embedded-sync"] }
+sochdb-core    = { path = "../sochdb-core" }
+
+# ── Competitors ──
+rusqlite = { version = "0.31", features = ["bundled"] }
+duckdb   = { version = "1.0",  features = ["bundled"] }
+
+# ── Bench infra ──
+rand        = "0.8"
+rand_chacha = "0.3"
+rand_distr  = "0.4"
+hdrhistogram = "7.5"
+clap        = { version = "4", features = ["derive"] }
+comfy-table = "7"
+colored     = "2"
+tempfile    = "3.10"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+csv         = "1"
+
+# ── LanceDB (optional, heavy) ──
+lancedb      = { version = "0.15", optional = true }
+arrow-array  = { version = "53",   optional = true }
+arrow-schema = { version = "53",   optional = true }
+tokio        = { version = "1", features = ["rt-multi-thread"], optional = true }
+
+[features]
+default      = []
+lancedb-bench = ["lancedb", "arrow-array", "arrow-schema", "tokio"]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile  = "3.10"
+
+[[bench]]
+name    = "micro"
+harness = false
+
+[profile.release]
+opt-level    = 3
+lto          = "thin"
+codegen-units = 1

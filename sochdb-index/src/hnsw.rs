@@ -66,7 +66,7 @@ use smallvec::SmallVec;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc;
 use std::thread;
 use rand::prelude::*;
@@ -2062,6 +2062,9 @@ pub struct HnswIndex {
     pub(crate) max_neighbors_per_node: usize,
     /// Whether flat_neighbors is up-to-date (invalidated on insert/update)
     pub(crate) flat_neighbors_valid: AtomicBool,
+    /// Entry point dense index for O(1) lookup without DashMap (Rec 9)
+    /// u32::MAX means no entry point
+    pub(crate) entry_point_dense: AtomicU32,
 }
 
 impl HnswIndex {
@@ -2088,6 +2091,7 @@ impl HnswIndex {
             flat_neighbors: Arc::new(RwLock::new(Vec::new())),
             max_neighbors_per_node: max_neighbors,
             flat_neighbors_valid: AtomicBool::new(false),
+            entry_point_dense: AtomicU32::new(u32::MAX),
         }
     }
 
@@ -2125,6 +2129,7 @@ impl HnswIndex {
             flat_neighbors: Arc::new(RwLock::new(Vec::new())),
             max_neighbors_per_node: max_neighbors,
             flat_neighbors_valid: AtomicBool::new(false),
+            entry_point_dense: AtomicU32::new(u32::MAX),
         }
     }
 
@@ -2773,6 +2778,7 @@ impl HnswIndex {
             if entry_point.is_none() || layer > *max_layer {
                 *entry_point = Some(id);
                 *max_layer = layer;
+                self.entry_point_dense.store(dense_index, AtomicOrdering::Release);
             }
         }
 
@@ -4429,18 +4435,21 @@ impl HnswIndex {
         if entry_point.is_none() {
             return Ok(Vec::new());
         }
-        let ep_id = entry_point.unwrap();
 
         // Acquire all read locks ONCE at the beginning - no more locks in hot path
         let vector_store = self.vector_store.read();
         let internal_nodes = self.internal_nodes.read();
         let dense_to_id = self.dense_to_id.read();
         
-        // Get entry point's dense_index (single DashMap lookup, outside hot loop)
-        let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
-        let ep_dense = ep_node.dense_index;
+        // Get entry point's dense_index via AtomicU32 — zero DashMap (Rec 9)
+        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        if ep_dense == u32::MAX {
+            return Ok(Vec::new());
+        }
+        let ep_node = internal_nodes.get(ep_dense as usize)
+            .and_then(|opt| opt.as_ref())
+            .ok_or("Entry point not found in dense array")?;
         let ep_vec_idx = ep_node.vector_index;
-        drop(ep_node); // Release DashMap ref immediately
         
         // Get entry point vector directly from array (O(1))
         let ep_vector = Self::get_raw_vector_from_store(&vector_store, &internal_nodes, ep_vec_idx, ep_dense)?;
@@ -4534,7 +4543,6 @@ impl HnswIndex {
         if entry_point.is_none() {
             return Ok(Vec::new());
         }
-        let ep_id = entry_point.unwrap();
 
         // Acquire all read locks ONCE at the beginning
         let vector_store = self.vector_store.read();
@@ -4542,11 +4550,15 @@ impl HnswIndex {
         let dense_to_id = self.dense_to_id.read();
         let flat_neighbors = self.flat_neighbors.read();
         
-        // Get entry point's dense_index
-        let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
-        let ep_dense = ep_node.dense_index;
+        // Get entry point's dense_index via AtomicU32 — zero DashMap (Rec 9)
+        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        if ep_dense == u32::MAX {
+            return Ok(Vec::new());
+        }
+        let ep_node = internal_nodes.get(ep_dense as usize)
+            .and_then(|opt| opt.as_ref())
+            .ok_or("Entry point not found in dense array")?;
         let ep_vec_idx = ep_node.vector_index;
-        drop(ep_node);
         
         let ep_vector = Self::get_raw_vector_from_store(&vector_store, &internal_nodes, ep_vec_idx, ep_dense)?;
         let initial_distance = self.distance_raw(query, ep_vector);
@@ -4608,8 +4620,9 @@ impl HnswIndex {
         let slots_per_node = self.max_neighbors_per_node;
         
         with_scratch_buffers(|scratch| {
-            let mut candidates: BinaryHeap<FastCandidate> = BinaryHeap::with_capacity(num_to_return * 2);
-            let mut results: BinaryHeap<Reverse<FastCandidate>> = BinaryHeap::with_capacity(num_to_return + 1);
+            // Reuse thread-local FastCandidate heaps — zero per-call allocation
+            let candidates = &mut scratch.fast_candidates;
+            let results = &mut scratch.fast_results_heap;
             
             // Initialize with entry points
             for ep in entry_points {
@@ -4766,9 +4779,9 @@ impl HnswIndex {
         
         // Use scratch buffers for zero allocation
         with_scratch_buffers(|scratch| {
-            // Local heaps for FastCandidate (can't reuse scratch.candidates which uses SearchCandidate)
-            let mut candidates: BinaryHeap<FastCandidate> = BinaryHeap::with_capacity(num_to_return * 2);
-            let mut results: BinaryHeap<Reverse<FastCandidate>> = BinaryHeap::with_capacity(num_to_return + 1);
+            // Reuse thread-local FastCandidate heaps — zero per-call allocation
+            let candidates = &mut scratch.fast_candidates;
+            let results = &mut scratch.fast_results_heap;
             
             // Initialize with entry points
             for ep in entry_points {
@@ -4884,12 +4897,20 @@ impl HnswIndex {
         vector_store: &[QuantizedVector],
         internal_nodes: &[Option<Arc<HnswNode>>],
     ) -> Vec<SearchCandidate> {
+        // Rec 9: local id→dense cache eliminates DashMap from hot loop
+        let mut id_to_dense: std::collections::HashMap<u128, u32> =
+            std::collections::HashMap::with_capacity(num_to_return * 2);
+
         with_scratch_buffers(|scratch| {
-            // Initialize with entry points
+            // Initialize with entry points — resolve dense via internal_nodes or DashMap fallback
             for ep in entry_points {
-                if let Some(node) = self.nodes.get(&ep.id) {
-                    scratch.visited.insert(node.dense_index);
-                }
+                let dense = if let Some(&d) = id_to_dense.get(&ep.id) {
+                    d
+                } else if let Some(node) = self.nodes.get(&ep.id) {
+                    id_to_dense.insert(ep.id, node.dense_index);
+                    node.dense_index
+                } else { continue; };
+                scratch.visited.insert(dense);
                 scratch.candidates.push(*ep);
                 scratch.results_heap.push(Reverse(*ep));
                 if scratch.results_heap.len() > num_to_return {
@@ -4907,7 +4928,13 @@ impl HnswIndex {
                     break;
                 }
 
-                if let Some(node) = self.nodes.get(&curr.id) {
+                // Rec 9: resolve curr via local cache → dense array (no DashMap in hot loop)
+                let curr_dense = match id_to_dense.get(&curr.id) {
+                    Some(&d) => d,
+                    None => continue, // should not happen if populated from neighbors
+                };
+
+                if let Some(Some(node)) = internal_nodes.get(curr_dense as usize) {
                     if layer <= node.layer {
                         let layer_data = node.layers[layer].read();
                         
@@ -4919,6 +4946,8 @@ impl HnswIndex {
 
                             // O(1) lookup in internal_nodes array
                             if let Some(Some(neighbor_node)) = internal_nodes.get(neighbor_dense as usize) {
+                                // Cache id→dense for when this neighbor becomes curr
+                                id_to_dense.insert(neighbor_node.id, neighbor_dense);
                                 // Get raw vector slice (zero-copy)
                                 let neighbor_vector = if let Some(qv) = vector_store.get(neighbor_node.vector_index as usize) {
                                     if let QuantizedVector::F32(arr) = qv {
@@ -4998,10 +5027,24 @@ impl HnswIndex {
         let vector_store = self.vector_store.read();
         let internal_nodes = self.internal_nodes.read();
         
-        let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
-        let ep_vector = vector_store
-            .get(ep_node.vector_index as usize)
-            .unwrap_or(&ep_node.vector);
+        // Rec 9: resolve entry point via dense array — zero DashMap
+        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        let ep_node_ref = if ep_dense != u32::MAX {
+            internal_nodes.get(ep_dense as usize).and_then(|opt| opt.as_ref())
+        } else {
+            None
+        };
+        let ep_vector = if let Some(ep_n) = ep_node_ref {
+            vector_store
+                .get(ep_n.vector_index as usize)
+                .unwrap_or(&ep_n.vector)
+        } else {
+            // Fallback to DashMap for backwards compat
+            let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
+            let vi = ep_node.vector_index as usize;
+            // Borrow from vector_store (which lives long enough) rather than ep_node
+            &vector_store[vi]
+        };
 
         // Task #6: Use stack buffer for common dimensions to avoid heap allocation
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
@@ -5704,11 +5747,19 @@ impl HnswIndex {
         vector_store: &[QuantizedVector],
         internal_nodes: &[Option<Arc<HnswNode>>],
     ) -> Vec<SearchCandidate> {
+        // Rec 9: local id→dense cache eliminates DashMap from hot loop
+        let mut id_to_dense: std::collections::HashMap<u128, u32> =
+            std::collections::HashMap::with_capacity(num_to_return * 2);
+
         with_scratch_buffers(|scratch| {
             for ep in entry_points {
-                if let Some(node) = self.nodes.get(&ep.id) {
-                    scratch.visited.insert(node.dense_index);
-                }
+                let dense = if let Some(&d) = id_to_dense.get(&ep.id) {
+                    d
+                } else if let Some(node) = self.nodes.get(&ep.id) {
+                    id_to_dense.insert(ep.id, node.dense_index);
+                    node.dense_index
+                } else { continue; };
+                scratch.visited.insert(dense);
                 scratch.candidates.push(*ep);
                 scratch.results_heap.push(Reverse(*ep));
                 if scratch.results_heap.len() > num_to_return {
@@ -5724,7 +5775,13 @@ impl HnswIndex {
                     break;
                 }
 
-                if let Some(node) = self.nodes.get(&curr.id) {
+                // Rec 9: resolve curr via local cache → dense array (no DashMap in hot loop)
+                let curr_dense = match id_to_dense.get(&curr.id) {
+                    Some(&d) => d,
+                    None => continue,
+                };
+
+                if let Some(Some(node)) = internal_nodes.get(curr_dense as usize) {
                     if layer <= node.layer {
                         let layer_data = node.layers[layer].read();
                         // Task #10: Process with prefetching
@@ -5735,6 +5792,7 @@ impl HnswIndex {
                             scratch,
                             vector_store,
                             internal_nodes,
+                            &mut id_to_dense,
                         );
                     }
                 }
@@ -5762,6 +5820,7 @@ impl HnswIndex {
         scratch: &mut crate::scratch_buffers::ScratchBuffers,
         vector_store: &[QuantizedVector],
         internal_nodes: &[Option<Arc<HnswNode>>],
+        id_to_dense: &mut std::collections::HashMap<u128, u32>,
     ) {
         use std::cmp::Reverse;
         const PREFETCH_DISTANCE: usize = 4;
@@ -5792,6 +5851,8 @@ impl HnswIndex {
 
             // O(1) direct array access - no DashMap, no locks
             if let Some(Some(neighbor_node)) = internal_nodes.get(neighbor_dense as usize) {
+                // Rec 9: cache id→dense for when this neighbor becomes curr
+                id_to_dense.insert(neighbor_node.id, neighbor_dense);
                 let neighbor_vector = vector_store
                     .get(neighbor_node.vector_index as usize)
                     .unwrap_or(&neighbor_node.vector);
@@ -5837,12 +5898,19 @@ impl HnswIndex {
     ) -> Vec<SearchCandidate> {
         let vector_store = self.vector_store.read();
         let internal_nodes = self.internal_nodes.read();
+        // Rec 9: local id→dense cache eliminates DashMap from hot loop
+        let mut id_to_dense: std::collections::HashMap<u128, u32> =
+            std::collections::HashMap::with_capacity(num_to_return * 2);
+
         with_scratch_buffers(|scratch| {
             for ep in entry_points {
-                // O(1) lookup via DashMap for entry points (only once)
-                if let Some(node) = self.nodes.get(&ep.id) {
-                    scratch.visited.insert(node.dense_index);
-                }
+                let dense = if let Some(&d) = id_to_dense.get(&ep.id) {
+                    d
+                } else if let Some(node) = self.nodes.get(&ep.id) {
+                    id_to_dense.insert(ep.id, node.dense_index);
+                    node.dense_index
+                } else { continue; };
+                scratch.visited.insert(dense);
                 scratch.candidates.push(*ep);
                 scratch.results_heap.push(Reverse(*ep));
                 if scratch.results_heap.len() > num_to_return {
@@ -5858,8 +5926,13 @@ impl HnswIndex {
                     break;
                 }
 
-                // O(1) lookup for current node - use DashMap since curr.id is external
-                if let Some(node) = self.nodes.get(&curr.id) {
+                // Rec 9: resolve curr via local cache → dense array (no DashMap in hot loop)
+                let curr_dense = match id_to_dense.get(&curr.id) {
+                    Some(&d) => d,
+                    None => continue,
+                };
+
+                if let Some(Some(node)) = internal_nodes.get(curr_dense as usize) {
                     if layer <= node.layer {
                         let layer_data = node.layers[layer].read();
                         self.process_neighbors_o1(
@@ -5869,6 +5942,7 @@ impl HnswIndex {
                             scratch,
                             &vector_store,
                             &internal_nodes,
+                            &mut id_to_dense,
                         );
                     }
                 }
@@ -5893,6 +5967,7 @@ impl HnswIndex {
         scratch: &mut crate::scratch_buffers::ScratchBuffers,
         vector_store: &[QuantizedVector],
         internal_nodes: &[Option<Arc<HnswNode>>],
+        id_to_dense: &mut std::collections::HashMap<u128, u32>,
     ) {
         use std::cmp::Reverse;
         for &neighbor_dense in neighbor_ids.iter() {
@@ -5902,6 +5977,8 @@ impl HnswIndex {
 
             // O(1) direct array access - no DashMap, no locks
             if let Some(Some(neighbor_node)) = internal_nodes.get(neighbor_dense as usize) {
+                // Rec 9: cache id→dense for when this neighbor becomes curr
+                id_to_dense.insert(neighbor_node.id, neighbor_dense);
                 let neighbor_vector = vector_store
                     .get(neighbor_node.vector_index as usize)
                     .unwrap_or(&neighbor_node.vector);

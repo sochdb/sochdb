@@ -14,9 +14,9 @@ description = "SochDB gRPC services for cross-language clients (Thick Server / T
 readme = "README.md"
 
 [dependencies]
-sochdb-index = { version = "0.4.9", path = "../sochdb-index" }
-sochdb-core = { version = "0.4.9", path = "../sochdb-core", features = ["analytics"] }
-sochdb-kernel = { version = "0.4.9", path = "../sochdb-kernel" }
+sochdb-index = { version = "0.5.0", path = "../sochdb-index" }
+sochdb-core = { version = "0.5.0", path = "../sochdb-core", features = ["analytics"] }
+sochdb-kernel = { version = "0.5.0", path = "../sochdb-kernel" }
 
 # gRPC / Protocol Buffers
 tonic = "0.13"

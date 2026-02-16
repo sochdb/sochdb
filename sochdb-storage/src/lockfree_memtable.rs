@@ -53,7 +53,7 @@
 
 use std::collections::HashSet;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -68,6 +68,12 @@ const MAX_THREADS: usize = 128;
 
 /// Number of retired nodes before attempting reclamation
 const RECLAMATION_THRESHOLD: usize = 64;
+
+/// Number of version slots per fat node (Rec 2)
+///
+/// 8 slots × 8-byte pointer = 64 bytes — fits in one cache line.
+/// Reduces pointer chases from O(v) to O(v/8) for version chain traversal.
+const FAT_NODE_SLOTS: usize = 8;
 
 /// Maximum size for inline value storage (fits in cache line with metadata)
 ///
@@ -242,10 +248,91 @@ impl LockFreeVersion {
     }
 }
 
-/// Lock-free version chain head
+/// Fat-node for version chain (Rec 2: Lock-Free Fat-Node Version Chain)
+///
+/// Groups up to 8 version pointers per node, reducing pointer chases from
+/// O(v) to O(v/8). Slot pointers occupy 64 bytes = 1 cache line, so scanning
+/// all 8 slots costs a single cache-line fetch instead of 8 random chases.
+///
+/// Layout:
+/// - `count` (AtomicU8): number of occupied slots (0..FAT_NODE_SLOTS)
+/// - `slots`: array of AtomicPtr<LockFreeVersion>, newest at index `count-1`
+/// - `next`: pointer to older FatNode
+pub struct FatNode {
+    /// Number of valid version pointers in `slots` (0..=FAT_NODE_SLOTS)
+    count: AtomicU8,
+    /// Version pointers, newest at `count-1`, oldest at 0
+    slots: [AtomicPtr<LockFreeVersion>; FAT_NODE_SLOTS],
+    /// Next (older) fat node in the chain
+    next: AtomicPtr<FatNode>,
+}
+
+impl FatNode {
+    /// Create a new fat node with one initial version and a link to older node
+    fn new_with_first(version: *mut LockFreeVersion, older: *mut FatNode) -> Self {
+        let slots = std::array::from_fn(|i| {
+            if i == 0 {
+                AtomicPtr::new(version)
+            } else {
+                AtomicPtr::new(ptr::null_mut())
+            }
+        });
+        Self {
+            count: AtomicU8::new(1),
+            slots,
+            next: AtomicPtr::new(older),
+        }
+    }
+
+    /// Try to append a version to this fat node. Returns Ok(()) if successful,
+    /// Err(version_ptr) if the node is full.
+    ///
+    /// Thread-safety: CAS on `count` serializes slot reservation. The reserving
+    /// thread then publishes the pointer via Release store on the slot.
+    #[inline]
+    fn try_push(&self, version: *mut LockFreeVersion) -> std::result::Result<(), *mut LockFreeVersion> {
+        loop {
+            let c = self.count.load(Ordering::Acquire);
+            if c as usize >= FAT_NODE_SLOTS {
+                return Err(version); // Full
+            }
+            // Reserve slot `c` by CAS count → c+1
+            match self.count.compare_exchange(c, c + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => {
+                    // We own slot `c` — publish the version pointer
+                    self.slots[c as usize].store(version, Ordering::Release);
+                    return Ok(());
+                }
+                Err(_) => continue, // Another thread won; retry
+            }
+        }
+    }
+
+    /// Get version pointer at slot index (must be < count)
+    #[inline]
+    fn slot(&self, idx: u8) -> *mut LockFreeVersion {
+        self.slots[idx as usize].load(Ordering::Acquire)
+    }
+
+    /// Iterate versions newest-first (index count-1 down to 0)
+    #[inline]
+    fn iter_newest_first(&self) -> impl Iterator<Item = &LockFreeVersion> {
+        let count = self.count.load(Ordering::Acquire);
+        (0..count).rev().filter_map(move |i| {
+            let ptr = self.slots[i as usize].load(Ordering::Acquire);
+            if ptr.is_null() { None } else { Some(unsafe { &*ptr }) }
+        })
+    }
+}
+
+/// Lock-free version chain using fat-node grouping (Rec 2)
+///
+/// Instead of a singly-linked list of individual versions, versions are grouped
+/// into fat nodes of 8. This reduces pointer chases from O(v) to O(v/8) since
+/// scanning 8 slots within a fat node hits the same cache line.
 pub struct LockFreeVersionChain {
-    /// Head of version chain (most recent)
-    head: AtomicPtr<LockFreeVersion>,
+    /// Head fat node (contains the most recent versions)
+    head: AtomicPtr<FatNode>,
 }
 
 impl Default for LockFreeVersionChain {
@@ -271,45 +358,74 @@ impl LockFreeVersionChain {
         loop {
             let head = self.head.load(Ordering::Acquire);
 
-            // Check for write-write conflict
+            // Check for write-write conflict: inspect the newest version
             if !head.is_null() {
-                let head_ref = unsafe { &*head };
-                if !head_ref.is_committed() && head_ref.txn_id != txn_id {
-                    // Clean up allocated version
-                    unsafe {
-                        drop(Box::from_raw(new_version));
+                let fat = unsafe { &*head };
+                let count = fat.count.load(Ordering::Acquire);
+                if count > 0 {
+                    let newest = fat.slot(count - 1);
+                    if !newest.is_null() {
+                        let newest_ref = unsafe { &*newest };
+                        if !newest_ref.is_committed() && newest_ref.txn_id != txn_id {
+                            unsafe { drop(Box::from_raw(new_version)); }
+                            return Err(SochDBError::Internal("Write-write conflict".into()));
+                        }
                     }
-                    return Err(SochDBError::Internal("Write-write conflict".into()));
                 }
-            }
 
-            // Link new version to current head
-            unsafe {
-                (*new_version).next.store(head, Ordering::Release);
-            }
-
-            // Try to CAS head
-            match self
-                .head
-                .compare_exchange(head, new_version, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return Ok(()),
-                Err(_) => continue, // Retry
+                // Try to push into existing fat node
+                match fat.try_push(new_version) {
+                    Ok(()) => return Ok(()),
+                    Err(_) => {
+                        // Fat node is full — allocate new one linking to current head
+                        let new_fat = Box::into_raw(Box::new(FatNode::new_with_first(new_version, head)));
+                        match self.head.compare_exchange(head, new_fat, Ordering::AcqRel, Ordering::Acquire) {
+                            Ok(_) => return Ok(()),
+                            Err(_) => {
+                                // CAS failed — reclaim the fat node, keep the version for retry
+                                unsafe {
+                                    // Detach version from fat node before dropping it
+                                    (*new_fat).slots[0].store(ptr::null_mut(), Ordering::Relaxed);
+                                    (*new_fat).count.store(0, Ordering::Relaxed);
+                                    drop(Box::from_raw(new_fat));
+                                }
+                                continue; // Retry from the top
+                            }
+                        }
+                    }
+                }
+            } else {
+                // No head — allocate first fat node
+                let new_fat = Box::into_raw(Box::new(FatNode::new_with_first(new_version, ptr::null_mut())));
+                match self.head.compare_exchange(head, new_fat, Ordering::AcqRel, Ordering::Acquire) {
+                    Ok(_) => return Ok(()),
+                    Err(_) => {
+                        unsafe {
+                            (*new_fat).slots[0].store(ptr::null_mut(), Ordering::Relaxed);
+                            (*new_fat).count.store(0, Ordering::Relaxed);
+                            drop(Box::from_raw(new_fat));
+                        }
+                        continue;
+                    }
+                }
             }
         }
     }
 
     /// Commit a version
     pub fn commit(&self, txn_id: u64, commit_ts: u64) -> bool {
-        let mut current = self.head.load(Ordering::Acquire);
+        let mut fat_ptr = self.head.load(Ordering::Acquire);
 
-        while !current.is_null() {
-            let version = unsafe { &*current };
-            if version.txn_id == txn_id && !version.is_committed() {
-                version.set_commit_ts(commit_ts);
-                return true;
+        while !fat_ptr.is_null() {
+            let fat = unsafe { &*fat_ptr };
+            // Scan this fat node's slots (newest first)
+            for ver in fat.iter_newest_first() {
+                if ver.txn_id == txn_id && !ver.is_committed() {
+                    ver.set_commit_ts(commit_ts);
+                    return true;
+                }
             }
-            current = version.next.load(Ordering::Acquire);
+            fat_ptr = fat.next.load(Ordering::Acquire);
         }
 
         false
@@ -324,26 +440,27 @@ impl LockFreeVersionChain {
         snapshot_ts: u64,
         current_txn_id: Option<u64>,
     ) -> Option<&LockFreeVersion> {
-        let mut current = self.head.load(Ordering::Acquire);
+        let mut fat_ptr = self.head.load(Ordering::Acquire);
 
-        while !current.is_null() {
-            let version = unsafe { &*current };
+        while !fat_ptr.is_null() {
+            let fat = unsafe { &*fat_ptr };
+            // Scan this fat node's slots (newest first)
+            for version in fat.iter_newest_first() {
+                // Check if this is our own uncommitted write
+                if let Some(txn_id) = current_txn_id
+                    && version.txn_id == txn_id
+                    && !version.is_committed()
+                {
+                    return Some(version);
+                }
 
-            // Check if this is our own uncommitted write
-            if let Some(txn_id) = current_txn_id
-                && version.txn_id == txn_id
-                && !version.is_committed()
-            {
-                return Some(version);
+                // Check if this version is visible
+                let commit_ts = version.get_commit_ts();
+                if commit_ts > 0 && commit_ts < snapshot_ts {
+                    return Some(version);
+                }
             }
-
-            // Check if this version is visible
-            let commit_ts = version.get_commit_ts();
-            if commit_ts > 0 && commit_ts < snapshot_ts {
-                return Some(version);
-            }
-
-            current = version.next.load(Ordering::Acquire);
+            fat_ptr = fat.next.load(Ordering::Acquire);
         }
 
         None
@@ -351,11 +468,18 @@ impl LockFreeVersionChain {
 
     /// Check if there's an uncommitted version by another transaction
     pub fn has_write_conflict(&self, my_txn_id: u64) -> bool {
-        let current = self.head.load(Ordering::Acquire);
+        let head = self.head.load(Ordering::Acquire);
 
-        if !current.is_null() {
-            let version = unsafe { &*current };
-            return !version.is_committed() && version.txn_id != my_txn_id;
+        if !head.is_null() {
+            let fat = unsafe { &*head };
+            let count = fat.count.load(Ordering::Acquire);
+            if count > 0 {
+                let newest = fat.slot(count - 1);
+                if !newest.is_null() {
+                    let version = unsafe { &*newest };
+                    return !version.is_committed() && version.txn_id != my_txn_id;
+                }
+            }
         }
 
         false
@@ -847,5 +971,78 @@ mod tests {
         // Verify callback receives correct data
         let matches = memtable.read_with(b"key1", 100, None, |v| v == b"value1");
         assert_eq!(matches, Some(true));
+    }
+
+    #[test]
+    fn test_fat_node_overflow() {
+        // Write more than FAT_NODE_SLOTS versions to a single key
+        // to verify fat node chaining works correctly
+        let memtable = LockFreeMemTable::new();
+
+        for i in 0..12u64 {
+            // Each write from a different committed txn
+            memtable
+                .write(
+                    b"key".to_vec(),
+                    Some(format!("v{}", i).into_bytes()),
+                    i + 1,
+                )
+                .unwrap();
+            memtable.commit(i + 1, (i + 1) * 10, &[b"key".to_vec()]);
+        }
+
+        // Read at latest snapshot should return v11 (committed at ts=120)
+        let val = memtable.read(b"key", 200, None);
+        assert_eq!(val, Some(b"v11".to_vec()));
+
+        // Read at ts=55 should return v4 (committed at ts=50)
+        let val = memtable.read(b"key", 55, None);
+        assert_eq!(val, Some(b"v4".to_vec()));
+
+        // Read at ts=5 should return None (v0 committed at ts=10)
+        let val = memtable.read(b"key", 5, None);
+        assert_eq!(val, None);
+    }
+
+    #[test]
+    fn test_fat_node_concurrent_writes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let memtable = Arc::new(LockFreeMemTable::new());
+
+        // 4 threads writing to different keys concurrently
+        let mut handles = Vec::new();
+        for t in 0..4u64 {
+            let mt = Arc::clone(&memtable);
+            handles.push(thread::spawn(move || {
+                for i in 0..20u64 {
+                    let key = format!("k{}-{}", t, i).into_bytes();
+                    let val = format!("v{}-{}", t, i).into_bytes();
+                    let txn_id = t * 1000 + i + 1;
+                    mt.write(key.clone(), Some(val), txn_id).unwrap();
+                    mt.commit(txn_id, txn_id * 10, &[key]);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Verify all 80 keys are readable
+        for t in 0..4u64 {
+            for i in 0..20u64 {
+                let key = format!("k{}-{}", t, i).into_bytes();
+                let val = memtable.read(&key, u64::MAX, None);
+                assert_eq!(
+                    val,
+                    Some(format!("v{}-{}", t, i).into_bytes()),
+                    "Missing key k{}-{}",
+                    t,
+                    i
+                );
+            }
+        }
     }
 }

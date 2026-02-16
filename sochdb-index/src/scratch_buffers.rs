@@ -49,7 +49,7 @@ use std::collections::{BinaryHeap, HashMap};
 use smallvec::SmallVec;
 use std::cmp::Reverse;
 
-use crate::hnsw::SearchCandidate;
+use crate::hnsw::{FastCandidate, SearchCandidate};
 
 // ============================================================================
 // Fast Bitset for Visited Set (Replaces HashSet for 10x faster operations)
@@ -210,6 +210,15 @@ pub struct ScratchBuffers {
     /// Float buffer for SIMD operations
     /// Typical size: 768-1536 for distance computation  
     pub float_buffer: Vec<f32>,
+
+    /// Candidate priority queue for FastCandidate-based zero-lock paths
+    /// (search_layer_zero_flat, search_layer_zero_lock)
+    /// Reused instead of per-call BinaryHeap allocation.
+    pub fast_candidates: BinaryHeap<FastCandidate>,
+
+    /// Results min-heap for FastCandidate-based zero-lock paths
+    /// Reused instead of per-call BinaryHeap allocation.
+    pub fast_results_heap: BinaryHeap<Reverse<FastCandidate>>,
 }
 
 impl ScratchBuffers {
@@ -229,6 +238,8 @@ impl ScratchBuffers {
             temp_neighbors: SmallVec::new(),
             node_indices: Vec::with_capacity(1024),
             float_buffer: Vec::with_capacity(1536),
+            fast_candidates: BinaryHeap::with_capacity(256),
+            fast_results_heap: BinaryHeap::with_capacity(256),
         }
     }
     
@@ -247,6 +258,8 @@ impl ScratchBuffers {
         self.temp_neighbors.clear();
         self.node_indices.clear();
         self.float_buffer.clear();
+        self.fast_candidates.clear();
+        self.fast_results_heap.clear();
     }
     
     /// Get memory usage of scratch buffers in bytes
@@ -262,10 +275,12 @@ impl ScratchBuffers {
         let temp_neighbors_mem = self.temp_neighbors.capacity() * std::mem::size_of::<u32>();
         let node_indices_mem = self.node_indices.capacity() * std::mem::size_of::<u32>();
         let float_buffer_mem = self.float_buffer.capacity() * std::mem::size_of::<f32>();
+        let fast_candidates_mem = self.fast_candidates.capacity() * std::mem::size_of::<FastCandidate>();
+        let fast_results_mem = self.fast_results_heap.capacity() * std::mem::size_of::<Reverse<FastCandidate>>();
         
         visited_mem + candidates_mem + results_mem + working_set_mem + 
         results_heap_mem + distance_cache_mem + projection_mem + temp_neighbors_mem + 
-        node_indices_mem + float_buffer_mem
+        node_indices_mem + float_buffer_mem + fast_candidates_mem + fast_results_mem
     }
     
     /// Resize buffers if they've grown beyond typical usage
@@ -304,6 +319,12 @@ impl ScratchBuffers {
         }
         if self.float_buffer.capacity() > MAX_FLOAT_BUFFER {
             self.float_buffer = Vec::with_capacity(1536);
+        }
+        if self.fast_candidates.capacity() > MAX_CANDIDATES {
+            self.fast_candidates = BinaryHeap::with_capacity(256);
+        }
+        if self.fast_results_heap.capacity() > MAX_RESULTS {
+            self.fast_results_heap = BinaryHeap::with_capacity(256);
         }
     }
 }
@@ -432,6 +453,27 @@ mod tests {
             scratch.projection_buffer[31] = 2.0;
             assert_eq!(scratch.projection_buffer[0], 1.0);
             assert_eq!(scratch.projection_buffer[31], 2.0);
+        });
+    }
+
+    #[test]
+    fn test_fast_candidate_scratch_reuse() {
+        // First call: populate FastCandidate heaps
+        with_scratch_buffers(|scratch| {
+            scratch.fast_candidates.push(FastCandidate { distance: 0.5, dense_index: 1 });
+            scratch.fast_candidates.push(FastCandidate { distance: 0.3, dense_index: 2 });
+            scratch.fast_results_heap.push(Reverse(FastCandidate { distance: 0.3, dense_index: 2 }));
+            assert_eq!(scratch.fast_candidates.len(), 2);
+            assert_eq!(scratch.fast_results_heap.len(), 1);
+        });
+
+        // Second call: heaps should be cleared, but capacity preserved
+        with_scratch_buffers(|scratch| {
+            assert_eq!(scratch.fast_candidates.len(), 0);
+            assert_eq!(scratch.fast_results_heap.len(), 0);
+            // Capacity should be >= initial allocation (256)
+            assert!(scratch.fast_candidates.capacity() >= 2);
+            assert!(scratch.fast_results_heap.capacity() >= 1);
         });
     }
 }

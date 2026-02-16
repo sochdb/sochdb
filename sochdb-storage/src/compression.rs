@@ -28,6 +28,7 @@
 //! - Compression ratio tracking
 
 use std::collections::HashMap;
+use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Compression type identifier
@@ -176,13 +177,8 @@ impl CompressionEngine {
         data: &[u8],
         compression: CompressionType,
     ) -> Result<Vec<u8>, std::io::Error> {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        // Hash the data
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        let hash = hasher.finish();
+        // Use xxHash3 for dedup hashing — 5× faster than SipHash, non-adversarial context
+        let hash = twox_hash::xxh3::hash64(data);
 
         // Check dedup cache
         if let Some(cached) = self.dedup_cache.get(&hash) {
@@ -194,58 +190,84 @@ impl CompressionEngine {
         let compressed = self.compress(data, compression)?;
 
         // Only cache if it's worth it (data > 1KB and compression ratio > 2:1)
-        if data.len() > 1024 && (data.len() / compressed.len()) >= 2 {
+        if data.len() > 1024 && compressed.len() > 0 && (data.len() / compressed.len()) >= 2 {
             self.dedup_cache.insert(hash, compressed.clone());
         }
 
         Ok(compressed)
     }
 
-    /// LZ4 compression (placeholder - would use lz4_flex crate in production)
+    /// LZ4 compression using lz4_flex (block mode, ~3 GB/s throughput)
+    ///
+    /// Wire format: [original_len: u32 LE] [lz4_compressed_payload...]
+    /// If compressed output >= original size, falls back to uncompressed with len=0 sentinel.
     fn compress_lz4(&self, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-        // Placeholder: In production, use lz4_flex::compress_prepend_size()
-        // For now, just return the data with a simple encoding
-        let mut output = Vec::with_capacity(data.len() + 4);
-        output.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        output.extend_from_slice(data);
-        Ok(output)
+        let compressed = lz4_flex::compress_prepend_size(data);
+        // Fallback: if compressed is larger than original + 4-byte header, store raw
+        if compressed.len() >= data.len() + 4 {
+            let mut output = Vec::with_capacity(data.len() + 4);
+            output.extend_from_slice(&0u32.to_le_bytes()); // 0 = uncompressed sentinel
+            output.extend_from_slice(data);
+            Ok(output)
+        } else {
+            Ok(compressed)
+        }
     }
 
-    /// LZ4 decompression (placeholder)
+    /// LZ4 decompression
     fn decompress_lz4(&self, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
         if data.len() < 4 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid LZ4 data",
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LZ4 data too short (< 4 bytes)",
             ));
         }
-
-        let _size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        Ok(data[4..].to_vec())
+        let original_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        if original_len == 0 {
+            // Uncompressed fallback: sentinel 0 means raw payload follows
+            return Ok(data[4..].to_vec());
+        }
+        lz4_flex::decompress_size_prepended(data).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("LZ4 decompression failed: {}", e),
+            )
+        })
     }
 
-    /// Zstd compression (placeholder - would use zstd crate in production)
-    fn compress_zstd(&self, data: &[u8], _level: i32) -> Result<Vec<u8>, std::io::Error> {
-        // Placeholder: In production, use zstd::encode_all(data, level)
-        // For now, simple encoding
-        let mut output = Vec::with_capacity(data.len() + 8);
-        output.extend_from_slice(b"ZSTD");
-        output.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        output.extend_from_slice(data);
-        Ok(output)
+    /// Zstd compression at the specified level
+    ///
+    /// Level 3: ~500 MB/s, ~3× ratio (warm tier)
+    /// Level 19: ~40 MB/s, ~4.5× ratio (cold tier — use from background compaction only)
+    ///
+    /// Wire format: raw zstd frame (self-describing, includes original size)
+    /// If compressed output >= original, falls back with a 4-byte sentinel header.
+    fn compress_zstd(&self, data: &[u8], level: i32) -> Result<Vec<u8>, std::io::Error> {
+        let compressed = zstd::encode_all(std::io::Cursor::new(data), level)?;
+        // Fallback: if compression didn't help, store raw with sentinel
+        if compressed.len() >= data.len() {
+            let mut output = Vec::with_capacity(data.len() + 4);
+            output.extend_from_slice(b"\x00\x00\x00\x00"); // 4 zero bytes = uncompressed sentinel
+            output.extend_from_slice(data);
+            Ok(output)
+        } else {
+            Ok(compressed)
+        }
     }
 
-    /// Zstd decompression (placeholder)
+    /// Zstd decompression
     fn decompress_zstd(&self, data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-        if data.len() < 8 || &data[0..4] != b"ZSTD" {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid Zstd data",
+        if data.len() < 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Zstd data too short (< 4 bytes)",
             ));
         }
-
-        let _size = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-        Ok(data[8..].to_vec())
+        // Check for uncompressed sentinel (4 zero bytes and NOT a valid zstd magic)
+        if &data[0..4] == b"\x00\x00\x00\x00" {
+            return Ok(data[4..].to_vec());
+        }
+        zstd::decode_all(std::io::Cursor::new(data))
     }
 
     /// Get compression statistics
@@ -307,47 +329,146 @@ mod tests {
     }
 
     #[test]
-    fn test_compression_basic() {
+    fn test_lz4_roundtrip() {
         let mut engine = CompressionEngine::new();
-        let data = b"Hello, World! This is test data.";
+        let data = b"Hello, World! This is test data for LZ4 compression roundtrip.";
 
         let compressed = engine.compress(data, CompressionType::Lz4).unwrap();
         let decompressed = engine
             .decompress(&compressed, CompressionType::Lz4)
             .unwrap();
 
-        assert_eq!(data, decompressed.as_slice());
+        assert_eq!(data.as_slice(), decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_zstd_fast_roundtrip() {
+        let mut engine = CompressionEngine::new();
+        let data = b"Hello, World! This is test data for Zstd level-3 compression roundtrip.";
+
+        let compressed = engine.compress(data, CompressionType::ZstdFast).unwrap();
+        let decompressed = engine
+            .decompress(&compressed, CompressionType::ZstdFast)
+            .unwrap();
+
+        assert_eq!(data.as_slice(), decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_zstd_max_roundtrip() {
+        let mut engine = CompressionEngine::new();
+        let data = b"Hello, World! This is test data for Zstd level-19 maximum compression roundtrip.";
+
+        let compressed = engine.compress(data, CompressionType::ZstdMax).unwrap();
+        let decompressed = engine
+            .decompress(&compressed, CompressionType::ZstdMax)
+            .unwrap();
+
+        assert_eq!(data.as_slice(), decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_real_compression_ratio() {
+        let mut engine = CompressionEngine::new();
+        // Highly compressible data: repeated pattern
+        let data: Vec<u8> = "The quick brown fox jumps over the lazy dog. "
+            .repeat(100)
+            .into_bytes();
+
+        let lz4 = engine.compress(&data, CompressionType::Lz4).unwrap();
+        assert!(
+            lz4.len() < data.len(),
+            "LZ4 should compress repetitive data: {} -> {}",
+            data.len(),
+            lz4.len()
+        );
+
+        let mut engine2 = CompressionEngine::new();
+        let zstd_fast = engine2.compress(&data, CompressionType::ZstdFast).unwrap();
+        assert!(
+            zstd_fast.len() < data.len(),
+            "ZstdFast should compress repetitive data: {} -> {}",
+            data.len(),
+            zstd_fast.len()
+        );
+
+        let mut engine3 = CompressionEngine::new();
+        let zstd_max = engine3.compress(&data, CompressionType::ZstdMax).unwrap();
+        assert!(
+            zstd_max.len() < data.len(),
+            "ZstdMax should compress repetitive data: {} -> {}",
+            data.len(),
+            zstd_max.len()
+        );
+
+        // ZstdMax should compress at least as well as ZstdFast
+        assert!(
+            zstd_max.len() <= zstd_fast.len(),
+            "ZstdMax ({}) should be <= ZstdFast ({})",
+            zstd_max.len(),
+            zstd_fast.len()
+        );
     }
 
     #[test]
     fn test_compression_stats() {
         let mut engine = CompressionEngine::new();
-        let data = b"Test data for compression statistics";
+        let data: Vec<u8> = "Test data for compression statistics. ".repeat(50).into_bytes();
 
-        engine.compress(data, CompressionType::Lz4).unwrap();
+        engine.compress(&data, CompressionType::Lz4).unwrap();
 
         let stats = engine.stats();
         assert!(stats.total_uncompressed > 0);
         assert!(stats.total_compressed > 0);
         assert_eq!(stats.lz4_count, 1);
+        // Real compression should actually save space on repetitive data
+        assert!(
+            stats.space_saved_bytes() > 0,
+            "Should save space on compressible data"
+        );
+        assert!(
+            stats.compression_ratio() < 1.0,
+            "Ratio should be < 1.0 (compressed smaller than original)"
+        );
     }
 
     #[test]
-    #[ignore = "Flaky test: deduplication depends on exact timing of hash lookups"]
     fn test_deduplication() {
         let mut engine = CompressionEngine::new();
-        let data = b"Repeated system prompt";
+        // Data must be > 1024 bytes AND achieve 2:1 compression for caching
+        let data: Vec<u8> = "Repeated system prompt for deduplication testing. "
+            .repeat(100)
+            .into_bytes();
+        assert!(data.len() > 1024);
 
-        // Compress twice with same data
-        engine
-            .compress_with_dedup(data, CompressionType::Lz4)
+        // First call: compresses and caches
+        let first = engine
+            .compress_with_dedup(&data, CompressionType::Lz4)
             .unwrap();
-        engine
-            .compress_with_dedup(data, CompressionType::Lz4)
-            .unwrap();
+        assert_eq!(engine.stats().dedup_hits, 0);
 
-        // Second call should be dedup hit
-        assert!(engine.stats().dedup_hits > 0);
+        // Second call: should hit dedup cache
+        let second = engine
+            .compress_with_dedup(&data, CompressionType::Lz4)
+            .unwrap();
+        assert_eq!(engine.stats().dedup_hits, 1);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_small_data_fallback() {
+        // Data too small to compress effectively — should still roundtrip correctly
+        let mut engine = CompressionEngine::new();
+        let data = b"tiny";
+
+        let lz4 = engine.compress(data, CompressionType::Lz4).unwrap();
+        let rt = engine.decompress(&lz4, CompressionType::Lz4).unwrap();
+        assert_eq!(data.as_slice(), rt.as_slice());
+
+        let mut engine2 = CompressionEngine::new();
+        let zstd = engine2.compress(data, CompressionType::ZstdFast).unwrap();
+        let rt2 = engine2.decompress(&zstd, CompressionType::ZstdFast).unwrap();
+        assert_eq!(data.as_slice(), rt2.as_slice());
     }
 
     #[test]
@@ -366,5 +487,42 @@ mod tests {
         // Old large payload -> ZstdMax
         let old = now - 4_000_000_000_000; // ~46 days ago
         assert_eq!(choose_compression(10000, old), CompressionType::ZstdMax);
+    }
+
+    #[test]
+    fn test_none_compression_passthrough() {
+        let mut engine = CompressionEngine::new();
+        let data = b"no compression applied";
+
+        let compressed = engine.compress(data, CompressionType::None).unwrap();
+        assert_eq!(data.as_slice(), compressed.as_slice());
+
+        let decompressed = engine
+            .decompress(&compressed, CompressionType::None)
+            .unwrap();
+        assert_eq!(data.as_slice(), decompressed.as_slice());
+    }
+
+    #[test]
+    fn test_large_payload_compression() {
+        let mut engine = CompressionEngine::new();
+        // Simulate a large LLM conversation context (JSON-like)
+        let data: Vec<u8> = (0..10000)
+            .map(|i| format!("{{\"role\":\"user\",\"content\":\"message {}\"}},", i))
+            .collect::<String>()
+            .into_bytes();
+
+        let compressed = engine.compress(&data, CompressionType::ZstdFast).unwrap();
+        let ratio = compressed.len() as f64 / data.len() as f64;
+        assert!(
+            ratio < 0.5,
+            "Large repetitive JSON should compress to < 50%: ratio={:.3}",
+            ratio
+        );
+
+        let decompressed = engine
+            .decompress(&compressed, CompressionType::ZstdFast)
+            .unwrap();
+        assert_eq!(data, decompressed);
     }
 }

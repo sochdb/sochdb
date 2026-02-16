@@ -147,8 +147,8 @@ pub struct ColumnTemperatureTracker {
     window_size: u64,
     /// Current window update count
     window_updates: AtomicU64,
-    /// Hot threshold (default 0.1)
-    hot_threshold: f64,
+    /// Hot threshold — stored as AtomicU64 bit pattern for lock-free updates
+    hot_threshold: AtomicU64,
 }
 
 impl ColumnTemperatureTracker {
@@ -162,8 +162,13 @@ impl ColumnTemperatureTracker {
             columns: RwLock::new(columns),
             window_size,
             window_updates: AtomicU64::new(0),
-            hot_threshold: 0.1,
+            hot_threshold: AtomicU64::new(0.1_f64.to_bits()),
         }
+    }
+
+    /// Read the current hot threshold (lock-free)
+    fn threshold(&self) -> f64 {
+        f64::from_bits(self.hot_threshold.load(Ordering::Relaxed))
     }
 
     /// Record an update to specific columns
@@ -192,18 +197,20 @@ impl ColumnTemperatureTracker {
 
     /// Get hot columns (above threshold)
     pub fn get_hot_columns(&self) -> HashSet<String> {
+        let threshold = self.threshold();
         let cols = self.columns.read();
         cols.values()
-            .filter(|t| t.is_hot(self.hot_threshold))
+            .filter(|t| t.is_hot(threshold))
             .map(|t| t.name.clone())
             .collect()
     }
 
     /// Get cold columns (at or below threshold)
     pub fn get_cold_columns(&self) -> HashSet<String> {
+        let threshold = self.threshold();
         let cols = self.columns.read();
         cols.values()
-            .filter(|t| !t.is_hot(self.hot_threshold))
+            .filter(|t| !t.is_hot(threshold))
             .map(|t| t.name.clone())
             .collect()
     }
@@ -213,10 +220,13 @@ impl ColumnTemperatureTracker {
         self.columns.read().values().cloned().collect()
     }
 
-    /// Set hot threshold
-    pub fn set_hot_threshold(&self, _threshold: f64) {
-        // Note: This would require interior mutability for hot_threshold
-        // For now this is a no-op; in practice use configuration
+    /// Set hot threshold (lock-free via atomic u64 bit pattern)
+    ///
+    /// Threshold ∈ [0.0, 1.0]. Columns with temperature > threshold are "hot" and
+    /// participate in compaction merges. Lower threshold = more columns treated as hot.
+    pub fn set_hot_threshold(&self, threshold: f64) {
+        let clamped = threshold.clamp(0.0, 1.0);
+        self.hot_threshold.store(clamped.to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -1543,11 +1553,15 @@ impl Lscs {
 
     /// Compact L0 column groups using column-aware compaction (Task 3)
     ///
-    /// This implementation:
-    /// 1. Identifies hot columns based on temperature tracking
-    /// 2. Only merges hot columns to L1
-    /// 3. Preserves cold column references (no rewrite)
-    /// 4. Reduces write amplification by factor of (hot_columns / total_columns)
+    /// Algorithm:
+    /// 1. Query `temperature_tracker` for hot/cold column sets
+    /// 2. Drain all L0 `ColumnGroup` segments
+    /// 3. Hot columns: read stripes, merge-sort by row_id, write to L1
+    /// 4. Cold columns: create `ColumnStripeRef` pointing to existing L0 data (zero I/O)
+    /// 5. Create `SegmentDescriptor` at L1 with mixed references
+    ///
+    /// Write amplification: WA_col = (|H| / |C|) × WA_lsm
+    /// With 20% hot columns: WA_col = 0.2 × WA_lsm ≈ 5× reduction.
     fn compact_l0(&self) -> Result<()> {
         let start_time = std::time::Instant::now();
 
@@ -1576,41 +1590,49 @@ impl Lscs {
         let mut bytes_written = 0u64;
         let mut cold_refs_preserved = 0u64;
 
-        // Perform selective merge
         let sequence = self.next_sequence.fetch_add(1, Ordering::SeqCst);
 
-        // For a full implementation, we would:
-        // 1. Read hot column data from all L0 segments
-        // 2. Merge sort the data by row_id
-        // 3. Write merged hot columns to new L1 segment
-        // 4. Create segment descriptor with cold column references
+        // ---- Hot column selective merge ----
+        // Only hot columns are read and rewritten. Cost = O(|H| × N × log N).
+        let merged_path = self.path.join(format!("L1_seq{}.sst", sequence));
+        let segment_refs: Vec<&ColumnGroup> = l0_segments.iter().collect();
 
-        // For now, implement a simplified version that demonstrates the approach
-        let _merged_path = self.path.join(format!("L1_seq{}.sst", sequence));
+        let hot_col_refs = if !hot_columns.is_empty() {
+            let refs = self.selective_merge_hot_columns(
+                &segment_refs,
+                &hot_columns,
+                &merged_path,
+            )?;
+            // Tally I/O for merged hot columns
+            for (_col, stripe) in &refs {
+                bytes_written += stripe.length;
+            }
+            refs
+        } else {
+            HashMap::new()
+        };
 
-        // Track column stripe references for the new segment
-        let mut col_refs = HashMap::new();
+        // ---- Cold column reference promotion (zero I/O) ----
+        // Cold columns keep their existing L0 stripe addresses.
+        let mut col_refs = hot_col_refs;
         let mut total_row_count = 0u64;
-        let min_row_id = u64::MAX;
-        let max_row_id = 0u64;
+        let mut min_row_id = u64::MAX;
+        let mut max_row_id = 0u64;
 
-        // Process each L0 segment
         for segment in &l0_segments {
-            bytes_read += segment.row_count * 100; // Estimate
+            bytes_read += segment.row_count * 100; // Estimate per-row overhead
             total_row_count += segment.row_count;
 
-            // For hot columns: read and merge
+            // Count hot-column bytes read from this segment
             for col_name in &hot_columns {
                 if let Some(col_idx) = segment.column_offsets.get(col_name) {
                     bytes_read += col_idx.length;
-                    bytes_written += col_idx.length;
                 }
             }
 
-            // For cold columns: just keep reference (no I/O)
+            // Promote cold column stripe references — no data movement
             for col_name in &cold_columns {
                 if let Some(col_idx) = segment.column_offsets.get(col_name) {
-                    // Create reference to existing stripe (no rewrite)
                     let stripe_ref = ColumnStripeRef::new(
                         segment.level,
                         segment.sequence,
@@ -1661,17 +1683,15 @@ impl Lscs {
         }
 
         // Clean up old L0 segments (mark as tombstones)
-        // In production, this would be coordinated with file deletion
+        // The segment files remain for cold column references until no longer needed
         for segment in l0_segments {
-            // The segment files remain for cold column references
-            // until no longer needed
             let _ = segment; // Drop the in-memory metadata
         }
 
         Ok(())
     }
 
-    /// Perform selective merge of hot columns across segments (Task 3)
+    /// Perform selective merge of hot columns across segments
     ///
     /// Algorithm:
     ///   Input: L0 segments S₀ = {s₁, s₂, ..., s_n}, hot columns H
@@ -1682,7 +1702,6 @@ impl Lscs {
     ///   2. Write merged hot columns to new segment
     ///   
     ///   Time: O(|H| × N × log(N)) where N = rows
-    #[allow(dead_code)]
     fn selective_merge_hot_columns(
         &self,
         segments: &[&ColumnGroup],
@@ -2269,5 +2288,46 @@ mod tests {
         // Data should still be accessible after fsync
         let result = lscs.get(1).unwrap();
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_temperature_tracker_set_threshold() {
+        let cols = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let tracker = ColumnTemperatureTracker::new(&cols, 10);
+
+        // Default threshold is 0.1
+        assert!((tracker.threshold() - 0.1).abs() < f64::EPSILON);
+
+        // set_hot_threshold is no longer a no-op
+        tracker.set_hot_threshold(0.5);
+        assert!((tracker.threshold() - 0.5).abs() < f64::EPSILON);
+
+        // Clamps to [0, 1]
+        tracker.set_hot_threshold(2.0);
+        assert!((tracker.threshold() - 1.0).abs() < f64::EPSILON);
+
+        tracker.set_hot_threshold(-0.5);
+        assert!((tracker.threshold() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_column_temperature_hot_cold_classification() {
+        let cols = vec!["hot_col".to_string(), "cold_col".to_string()];
+        let tracker = ColumnTemperatureTracker::new(&cols, 2);
+
+        // Lower threshold so that EMA(0.1) > 0.05 qualifies as hot
+        tracker.set_hot_threshold(0.05);
+
+        // Update only "hot_col" — triggers EMA after window_size=2 updates
+        tracker.record_updates(&["hot_col"]);
+        tracker.record_updates(&["hot_col"]);
+
+        let hot = tracker.get_hot_columns();
+        let cold = tracker.get_cold_columns();
+
+        // hot_col should be hot (temp = 0.1 × (2/2) + 0.9 × 0 = 0.1 > 0.05)
+        assert!(hot.contains("hot_col"), "hot_col should be classified as hot");
+        // cold_col was never updated, temperature=0.0
+        assert!(cold.contains("cold_col"), "cold_col should be classified as cold");
     }
 }

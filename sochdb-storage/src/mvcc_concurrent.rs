@@ -62,6 +62,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use sochdb_core::{Result, SochDBError};
+use sochdb_core::version_chain::{
+    BinarySearchChain, ChainEntry,
+    MvccVersionChain, MvccVersionChainMut, WriteConflictDetection,
+    VisibilityContext, TxnId, Timestamp,
+};
 
 // Type aliases to avoid conflicts with other modules
 pub type ConcurrentVersionChain = VersionChain;
@@ -415,8 +420,15 @@ impl VersionEntry {
     }
 }
 
+// Rec 11: Implement ChainEntry so BinarySearchChain<VersionEntry> works
+impl ChainEntry for VersionEntry {
+    #[inline] fn commit_ts(&self) -> u64 { self.commit_ts }
+    #[inline] fn txn_id(&self) -> u64 { self.txn_id }
+    #[inline] fn set_commit_ts(&mut self, ts: u64) { self.commit_ts = ts; }
+}
+
 // =============================================================================
-// Version Chain (Sorted by commit_ts descending)
+// Version Chain (Sorted by commit_ts descending) — Rec 11: Consolidated
 // =============================================================================
 
 /// Chain of versions for a single key, sorted by commit_ts descending
@@ -425,27 +437,27 @@ impl VersionEntry {
 /// - O(log V) reads via binary search
 /// - O(1) writes (prepend to front)
 /// - O(V) GC (linear scan with compaction)
+///
+/// ## Rec 11: Consolidated
+///
+/// Delegates binary-search logic to `BinarySearchChain<VersionEntry>` from
+/// sochdb-core, eliminating duplication with `durable_storage::VersionChain`.
 #[derive(Debug, Default)]
 pub struct VersionChain {
-    /// Committed versions, sorted by commit_ts DESCENDING
-    versions: Vec<VersionEntry>,
-    /// Uncommitted version (at most one per key)
-    uncommitted: Option<VersionEntry>,
+    /// Consolidated binary-search chain (Rec 11)
+    inner: BinarySearchChain<VersionEntry>,
 }
 
 impl VersionChain {
     /// Create empty version chain
     pub fn new() -> Self {
-        Self {
-            versions: Vec::new(),
-            uncommitted: None,
-        }
+        Self { inner: BinarySearchChain::new() }
     }
 
     /// Add uncommitted version
     pub fn add_uncommitted(&mut self, value: Option<Vec<u8>>, txn_id: u64, epoch: u32) {
-        self.uncommitted = Some(VersionEntry {
-            commit_ts: 0, // Uncommitted
+        self.inner.set_uncommitted(VersionEntry {
+            commit_ts: 0,
             txn_id,
             epoch,
             value,
@@ -453,109 +465,113 @@ impl VersionChain {
     }
 
     /// Commit the uncommitted version
-    ///
-    /// Returns true if committed successfully
+    #[inline]
     pub fn commit(&mut self, txn_id: u64, commit_ts: u64) -> bool {
-        if let Some(ref mut v) = self.uncommitted {
-            if v.txn_id == txn_id {
-                v.commit_ts = commit_ts;
-                let committed = self.uncommitted.take().unwrap();
-
-                // Insert into sorted position (descending by commit_ts)
-                // Binary search for insertion point
-                let pos = self
-                    .versions
-                    .partition_point(|existing| existing.commit_ts > commit_ts);
-                self.versions.insert(pos, committed);
-
-                return true;
-            }
-        }
-        false
+        self.inner.commit(txn_id, commit_ts)
     }
 
     /// Abort uncommitted version
+    #[inline]
     pub fn abort(&mut self, txn_id: u64) {
-        if let Some(ref v) = self.uncommitted {
-            if v.txn_id == txn_id {
-                self.uncommitted = None;
-            }
-        }
+        self.inner.abort(txn_id);
     }
 
     /// Read at snapshot timestamp
     ///
-    /// Returns the most recent version visible at snapshot_ts.
-    /// If current_txn_id is provided, also considers uncommitted writes from that txn.
-    ///
     /// Complexity: O(log V) via binary search
+    #[inline]
     pub fn read_at(&self, snapshot_ts: u64, current_txn_id: Option<u64>) -> Option<&VersionEntry> {
-        // Check uncommitted version from current transaction
-        if let Some(txn_id) = current_txn_id {
-            if let Some(ref v) = self.uncommitted {
-                if v.txn_id == txn_id {
-                    return Some(v);
-                }
-            }
-        }
-
-        // Binary search for first version with commit_ts < snapshot_ts
-        // Versions are sorted descending, so we find first where commit_ts < snapshot_ts
-        let idx = self
-            .versions
-            .partition_point(|v| v.commit_ts >= snapshot_ts);
-
-        self.versions.get(idx)
+        self.inner.read_at(snapshot_ts, current_txn_id)
     }
 
     /// Check if there's a write conflict
+    #[inline]
     pub fn has_write_conflict(&self, my_txn_id: u64) -> bool {
-        if let Some(ref v) = self.uncommitted {
-            return v.txn_id != my_txn_id;
-        }
-        false
+        self.inner.has_write_conflict(my_txn_id)
     }
 
     /// Garbage collect old versions
     ///
-    /// Removes versions that are:
-    /// 1. Older than min_visible_epoch AND
-    /// 2. Older than min_snapshot_ts AND
-    /// 3. Not the most recent version (we always keep at least one)
-    ///
-    /// Returns number of versions reclaimed
+    /// Custom GC: filters by both epoch AND snapshot timestamp.
+    /// Returns number of versions reclaimed.
     pub fn gc(&mut self, min_epoch: u32, min_snapshot_ts: u64) -> usize {
-        if self.versions.len() <= 1 {
-            return 0; // Always keep at least one version
+        let versions = self.inner.committed_versions_mut();
+        if versions.len() <= 1 {
+            return 0;
         }
 
-        let original_len = self.versions.len();
+        let original_len = versions.len();
 
-        // Keep versions that are:
-        // - In current or recent epoch, OR
-        // - Potentially visible to active readers, OR
-        // - The most recent version (always keep)
         let mut keep_count = 1; // Always keep newest
-        for v in self.versions.iter().skip(1) {
+        for v in versions.iter().skip(1) {
             if v.epoch >= min_epoch || v.commit_ts >= min_snapshot_ts {
                 keep_count += 1;
             } else {
-                break; // Sorted descending, so all remaining are older
+                break; // Sorted descending, all remaining are older
             }
         }
 
-        self.versions.truncate(keep_count);
-        original_len - self.versions.len()
+        versions.truncate(keep_count);
+        original_len - versions.len()
     }
 
     /// Get number of versions
+    #[inline]
     pub fn len(&self) -> usize {
-        self.versions.len() + if self.uncommitted.is_some() { 1 } else { 0 }
+        self.inner.version_count()
     }
 
     /// Check if empty
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.versions.is_empty() && self.uncommitted.is_none()
+        self.inner.is_empty()
+    }
+}
+
+// =============================================================================
+// Rec 6: Unified Version Chain Trait Implementations
+// =============================================================================
+
+impl MvccVersionChain for VersionChain {
+    type Value = Option<Vec<u8>>;
+
+    fn get_visible(&self, ctx: &VisibilityContext) -> Option<&Self::Value> {
+        self.inner.read_at(ctx.snapshot_ts, Some(ctx.reader_txn_id))
+            .map(|v| &v.value)
+    }
+
+    fn get_latest(&self) -> Option<&Self::Value> {
+        self.inner.latest().map(|v| &v.value)
+    }
+
+    fn version_count(&self) -> usize {
+        self.inner.version_count()
+    }
+}
+
+impl MvccVersionChainMut for VersionChain {
+    fn add_uncommitted(&mut self, value: Self::Value, txn_id: TxnId) {
+        self.add_uncommitted(value, txn_id, 0);
+    }
+
+    fn commit_version(&mut self, txn_id: TxnId, commit_ts: Timestamp) -> bool {
+        self.inner.commit(txn_id, commit_ts)
+    }
+
+    fn delete_version(&mut self, txn_id: TxnId, _delete_ts: Timestamp) -> bool {
+        self.add_uncommitted(None, txn_id, 0);
+        true
+    }
+
+    fn gc(&mut self, min_visible_ts: Timestamp) -> (usize, usize) {
+        let removed = self.gc(0, min_visible_ts);
+        (removed, removed * std::mem::size_of::<VersionEntry>())
+    }
+}
+
+impl WriteConflictDetection for VersionChain {
+    fn has_write_conflict(&self, txn_id: TxnId) -> bool {
+        self.inner.has_write_conflict(txn_id)
     }
 }
 
@@ -693,6 +709,65 @@ impl VersionStore {
 impl Default for VersionStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// =============================================================================
+// Rec 11: Unified MvccStore Implementation for VersionStore
+// =============================================================================
+
+impl sochdb_core::version_chain::MvccStore for VersionStore {
+    fn mvcc_get(&self, key: &[u8], snapshot_ts: u64, txn_id: Option<u64>) -> Option<Vec<u8>> {
+        self.get(key, snapshot_ts, txn_id)
+    }
+
+    fn mvcc_put(
+        &self,
+        key: &[u8],
+        value: Option<Vec<u8>>,
+        txn_id: u64,
+    ) -> std::result::Result<(), sochdb_core::version_chain::MvccStoreError> {
+        let mut entry = self.data.entry(key.to_vec()).or_insert_with(|| {
+            self.stats.num_keys.fetch_add(1, Ordering::Relaxed);
+            VersionChain::new()
+        });
+        if entry.has_write_conflict(txn_id) {
+            return Err(sochdb_core::version_chain::MvccStoreError::WriteConflict);
+        }
+        entry.add_uncommitted(value, txn_id, 0);
+        self.stats.num_versions.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn mvcc_commit_key(&self, key: &[u8], txn_id: u64, commit_ts: u64) -> bool {
+        self.commit(key, txn_id, commit_ts)
+    }
+
+    fn mvcc_abort_key(&self, key: &[u8], txn_id: u64) {
+        self.abort(key, txn_id);
+    }
+
+    fn mvcc_has_conflict(&self, key: &[u8], txn_id: u64) -> bool {
+        self.data
+            .get(key)
+            .map(|chain| chain.has_write_conflict(txn_id))
+            .unwrap_or(false)
+    }
+
+    fn mvcc_gc(&self, min_ts: u64) -> sochdb_core::version_chain::MvccGcStats {
+        let mut stats = sochdb_core::version_chain::MvccGcStats::default();
+        for mut entry in self.data.iter_mut() {
+            stats.keys_scanned += 1;
+            let removed = entry.gc(0, min_ts);
+            stats.versions_removed += removed;
+        }
+        self.stats.gc_passes.fetch_add(1, Ordering::Relaxed);
+        self.stats.versions_reclaimed.fetch_add(stats.versions_removed as u64, Ordering::Relaxed);
+        stats
+    }
+
+    fn mvcc_key_count(&self) -> usize {
+        self.len()
     }
 }
 
@@ -1183,10 +1258,13 @@ mod tests {
     fn test_version_chain_read_at() {
         let mut chain = VersionChain::new();
 
-        // Add versions
-        chain.versions.push(VersionEntry::new(100, 1, 1, Some(b"v100".to_vec())));
-        chain.versions.push(VersionEntry::new(90, 2, 1, Some(b"v90".to_vec())));
-        chain.versions.push(VersionEntry::new(80, 3, 1, Some(b"v80".to_vec())));
+        // Add committed versions via the public API
+        chain.add_uncommitted(Some(b"v80".to_vec()), 3, 1);
+        chain.commit(3, 80);
+        chain.add_uncommitted(Some(b"v90".to_vec()), 2, 1);
+        chain.commit(2, 90);
+        chain.add_uncommitted(Some(b"v100".to_vec()), 1, 1);
+        chain.commit(1, 100);
 
         // Read at different snapshots
         let v = chain.read_at(105, None).unwrap();
@@ -1206,15 +1284,14 @@ mod tests {
     fn test_version_chain_gc() {
         let mut chain = VersionChain::new();
 
-        // Add 10 versions with varying epochs
-        // Older versions have older epochs
-        for i in 0..10 {
-            chain.versions.push(VersionEntry::new(
-                100 - i * 5,   // commit_ts: 100, 95, 90, 85, 80, 75, 70, 65, 60, 55
-                i as u64,     // txn_id
-                (10 - i) as u32, // epoch: 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 (older = lower)
+        // Add 10 committed versions with varying epochs via public API
+        for i in (0..10u64).rev() {
+            chain.add_uncommitted(
                 Some(format!("v{}", 100 - i * 5).into_bytes()),
-            ));
+                i,
+                (10 - i) as u32,
+            );
+            chain.commit(i, 100 - i * 5);
         }
 
         assert_eq!(chain.len(), 10);

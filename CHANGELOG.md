@@ -7,39 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.9] - 2026-02-10
+## [0.5.0] - 2026-02-15
 
 ### Changed
 
-#### Cost-Based Optimizer: Production-Ready
+#### Lock-Free Epoch GC (sochdb-core)
 
-- **Key range derivation** — `derive_key_range()` extracts bounds from Eq/Lt/Gt/Between predicates instead of falling back to `KeyRange::all()`
-- **Scan cost accuracy** — full table scans now correctly read all blocks regardless of predicate selectivity
-- **Projection pushdown** — cost reduction is proportional to `selected_columns / total_columns` instead of a fixed 80% cut
-- **Token budget safety** — `saturating_sub` with `.max(1.0)` floor prevents underflow panics
-- **Plan caching** — configurable TTL-based plan cache with `invalidate_plan_cache()` and `stats_age_us()` APIs
-- **Auto stats collection** — `collect_stats()` builds histograms, MCV lists, and distinct counts from live data
+- **Lock-free `ReaderRegistry`** — replaced `RwLock<HashMap<u64, u64>>` with a fixed-size array of 256 cache-line-aligned `AtomicU64` slots; `register()` uses CAS, `unregister()` is a single atomic store, `min_active_epoch()` is a relaxed scan — fully lock-free, zero contention
+- **DashMap-backed `EpochGC`** — replaced `RwLock<HashMap<K, VersionChain<T>>>` with `DashMap` for the version chain store; GC cycle no longer takes a global write lock
+- **Strict less-than epoch visibility** — `version_at(epoch)` now uses `epoch < N` (was `<=`), consistent with MVCC snapshot semantics
+- **O(1) GC truncation** — `VersionChain::gc()` uses `truncate(kept)` instead of repeated `pop_back()`
 
-#### Adaptive Group Commit: Implemented
+#### Consolidated MVCC Version Chain (sochdb-core, sochdb-storage)
 
-- Little's Law-based batch sizing with EMA arrival-rate tracking
-- Automatic write throughput optimization
+- **`BinarySearchChain<E>`** — new generic binary-search version chain in `sochdb-core::version_chain` that captures the duplicated O(log V) `partition_point` logic previously in both `durable_storage::VersionChain` and `mvcc_concurrent::VersionChain`; both modules now wrap `BinarySearchChain<E>` and delegate core ops
+- **`ChainEntry` trait** — abstraction for version entry types (`commit_ts`, `txn_id`, `set_commit_ts`), implemented by `durable_storage::Version` and `mvcc_concurrent::VersionEntry`
+- **`MvccVersionChain` / `MvccVersionChainMut` traits** — unified read/write interface for any version chain implementation
+- **`MvccStore` trait** — unified store interface (`mvcc_get`, `mvcc_put`, `mvcc_commit_key`, `mvcc_abort_key`, `mvcc_gc`) implemented by `MvccMemTable`
+- **Compile-time concurrency markers** — `ExternalLock`, `InternalRwLock`, `LockFreeAtomic` marker types for generic version chain strategy selection
 
-#### WAL Compaction: Partially Implemented
+#### HNSW Search: Zero-DashMap Hot Path (sochdb-index)
 
-- Manual `checkpoint()` + `truncate_wal()` works end-to-end
-- Automatic background compaction planned for future release
+- **AtomicU32 entry point** — `entry_point_dense` field eliminates DashMap lookup to resolve the entry point on every search; set during insert, read via `Acquire` load
+- **Local `id→dense` cache** — search loops build a per-query `HashMap<u128, u32>` cache, populated from `internal_nodes` neighbor traversal; every subsequent `curr` node resolves from the local cache instead of DashMap
+- **Scratch buffer reuse for `FastCandidate` heaps** — `fast_candidates` and `fast_results_heap` moved into thread-local `ScratchBuffers`, eliminating per-search heap allocations
 
-#### Query Optimizer Upgrade
+#### Lock-Free Fat-Node Version Chain (sochdb-storage)
 
-- `query_optimizer.rs` upgraded from heuristic stub to cost-based planning
-- Scores each predicate against candidate indexes, compares to full-scan baseline
-- Selects cheapest access path automatically
+- **`FatNode` struct** — groups 8 version pointers per node (64 bytes = 1 cache line), reducing pointer chases from O(v) to O(v/8); CAS on `AtomicU8` count serializes slot reservation
+- **`LockFreeVersionChain`** — uses fat-node linked list; `try_push` appends within node or allocates a new node only when full
+
+#### SSI Conflict Detection: Stack-Allocated Keys + Bloom Filter (sochdb-storage)
+
+- **`InlineKey` (`SmallVec<[u8; 32]>`)** — read/write sets use stack-allocated keys (≤ 32 bytes avoid heap allocation); `record_read` / `record_write` accept `&[u8]` instead of `Vec<u8>`
+- **256-bit Bloom filter** — `SsiTransaction` carries a 4×u64 Bloom filter on the read set; `commit()` fast-rejects non-conflicting write sets before scanning the full read set
+- **DashMap-backed `SsiManager`** — `key_writers` uses `DashMap` instead of `RwLock<HashMap>` for concurrent shard-level access
+
+#### Real LZ4/Zstd Compression (sochdb-storage)
+
+- **LZ4 block compression** — replaced placeholder with `lz4_flex::compress_prepend_size()` / `decompress_size_prepended()`; wire format: `[original_len: u32 LE][payload]` with uncompressed fallback sentinel (`len=0`)
+- **Zstd compression** — replaced placeholder with `zstd::encode_all()` / `zstd::decode_all()` at configurable compression level
+- **Dedup hashing** — switched from `DefaultHasher` (SipHash) to `twox_hash::xxh3::hash64()` (~5× faster, non-adversarial context)
+
+#### LSCS Temperature Tracker: Lock-Free Threshold (sochdb-storage)
+
+- **AtomicU64 hot threshold** — `hot_threshold` stored as `AtomicU64` bit pattern (`f64::to_bits()` / `from_bits()`) for lock-free reads; `set_hot_threshold()` is now a real implementation (was a no-op)
+- **Selective hot-column merge** — `compact_selective()` actually reads and merges hot column stripes to L1, cold columns get zero-I/O `ColumnStripeRef` references
+
+#### Feature Flag Hygiene (workspace-wide)
+
+- **sochdb-vector**: `simd-kernels` consolidated → `simd` (deprecated alias kept for backward compat, removed in v0.6)
+- **sochdb-index**: `async-trait` made optional behind `llm-embeddings` feature; new `async` feature as tokio opt-in gate
+- **sochdb-core**: `serde_json` moved from optional (analytics-only) to always-on dependency; `blake3` added as workspace dep
+- **deny.toml**: `sochdb-index` added to license-check exclusion list
+- **Workspace**: `sochdb-fusion` crate added to workspace members
+
+#### Version Bump: 0.4.9 → 0.5.0
+
+- All 13 workspace crates, `sochdb-kernel`, `sochdb-plugin-logging`, `sochdb-python` (Cargo + pyproject.toml)
+- Docker tags, docs, README updated
 
 ### Added
 
-- 12 new production-grade tests for the cost optimizer:
-  `token_budget_underflow_safety`, `index_seek_derives_key_range`, `range_predicate_key_range`, `projection_pushdown_proportional_reduction`, `collect_stats_builds_histogram`, `plan_cache_invalidation`, `stats_age_tracking`, `scan_cost_reads_all_blocks`, `index_wins_over_scan_for_point_lookup`, `no_stats_defaults_to_scan`, `compound_predicate_selectivity`, `join_order_optimizer`
+#### Columnar Zero-Allocation Row Access (sochdb-core, sochdb-storage)
+
+- **`TypedColumn::value_at(idx)`** — extract a single `SochValue` from a columnar array without materializing a per-row `HashMap`
+- **`ColumnarQueryResult::row_view(idx)`** — returns a `ColumnarRowView` that resolves column values on demand from the underlying arrays; O(1) column lookup + O(1) array read, zero allocation per row
+- **`ColumnarRowView::get(column)`** — named-column access without `HashMap` overhead
+- **`ColumnarQueryResult::into_query_result()`** — backward-compatible materialization to row-oriented `QueryResult`
+
+#### DurableStorage Fast-Path APIs (sochdb-storage)
+
+- **`begin_read_only_fast()`** / **`abort_read_only_fast()`** — lightweight read transactions that bypass `active_txns` DashMap and full MVCC bookkeeping
+- **`read_latest(key)`** — single-key read at current timestamp, no transaction overhead
+- **`scan_latest(prefix)`** — prefix scan at current timestamp, no transaction overhead
+
+#### Knowledge Object Data Model (sochdb-core) [New Module]
+
+- **`knowledge_object.rs`** — content-addressed `KnowledgeObject` with BLAKE3 OID, embedded edges, multi-space embeddings, bitemporal coordinates, and provenance chains; foundation for the Knowledge Fabric layer
+
+#### sochdb-fusion Crate [New]
+
+- New workspace member for fused query execution across vector, graph, and temporal predicates
+
+#### sochdb-bench Crate [New, Untracked]
+
+- Criterion micro-benchmark suite with HNSW, storage, and MVCC benchmarks; optimization results documented in `OPTIMIZATIONS.md`
+
+### Fixed
+
+- **Compression divide-by-zero** — `compressed.len() > 0` guard added before ratio check in `CompressionEngine`
 
 ---
 

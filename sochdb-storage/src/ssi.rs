@@ -49,7 +49,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use dashmap::DashMap;
 use parking_lot::RwLock;
+use smallvec::SmallVec;
+
+use crate::durable_storage::InlineKey;
 
 /// Transaction ID type
 pub type TxnId = u64;
@@ -172,8 +176,8 @@ pub struct RwDependency {
     pub reader: TxnId,
     /// Writer transaction (T₂ in T₁ →ʳʷ T₂)
     pub writer: TxnId,
-    /// Key that was read/written
-    pub key: Vec<u8>,
+    /// Key that was read/written (stack-allocated for keys ≤ 32 bytes)
+    pub key: InlineKey,
 }
 
 /// Transaction entry for SSI tracking
@@ -187,10 +191,14 @@ pub struct SsiTransaction {
     pub status: SsiTxnStatus,
     /// Commit timestamp (if committed)
     pub commit_ts: Option<Timestamp>,
-    /// Read set (keys this transaction has read)
-    pub read_set: HashSet<Vec<u8>>,
-    /// Write set (keys this transaction has written)
-    pub write_set: HashSet<Vec<u8>>,
+    /// Read set (keys this transaction has read) — uses InlineKey (SmallVec<[u8; 32]>)
+    /// to avoid heap allocation for keys ≤ 32 bytes
+    pub read_set: HashSet<InlineKey>,
+    /// Write set (keys this transaction has written) — uses InlineKey for inline storage
+    pub write_set: HashSet<InlineKey>,
+    /// Bloom filter bits for fast negative-lookup during commit conflict checks.
+    /// Uses two hash slots per key (xxh3 split), 256-bit filter = 32 bytes.
+    read_bloom: [u64; 4],
     /// Incoming rw-antidependencies (transactions that read before this wrote)
     pub in_rw_deps: HashSet<TxnId>,
     /// Outgoing rw-antidependencies (transactions that wrote after this read)
@@ -211,6 +219,7 @@ impl SsiTransaction {
             commit_ts: None,
             read_set: HashSet::new(),
             write_set: HashSet::new(),
+            read_bloom: [0u64; 4],
             in_rw_deps: HashSet::new(),
             out_rw_deps: HashSet::new(),
             has_committed_in_rw: false,
@@ -218,14 +227,31 @@ impl SsiTransaction {
         }
     }
 
-    /// Record a read operation
-    pub fn record_read(&mut self, key: Vec<u8>) {
-        self.read_set.insert(key);
+    /// Record a read operation (stack-allocated for keys ≤ 32 bytes)
+    pub fn record_read(&mut self, key: &[u8]) {
+        let ik = SmallVec::from_slice(key);
+        self.read_set.insert(ik);
+        // Update Bloom filter — 2 hash slots from xxh3
+        let h = twox_hash::xxh3::hash64(key);
+        let h1 = (h & 0xFF) as usize;       // bit index 0..255
+        let h2 = ((h >> 8) & 0xFF) as usize; // second bit index
+        self.read_bloom[h1 / 64] |= 1u64 << (h1 % 64);
+        self.read_bloom[h2 / 64] |= 1u64 << (h2 % 64);
     }
 
-    /// Record a write operation
-    pub fn record_write(&mut self, key: Vec<u8>) {
-        self.write_set.insert(key);
+    /// Record a write operation (stack-allocated for keys ≤ 32 bytes)
+    pub fn record_write(&mut self, key: &[u8]) {
+        self.write_set.insert(SmallVec::from_slice(key));
+    }
+
+    /// Fast Bloom pre-check: might this transaction have read `key`?
+    /// False positives possible, false negatives are not.
+    pub fn maybe_read(&self, key: &[u8]) -> bool {
+        let h = twox_hash::xxh3::hash64(key);
+        let h1 = (h & 0xFF) as usize;
+        let h2 = ((h >> 8) & 0xFF) as usize;
+        (self.read_bloom[h1 / 64] & (1u64 << (h1 % 64))) != 0
+            && (self.read_bloom[h2 / 64] & (1u64 << (h2 % 64))) != 0
     }
 
     /// Check for dangerous structure (two-in-two-out)
@@ -297,9 +323,13 @@ pub struct SsiManager {
     /// Transaction states for visibility
     txn_states: Arc<SsiTxnStates>,
     /// Key -> latest writer transaction (for write-write detection)
-    key_writers: RwLock<HashMap<Vec<u8>, (TxnId, Timestamp)>>,
+    /// DashMap provides 64-shard concurrent access, eliminating the global
+    /// RwLock bottleneck on key_writers that serialised all record_write() calls.
+    key_writers: DashMap<Vec<u8>, (TxnId, Timestamp)>,
     /// Key -> list of readers (for rw-antidep tracking)
-    key_readers: RwLock<HashMap<Vec<u8>, HashSet<TxnId>>>,
+    /// DashMap allows per-shard locking: concurrent reads on disjoint keys
+    /// proceed without contention.
+    key_readers: DashMap<Vec<u8>, HashSet<TxnId>>,
 }
 
 impl SsiManager {
@@ -310,8 +340,8 @@ impl SsiManager {
             timestamp: AtomicU64::new(1),
             transactions: RwLock::new(HashMap::new()),
             txn_states: Arc::new(SsiTxnStates::new()),
-            key_writers: RwLock::new(HashMap::new()),
-            key_readers: RwLock::new(HashMap::new()),
+            key_writers: DashMap::new(),
+            key_readers: DashMap::new(),
         }
     }
 
@@ -332,35 +362,28 @@ impl SsiManager {
     /// If another concurrent transaction wrote to this key after our snapshot,
     /// we have an rw-antidependency (T_reader →ʳʷ T_writer).
     pub fn record_read(&self, txn_id: TxnId, key: &[u8]) -> Result<(), SsiConflictError> {
-        // Get the snapshot timestamp first
+        // Get the snapshot timestamp and record in read set in one write lock
         let snapshot_ts = {
-            let txns = self.transactions.read();
-            let txn = txns.get(&txn_id).ok_or_else(|| SsiConflictError {
+            let mut txns = self.transactions.write();
+            let txn = txns.get_mut(&txn_id).ok_or_else(|| SsiConflictError {
                 victim_txn: txn_id,
                 winner_txn: None,
                 conflict_type: ConflictType::ReadWriteAnti,
                 message: "Transaction not found".into(),
             })?;
-            txn.start_ts
+            let ts = txn.start_ts;
+            txn.record_read(key);
+            ts
         };
 
-        // Record in read set
-        {
-            let mut txns = self.transactions.write();
-            if let Some(txn) = txns.get_mut(&txn_id) {
-                txn.record_read(key.to_vec());
-            }
-        }
-
-        // Add to key readers
+        // Add to key readers — DashMap per-shard lock, no global contention
         self.key_readers
-            .write()
             .entry(key.to_vec())
             .or_default()
             .insert(txn_id);
 
-        // Check if there's a concurrent writer
-        let writer_info = self.key_writers.read().get(key).cloned();
+        // Check if there's a concurrent writer — DashMap read is lock-free on shard
+        let writer_info = self.key_writers.get(key).map(|r| *r);
         if let Some((writer_txn, write_ts)) = writer_info
             && write_ts > snapshot_ts
             && writer_txn != txn_id
@@ -418,17 +441,13 @@ impl SsiManager {
 
         let snapshot_ts = txn.start_ts;
 
-        // Check for write-write conflict (first-updater-wins)
-        {
-            let key_writers = self.key_writers.read();
-            if let Some((prev_writer, write_ts)) = key_writers.get(key)
-                && *write_ts > snapshot_ts
-                && *prev_writer != txn_id
-            {
-                // Another transaction already wrote after our snapshot
+        // Check for write-write conflict (first-updater-wins) — DashMap shard read
+        if let Some(entry) = self.key_writers.get(key) {
+            let (prev_writer, write_ts) = *entry;
+            if write_ts > snapshot_ts && prev_writer != txn_id {
                 return Err(SsiConflictError {
                     victim_txn: txn_id,
-                    winner_txn: Some(*prev_writer),
+                    winner_txn: Some(prev_writer),
                     conflict_type: ConflictType::WriteWrite,
                     message: format!(
                         "Write-write conflict: transaction {} already wrote to key, ts {}",
@@ -438,21 +457,19 @@ impl SsiManager {
             }
         }
 
-        // Record in write set
-        txn.record_write(key.to_vec());
+        // Record in write set (InlineKey — stack-allocated for keys ≤ 32 bytes)
+        txn.record_write(key);
 
-        // Update key writer
+        // Update key writer — DashMap shard write
         let write_ts = self.timestamp.fetch_add(1, Ordering::SeqCst);
         drop(txns);
 
-        self.key_writers
-            .write()
-            .insert(key.to_vec(), (txn_id, write_ts));
+        self.key_writers.insert(key.to_vec(), (txn_id, write_ts));
 
-        // Check for rw-antidependency from existing readers
-        if let Some(readers) = self.key_readers.read().get(key) {
+        // Check for rw-antidependency from existing readers — DashMap shard read
+        if let Some(readers) = self.key_readers.get(key) {
             let mut txns = self.transactions.write();
-            for reader_id in readers {
+            for reader_id in readers.value() {
                 if *reader_id != txn_id
                     && let Some(reader_txn) = txns.get(reader_id)
                     && reader_txn.start_ts < write_ts
@@ -553,14 +570,12 @@ impl SsiManager {
             self.txn_states.set_status(txn_id, SsiTxnStatus::Aborted);
         }
 
-        // Clean up key writers
-        self.key_writers
-            .write()
-            .retain(|_, (writer, _)| *writer != txn_id);
+        // Clean up key writers — DashMap .retain() operates per-shard
+        self.key_writers.retain(|_, (writer, _)| *writer != txn_id);
 
-        // Clean up key readers
-        for readers in self.key_readers.write().values_mut() {
-            readers.remove(&txn_id);
+        // Clean up key readers — iterate DashMap entries, mutate per-shard
+        for mut entry in self.key_readers.iter_mut() {
+            entry.value_mut().remove(&txn_id);
         }
     }
 
@@ -884,5 +899,88 @@ mod tests {
         let (txn2, _) = ssi.begin().unwrap();
         let result = ssi.record_write(txn2, b"key1");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ssi_bloom_filter_negative() {
+        // Bloom filter should never produce false negatives
+        let mut txn = SsiTransaction::new(1, 100);
+        txn.record_read(b"alpha");
+        txn.record_read(b"beta");
+
+        // Keys that were read must pass maybe_read
+        assert!(txn.maybe_read(b"alpha"));
+        assert!(txn.maybe_read(b"beta"));
+
+        // A key never read _may_ pass (false positive) but with only
+        // 2 keys in a 256-bit filter the probability is low.
+        // We merely confirm the API compiles and returns bool.
+        let _ = txn.maybe_read(b"gamma");
+    }
+
+    #[test]
+    fn test_ssi_inline_key_read_write_sets() {
+        // Verify read/write sets store InlineKey (SmallVec<[u8;32]>)
+        let mut txn = SsiTransaction::new(1, 100);
+
+        // Short key — stack-allocated
+        txn.record_read(b"short");
+        txn.record_write(b"short_w");
+
+        // 32-byte key — still stack-allocated
+        let k32 = [0xABu8; 32];
+        txn.record_read(&k32);
+        txn.record_write(&k32);
+
+        // 64-byte key — heap-allocated but still works
+        let k64 = [0xCDu8; 64];
+        txn.record_read(&k64);
+        txn.record_write(&k64);
+
+        assert_eq!(txn.read_set.len(), 3);
+        assert_eq!(txn.write_set.len(), 3);
+    }
+
+    #[test]
+    fn test_ssi_dashmap_concurrent_disjoint_keys() {
+        // Multiple transactions writing disjoint keys should not conflict
+        let ssi = SsiManager::new();
+        let mut txns = Vec::new();
+        for i in 0..10 {
+            let (tid, _) = ssi.begin().unwrap();
+            let key = format!("key_{}", i);
+            ssi.record_write(tid, key.as_bytes()).unwrap();
+            txns.push(tid);
+        }
+        // All should commit successfully
+        for tid in txns {
+            assert!(ssi.commit(tid).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_ssi_dashmap_abort_cleans_all_shards() {
+        let ssi = SsiManager::new();
+
+        let (txn1, _) = ssi.begin().unwrap();
+        // Write to keys that likely hash to different DashMap shards
+        for i in 0..20 {
+            let key = format!("shard_test_{}", i);
+            ssi.record_write(txn1, key.as_bytes()).unwrap();
+        }
+
+        ssi.abort(txn1);
+
+        // Verify all key_writers entries for txn1 are removed
+        for i in 0..20 {
+            let key = format!("shard_test_{}", i);
+            let has_entry = ssi.key_writers.get(key.as_bytes()).is_some();
+            assert!(!has_entry, "key_writers should be cleaned for {}", key);
+        }
+
+        // Another transaction should be able to write any of those keys
+        let (txn2, _) = ssi.begin().unwrap();
+        ssi.record_write(txn2, b"shard_test_5").unwrap();
+        assert!(ssi.commit(txn2).is_ok());
     }
 }

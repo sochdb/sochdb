@@ -1,6 +1,6 @@
 [package]
 name = "sochdb-python"
-version = "0.4.9"
+version = "0.5.0"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
 license.workspace = true

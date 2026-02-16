@@ -107,6 +107,7 @@ pub mod schema_evolution;
 pub mod sharded_block_store;
 pub mod string_interner; // String interning for path segments
 pub mod tbp; // TOON Binary Protocol for zero-copy wire format (mm.md Task 3.1)
+pub mod knowledge_object; // Knowledge Fabric: Object-centric data model (content-addressed, bitemporal, multi-space)
 pub mod soch;
 pub mod soch_codec;
 pub mod sochfs_metadata;
@@ -141,6 +142,11 @@ pub use path_trie::{ColumnGroupAffinity, ColumnType as PathTrieColumnType, PathT
 pub use predefined_views::{
     ViewDefinition, build_view_map, get_predefined_views, get_view, naming,
 };
+pub use knowledge_object::{
+    BitemporalCoord, CompressionMode, Edge, EdgeKind, EmbeddingSpace, KnowledgeObject,
+    KnowledgeObjectBuilder, KnowledgeObjectError, ObjectId, ObjectIdError,
+    ObjectKind, Provenance,
+};
 pub use soch::{SochField, SochIndex, SochRow, SochSchema, SochTable, SochType, SochValue};
 pub use soch_codec::{
     SochDbBinaryCodec, SochDocument, SochParseError, SochTextEncoder, SochTextParser,
@@ -157,6 +163,9 @@ pub use transaction_typestate::{
     ReadOnly, ReadWrite, WriteOnly, TransactionStorage, TransactionMode,
 };
 pub use version_chain::{
+    BinarySearchChain, ChainEntry,
+    ConcurrencyPolicy, ExternalLock, InternalRwLock, LockFreeAtomic,
+    MvccGcStats, MvccStore, MvccStoreError,
     MvccVersionChain, MvccVersionChainMut, VersionMeta, VisibilityContext, WriteConflictDetection,
 };
 pub use vfs::{
