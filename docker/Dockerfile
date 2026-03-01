@@ -41,6 +41,7 @@ COPY sochdb-wasm ./sochdb-wasm
 COPY sochdb-tools ./sochdb-tools
 COPY sochdb-plugin-logging ./sochdb-plugin-logging
 COPY proto ./proto
+COPY sochdb-fusion ./sochdb-fusion
 
 # Build release binary
 RUN cargo build --release --package sochdb-grpc --bin sochdb-grpc-server
@@ -49,7 +50,8 @@ RUN cargo build --release --package sochdb-grpc --bin sochdb-grpc-server
 # Stage 2: Runtime
 # =============================================================================
 FROM debian:bookworm-slim AS runtime
-
+COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 \
+    /ko-app/grpc-health-probe /bin/grpc_health_probe
 # Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
