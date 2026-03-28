@@ -43,6 +43,33 @@ Complete guide to SochDB's Python SDK covering dual-mode architecture (embedded 
 pip install sochdb
 ```
 
+### Local Development From Source
+
+If you're working from this monorepo rather than consuming the published PyPI package,
+build the editable package from `sochdb-python/`:
+
+```bash
+cd sochdb-python
+pip install maturin
+maturin develop --release
+```
+
+Then use the package from that same Python environment:
+
+```python
+from sochdb import Database
+```
+
+### macOS Architecture Note
+
+SochDB's Python package uses native Rust extensions. On macOS, your Python runtime
+architecture must match the native library architecture:
+
+- Apple Silicon Python should use `arm64` builds
+- Intel / Rosetta Python should use `x86_64` builds
+
+Mixed environments can fail at import/load time with native library errors.
+
 **What's New in 0.4.7:**
 - ✅ Improved FFI stability and error messages
 - ✅ Better platform detection for native libraries

@@ -66,14 +66,23 @@ Real-world examples showing how to use SochDB for AI/LLM applications.
 ### 1. Setup Environment
 
 ```bash
-# Install Python dependencies
-pip install python-dotenv requests numpy
+# Install the published SDK
+pip install sochdb python-dotenv requests numpy
 
-# For LangGraph
+# Install Python dependencies
 pip install langgraph langchain-core
 
 # For CrewAI (optional)
 pip install crewai crewai-tools
+```
+
+If you're developing from the monorepo instead of using the published package:
+
+```bash
+cd sochdb-python
+pip install maturin
+maturin develop --release
+cd ..
 ```
 
 ### 2. Configure Azure OpenAI
@@ -95,15 +104,17 @@ AZURE_EMEBEDDING_API_VERSION="2024-12-01-preview"
 ### 3. Run Examples
 
 ```bash
-# Set environment
-export PYTHONPATH=$(pwd)/sochdb-python-sdk/src
-export SOCHDB_LIB_PATH=$(pwd)/target/release
-
 # Run any example
 python3 examples/python/langgraph_agent.py
 python3 examples/python/simple_rag_chatbot.py
 python3 examples/python/semantic_search_api.py
 ```
+
+### 4. macOS Architecture Note
+
+If you're using a local Rust build or editable Python install on macOS, make sure
+your Python environment architecture matches the native library architecture
+(`arm64` vs `x86_64`). Mixed-architecture setups can fail during native library load.
 
 ## Example Highlights
 
