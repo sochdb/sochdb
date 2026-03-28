@@ -3,7 +3,7 @@ name = "sochdb-python"
 version = "0.5.0"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
-license.workspace = true
+license = "AGPL-3.0-or-later"
 description = "SochDB Python native extension with PyO3 - zero-copy vector operations"
 
 [lib]
