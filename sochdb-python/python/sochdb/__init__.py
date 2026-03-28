@@ -26,7 +26,9 @@ from __future__ import annotations
 # Import native extension
 try:
     from sochdb._native import (
+        Database,
         HnswIndex,
+        Transaction,
         build_index,
         version,
         is_safe_mode,
@@ -39,7 +41,9 @@ except ImportError as e:
 # Re-export for convenience
 __all__ = [
     # Core classes
+    "Database",
     "HnswIndex",
+    "Transaction",
     # Functions
     "build_index",
     "build_index_from_numpy",
@@ -50,7 +54,7 @@ __all__ = [
     "bulk_build_index",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 
 
 def _check_native():
@@ -223,6 +227,12 @@ if _HAS_NATIVE:
     pass
 else:
     # Stub classes for IDE autocomplete when native not installed
+    class Database:
+        """SochDB Database (stub - native extension not loaded)."""
+
+        def __init__(self, *args, **kwargs):
+            _check_native()
+
     class HnswIndex:
         """HNSW Vector Index (stub - native extension not loaded)."""
         
@@ -244,4 +254,10 @@ else:
         
         @staticmethod
         def load(path: str) -> "HnswIndex":
+            _check_native()
+
+    class Transaction:
+        """SochDB Transaction (stub - native extension not loaded)."""
+
+        def __init__(self, *args, **kwargs):
             _check_native()
