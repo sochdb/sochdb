@@ -192,16 +192,27 @@ Observed on the public `SciFact` dataset prepared via `ir_datasets`:
 
 | System | Recall@5 | MRR | nDCG@5 | P50 (ms) | P95 (ms) | Mean (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `sochdb` | 0.7026 | 0.5807 | 0.6056 | 0.149 | 0.221 | 0.155 |
+| `sochdb` (default: `m=16`, `ef_construction=100`) | 0.7026 | 0.5807 | 0.6056 | 0.149 | 0.221 | 0.155 |
+| `sochdb` (quality: `m=32`, `ef_construction=200`) | 0.7076 | 0.5850 | 0.6102 | 0.248 | 0.413 | 0.262 |
 | `sqlite_faiss` | 0.7109 | 0.5883 | 0.6135 | 0.136 | 0.158 | 0.158 |
 | `lancedb` | 0.6183 | 0.4843 | 0.5130 | 2.531 | 3.879 | 2.987 |
 
 Notes:
 
 - SochDB is close to SQLite + FAISS on retrieval quality on this larger public dataset
+- increasing `m` and `ef_construction` improves SochDB quality and narrows the gap further, at the cost of some latency
 - SochDB and SQLite + FAISS remain in the same general latency range
 - LanceDB was materially slower and lower-quality on this run
 - this is a much more meaningful comparison point than the tiny starter corpus
+
+## Suggested SochDB Presets
+
+For this benchmark harness, the current useful presets are:
+
+| Preset | Settings | When to use |
+| --- | --- | --- |
+| `fast` | `m=16`, `ef_construction=100`, `precision=f32` | default local evaluation, quicker benchmark iteration |
+| `quality` | `m=32`, `ef_construction=200`, `precision=f32` | when recall quality matters more and you can spend more latency budget |
 
 ## Workflow Complexity
 

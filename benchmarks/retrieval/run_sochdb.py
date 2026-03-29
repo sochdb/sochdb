@@ -76,6 +76,24 @@ def main() -> None:
         help="Keep existing DB directory instead of recreating it",
     )
     parser.add_argument(
+        "--m",
+        type=int,
+        default=16,
+        help="HNSW max connections per node",
+    )
+    parser.add_argument(
+        "--ef-construction",
+        type=int,
+        default=100,
+        help="HNSW construction search depth",
+    )
+    parser.add_argument(
+        "--precision",
+        default="f32",
+        choices=["f32", "f16", "bf16"],
+        help="Index quantization precision",
+    )
+    parser.add_argument(
         "--dataset-dir",
         type=Path,
         default=DEFAULT_DATASET_DIR,
@@ -118,9 +136,10 @@ def main() -> None:
         dimension = int(doc_embeddings.shape[1])
         index = HnswIndex(
             dimension=dimension,
-            m=16,
-            ef_construction=100,
+            m=args.m,
+            ef_construction=args.ef_construction,
             metric="cosine",
+            precision=args.precision,
         )
 
         print(f"Building HNSW index for {len(doc_ids)} embeddings...")
@@ -186,6 +205,9 @@ def main() -> None:
                 "store_time_ms": round(store_elapsed * 1000, 3),
                 "index_build_time_ms": round(build_elapsed * 1000, 3),
                 "indexed_vectors": int(inserted),
+                "m": args.m,
+                "ef_construction": args.ef_construction,
+                "precision": args.precision,
             },
             "query_latency": {
                 "p50_ms": round(percentile(query_timings, 50) * 1000, 3),
