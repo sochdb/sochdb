@@ -87,6 +87,13 @@ This page does **not** claim that SochDB was benchmarked against each of them he
 pip install sochdb
 ```
 
+### Suggested presets
+
+If you benchmark or compare SochDB locally:
+
+- `fast`: `m=16`, `ef_construction=100`, `precision=f32`
+- `quality`: `m=48`, `ef_construction=200`, `precision=f32`
+
 ### Run
 
 ```bash

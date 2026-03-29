@@ -161,9 +161,15 @@ If you want to evaluate SochDB seriously, do this:
 
 1. Use the published Python package: `pip install sochdb`
 2. Run the local knowledge retrieval demo
-3. Decide whether the reduced workflow complexity is meaningful for your use case
+3. Use the benchmark `fast` preset for quick iteration, or the `quality` preset if you want the strongest current retrieval quality
+4. Decide whether the reduced workflow complexity is meaningful for your use case
 
 That is a better first evaluation path than trying to use every feature in the docs at once.
+
+Current benchmark presets:
+
+- `fast`: `m=16`, `ef_construction=100`, `precision=f32`
+- `quality`: `m=48`, `ef_construction=200`, `precision=f32`
 
 ---
 

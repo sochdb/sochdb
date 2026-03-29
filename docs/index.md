@@ -151,6 +151,7 @@ Step-by-step guides to get you up and running quickly.
 
 - [Quick Start](/getting-started/quickstart) — 5-minute intro
 - [Installation](/getting-started/installation) — All platforms
+- [Local Retrieval Start Here](/getting-started/local-retrieval-start-here) — Best current evaluator path
 - [Use SochDB When](/getting-started/use-sochdb-when) — Decide if SochDB fits your workflow
 - [Local Retrieval Comparison](/getting-started/local-knowledge-retrieval-comparison) — Compare the first local evaluation path
 - [What Works Today](/getting-started/what-works-today) — Current product maturity map
