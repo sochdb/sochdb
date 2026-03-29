@@ -11,7 +11,7 @@ Use this table first before choosing what to run:
 | Status | What it means | Recommended examples |
 |--------|----------------|----------------------|
 | **Validated / local-only** | Works without external APIs or cloud credentials | `python/07_local_knowledge_search.py` |
-| **Needs local source-path cleanup** | Useful example, but still contains older monorepo path assumptions like `sochdb-python-sdk` | `python/01_basic_database.py`, `python/02_vector_search.py`, `python/03_bulk_operations.py`, `python/04_langgraph_integration.py`, `python/05_context_query.py` |
+| **Ready with local setup** | Uses current package/install guidance, but may still need optional dependencies or a local build depending on the example | `python/01_basic_database.py`, `python/02_vector_search.py`, `python/03_bulk_operations.py`, `python/04_langgraph_integration.py`, `python/05_context_query.py` |
 | **Needs external dependencies or cloud credentials** | Requires framework installs, API keys, or external model providers | `python/langgraph_agent.py`, `python/crewai_research_crew.py`, `python/llamaindex_rag.py`, `python/simple_rag_chatbot.py`, `python/semantic_search_api.py`, `python/customer_support_rag.py`, `python/ecommerce_search.py`, `python/semantic_dedup.py`, `python/code_search.py`, `python/personalization.py`, `python/security_qa_triage.py`, `python/real_llm_test.py` |
 | **Legacy / needs rename cleanup** | Contains older package or project naming and should be updated before being used as a primary example | `examples/go/*.go`, `python/sochdb_implementations.py`, `python/test_scenarios.py`, `python/comprehensive_e2e_test.py`, `python/sochdb_feature_validation.py` |
 
@@ -33,8 +33,8 @@ That path is the clearest current wedge:
 
 The example set still has some cleanup work in progress:
 
-- several Python examples still reference `sochdb-python-sdk` instead of the current monorepo path
-- a few examples assume older package names like `sochdb-client`
+- several advanced Python examples still reference older monorepo paths and should be normalized
+- a few legacy scripts still assume older package names like `sochdb-client`
 - some legacy validation/demo scripts still need broader rename and packaging cleanup
 
 Treat the examples above as product maturity signals rather than all being equally ready.
