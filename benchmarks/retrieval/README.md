@@ -115,15 +115,17 @@ conda run -n sochdb-py310 python benchmarks/retrieval/evaluate.py benchmarks/ret
 
 Observed on the starter corpus and query set:
 
-| Backend | Recall@5 | MRR | nDCG@5 | P50 (ms) | P95 (ms) | Mean (ms) |
+| System / Backend | Recall@5 | MRR | nDCG@5 | P50 (ms) | P95 (ms) | Mean (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `tfidf-svd` | 0.8000 | 0.9750 | 0.8154 | 0.011 | 0.024 | 0.013 |
-| `sentence-transformers/all-MiniLM-L6-v2` | 0.8750 | 1.0000 | 0.8901 | 0.016 | 0.027 | 0.018 |
+| `sochdb` + `tfidf-svd` | 0.8000 | 0.9750 | 0.8154 | 0.011 | 0.024 | 0.013 |
+| `sochdb` + `sentence-transformers/all-MiniLM-L6-v2` | 0.8750 | 1.0000 | 0.8901 | 0.016 | 0.027 | 0.018 |
+| `sqlite_faiss` + `sentence-transformers/all-MiniLM-L6-v2` | 0.8750 | 1.0000 | 0.8901 | 0.005 | 0.494 | 0.460 |
 
 Notes:
 
 - the sentence-transformer backend performed better on this small starter dataset
-- query latency remained very low for both runs
+- SochDB and SQLite + FAISS matched on retrieval quality for the sentence-transformer run
+- SQLite + FAISS showed a very low median query latency but had one visible outlier query in this initial run, which pushed up its p95 and mean
 - the TF-IDF + SVD path is still useful as a local fallback when the model stack is unavailable
 
 ## Next Tasks
