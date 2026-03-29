@@ -72,6 +72,32 @@ This benchmark aligns with the current first evaluator path:
 - `docs/getting-started/use-sochdb-when.md`
 - `docs/getting-started/local-knowledge-retrieval-comparison.md`
 
+## Public Dataset Path
+
+Alongside the starter internal-doc corpus, we can also prepare a public retrieval dataset from BEIR.
+
+Recommended first pick:
+
+- `SciFact`
+
+Suggested sources:
+
+- Hugging Face dataset card for SciFact: https://huggingface.co/datasets/bigbio/scifact
+- BEIR benchmark family: https://huggingface.co/datasets/BeIR
+
+Preparation script:
+
+```bash
+conda run -n sochdb-py310 pip install ir_datasets
+conda run -n sochdb-py310 python benchmarks/retrieval/prepare_beir_dataset.py --dataset scifact
+```
+
+That writes a benchmark-ready dataset under:
+
+- `benchmarks/retrieval/datasets/scifact/corpus.jsonl`
+- `benchmarks/retrieval/datasets/scifact/queries.jsonl`
+- `benchmarks/retrieval/datasets/scifact/metadata.json`
+
 ## How To Run
 
 Known working dependency stack in `sochdb-py310` for the `sentence-transformers` backend:
