@@ -33,7 +33,7 @@ That path is the clearest current wedge:
 
 The example set still has some cleanup work in progress:
 
-- several advanced Python examples still reference older monorepo paths and should be normalized
+- a smaller set of advanced Python examples still reference older monorepo paths and should be normalized
 - a few legacy scripts still assume older package names like `sochdb-client`
 - some legacy validation/demo scripts still need broader rename and packaging cleanup
 
