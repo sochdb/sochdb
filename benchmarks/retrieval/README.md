@@ -120,12 +120,14 @@ Observed on the starter corpus and query set:
 | `sochdb` + `tfidf-svd` | 0.8000 | 0.9750 | 0.8154 | 0.011 | 0.024 | 0.013 |
 | `sochdb` + `sentence-transformers/all-MiniLM-L6-v2` | 0.8750 | 1.0000 | 0.8901 | 0.016 | 0.027 | 0.018 |
 | `sqlite_faiss` + `sentence-transformers/all-MiniLM-L6-v2` | 0.8750 | 1.0000 | 0.8901 | 0.005 | 0.494 | 0.460 |
+| `lancedb` + `sentence-transformers/all-MiniLM-L6-v2` | 0.8750 | 1.0000 | 0.8901 | 2.331 | 4.547 | 3.262 |
 
 Notes:
 
 - the sentence-transformer backend performed better on this small starter dataset
 - SochDB and SQLite + FAISS matched on retrieval quality for the sentence-transformer run
 - SQLite + FAISS showed a very low median query latency but had one visible outlier query in this initial run, which pushed up its p95 and mean
+- LanceDB also matched on retrieval quality, but on this 30-document starter corpus it could not train its PQ-based index and fell back to the non-indexed search path
 - the TF-IDF + SVD path is still useful as a local fallback when the model stack is unavailable
 
 ## Next Tasks
