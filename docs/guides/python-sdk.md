@@ -60,6 +60,9 @@ Then use the package from that same Python environment:
 from sochdb import Database
 ```
 
+For a concise environment matrix and architecture troubleshooting guide, see
+[Python Install Matrix](/getting-started/python-install-matrix).
+
 ### macOS Architecture Note
 
 SochDB's Python package uses native Rust extensions. On macOS, your Python runtime
@@ -1070,7 +1073,7 @@ print(f"Active transactions: {stats['active_transactions']}")
 
 ## CLI Tools
 
-Three CLI tools are available globally after `pip install sochdb-client`:
+Three CLI tools are available globally after `pip install sochdb`:
 
 ### sochdb-bulk
 

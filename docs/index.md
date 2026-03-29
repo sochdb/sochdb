@@ -151,6 +151,8 @@ Step-by-step guides to get you up and running quickly.
 
 - [Quick Start](/getting-started/quickstart) — 5-minute intro
 - [Installation](/getting-started/installation) — All platforms
+- [Use SochDB When](/getting-started/use-sochdb-when) — Decide if SochDB fits your workflow
+- [Local Retrieval Comparison](/getting-started/local-knowledge-retrieval-comparison) — Compare the first local evaluation path
 - [First App](/getting-started/first-app) — Build something real
 
 ### 📖 Guides
@@ -234,7 +236,7 @@ Recipes for common tasks.
 
 - [**sochdb.dev**](https://sochdb.dev) — Main website
 - [**GitHub**](https://github.com/sochdb/sochdb) — Source code
-- [**Python SDK**](https://github.com/sochdb/sochdb-python-sdk) — Python SDK repo
+- [**Python Source**](https://github.com/sochdb/sochdb/tree/main/sochdb-python) — Python package in the monorepo
 - [**Node.js SDK**](https://github.com/sochdb/sochdb-nodejs-sdk) — Node.js SDK repo
 - [**Go SDK**](https://github.com/sochdb/sochdb-go) — Go SDK repo
 - [**Discussions**](https://github.com/sochdb/sochdb/discussions) — Community Q&A

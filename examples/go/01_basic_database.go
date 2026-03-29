@@ -1,4 +1,4 @@
-// Basic ToonDB Operations Example
+// Basic SochDB Operations Example
 //
 // Demonstrates fundamental key-value operations:
 // - Opening a database
@@ -12,12 +12,12 @@ import (
 	"fmt"
 	"log"
 
-	toondb "github.com/toondb/toondb-go"
+	sochdb "github.com/sochdb/sochdb-go"
 )
 
 func main() {
 	// Open or create a database
-	db, err := toondb.Open("./example_db")
+	db, err := sochdb.Open("./example_db")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func main() {
 	fmt.Println("✓ Database opened")
 
 	// Basic key-value operations
-	err = db.Put("greeting", []byte("Hello, ToonDB!"))
+	err = db.Put("greeting", []byte("Hello, SochDB!"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func main() {
 
 	// Verify deletion
 	_, err = db.Get("greeting")
-	if err == toondb.ErrNotFound {
+	if err == sochdb.ErrNotFound {
 		fmt.Println("✓ Key confirmed deleted")
 	}
 
