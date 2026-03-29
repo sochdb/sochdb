@@ -24,6 +24,7 @@ RESULTS_DIR = ROOT / "results"
 DEFAULT_DB_PATH = ROOT / "results" / "sochdb_benchmark_db"
 DEFAULT_OUTPUT_PATH = ROOT / "results" / "sochdb.json"
 EMBEDDING_DIR = ROOT / "results"
+DEFAULT_DATASET_DIR = ROOT
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -74,10 +75,18 @@ def main() -> None:
         action="store_true",
         help="Keep existing DB directory instead of recreating it",
     )
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=DEFAULT_DATASET_DIR,
+        help="Directory containing corpus.jsonl and queries.jsonl",
+    )
     args = parser.parse_args()
 
-    corpus = load_jsonl(CORPUS_PATH)
-    queries = load_jsonl(QUERIES_PATH)
+    corpus_path = args.dataset_dir / "corpus.jsonl"
+    queries_path = args.dataset_dir / "queries.jsonl"
+    corpus = load_jsonl(corpus_path)
+    queries = load_jsonl(queries_path)
 
     doc_embeddings = np.load(args.embedding_dir / "doc_embeddings.npy")
     query_embeddings = np.load(args.embedding_dir / "query_embeddings.npy")
@@ -116,8 +125,12 @@ def main() -> None:
 
         print(f"Building HNSW index for {len(doc_ids)} embeddings...")
         build_start = time.perf_counter()
+        numeric_ids = np.arange(1, len(doc_ids) + 1, dtype=np.uint64)
+        numeric_to_doc_id = {
+            int(numeric_id): doc_id for numeric_id, doc_id in zip(numeric_ids.tolist(), doc_ids)
+        }
         inserted = index.insert_batch_with_ids(
-            np.array([int(doc_id.split("-")[1]) for doc_id in doc_ids], dtype=np.uint64),
+            numeric_ids,
             doc_embeddings.astype(np.float32),
         )
         build_elapsed = time.perf_counter() - build_start
@@ -136,7 +149,9 @@ def main() -> None:
 
             ranked = []
             for doc_numeric_id, distance in zip(result_ids.tolist(), distances.tolist()):
-                doc_id = f"doc-{int(doc_numeric_id):03d}"
+                doc_id = numeric_to_doc_id.get(int(doc_numeric_id))
+                if doc_id is None:
+                    continue
                 ranked.append(
                     {
                         "doc_id": doc_id,
@@ -164,6 +179,7 @@ def main() -> None:
             "top_k": args.k,
             "storage": {
                 "db_path": str(args.db_path),
+                "dataset_dir": str(args.dataset_dir),
             },
             "build": {
                 "documents_stored": len(corpus),

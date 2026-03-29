@@ -21,12 +21,14 @@ Implemented so far:
 - starter query set with relevance labels
 - embedding generation script
 - SochDB runner
+- SQLite + FAISS runner
+- LanceDB runner
 - evaluator
 
 Not implemented yet:
 
-- SQLite + FAISS runner
-- LanceDB runner
+- workflow-complexity comparison table
+- a larger benchmark summary page
 
 ## Dataset Shape
 
@@ -98,6 +100,33 @@ That writes a benchmark-ready dataset under:
 - `benchmarks/retrieval/datasets/scifact/queries.jsonl`
 - `benchmarks/retrieval/datasets/scifact/metadata.json`
 
+To run the harness against SciFact instead of the starter internal-doc corpus:
+
+```bash
+conda run -n sochdb-py310 python benchmarks/retrieval/embed.py \
+  --dataset-dir benchmarks/retrieval/datasets/scifact \
+  --output-dir benchmarks/retrieval/results_scifact \
+  --backend sentence-transformers
+
+conda run -n sochdb-py310 python benchmarks/retrieval/run_sochdb.py \
+  --dataset-dir benchmarks/retrieval/datasets/scifact \
+  --embedding-dir benchmarks/retrieval/results_scifact \
+  --db-path benchmarks/retrieval/results/sochdb_scifact_db \
+  --output benchmarks/retrieval/results/sochdb_scifact.json
+
+conda run -n sochdb-py310 python benchmarks/retrieval/run_sqlite_faiss.py \
+  --dataset-dir benchmarks/retrieval/datasets/scifact \
+  --embedding-dir benchmarks/retrieval/results_scifact \
+  --db-path benchmarks/retrieval/results/sqlite_faiss_scifact.db \
+  --output benchmarks/retrieval/results/sqlite_faiss_scifact.json
+
+conda run -n sochdb-py310 python benchmarks/retrieval/run_lancedb.py \
+  --dataset-dir benchmarks/retrieval/datasets/scifact \
+  --embedding-dir benchmarks/retrieval/results_scifact \
+  --db-path benchmarks/retrieval/results/lancedb_scifact \
+  --output benchmarks/retrieval/results/lancedb_scifact.json
+```
+
 ## How To Run
 
 Known working dependency stack in `sochdb-py310` for the `sentence-transformers` backend:
@@ -156,9 +185,26 @@ Notes:
 - LanceDB also matched on retrieval quality, but on this 30-document starter corpus it could not train its PQ-based index and fell back to the non-indexed search path
 - the TF-IDF + SVD path is still useful as a local fallback when the model stack is unavailable
 
+## SciFact Results
+
+Observed on the public `SciFact` dataset prepared via `ir_datasets`:
+
+| System | Recall@5 | MRR | nDCG@5 | P50 (ms) | P95 (ms) | Mean (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `sochdb` | 0.7026 | 0.5807 | 0.6056 | 0.149 | 0.221 | 0.155 |
+| `sqlite_faiss` | 0.7109 | 0.5883 | 0.6135 | 0.136 | 0.158 | 0.158 |
+| `lancedb` | 0.6183 | 0.4843 | 0.5130 | 2.531 | 3.879 | 2.987 |
+
+Notes:
+
+- SochDB is close to SQLite + FAISS on retrieval quality on this larger public dataset
+- SochDB and SQLite + FAISS remain in the same general latency range
+- LanceDB was materially slower and lower-quality on this run
+- this is a much more meaningful comparison point than the tiny starter corpus
+
 ## Next Tasks
 
-1. add SQLite + FAISS baseline
-2. add LanceDB baseline
-3. compare workflow complexity and retrieval metrics
-4. decide whether to track result JSON files or keep them as local benchmark outputs
+1. compare workflow complexity and retrieval metrics
+2. tune SochDB search/index settings to close the small SciFact quality gap
+3. decide whether to track summary outputs separately from generated benchmark artifacts
+4. add another public dataset if needed

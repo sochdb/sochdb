@@ -22,6 +22,7 @@ RESULTS_DIR = ROOT / "results"
 DEFAULT_DB_PATH = ROOT / "results" / "sqlite_faiss.db"
 DEFAULT_OUTPUT_PATH = ROOT / "results" / "sqlite_faiss.json"
 EMBEDDING_DIR = ROOT / "results"
+DEFAULT_DATASET_DIR = ROOT
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -91,6 +92,12 @@ def main() -> None:
         action="store_true",
         help="Keep existing SQLite DB instead of recreating it",
     )
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=DEFAULT_DATASET_DIR,
+        help="Directory containing corpus.jsonl and queries.jsonl",
+    )
     args = parser.parse_args()
 
     try:
@@ -102,8 +109,10 @@ def main() -> None:
             "  conda run -n sochdb-py310 pip install faiss-cpu"
         ) from exc
 
-    corpus = load_jsonl(CORPUS_PATH)
-    queries = load_jsonl(QUERIES_PATH)
+    corpus_path = args.dataset_dir / "corpus.jsonl"
+    queries_path = args.dataset_dir / "queries.jsonl"
+    corpus = load_jsonl(corpus_path)
+    queries = load_jsonl(queries_path)
 
     doc_embeddings = np.load(args.embedding_dir / "doc_embeddings.npy").astype(np.float32)
     query_embeddings = np.load(args.embedding_dir / "query_embeddings.npy").astype(np.float32)
@@ -198,6 +207,7 @@ def main() -> None:
             "top_k": args.k,
             "storage": {
                 "db_path": str(args.db_path),
+                "dataset_dir": str(args.dataset_dir),
             },
             "build": {
                 "documents_stored": len(corpus),

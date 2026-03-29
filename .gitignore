@@ -84,4 +84,5 @@ benchmarks/retrieval/results/*
 !benchmarks/retrieval/results/.gitkeep
 benchmarks/retrieval/results_tfidf/
 benchmarks/retrieval/results_st/
+benchmarks/retrieval/results_scifact/
 benchmarks/retrieval/datasets/

@@ -25,9 +25,11 @@ ROOT = Path(__file__).resolve().parent
 CORPUS_PATH = ROOT / "corpus.jsonl"
 QUERIES_PATH = ROOT / "queries.jsonl"
 OUTPUT_DIR = ROOT / "results"
+DEFAULT_DATASET_DIR = ROOT
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_BACKEND = "auto"
 FALLBACK_MODEL = "tfidf-svd"
+DEFAULT_BATCH_SIZE = 128
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -85,25 +87,39 @@ def encode_with_sentence_transformers(
     model_name: str,
     doc_texts: list[str],
     query_texts: list[str],
+    batch_size: int,
 ) -> tuple[np.ndarray, np.ndarray, str]:
     from sentence_transformers import SentenceTransformer
 
     print(f"Loading sentence-transformers model: {model_name}")
     model = SentenceTransformer(model_name)
 
-    print(f"Embedding {len(doc_texts)} corpus documents with sentence-transformers...")
-    doc_embeddings = model.encode(
-        doc_texts,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    ).astype(np.float32)
+    def encode_batches(texts: list[str], label: str) -> np.ndarray:
+        total = len(texts)
+        if total == 0:
+            return np.zeros((0, 0), dtype=np.float32)
 
-    print(f"Embedding {len(query_texts)} queries with sentence-transformers...")
-    query_embeddings = model.encode(
-        query_texts,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    ).astype(np.float32)
+        print(
+            f"Embedding {total} {label} with sentence-transformers "
+            f"(batch_size={batch_size})..."
+        )
+        batches: list[np.ndarray] = []
+        total_batches = (total + batch_size - 1) // batch_size
+        for batch_idx, start in enumerate(range(0, total, batch_size), start=1):
+            end = min(start + batch_size, total)
+            print(f"  {label} batch {batch_idx}/{total_batches}: rows {start}-{end - 1}")
+            batch_embeddings = model.encode(
+                texts[start:end],
+                batch_size=batch_size,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            ).astype(np.float32)
+            batches.append(batch_embeddings)
+        return np.vstack(batches)
+
+    doc_embeddings = encode_batches(doc_texts, "corpus documents")
+    query_embeddings = encode_batches(query_texts, "queries")
 
     return doc_embeddings, query_embeddings, model_name
 
@@ -173,15 +189,30 @@ def main() -> None:
         default=OUTPUT_DIR,
         help="Directory for embedding outputs",
     )
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        default=DEFAULT_DATASET_DIR,
+        help="Directory containing corpus.jsonl and queries.jsonl",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Batch size for sentence-transformers encoding",
+    )
     args = parser.parse_args()
 
-    doc_records = load_jsonl(CORPUS_PATH)
-    query_records = load_jsonl(QUERIES_PATH)
+    corpus_path = args.dataset_dir / "corpus.jsonl"
+    queries_path = args.dataset_dir / "queries.jsonl"
+
+    doc_records = load_jsonl(corpus_path)
+    query_records = load_jsonl(queries_path)
 
     if not doc_records:
-        raise SystemExit(f"No corpus records found in {CORPUS_PATH}")
+        raise SystemExit(f"No corpus records found in {corpus_path}")
     if not query_records:
-        raise SystemExit(f"No query records found in {QUERIES_PATH}")
+        raise SystemExit(f"No query records found in {queries_path}")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -197,6 +228,7 @@ def main() -> None:
                 args.model,
                 doc_texts,
                 query_texts,
+                args.batch_size,
             )
             backend_used = "sentence-transformers"
         except Exception as exc:
@@ -249,6 +281,7 @@ def main() -> None:
     print(f"  - {args.output_dir / 'doc_ids.json'}")
     print(f"  - {args.output_dir / 'query_ids.json'}")
     print(f"  - {args.output_dir / 'embedding_metadata.json'}")
+    print(f"Dataset directory: {args.dataset_dir}")
     print(f"Embedding backend: {backend_used}")
     print(f"Embedding model: {model_name}")
     print(f"Embedding dimension: {doc_embeddings.shape[1]}")
