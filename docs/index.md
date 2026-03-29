@@ -168,6 +168,7 @@ Task-oriented guides for specific use cases.
 **Features:**
 - [SQL Guide](/guides/sql-guide) — Working with SQL queries
 - [Vector Search](/guides/vector-search) — HNSW indexing
+- [Retrieval Evaluation](/guides/retrieval-evaluation) — Benchmark and comparison framework
 - [Bulk Operations](/guides/bulk-operations) — Batch processing
 - [Deployment](/guides/deployment) — Production setup
 
