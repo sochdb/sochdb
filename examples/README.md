@@ -21,6 +21,7 @@ Real-world examples showing how to use SochDB for AI/LLM applications.
 | Example | Description | Key Features |
 |---------|-------------|--------------|
 | [06_sql_queries.py](python/06_sql_queries.py) | SQL query operations | CREATE TABLE, INSERT, SELECT, UPDATE, DELETE, JOINs |
+| [07_local_knowledge_search.py](python/07_local_knowledge_search.py) | Local knowledge-base retrieval | Embedded DB, local vectors, no external APIs |
 | [customer_support_rag.py](python/customer_support_rag.py) | Multi-tenant support system | ACL, time decay, OOD handling |
 | [ecommerce_search.py](python/ecommerce_search.py) | Product semantic search | Multi-vector, faceted filtering |
 | [semantic_dedup.py](python/semantic_dedup.py) | Near-duplicate detection | Threshold matching, clustering |
