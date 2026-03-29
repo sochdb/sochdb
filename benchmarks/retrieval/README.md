@@ -25,10 +25,11 @@ Implemented so far:
 - LanceDB runner
 - evaluator
 
-Not implemented yet:
+Next benchmark gaps:
 
-- workflow-complexity comparison table
-- a larger benchmark summary page
+- tune SochDB search/index settings on larger public datasets
+- add another public retrieval dataset if needed
+- decide how to preserve benchmark summaries in-repo without checking in generated artifacts
 
 ## Dataset Shape
 
@@ -201,6 +202,23 @@ Notes:
 - SochDB and SQLite + FAISS remain in the same general latency range
 - LanceDB was materially slower and lower-quality on this run
 - this is a much more meaningful comparison point than the tiny starter corpus
+
+## Workflow Complexity
+
+This benchmark is not only about retrieval metrics. For the current local Python-first wedge, the workflow shape matters too.
+
+| System | Components to manage | Local storage pieces | Setup shape | Retrieval glue in app code |
+| --- | --- | --- | --- | --- |
+| `sochdb` | `sochdb` | local SochDB directory + embedding outputs | one DB layer plus embeddings | low |
+| `sqlite_faiss` | `sqlite3`, `faiss-cpu` | SQLite DB file + FAISS index in memory + embedding outputs | separate payload store and vector index | medium |
+| `lancedb` | `lancedb`, `pyarrow` | LanceDB directory + embedding outputs | one local vector/data system, but more package/runtime weight | medium |
+
+Notes:
+
+- SochDB keeps payload storage and retrieval flow in one local system, which is the main product argument this benchmark is trying to test
+- SQLite + FAISS is a strong local baseline, but it still requires explicit coordination between a relational store and a vector index
+- LanceDB has a nice local story, but on the current SciFact run it was slower and did not look as competitive on quality
+- this table is intentionally qualitative; if needed, we can turn it into a more explicit “steps / packages / code paths” scorecard next
 
 ## Next Tasks
 
