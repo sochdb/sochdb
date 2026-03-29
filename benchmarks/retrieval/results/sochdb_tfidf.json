@@ -1,0 +1,740 @@
+{
+  "system": "sochdb",
+  "corpus_size": 30,
+  "query_count": 20,
+  "embedding_model": "tfidf-svd:29",
+  "embedding_dimension": 29,
+  "top_k": 5,
+  "storage": {
+    "db_path": "/Users/saisandeepkantareddy/Downloads/sochdb/benchmarks/retrieval/results/sochdb_benchmark_db"
+  },
+  "build": {
+    "documents_stored": 30,
+    "store_time_ms": 0.288,
+    "index_build_time_ms": 0.656,
+    "indexed_vectors": 30
+  },
+  "query_latency": {
+    "p50_ms": 0.01,
+    "p95_ms": 0.023,
+    "mean_ms": 0.013
+  },
+  "queries": [
+    {
+      "query_id": "q-001",
+      "query": "How do I access internal dashboards securely from my laptop?",
+      "relevant_ids": [
+        "doc-001",
+        "doc-023"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-001",
+          "distance": 0.09881818294525146,
+          "title": "Laptop VPN Setup"
+        },
+        {
+          "doc_id": "doc-009",
+          "distance": 0.4862988591194153,
+          "title": "Access Review Checklist"
+        },
+        {
+          "doc_id": "doc-023",
+          "distance": 0.6857880353927612,
+          "title": "Production Access Policy"
+        },
+        {
+          "doc_id": "doc-010",
+          "distance": 0.8252460360527039,
+          "title": "Offboarding Checklist"
+        },
+        {
+          "doc_id": "doc-013",
+          "distance": 0.8803026080131531,
+          "title": "New Hire Equipment Request"
+        }
+      ],
+      "latency_ms": 0.055
+    },
+    {
+      "query_id": "q-002",
+      "query": "What is the process for reimbursing travel meals?",
+      "relevant_ids": [
+        "doc-003",
+        "doc-025"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-025",
+          "distance": 0.11248409748077393,
+          "title": "Travel Booking Policy"
+        },
+        {
+          "doc_id": "doc-003",
+          "distance": 0.37977421283721924,
+          "title": "Expense Reimbursement Policy"
+        },
+        {
+          "doc_id": "doc-026",
+          "distance": 0.7654708027839661,
+          "title": "Customer Refund Process"
+        },
+        {
+          "doc_id": "doc-005",
+          "distance": 0.7941491007804871,
+          "title": "On-Call Incident Process"
+        },
+        {
+          "doc_id": "doc-004",
+          "distance": 0.8088987469673157,
+          "title": "Manager Expense Approval"
+        }
+      ],
+      "latency_ms": 0.022
+    },
+    {
+      "query_id": "q-003",
+      "query": "What should I do when production is down and I am on call?",
+      "relevant_ids": [
+        "doc-005",
+        "doc-006",
+        "doc-022"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-023",
+          "distance": 0.1299138069152832,
+          "title": "Production Access Policy"
+        },
+        {
+          "doc_id": "doc-005",
+          "distance": 0.665653645992279,
+          "title": "On-Call Incident Process"
+        },
+        {
+          "doc_id": "doc-015",
+          "distance": 0.6768985986709595,
+          "title": "Database Backup Policy"
+        },
+        {
+          "doc_id": "doc-002",
+          "distance": 0.6922346949577332,
+          "title": "Password Manager Enrollment"
+        },
+        {
+          "doc_id": "doc-004",
+          "distance": 0.9539915919303894,
+          "title": "Manager Expense Approval"
+        }
+      ],
+      "latency_ms": 0.015
+    },
+    {
+      "query_id": "q-004",
+      "query": "How should urgent customer issues be escalated?",
+      "relevant_ids": [
+        "doc-007",
+        "doc-008"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-007",
+          "distance": 0.011381685733795166,
+          "title": "Customer Support Escalation"
+        },
+        {
+          "doc_id": "doc-026",
+          "distance": 0.8890470862388611,
+          "title": "Customer Refund Process"
+        },
+        {
+          "doc_id": "doc-027",
+          "distance": 0.9107403755187988,
+          "title": "PII Handling Guide"
+        },
+        {
+          "doc_id": "doc-020",
+          "distance": 0.9353936910629272,
+          "title": "Vendor Security Review"
+        },
+        {
+          "doc_id": "doc-006",
+          "distance": 0.9466274380683899,
+          "title": "Severity Definitions"
+        }
+      ],
+      "latency_ms": 0.012
+    },
+    {
+      "query_id": "q-005",
+      "query": "When do managers review employee tool access?",
+      "relevant_ids": [
+        "doc-009"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-009",
+          "distance": 0.030945181846618652,
+          "title": "Access Review Checklist"
+        },
+        {
+          "doc_id": "doc-023",
+          "distance": 0.6950213313102722,
+          "title": "Production Access Policy"
+        },
+        {
+          "doc_id": "doc-010",
+          "distance": 0.7320609092712402,
+          "title": "Offboarding Checklist"
+        },
+        {
+          "doc_id": "doc-001",
+          "distance": 0.8383470773696899,
+          "title": "Laptop VPN Setup"
+        },
+        {
+          "doc_id": "doc-024",
+          "distance": 0.8434686660766602,
+          "title": "Code Review Expectations"
+        }
+      ],
+      "latency_ms": 0.011
+    },
+    {
+      "query_id": "q-006",
+      "query": "What needs to happen when an employee leaves the company?",
+      "relevant_ids": [
+        "doc-010"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-010",
+          "distance": 0.06988131999969482,
+          "title": "Offboarding Checklist"
+        },
+        {
+          "doc_id": "doc-002",
+          "distance": 0.7331719398498535,
+          "title": "Password Manager Enrollment"
+        },
+        {
+          "doc_id": "doc-001",
+          "distance": 0.7371686697006226,
+          "title": "Laptop VPN Setup"
+        },
+        {
+          "doc_id": "doc-009",
+          "distance": 0.7539858222007751,
+          "title": "Access Review Checklist"
+        },
+        {
+          "doc_id": "doc-014",
+          "distance": 0.7574889659881592,
+          "title": "Employee Onboarding Checklist"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-007",
+      "query": "What is the recommended deployment and rollback process?",
+      "relevant_ids": [
+        "doc-011",
+        "doc-012",
+        "doc-029"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-012",
+          "distance": 0.19604647159576416,
+          "title": "Rollback Procedure"
+        },
+        {
+          "doc_id": "doc-011",
+          "distance": 0.4304995536804199,
+          "title": "Engineering Deployment Guide"
+        },
+        {
+          "doc_id": "doc-024",
+          "distance": 0.7434613108634949,
+          "title": "Code Review Expectations"
+        },
+        {
+          "doc_id": "doc-026",
+          "distance": 0.7499251961708069,
+          "title": "Customer Refund Process"
+        },
+        {
+          "doc_id": "doc-005",
+          "distance": 0.7799291610717773,
+          "title": "On-Call Incident Process"
+        }
+      ],
+      "latency_ms": 0.011
+    },
+    {
+      "query_id": "q-008",
+      "query": "How early should I request a laptop for a new hire?",
+      "relevant_ids": [
+        "doc-013",
+        "doc-014"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-013",
+          "distance": 0.030440211296081543,
+          "title": "New Hire Equipment Request"
+        },
+        {
+          "doc_id": "doc-001",
+          "distance": 0.7831703424453735,
+          "title": "Laptop VPN Setup"
+        },
+        {
+          "doc_id": "doc-023",
+          "distance": 0.8972836136817932,
+          "title": "Production Access Policy"
+        },
+        {
+          "doc_id": "doc-029",
+          "distance": 0.9003705382347107,
+          "title": "Feature Flag Rollout Guide"
+        },
+        {
+          "doc_id": "doc-020",
+          "distance": 0.9100713133811951,
+          "title": "Vendor Security Review"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-009",
+      "query": "How often are production databases backed up?",
+      "relevant_ids": [
+        "doc-015",
+        "doc-016"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-015",
+          "distance": 0.06744152307510376,
+          "title": "Database Backup Policy"
+        },
+        {
+          "doc_id": "doc-023",
+          "distance": 0.6877560019493103,
+          "title": "Production Access Policy"
+        },
+        {
+          "doc_id": "doc-005",
+          "distance": 0.8802899122238159,
+          "title": "On-Call Incident Process"
+        },
+        {
+          "doc_id": "doc-002",
+          "distance": 0.8906026482582092,
+          "title": "Password Manager Enrollment"
+        },
+        {
+          "doc_id": "doc-004",
+          "distance": 0.9719808101654053,
+          "title": "Manager Expense Approval"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-010",
+      "query": "When should service API keys be rotated?",
+      "relevant_ids": [
+        "doc-017",
+        "doc-018"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-017",
+          "distance": 0.0038390159606933594,
+          "title": "API Key Rotation Guide"
+        },
+        {
+          "doc_id": "doc-030",
+          "distance": 0.9048097133636475,
+          "title": "Team Pager Ownership"
+        },
+        {
+          "doc_id": "doc-003",
+          "distance": 0.9912412762641907,
+          "title": "Expense Reimbursement Policy"
+        },
+        {
+          "doc_id": "doc-026",
+          "distance": 0.9918937087059021,
+          "title": "Customer Refund Process"
+        },
+        {
+          "doc_id": "doc-019",
+          "distance": 0.9941520094871521,
+          "title": "Procurement Approval Policy"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-011",
+      "query": "What approvals are needed before buying software?",
+      "relevant_ids": [
+        "doc-019",
+        "doc-020"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-019",
+          "distance": 0.057665467262268066,
+          "title": "Procurement Approval Policy"
+        },
+        {
+          "doc_id": "doc-004",
+          "distance": 0.7693034410476685,
+          "title": "Manager Expense Approval"
+        },
+        {
+          "doc_id": "doc-025",
+          "distance": 0.9197289347648621,
+          "title": "Travel Booking Policy"
+        },
+        {
+          "doc_id": "doc-007",
+          "distance": 0.9675225615501404,
+          "title": "Customer Support Escalation"
+        },
+        {
+          "doc_id": "doc-020",
+          "distance": 0.9750514626502991,
+          "title": "Vendor Security Review"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-012",
+      "query": "How should support documentation be written?",
+      "relevant_ids": [
+        "doc-021"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-021",
+          "distance": 0.04497265815734863,
+          "title": "Knowledge Base Writing Guide"
+        },
+        {
+          "doc_id": "doc-007",
+          "distance": 0.686676025390625,
+          "title": "Customer Support Escalation"
+        },
+        {
+          "doc_id": "doc-026",
+          "distance": 0.7800835967063904,
+          "title": "Customer Refund Process"
+        },
+        {
+          "doc_id": "doc-008",
+          "distance": 0.7920131087303162,
+          "title": "Support SLA Targets"
+        },
+        {
+          "doc_id": "doc-004",
+          "distance": 0.9937260150909424,
+          "title": "Manager Expense Approval"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-013",
+      "query": "What belongs in an incident postmortem?",
+      "relevant_ids": [
+        "doc-022"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-022",
+          "distance": 0.007388412952423096,
+          "title": "Incident Postmortem Template"
+        },
+        {
+          "doc_id": "doc-005",
+          "distance": 0.7717260718345642,
+          "title": "On-Call Incident Process"
+        },
+        {
+          "doc_id": "doc-018",
+          "distance": 0.8459014892578125,
+          "title": "Secret Scanning Response"
+        },
+        {
+          "doc_id": "doc-012",
+          "distance": 0.848895788192749,
+          "title": "Rollback Procedure"
+        },
+        {
+          "doc_id": "doc-006",
+          "distance": 0.9454376101493835,
+          "title": "Severity Definitions"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-014",
+      "query": "Who can get production access and what is required?",
+      "relevant_ids": [
+        "doc-023",
+        "doc-002"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-023",
+          "distance": 0.04324042797088623,
+          "title": "Production Access Policy"
+        },
+        {
+          "doc_id": "doc-009",
+          "distance": 0.5629269480705261,
+          "title": "Access Review Checklist"
+        },
+        {
+          "doc_id": "doc-010",
+          "distance": 0.8261541128158569,
+          "title": "Offboarding Checklist"
+        },
+        {
+          "doc_id": "doc-001",
+          "distance": 0.8350769281387329,
+          "title": "Laptop VPN Setup"
+        },
+        {
+          "doc_id": "doc-005",
+          "distance": 0.909773588180542,
+          "title": "On-Call Incident Process"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-015",
+      "query": "What are the expectations for reviewing pull requests?",
+      "relevant_ids": [
+        "doc-024"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-024",
+          "distance": 0.019874095916748047,
+          "title": "Code Review Expectations"
+        },
+        {
+          "doc_id": "doc-013",
+          "distance": 0.8107348680496216,
+          "title": "New Hire Equipment Request"
+        },
+        {
+          "doc_id": "doc-003",
+          "distance": 0.9826353788375854,
+          "title": "Expense Reimbursement Policy"
+        },
+        {
+          "doc_id": "doc-026",
+          "distance": 0.9839288592338562,
+          "title": "Customer Refund Process"
+        },
+        {
+          "doc_id": "doc-019",
+          "distance": 0.9884060025215149,
+          "title": "Procurement Approval Policy"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-016",
+      "query": "How do flight bookings need to be handled for business travel?",
+      "relevant_ids": [
+        "doc-025",
+        "doc-003"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-025",
+          "distance": 0.1384521722793579,
+          "title": "Travel Booking Policy"
+        },
+        {
+          "doc_id": "doc-003",
+          "distance": 0.480085551738739,
+          "title": "Expense Reimbursement Policy"
+        },
+        {
+          "doc_id": "doc-019",
+          "distance": 0.6851353049278259,
+          "title": "Procurement Approval Policy"
+        },
+        {
+          "doc_id": "doc-013",
+          "distance": 0.7463070154190063,
+          "title": "New Hire Equipment Request"
+        },
+        {
+          "doc_id": "doc-008",
+          "distance": 0.7500577569007874,
+          "title": "Support SLA Targets"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-017",
+      "query": "What is the process for approving a large customer refund?",
+      "relevant_ids": [
+        "doc-026"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-026",
+          "distance": 0.09705960750579834,
+          "title": "Customer Refund Process"
+        },
+        {
+          "doc_id": "doc-004",
+          "distance": 0.6100795269012451,
+          "title": "Manager Expense Approval"
+        },
+        {
+          "doc_id": "doc-007",
+          "distance": 0.6764672994613647,
+          "title": "Customer Support Escalation"
+        },
+        {
+          "doc_id": "doc-005",
+          "distance": 0.8236910104751587,
+          "title": "On-Call Incident Process"
+        },
+        {
+          "doc_id": "doc-020",
+          "distance": 0.8299936056137085,
+          "title": "Vendor Security Review"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-018",
+      "query": "How should personal customer data be handled in logs and screenshots?",
+      "relevant_ids": [
+        "doc-027",
+        "doc-028"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-027",
+          "distance": 0.1815248727798462,
+          "title": "PII Handling Guide"
+        },
+        {
+          "doc_id": "doc-007",
+          "distance": 0.502038836479187,
+          "title": "Customer Support Escalation"
+        },
+        {
+          "doc_id": "doc-020",
+          "distance": 0.520601749420166,
+          "title": "Vendor Security Review"
+        },
+        {
+          "doc_id": "doc-028",
+          "distance": 0.8902426362037659,
+          "title": "Log Retention Policy"
+        },
+        {
+          "doc_id": "doc-026",
+          "distance": 0.9104567766189575,
+          "title": "Customer Refund Process"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-019",
+      "query": "How should new features be rolled out safely?",
+      "relevant_ids": [
+        "doc-029",
+        "doc-011"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-029",
+          "distance": 0.16509145498275757,
+          "title": "Feature Flag Rollout Guide"
+        },
+        {
+          "doc_id": "doc-013",
+          "distance": 0.5776598453521729,
+          "title": "New Hire Equipment Request"
+        },
+        {
+          "doc_id": "doc-011",
+          "distance": 0.6563785076141357,
+          "title": "Engineering Deployment Guide"
+        },
+        {
+          "doc_id": "doc-020",
+          "distance": 0.7894509434700012,
+          "title": "Vendor Security Review"
+        },
+        {
+          "doc_id": "doc-006",
+          "distance": 0.8088643550872803,
+          "title": "Severity Definitions"
+        }
+      ],
+      "latency_ms": 0.01
+    },
+    {
+      "query_id": "q-020",
+      "query": "How is pager duty ownership supposed to be organized?",
+      "relevant_ids": [
+        "doc-030",
+        "doc-005"
+      ],
+      "results": [
+        {
+          "doc_id": "doc-030",
+          "distance": 0.004663407802581787,
+          "title": "Team Pager Ownership"
+        },
+        {
+          "doc_id": "doc-003",
+          "distance": 0.9910767674446106,
+          "title": "Expense Reimbursement Policy"
+        },
+        {
+          "doc_id": "doc-026",
+          "distance": 0.991741418838501,
+          "title": "Customer Refund Process"
+        },
+        {
+          "doc_id": "doc-019",
+          "distance": 0.9940420985221863,
+          "title": "Procurement Approval Policy"
+        },
+        {
+          "doc_id": "doc-014",
+          "distance": 0.9981491565704346,
+          "title": "Employee Onboarding Checklist"
+        }
+      ],
+      "latency_ms": 0.01
+    }
+  ]
+}
