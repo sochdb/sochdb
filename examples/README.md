@@ -2,6 +2,43 @@
 
 Real-world examples showing how to use SochDB for AI/LLM applications.
 
+## Example Status
+
+This repo currently contains examples at different maturity levels.
+
+Use this table first before choosing what to run:
+
+| Status | What it means | Recommended examples |
+|--------|----------------|----------------------|
+| **Validated / local-only** | Works without external APIs or cloud credentials | `python/07_local_knowledge_search.py` |
+| **Ready with local setup** | Uses current package/install guidance, but may still need optional dependencies or a local build depending on the example | `python/01_basic_database.py`, `python/02_vector_search.py`, `python/03_bulk_operations.py`, `python/04_langgraph_integration.py`, `python/05_context_query.py` |
+| **Needs external dependencies or cloud credentials** | Requires framework installs, API keys, or external model providers | `python/langgraph_agent.py`, `python/crewai_research_crew.py`, `python/llamaindex_rag.py`, `python/simple_rag_chatbot.py`, `python/semantic_search_api.py`, `python/customer_support_rag.py`, `python/ecommerce_search.py`, `python/semantic_dedup.py`, `python/code_search.py`, `python/personalization.py`, `python/security_qa_triage.py`, `python/real_llm_test.py` |
+| **Legacy / needs rename cleanup** | Contains older package or project naming and should be updated before being used as a primary example | `examples/go/*.go`, `python/sochdb_implementations.py`, `python/test_scenarios.py`, `python/comprehensive_e2e_test.py`, `python/sochdb_feature_validation.py` |
+
+### Recommended Start Here
+
+If you're evaluating SochDB for the first time, start with:
+
+1. `python/07_local_knowledge_search.py`
+2. `docs/getting-started/quickstart.md`
+3. `docs/getting-started/python-install-matrix.md`
+
+That path is the clearest current wedge:
+- local embedded database
+- local vector retrieval
+- no external APIs
+- easy to understand and demo
+
+### Current Gaps
+
+The example set still has some cleanup work in progress:
+
+- a smaller set of advanced Python examples still reference older monorepo paths and should be normalized
+- a few legacy scripts still assume older package names like `sochdb-client`
+- some legacy validation/demo scripts still need broader rename and packaging cleanup
+
+Treat the examples above as product maturity signals rather than all being equally ready.
+
 ## Examples by Language
 
 ### Python (`examples/python/`)
@@ -105,7 +142,10 @@ AZURE_EMEBEDDING_API_VERSION="2024-12-01-preview"
 ### 3. Run Examples
 
 ```bash
-# Run any example
+# Recommended first run: local-only, no API keys
+python3 examples/python/07_local_knowledge_search.py
+
+# Then move to advanced examples with extra dependencies
 python3 examples/python/langgraph_agent.py
 python3 examples/python/simple_rag_chatbot.py
 python3 examples/python/semantic_search_api.py

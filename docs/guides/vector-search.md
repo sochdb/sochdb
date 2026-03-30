@@ -26,7 +26,7 @@ python -m venv venv
 source venv/bin/activate
 
 # Install dependencies
-pip install sochdb-client numpy sentence-transformers
+pip install sochdb numpy sentence-transformers
 ```
 
 > **Note:** `sentence-transformers` provides real embedding models. For production, you might also use OpenAI, Cohere, or other embedding APIs.
@@ -450,4 +450,3 @@ def add_documents_batched(self, documents, batch_size=1000):
 ---
 
 *Tutorial completed! You've built a working semantic search system with SochDB.* 🎉
-

@@ -8,7 +8,13 @@ Demonstrates a multi-agent research crew with:
 - Real embeddings via Azure OpenAI
 
 Usage:
-    pip install crewai crewai-tools
+    pip install sochdb python-dotenv requests numpy crewai crewai-tools
+    python3 examples/python/crewai_research_crew.py
+
+    # Or from this monorepo:
+    cd sochdb-python
+    maturin develop --release
+    cd ..
     python3 examples/python/crewai_research_crew.py
 """
 
@@ -22,8 +28,8 @@ import numpy as np
 import requests
 from typing import List, Dict
 
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
+# Add SochDB package path for monorepo source usage
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python"))
 
 from dotenv import load_dotenv
 load_dotenv()

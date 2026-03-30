@@ -62,7 +62,7 @@ def _check_native():
     if not _HAS_NATIVE:
         raise ImportError(
             f"SochDB native extension not found: {_IMPORT_ERROR}\n"
-            "Install with: pip install sochdb-client\n"
+            "Install with: pip install sochdb\n"
             "Or build from source: maturin develop --release"
         )
 

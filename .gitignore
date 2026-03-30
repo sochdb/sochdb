@@ -77,3 +77,12 @@ knowledge_demo_db/
 meeting_demo_db/
 repo_demo_db/
 *_demo_db/
+
+# Benchmark artifacts
+benchmarks/retrieval/__pycache__/
+benchmarks/retrieval/results/*
+!benchmarks/retrieval/results/.gitkeep
+benchmarks/retrieval/results_tfidf/
+benchmarks/retrieval/results_st/
+benchmarks/retrieval/results_scifact/
+benchmarks/retrieval/datasets/
