@@ -19,6 +19,7 @@
 //!
 //! Comprehensive token set for SQL-92 with SochDB extensions.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::hash::Hash;
 
@@ -64,37 +65,37 @@ impl Default for Span {
 
 /// SQL Token with location information
 #[derive(Debug, Clone, PartialEq)]
-pub struct Token {
-    pub kind: TokenKind,
+pub struct Token<'a> {
+    pub kind: TokenKind<'a>,
     pub span: Span,
-    pub literal: String,
+    pub literal: &'a str,
 }
 
-impl Token {
-    pub fn new(kind: TokenKind, span: Span, literal: impl Into<String>) -> Self {
+impl<'a> Token<'a> {
+    pub fn new(kind: TokenKind<'a>, span: Span, literal: &'a str) -> Self {
         Self {
             kind,
             span,
-            literal: literal.into(),
+            literal,
         }
     }
 }
 
 /// Token classification
 #[derive(Debug, Clone, PartialEq)]
-pub enum TokenKind {
+pub enum TokenKind<'a> {
     // Literals
     Integer(i64),
     Float(f64),
-    String(String),
+    String(Cow<'a, str>),
     Blob(Vec<u8>),
     Null,
     True,
     False,
 
     // Identifiers
-    Identifier(String),
-    QuotedIdentifier(String), // "column name" or `column name`
+    Identifier(&'a str),
+    QuotedIdentifier(Cow<'a, str>), // "column name" or `column name`
 
     // Keywords - DDL
     Create,
@@ -105,6 +106,8 @@ pub enum TokenKind {
     Add,
     Column,
     Rename,
+    To,
+    Cascade,
     Primary,
     Key,
     Foreign,
@@ -229,6 +232,23 @@ pub enum TokenKind {
     Euclidean,
     DotProduct,
 
+    // Keywords - Graph & Real-Time (P1)
+    Relate,
+    Live,
+    Content,
+    Event,
+    Diff,
+
+    // Keywords - Security DDL (P2 — Scope-Based Auth)
+    Define,
+    Scope,
+    Remove,
+    Session,
+    Signin,
+    Signup,
+    Permissions,
+    For,
+
     // Operators
     Plus,       // +
     Minus,      // -
@@ -260,20 +280,22 @@ pub enum TokenKind {
     DoubleColon,  // ::
     Arrow,        // ->
     DoubleArrow,  // ->>
+    LeftArrow,    // <-
+    BiArrow,      // <->
     QuestionMark, // ?
     At,           // @
 
     // Special
     Placeholder(u32), // $1, $2, ... or ?
-    Comment(String),
+    Comment(&'a str),
     Whitespace,
     Eof,
-    Invalid(String),
+    Invalid(&'a str),
 }
 
-impl Eq for TokenKind {}
+impl Eq for TokenKind<'_> {}
 
-impl Hash for TokenKind {
+impl Hash for TokenKind<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
         match self {
@@ -291,7 +313,7 @@ impl Hash for TokenKind {
     }
 }
 
-impl TokenKind {
+impl<'a> TokenKind<'a> {
     /// Check if this token is a keyword
     pub fn is_keyword(&self) -> bool {
         matches!(
@@ -334,6 +356,8 @@ impl TokenKind {
                 | TokenKind::Table
                 | TokenKind::Index
                 | TokenKind::Alter
+                | TokenKind::To
+                | TokenKind::Cascade
                 | TokenKind::Primary
                 | TokenKind::Key
                 | TokenKind::Foreign
@@ -415,12 +439,30 @@ impl TokenKind {
                 | TokenKind::Abort
                 | TokenKind::Fail
                 | TokenKind::Returning
+                // Graph & Real-Time keywords
+                | TokenKind::Relate
+                | TokenKind::Live
+                | TokenKind::Content
+                | TokenKind::Event
+                | TokenKind::Diff
         )
     }
 
     /// Get keyword from string (case-insensitive)
-    pub fn from_keyword(s: &str) -> Option<TokenKind> {
-        match s.to_uppercase().as_str() {
+    /// Uses a stack-allocated buffer to avoid heap allocation.
+    pub fn from_keyword(s: &str) -> Option<TokenKind<'a>> {
+        let len = s.len();
+        if len == 0 || len > 20 {
+            return None;
+        }
+        let mut buf = [0u8; 20];
+        for (i, &b) in s.as_bytes().iter().enumerate() {
+            buf[i] = b.to_ascii_uppercase();
+        }
+        // SAFETY: to_ascii_uppercase on valid ASCII bytes preserves UTF-8 validity.
+        // scan_identifier only accepts ASCII chars, so this is always sound.
+        let upper = unsafe { std::str::from_utf8_unchecked(&buf[..len]) };
+        match upper {
             "SELECT" => Some(TokenKind::Select),
             "INSERT" => Some(TokenKind::Insert),
             "UPDATE" => Some(TokenKind::Update),
@@ -432,6 +474,8 @@ impl TokenKind {
             "ADD" => Some(TokenKind::Add),
             "COLUMN" => Some(TokenKind::Column),
             "RENAME" => Some(TokenKind::Rename),
+            "TO" => Some(TokenKind::To),
+            "CASCADE" => Some(TokenKind::Cascade),
             "INDEX" => Some(TokenKind::Index),
             "FROM" => Some(TokenKind::From),
             "WHERE" => Some(TokenKind::Where),
@@ -542,12 +586,27 @@ impl TokenKind {
             "COSINE" => Some(TokenKind::Cosine),
             "EUCLIDEAN" => Some(TokenKind::Euclidean),
             "DOT_PRODUCT" => Some(TokenKind::DotProduct),
+            // Graph & Real-Time
+            "RELATE" => Some(TokenKind::Relate),
+            "LIVE" => Some(TokenKind::Live),
+            "CONTENT" => Some(TokenKind::Content),
+            "EVENT" => Some(TokenKind::Event),
+            "DIFF" => Some(TokenKind::Diff),
+            // Security DDL
+            "DEFINE" => Some(TokenKind::Define),
+            "SCOPE" => Some(TokenKind::Scope),
+            "REMOVE" => Some(TokenKind::Remove),
+            "SESSION" => Some(TokenKind::Session),
+            "SIGNIN" => Some(TokenKind::Signin),
+            "SIGNUP" => Some(TokenKind::Signup),
+            "PERMISSIONS" => Some(TokenKind::Permissions),
+            "FOR" => Some(TokenKind::For),
             _ => None,
         }
     }
 }
 
-impl fmt::Display for TokenKind {
+impl fmt::Display for TokenKind<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TokenKind::Integer(n) => write!(f, "{}", n),

@@ -101,6 +101,11 @@ impl Namespace {
     
     /// Validate a namespace string
     fn validate(name: &str) -> Result<(), NamespaceError> {
+        Self::validate_name(name)
+    }
+
+    /// Validate a name string (public, reusable for database/table names too)
+    pub fn validate_name(name: &str) -> Result<(), NamespaceError> {
         if name.is_empty() {
             return Err(NamespaceError::Empty);
         }
@@ -421,6 +426,215 @@ pub fn scope(name: &str) -> Result<NamespaceScope, NamespaceError> {
 }
 
 // ============================================================================
+// Database Tier — namespace > database > table (P3.1)
+// ============================================================================
+
+/// A database within a namespace.
+///
+/// Mirrors SurrealDB's three-tier hierarchy: `namespace > database > table`.
+/// Each namespace can contain multiple databases, providing logical grouping
+/// and isolation of tables within the same namespace.
+///
+/// ## Example
+///
+/// ```text
+/// namespace "production"
+///   ├─ database "app"
+///   │   ├─ table "users"
+///   │   └─ table "posts"
+///   └─ database "analytics"
+///       ├─ table "events"
+///       └─ table "sessions"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DatabaseId {
+    /// Parent namespace
+    pub namespace: String,
+    /// Database name within the namespace
+    pub name: String,
+}
+
+impl DatabaseId {
+    /// Maximum length for a database identifier
+    pub const MAX_LENGTH: usize = 256;
+
+    /// Create a new database identifier.
+    pub fn new(namespace: impl Into<String>, name: impl Into<String>) -> Result<Self, NamespaceError> {
+        let namespace = namespace.into();
+        let name = name.into();
+        Namespace::validate_name(&name)?;
+        Ok(Self { namespace, name })
+    }
+
+    /// Return the fully qualified name: `namespace/database`
+    pub fn qualified_name(&self) -> String {
+        format!("{}/{}", self.namespace, self.name)
+    }
+}
+
+impl fmt::Display for DatabaseId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.namespace, self.name)
+    }
+}
+
+/// A fully qualified table path: `namespace/database/table`.
+///
+/// Used to address tables unambiguously across the entire hierarchy.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct QualifiedTable {
+    pub namespace: String,
+    pub database: String,
+    pub table: String,
+}
+
+impl QualifiedTable {
+    /// Create a new qualified table path.
+    pub fn new(
+        namespace: impl Into<String>,
+        database: impl Into<String>,
+        table: impl Into<String>,
+    ) -> Self {
+        Self {
+            namespace: namespace.into(),
+            database: database.into(),
+            table: table.into(),
+        }
+    }
+
+    /// Return the fully qualified name: `namespace/database/table`
+    pub fn qualified_name(&self) -> String {
+        format!("{}/{}/{}", self.namespace, self.database, self.table)
+    }
+
+    /// Return the storage key prefix for this table.
+    /// All row keys under this table are prefixed with this string.
+    pub fn storage_prefix(&self) -> String {
+        format!("{}:{}:{}", self.namespace, self.database, self.table)
+    }
+}
+
+impl fmt::Display for QualifiedTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}/{}", self.namespace, self.database, self.table)
+    }
+}
+
+/// Registry tracking the namespace → database → table hierarchy.
+///
+/// Provides O(1) lookups and enforces naming constraints.
+#[derive(Debug, Clone, Default)]
+pub struct NamespaceRegistry {
+    /// namespace_name → set of database names
+    databases: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    /// (namespace, database) → set of table names
+    tables: std::collections::HashMap<(String, String), std::collections::HashSet<String>>,
+}
+
+impl NamespaceRegistry {
+    /// Create a new empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a namespace (idempotent).
+    pub fn create_namespace(&mut self, namespace: &str) -> Result<(), NamespaceError> {
+        Namespace::validate_name(namespace)?;
+        self.databases.entry(namespace.to_string()).or_default();
+        Ok(())
+    }
+
+    /// Create a database within a namespace.
+    pub fn create_database(&mut self, namespace: &str, database: &str) -> Result<(), NamespaceError> {
+        Namespace::validate_name(database)?;
+        let dbs = self.databases.entry(namespace.to_string()).or_default();
+        dbs.insert(database.to_string());
+        self.tables.entry((namespace.to_string(), database.to_string())).or_default();
+        Ok(())
+    }
+
+    /// Register a table within a namespace/database.
+    pub fn create_table(&mut self, namespace: &str, database: &str, table: &str) -> Result<(), NamespaceError> {
+        Namespace::validate_name(table)?;
+        // Ensure parent database exists
+        let dbs = self.databases.entry(namespace.to_string()).or_default();
+        dbs.insert(database.to_string());
+        let tables = self.tables.entry((namespace.to_string(), database.to_string())).or_default();
+        tables.insert(table.to_string());
+        Ok(())
+    }
+
+    /// List databases in a namespace.
+    pub fn list_databases(&self, namespace: &str) -> Vec<&str> {
+        self.databases.get(namespace)
+            .map(|dbs| dbs.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    /// List tables in a database.
+    pub fn list_tables(&self, namespace: &str, database: &str) -> Vec<&str> {
+        self.tables.get(&(namespace.to_string(), database.to_string()))
+            .map(|tables| tables.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Check if a namespace exists.
+    pub fn namespace_exists(&self, namespace: &str) -> bool {
+        self.databases.contains_key(namespace)
+    }
+
+    /// Check if a database exists within a namespace.
+    pub fn database_exists(&self, namespace: &str, database: &str) -> bool {
+        self.databases.get(namespace)
+            .map(|dbs| dbs.contains(database))
+            .unwrap_or(false)
+    }
+
+    /// Check if a table exists within a namespace/database.
+    pub fn table_exists(&self, namespace: &str, database: &str, table: &str) -> bool {
+        self.tables.get(&(namespace.to_string(), database.to_string()))
+            .map(|tables| tables.contains(table))
+            .unwrap_or(false)
+    }
+
+    /// Drop a database and all its tables.
+    pub fn drop_database(&mut self, namespace: &str, database: &str) -> bool {
+        self.tables.remove(&(namespace.to_string(), database.to_string()));
+        self.databases.get_mut(namespace)
+            .map(|dbs| dbs.remove(database))
+            .unwrap_or(false)
+    }
+
+    /// Drop a table from a database.
+    pub fn drop_table(&mut self, namespace: &str, database: &str, table: &str) -> bool {
+        self.tables.get_mut(&(namespace.to_string(), database.to_string()))
+            .map(|tables| tables.remove(table))
+            .unwrap_or(false)
+    }
+
+    /// Drop a namespace and all its databases/tables.
+    pub fn drop_namespace(&mut self, namespace: &str) -> bool {
+        if !self.databases.contains_key(namespace) {
+            return false;
+        }
+        // Remove all tables under this namespace
+        let db_names: Vec<String> = self.databases.get(namespace)
+            .map(|dbs| dbs.iter().cloned().collect())
+            .unwrap_or_default();
+        for db in &db_names {
+            self.tables.remove(&(namespace.to_string(), db.clone()));
+        }
+        self.databases.remove(namespace);
+        true
+    }
+
+    /// Resolve a qualified table path to check it exists.
+    pub fn resolve_table(&self, qualified: &QualifiedTable) -> bool {
+        self.table_exists(&qualified.namespace, &qualified.database, &qualified.table)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -520,5 +734,91 @@ mod tests {
         assert!(effective.constrains_field("namespace"));
         assert!(effective.constrains_field("tenant_id"));
         assert!(effective.constrains_field("type"));
+    }
+
+    // ======== Database Tier Tests (P3.1) ========
+
+    #[test]
+    fn test_database_id_creation() {
+        let db = DatabaseId::new("production", "app").unwrap();
+        assert_eq!(db.namespace, "production");
+        assert_eq!(db.name, "app");
+        assert_eq!(db.qualified_name(), "production/app");
+    }
+
+    #[test]
+    fn test_qualified_table() {
+        let qt = QualifiedTable::new("production", "app", "users");
+        assert_eq!(qt.qualified_name(), "production/app/users");
+        assert_eq!(qt.storage_prefix(), "production:app:users");
+    }
+
+    #[test]
+    fn test_namespace_registry_basic() {
+        let mut reg = NamespaceRegistry::new();
+        reg.create_namespace("prod").unwrap();
+        assert!(reg.namespace_exists("prod"));
+        assert!(!reg.namespace_exists("staging"));
+    }
+
+    #[test]
+    fn test_namespace_registry_databases() {
+        let mut reg = NamespaceRegistry::new();
+        reg.create_namespace("prod").unwrap();
+        reg.create_database("prod", "app").unwrap();
+        reg.create_database("prod", "analytics").unwrap();
+        assert!(reg.database_exists("prod", "app"));
+        assert!(reg.database_exists("prod", "analytics"));
+        assert!(!reg.database_exists("prod", "logs"));
+        let dbs = reg.list_databases("prod");
+        assert_eq!(dbs.len(), 2);
+    }
+
+    #[test]
+    fn test_namespace_registry_tables() {
+        let mut reg = NamespaceRegistry::new();
+        reg.create_table("prod", "app", "users").unwrap();
+        reg.create_table("prod", "app", "posts").unwrap();
+        assert!(reg.table_exists("prod", "app", "users"));
+        assert!(reg.table_exists("prod", "app", "posts"));
+        assert!(!reg.table_exists("prod", "app", "comments"));
+        // database was auto-created
+        assert!(reg.database_exists("prod", "app"));
+    }
+
+    #[test]
+    fn test_namespace_registry_drop() {
+        let mut reg = NamespaceRegistry::new();
+        reg.create_table("prod", "app", "users").unwrap();
+        reg.create_table("prod", "app", "posts").unwrap();
+        reg.create_table("prod", "analytics", "events").unwrap();
+
+        // Drop one table
+        assert!(reg.drop_table("prod", "app", "users"));
+        assert!(!reg.table_exists("prod", "app", "users"));
+        assert!(reg.table_exists("prod", "app", "posts"));
+
+        // Drop a database
+        assert!(reg.drop_database("prod", "app"));
+        assert!(!reg.database_exists("prod", "app"));
+        assert!(!reg.table_exists("prod", "app", "posts"));
+
+        // analytics still exists
+        assert!(reg.table_exists("prod", "analytics", "events"));
+
+        // Drop entire namespace
+        assert!(reg.drop_namespace("prod"));
+        assert!(!reg.namespace_exists("prod"));
+        assert!(!reg.table_exists("prod", "analytics", "events"));
+    }
+
+    #[test]
+    fn test_qualified_table_resolve() {
+        let mut reg = NamespaceRegistry::new();
+        reg.create_table("prod", "app", "users").unwrap();
+        let qt = QualifiedTable::new("prod", "app", "users");
+        assert!(reg.resolve_table(&qt));
+        let missing = QualifiedTable::new("prod", "app", "absent");
+        assert!(!reg.resolve_table(&missing));
     }
 }

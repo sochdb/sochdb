@@ -73,3 +73,5 @@ sochdb_agent_memory/
 toondb_rust.txt
 test_k8s_concurrency.py
 test_k8s_deployment.py
+# H2O benchmark large data files (generate with h2o_datagen.py)
+sochdb-bench/h2o-bench/data/*_1e7_*

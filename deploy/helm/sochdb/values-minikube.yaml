@@ -1,0 +1,88 @@
+# SochDB Helm Values - Minikube Development
+# Overrides for local development on minikube
+
+image:
+  repository: sochdb/sochdb-grpc
+  tag: "0.5.0"
+  pullPolicy: Never  # Use locally built image in minikube
+
+replicaCount: 1
+
+# Lower resources for minikube
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "2000m"
+
+# Smaller PVC for local dev
+persistence:
+  enabled: true
+  size: 2Gi
+
+# Expose via NodePort for easy access
+service:
+  type: NodePort
+  grpcPort: 50051
+  httpPort: 8080
+
+# Use HTTP probes on metrics endpoint to avoid gRPC h2 noise
+probes:
+  startup:
+    enabled: true
+    tcpSocket: null
+    httpGet:
+      path: /metrics
+      port: 9090
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30
+    successThreshold: 1
+  readiness:
+    enabled: true
+    tcpSocket: null
+    httpGet:
+      path: /metrics
+      port: 9090
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+  liveness:
+    enabled: true
+    tcpSocket: null
+    httpGet:
+      path: /metrics
+      port: 9090
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+    successThreshold: 1
+
+# Disable heavy Day-2 features for local dev
+networkPolicy:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+initContainers:
+  fsCheck:
+    enabled: false
+
+observability:
+  metrics:
+    enabled: true
+    port: 9090
+
+# Dev-level logging
+extraEnv:
+  - name: RUST_LOG
+    value: "debug"
+  - name: SOCHDB_DISABLE_ANALYTICS
+    value: "true"

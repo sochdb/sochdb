@@ -101,6 +101,7 @@
 
 use dashmap::DashMap;
 use smallvec::SmallVec;
+use sochdb_core::reclamation::UnifiedReclaimer;
 use std::cell::RefCell;
 use std::collections::BinaryHeap;
 use std::cmp::Reverse;
@@ -120,9 +121,17 @@ pub type NodeId = u128;
 pub type Distance = f32;
 
 /// Vector dimension (for simplified quantized storage)
+/// NOTE: This constant is used only for the fixed-array QuantizedVector below.
+#[deprecated(
+    since = "0.5.0",
+    note = "Use DynamicQuantizedVector instead — VECTOR_DIM is hardcoded to 128."
+)]
 pub const VECTOR_DIM: usize = 128;
 
-/// Quantized vector storage (8-bit per dimension)
+/// Fixed-size quantized vector — DEPRECATED.
+///
+/// Use [`DynamicQuantizedVector`] for runtime-configurable dimensionality.
+#[deprecated(since = "0.5.0", note = "Use DynamicQuantizedVector instead")]
 #[derive(Clone)]
 pub struct QuantizedVector {
     data: [u8; VECTOR_DIM],
@@ -137,10 +146,26 @@ impl Default for QuantizedVector {
 }
 
 impl QuantizedVector {
+    /// Create a QuantizedVector from f32 slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `v.len() != VECTOR_DIM`. This is intentional —
+    /// silently truncating dimensions produces incorrect similarity
+    /// rankings, which is silent data corruption.
     pub fn from_f32(v: &[f32]) -> Self {
+        assert_eq!(
+            v.len(),
+            VECTOR_DIM,
+            "QuantizedVector::from_f32: expected {}-dimensional vector, got {}. \
+             Silently truncating dimensions would produce incorrect similarity rankings. \
+             Use DynamicQuantizedVector for variable dimensionality.",
+            VECTOR_DIM,
+            v.len()
+        );
         let mut data = [0u8; VECTOR_DIM];
-        for (i, &val) in v.iter().take(VECTOR_DIM).enumerate() {
-            // Quantize to 0-255 range (assuming normalized vectors)
+        for (i, &val) in v.iter().enumerate() {
+            // Quantize to 0-255 range (assuming normalized vectors in [-1, 1])
             data[i] = ((val + 1.0) * 127.5).clamp(0.0, 255.0) as u8;
         }
         Self { data }
@@ -153,6 +178,63 @@ impl QuantizedVector {
             sum += diff * diff;
         }
         (sum as f32).sqrt()
+    }
+}
+
+/// Runtime-configurable quantized vector storage (8-bit per dimension)
+///
+/// Unlike `QuantizedVector`, this supports arbitrary dimensionality
+/// and validates dimension consistency at construction time.
+#[derive(Clone, Debug)]
+pub struct DynamicQuantizedVector {
+    data: Vec<u8>,
+}
+
+impl DynamicQuantizedVector {
+    /// Create a DynamicQuantizedVector from f32 slice.
+    ///
+    /// Supports any dimensionality from 2 to 4096.
+    ///
+    /// # Panics
+    ///
+    /// Panics if dimensionality is outside [2, 4096].
+    pub fn from_f32(v: &[f32]) -> Self {
+        assert!(
+            v.len() >= 2 && v.len() <= 4096,
+            "DynamicQuantizedVector: dimensionality must be in [2, 4096], got {}",
+            v.len()
+        );
+        let data: Vec<u8> = v
+            .iter()
+            .map(|&val| ((val + 1.0) * 127.5).clamp(0.0, 255.0) as u8)
+            .collect();
+        Self { data }
+    }
+
+    /// Compute L2 distance between two quantized vectors.
+    ///
+    /// # Panics
+    ///
+    /// Panics if dimensions don't match.
+    pub fn distance(&self, other: &Self) -> Distance {
+        assert_eq!(
+            self.data.len(),
+            other.data.len(),
+            "DynamicQuantizedVector::distance: dimension mismatch ({} vs {})",
+            self.data.len(),
+            other.data.len()
+        );
+        let mut sum = 0i32;
+        for i in 0..self.data.len() {
+            let diff = self.data[i] as i32 - other.data[i] as i32;
+            sum += diff * diff;
+        }
+        (sum as f32).sqrt()
+    }
+
+    /// Get the dimensionality of this vector
+    pub fn dim(&self) -> usize {
+        self.data.len()
     }
 }
 
@@ -223,9 +305,40 @@ impl AtomicNeighborList {
         self.version.load(Ordering::Acquire) == expected
     }
 
-    /// Atomically update neighbors using CAS
-    /// Returns true if update succeeded, false if retry needed
+    /// Atomically update neighbors using CAS (legacy — leaks old list)
+    ///
+    /// **DEPRECATED**: Use `update_reclaim` with a `UnifiedReclaimer` for
+    /// production code. This method leaks old neighbor lists, which causes
+    /// unbounded memory growth in long-running systems.
+    #[deprecated(note = "Use update_reclaim() with a UnifiedReclaimer instead — this method leaks memory")]
     pub fn update<F>(&self, mutator: F) -> bool
+    where
+        F: FnOnce(&[NodeId]) -> SmallVec<[NodeId; MAX_M]>,
+    {
+        self.update_inner(mutator, None)
+    }
+
+    /// Atomically update neighbors using CAS with safe reclamation
+    ///
+    /// Old neighbor lists are retired via the `UnifiedReclaimer` (epoch-based
+    /// GC), which safely frees them once all concurrent readers have finished.
+    /// This eliminates the memory leak in `update()`.
+    ///
+    /// # Memory Safety
+    ///
+    /// The old pointer is scheduled for deferred reclamation. Concurrent
+    /// readers using `read()` may still hold references to the old list;
+    /// the reclaimer ensures the old list is not freed until all such
+    /// references are released.
+    pub fn update_reclaim<F>(&self, mutator: F, reclaimer: &UnifiedReclaimer) -> bool
+    where
+        F: FnOnce(&[NodeId]) -> SmallVec<[NodeId; MAX_M]>,
+    {
+        self.update_inner(mutator, Some(reclaimer))
+    }
+
+    /// Internal CAS update implementation
+    fn update_inner<F>(&self, mutator: F, reclaimer: Option<&UnifiedReclaimer>) -> bool
     where
         F: FnOnce(&[NodeId]) -> SmallVec<[NodeId; MAX_M]>,
     {
@@ -255,10 +368,17 @@ impl AtomicNeighborList {
                 // Version bumped, now swap pointer
                 let old_ptr = self.ptr.swap(new_list, Ordering::AcqRel);
 
-                // Schedule old list for reclamation
-                // In a real implementation, this would use hazard pointers
-                // For now, we leak (safe but not ideal for long-running systems)
-                std::mem::forget(unsafe { Box::from_raw(old_ptr) });
+                // Schedule old list for safe reclamation
+                if let Some(reclaimer) = reclaimer {
+                    // Safety: old_ptr was allocated via Box::into_raw and is no
+                    // longer reachable through self.ptr. Concurrent readers may
+                    // still hold the old pointer; the epoch-based reclaimer
+                    // defers deallocation until all readers have unpinned.
+                    unsafe { reclaimer.retire::<NeighborList>(old_ptr as *mut NeighborList) };
+                } else {
+                    // No reclaimer — leak to preserve safety (backward compat)
+                    std::mem::forget(unsafe { Box::from_raw(old_ptr) });
+                }
 
                 true
             }
@@ -273,13 +393,35 @@ impl AtomicNeighborList {
         }
     }
 
-    /// Atomically update with retry loop
+    /// Atomically update with retry loop (legacy — leaks old lists)
+    ///
+    /// **DEPRECATED**: Use `update_with_retry_reclaim` for production code.
+    #[deprecated(note = "Use update_with_retry_reclaim() with a UnifiedReclaimer instead — this method leaks memory")]
     pub fn update_with_retry<F>(&self, mut mutator: F, max_retries: usize) -> bool
     where
         F: FnMut(&[NodeId]) -> SmallVec<[NodeId; MAX_M]>,
     {
         for _ in 0..max_retries {
             if self.update(&mut mutator) {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
+    }
+
+    /// Atomically update with retry loop and safe reclamation
+    pub fn update_with_retry_reclaim<F>(
+        &self,
+        mut mutator: F,
+        max_retries: usize,
+        reclaimer: &UnifiedReclaimer,
+    ) -> bool
+    where
+        F: FnMut(&[NodeId]) -> SmallVec<[NodeId; MAX_M]>,
+    {
+        for _ in 0..max_retries {
+            if self.update_reclaim(&mut mutator, reclaimer) {
                 return true;
             }
             std::hint::spin_loop();
@@ -387,7 +529,7 @@ thread_local! {
 pub struct LockFreeNode {
     pub id: NodeId,
     pub dense_index: u32,
-    pub vector: QuantizedVector,
+    pub vector: DynamicQuantizedVector,
     /// Neighbor lists per layer
     pub layers: Vec<AtomicNeighborList>,
     /// Maximum layer this node appears in
@@ -395,7 +537,7 @@ pub struct LockFreeNode {
 }
 
 impl LockFreeNode {
-    pub fn new(id: NodeId, dense_index: u32, vector: QuantizedVector, max_layer: usize) -> Self {
+    pub fn new(id: NodeId, dense_index: u32, vector: DynamicQuantizedVector, max_layer: usize) -> Self {
         let mut layers = Vec::with_capacity(max_layer + 1);
         for _ in 0..=max_layer {
             layers.push(AtomicNeighborList::new());
@@ -451,6 +593,10 @@ pub struct LockFreeHnsw {
     stats: HnswStats,
     /// Dense index allocator for visited-epoch bitset
     next_dense_index: AtomicUsize,
+    /// Memory reclaimer for safe deallocation of old neighbor lists
+    /// Uses epoch-based GC with hazard pointer support to ensure
+    /// concurrent readers don't access freed memory.
+    reclaimer: Arc<UnifiedReclaimer>,
 }
 
 /// HNSW statistics
@@ -478,6 +624,20 @@ impl LockFreeHnsw {
             config,
             stats: HnswStats::default(),
             next_dense_index: AtomicUsize::new(0),
+            reclaimer: Arc::new(UnifiedReclaimer::new()),
+        }
+    }
+
+    /// Create with custom reclaimer (for sharing across indices)
+    pub fn with_reclaimer(config: LockFreeHnswConfig, reclaimer: Arc<UnifiedReclaimer>) -> Self {
+        Self {
+            nodes: DashMap::new(),
+            entry_point: AtomicU64::new(0),
+            entry_layer: AtomicUsize::new(0),
+            config,
+            stats: HnswStats::default(),
+            next_dense_index: AtomicUsize::new(0),
+            reclaimer,
         }
     }
 
@@ -488,7 +648,7 @@ impl LockFreeHnsw {
     }
 
     /// Calculate distance between two vectors
-    fn distance(&self, a: &QuantizedVector, b: &QuantizedVector) -> Distance {
+    fn distance(&self, a: &DynamicQuantizedVector, b: &DynamicQuantizedVector) -> Distance {
         self.stats
             .distance_computations
             .fetch_add(1, Ordering::Relaxed);
@@ -496,7 +656,7 @@ impl LockFreeHnsw {
     }
 
     /// Insert a new node
-    pub fn insert(&self, id: NodeId, vector: QuantizedVector) {
+    pub fn insert(&self, id: NodeId, vector: DynamicQuantizedVector) {
         let level = self.random_level();
         let dense_index = self.next_dense_index.fetch_add(1, Ordering::Relaxed) as u32;
         let node = Arc::new(LockFreeNode::new(id, dense_index, vector, level));
@@ -559,7 +719,7 @@ impl LockFreeHnsw {
 
             // Add connections from new node to neighbors
             if layer < node.layers.len() {
-                node.layers[layer].update(|_| selected.clone());
+                node.layers[layer].update_reclaim(|_| selected.clone(), &self.reclaimer);
             }
 
             // Add bidirectional connections (the critical fix!)
@@ -599,7 +759,7 @@ impl LockFreeHnsw {
         };
 
         // Use CAS with retry to atomically update
-        let success = node.layers[layer].update_with_retry(
+        let success = node.layers[layer].update_with_retry_reclaim(
             |current_neighbors| {
                 // Check if already connected
                 if current_neighbors.contains(&new_neighbor) {
@@ -644,6 +804,7 @@ impl LockFreeHnsw {
                     .collect()
             },
             self.config.max_cas_retries,
+            &self.reclaimer,
         );
 
         if success {
@@ -656,7 +817,7 @@ impl LockFreeHnsw {
     /// Search for nearest neighbors at a specific layer
     fn search_layer(
         &self,
-        query: &QuantizedVector,
+        query: &DynamicQuantizedVector,
         entry_id: NodeId,
         ef: usize,
         layer: usize,
@@ -747,7 +908,7 @@ impl LockFreeHnsw {
     }
 
     /// Search for k nearest neighbors
-    pub fn search(&self, query: &QuantizedVector, k: usize) -> Vec<SearchCandidate> {
+    pub fn search(&self, query: &DynamicQuantizedVector, k: usize) -> Vec<SearchCandidate> {
         self.stats.searches.fetch_add(1, Ordering::Relaxed);
 
         let entry_id = self.entry_point.load(Ordering::Acquire) as NodeId;
@@ -799,28 +960,31 @@ impl LockFreeHnsw {
 mod tests {
     use super::*;
 
-    fn random_vector() -> QuantizedVector {
-        let v: Vec<f32> = (0..VECTOR_DIM)
+    const TEST_DIM: usize = 128;
+
+    fn random_vector() -> DynamicQuantizedVector {
+        let v: Vec<f32> = (0..TEST_DIM)
             .map(|_| rand::random::<f32>() * 2.0 - 1.0)
             .collect();
-        QuantizedVector::from_f32(&v)
+        DynamicQuantizedVector::from_f32(&v)
     }
 
     #[test]
     fn test_atomic_neighbor_list_basic() {
         let list = AtomicNeighborList::new();
+        let reclaimer = UnifiedReclaimer::new();
 
         // Initially empty
         assert!(list.read().is_empty());
 
         // Add some neighbors
-        let success = list.update(|_| {
+        let success = list.update_reclaim(|_| {
             let mut v = SmallVec::new();
             v.push(1);
             v.push(2);
             v.push(3);
             v
-        });
+        }, &reclaimer);
         assert!(success);
 
         let neighbors = list.read();
@@ -833,10 +997,11 @@ mod tests {
     #[test]
     fn test_atomic_neighbor_list_version() {
         let list = AtomicNeighborList::new();
+        let reclaimer = UnifiedReclaimer::new();
 
         let (_, v1) = list.read_versioned();
 
-        list.update(|_| SmallVec::from_slice(&[1, 2]));
+        list.update_reclaim(|_| SmallVec::from_slice(&[1, 2]), &reclaimer);
 
         let (_, v2) = list.read_versioned();
         assert!(v2 > v1);
@@ -994,14 +1159,14 @@ mod tests {
 
     #[test]
     fn test_quantized_vector_distance() {
-        let v1 = QuantizedVector::from_f32(&[0.0; VECTOR_DIM]);
-        let v2 = QuantizedVector::from_f32(&[0.0; VECTOR_DIM]);
+        let v1 = DynamicQuantizedVector::from_f32(&[0.0; TEST_DIM]);
+        let v2 = DynamicQuantizedVector::from_f32(&[0.0; TEST_DIM]);
 
         // Same vectors should have distance 0
         assert_eq!(v1.distance(&v2), 0.0);
 
         // Different vectors should have non-zero distance
-        let v3 = QuantizedVector::from_f32(&[1.0; VECTOR_DIM]);
+        let v3 = DynamicQuantizedVector::from_f32(&[1.0; TEST_DIM]);
         assert!(v1.distance(&v3) > 0.0);
     }
 
@@ -1017,15 +1182,17 @@ mod tests {
         }));
 
         // Insert nodes that will all connect to each other
-        let base_vector = QuantizedVector::from_f32(&[0.5; VECTOR_DIM]);
+        let base_vector = DynamicQuantizedVector::from_f32(&[0.5; TEST_DIM]);
 
         let mut handles = vec![];
 
         // Concurrent inserts of nearby vectors
         for i in 0..16 {
             let hnsw = hnsw.clone();
-            let mut v = base_vector.clone();
-            v.data[0] = (i * 10) as u8; // Slight variation
+            // Create a vector with slight variation
+            let mut vals = vec![0.5f32; TEST_DIM];
+            vals[0] = (i as f32 * 0.1) - 0.8; // Slight variation in [-0.8, 0.7]
+            let v = DynamicQuantizedVector::from_f32(&vals);
 
             handles.push(std::thread::spawn(move || {
                 hnsw.insert(i as NodeId, v);
@@ -1081,5 +1248,50 @@ mod tests {
         assert_eq!(heap.pop().unwrap().distance, 1.0);
         assert_eq!(heap.pop().unwrap().distance, 2.0);
         assert_eq!(heap.pop().unwrap().distance, 3.0);
+    }
+
+    #[test]
+    fn test_variable_dimensionality_384() {
+        // Verify LockFreeHnsw works with 384-dim vectors (BERT-like)
+        let hnsw = LockFreeHnsw::new(LockFreeHnswConfig {
+            max_connections: 4,
+            max_connections_layer0: 8,
+            ef_construction: 20,
+            ..Default::default()
+        });
+
+        let dim = 384;
+        for i in 0..10 {
+            let v: Vec<f32> = (0..dim)
+                .map(|j| ((i * dim + j) as f32 / (dim * 10) as f32) * 2.0 - 1.0)
+                .collect();
+            hnsw.insert(i, DynamicQuantizedVector::from_f32(&v));
+        }
+
+        assert_eq!(hnsw.len(), 10);
+
+        let query: Vec<f32> = (0..dim).map(|j| (j as f32 / dim as f32) * 2.0 - 1.0).collect();
+        let results = hnsw.search(&DynamicQuantizedVector::from_f32(&query), 3);
+        assert!(!results.is_empty());
+        assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn test_variable_dimensionality_768() {
+        // Verify LockFreeHnsw works with 768-dim vectors (sentence-transformers)
+        let hnsw = LockFreeHnsw::new(LockFreeHnswConfig::default());
+
+        let dim = 768;
+        for i in 0..5 {
+            let v: Vec<f32> = (0..dim)
+                .map(|j| ((i * dim + j) as f32).sin() * 0.5)
+                .collect();
+            hnsw.insert(i, DynamicQuantizedVector::from_f32(&v));
+        }
+
+        assert_eq!(hnsw.len(), 5);
+        let query: Vec<f32> = (0..dim).map(|j| (j as f32).cos() * 0.5).collect();
+        let results = hnsw.search(&DynamicQuantizedVector::from_f32(&query), 2);
+        assert!(!results.is_empty());
     }
 }

@@ -444,14 +444,12 @@ impl<'a> StagedBuilder<'a> {
         // Get navigation state snapshot
         let nav_state = self.index.navigation_state();
         
-        // If this is a potential new entry point, handle it
-        if layer > nav_state.max_layer {
-            // Update entry point atomically
-            let mut ep = self.index.entry_point.write();
-            let mut ml = self.index.max_layer.write();
-            if layer > *ml {
-                *ml = layer;
-                *ep = Some(id);
+        // If this is a potential new entry point, handle it (lock-free CAS)
+        if layer > nav_state.max_layer || nav_state.entry_point.is_none() {
+            if let Some(dense) = self.index.node_id_to_dense(id) {
+                if self.index.nav_state.update_if_higher(dense as u64, layer) {
+                    self.index.entry_point_dense.store(dense, std::sync::atomic::Ordering::Release);
+                }
             }
         }
         

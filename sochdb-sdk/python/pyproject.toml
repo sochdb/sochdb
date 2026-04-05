@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sochdb-sdk"
+version = "0.5.0"
+description = "SochDB Python SDK — Thin gRPC client for the LLM-optimized database"
+requires-python = ">=3.9"
+license = {text = "AGPL-3.0-or-later"}
+dependencies = [
+    "grpcio>=1.60.0",
+    "protobuf>=4.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "grpcio-tools>=1.60.0",
+    "pytest>=7.0",
+]

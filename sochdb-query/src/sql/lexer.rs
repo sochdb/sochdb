@@ -21,8 +21,7 @@
 //! Handles string literals, numbers, identifiers, keywords, and operators.
 
 use super::token::{Span, Token, TokenKind};
-use std::iter::Peekable;
-use std::str::Chars;
+use std::borrow::Cow;
 
 /// SQL Lexer errors
 #[derive(Debug, Clone, PartialEq)]
@@ -55,11 +54,11 @@ impl std::error::Error for LexError {}
 /// SQL Lexer - tokenizes SQL input
 pub struct Lexer<'a> {
     input: &'a str,
-    chars: Peekable<Chars<'a>>,
+    bytes: &'a [u8],
     pos: usize,
     line: usize,
     column: usize,
-    tokens: Vec<Token>,
+    tokens: Vec<Token<'a>>,
     errors: Vec<LexError>,
     /// Counter for `?` style placeholders (auto-incrementing)
     placeholder_counter: u32,
@@ -70,18 +69,18 @@ impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
         Self {
             input,
-            chars: input.chars().peekable(),
+            bytes: input.as_bytes(),
             pos: 0,
             line: 1,
             column: 1,
-            tokens: Vec::new(),
+            tokens: Vec::with_capacity(input.len() / 4),
             errors: Vec::new(),
             placeholder_counter: 0,
         }
     }
 
     /// Tokenize the entire input
-    pub fn tokenize(mut self) -> Result<Vec<Token>, Vec<LexError>> {
+    pub fn tokenize(mut self) -> Result<Vec<Token<'a>>, Vec<LexError>> {
         while !self.is_at_end() {
             self.scan_token();
         }
@@ -100,30 +99,68 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn is_at_end(&mut self) -> bool {
-        self.chars.peek().is_none()
+    fn is_at_end(&self) -> bool {
+        self.pos >= self.bytes.len()
     }
 
     fn advance(&mut self) -> Option<char> {
-        let c = self.chars.next()?;
-        self.pos += c.len_utf8();
-        if c == '\n' {
-            self.line += 1;
-            self.column = 1;
-        } else {
-            self.column += 1;
+        if self.pos >= self.bytes.len() {
+            return None;
         }
-        Some(c)
+        let b = self.bytes[self.pos];
+        if b < 0x80 {
+            // ASCII fast path
+            self.pos += 1;
+            if b == b'\n' {
+                self.line += 1;
+                self.column = 1;
+            } else {
+                self.column += 1;
+            }
+            Some(b as char)
+        } else {
+            // Multi-byte UTF-8
+            let c = self.input[self.pos..].chars().next().unwrap();
+            self.pos += c.len_utf8();
+            self.column += 1;
+            Some(c)
+        }
     }
 
-    fn peek(&mut self) -> Option<char> {
-        self.chars.peek().copied()
+    fn peek(&self) -> Option<char> {
+        if self.pos >= self.bytes.len() {
+            return None;
+        }
+        let b = self.bytes[self.pos];
+        if b < 0x80 {
+            Some(b as char)
+        } else {
+            self.input[self.pos..].chars().next()
+        }
     }
 
     fn peek_next(&self) -> Option<char> {
-        let mut chars = self.chars.clone();
-        chars.next();
-        chars.next()
+        if self.pos >= self.bytes.len() {
+            return None;
+        }
+        let first_len = if self.bytes[self.pos] < 0x80 {
+            1
+        } else {
+            self.input[self.pos..]
+                .chars()
+                .next()
+                .map_or(1, |c| c.len_utf8())
+        };
+        let next = self.pos + first_len;
+        if next >= self.bytes.len() {
+            return None;
+        }
+        let b = self.bytes[next];
+        if b < 0x80 {
+            Some(b as char)
+        } else {
+            self.input[next..].chars().next()
+        }
     }
 
     fn make_span(&self, start: usize, start_line: usize, start_col: usize) -> Span {
@@ -210,6 +247,14 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('=') {
                     self.advance();
                     self.add_token(TokenKind::Le, start, start_line, start_col);
+                } else if self.peek() == Some('-') {
+                    self.advance(); // consume '-'
+                    if self.peek() == Some('>') {
+                        self.advance(); // consume '>'
+                        self.add_token(TokenKind::BiArrow, start, start_line, start_col);
+                    } else {
+                        self.add_token(TokenKind::LeftArrow, start, start_line, start_col);
+                    }
                 } else if self.peek() == Some('>') {
                     self.advance();
                     self.add_token(TokenKind::Ne, start, start_line, start_col);
@@ -303,8 +348,9 @@ impl<'a> Lexer<'a> {
                 } else {
                     // End of string
                     let span = self.make_span(start, start_line, start_col);
+                    let literal = &self.input[start..self.pos];
                     self.tokens
-                        .push(Token::new(TokenKind::String(value), span, ""));
+                        .push(Token::new(TokenKind::String(Cow::Owned(value)), span, literal));
                     return;
                 }
             } else if c == '\\' {
@@ -352,8 +398,9 @@ impl<'a> Lexer<'a> {
                     value.push(quote);
                 } else {
                     let span = self.make_span(start, start_line, start_col);
+                    let literal = &self.input[start..self.pos];
                     self.tokens
-                        .push(Token::new(TokenKind::QuotedIdentifier(value), span, ""));
+                        .push(Token::new(TokenKind::QuotedIdentifier(Cow::Owned(value)), span, literal));
                     return;
                 }
             } else {
@@ -436,9 +483,9 @@ impl<'a> Lexer<'a> {
         let literal = &self.input[start..self.pos];
         let span = self.make_span(start, start_line, start_col);
 
-        // Check for keyword
+        // Check for keyword — zero allocation
         let kind = TokenKind::from_keyword(literal)
-            .unwrap_or_else(|| TokenKind::Identifier(literal.to_string()));
+            .unwrap_or(TokenKind::Identifier(literal));
 
         self.tokens.push(Token::new(kind, span, literal));
     }
@@ -562,8 +609,9 @@ impl<'a> Lexer<'a> {
         match bytes {
             Ok(data) => {
                 let span = self.make_span(start, start_line, start_col);
+                let literal = &self.input[start..self.pos];
                 self.tokens
-                    .push(Token::new(TokenKind::Blob(data), span, ""));
+                    .push(Token::new(TokenKind::Blob(data), span, literal));
             }
             Err(_) => {
                 self.add_error("Invalid blob literal", start, start_line, start_col);
@@ -571,7 +619,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn add_token(&mut self, kind: TokenKind, start: usize, start_line: usize, start_col: usize) {
+    fn add_token(&mut self, kind: TokenKind<'a>, start: usize, start_line: usize, start_col: usize) {
         let span = self.make_span(start, start_line, start_col);
         let literal = &self.input[start..self.pos];
         self.tokens.push(Token::new(kind, span, literal));
@@ -668,5 +716,39 @@ mod tests {
     fn test_blob_literal() {
         let tokens = Lexer::new("X'48454C4C4F'").tokenize().unwrap();
         assert!(matches!(&tokens[0].kind, TokenKind::Blob(b) if b == b"HELLO"));
+    }
+
+    #[test]
+    fn test_left_arrow() {
+        let tokens = Lexer::new("<-").tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::LeftArrow);
+    }
+
+    #[test]
+    fn test_biarrow() {
+        let tokens = Lexer::new("<->").tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::BiArrow);
+    }
+
+    #[test]
+    fn test_arrow_tokens_in_context() {
+        let tokens = Lexer::new("a -> b <- c <-> d").tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Identifier("a")));
+        assert_eq!(tokens[1].kind, TokenKind::Arrow);
+        assert!(matches!(tokens[2].kind, TokenKind::Identifier("b")));
+        assert_eq!(tokens[3].kind, TokenKind::LeftArrow);
+        assert!(matches!(tokens[4].kind, TokenKind::Identifier("c")));
+        assert_eq!(tokens[5].kind, TokenKind::BiArrow);
+        assert!(matches!(tokens[6].kind, TokenKind::Identifier("d")));
+    }
+
+    #[test]
+    fn test_relate_keyword() {
+        let tokens = Lexer::new("RELATE LIVE CONTENT EVENT DIFF").tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Relate);
+        assert_eq!(tokens[1].kind, TokenKind::Live);
+        assert_eq!(tokens[2].kind, TokenKind::Content);
+        assert_eq!(tokens[3].kind, TokenKind::Event);
+        assert_eq!(tokens[4].kind, TokenKind::Diff);
     }
 }

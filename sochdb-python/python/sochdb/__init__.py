@@ -30,6 +30,7 @@ try:
         build_index,
         version,
         is_safe_mode,
+        TableDatabase,
     )
     _HAS_NATIVE = True
 except ImportError as e:
@@ -40,6 +41,7 @@ except ImportError as e:
 __all__ = [
     # Core classes
     "HnswIndex",
+    "TableDatabase",
     # Functions
     "build_index",
     "build_index_from_numpy",

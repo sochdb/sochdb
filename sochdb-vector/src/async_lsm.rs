@@ -310,12 +310,12 @@ impl WriteAheadLog {
     }
 
     fn compute_checksum(&self, key: VectorKey, vector: &[f32]) -> u32 {
-        let mut hash = key as u32;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&(key as u32).to_le_bytes());
         for &x in vector {
-            hash = hash.wrapping_add(x.to_bits());
-            hash = hash.rotate_left(5);
+            hasher.update(&x.to_le_bytes());
         }
-        hash
+        hasher.finalize()
     }
 
     /// Get write statistics
