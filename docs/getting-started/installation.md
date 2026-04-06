@@ -12,7 +12,9 @@ Complete installation guide for SochDB across different platforms and use cases.
 pip install sochdb
 ```
 
-**Pre-built binaries** are available for Linux (`x86_64`, `aarch64`), macOS (Intel, Apple Silicon), and Windows (`x86_64`).
+**Recommended first path on Apple Silicon:** use a native `arm64` Python environment.
+
+We validated the packaged Python path successfully in a clean native `arm64` macOS environment. If you are on Apple Silicon but your Python reports `x86_64`, you are likely in a Rosetta/Intel environment and should switch to native `arm64` first.
 
 ### Verify Installation
 
@@ -20,8 +22,7 @@ pip install sochdb
 from sochdb import Database
 
 db = Database.open("./test_db")
-with db.transaction() as txn:
-    db.put(b"test", b"hello", txn.id)
+db.put(b"test", b"hello")
 
 value = db.get(b"test")
 print(f"SochDB installed! Value: {value.decode()}")
@@ -162,6 +163,8 @@ python -c "import platform; print(platform.machine())"
 # Should output: arm64
 ```
 
+If this prints `x86_64` on an Apple Silicon Mac, do not treat that as the recommended packaged path. Switch to a native `arm64` Python environment first.
+
 ### Linux
 
 For best performance, ensure your kernel supports `io_uring`:
@@ -191,9 +194,7 @@ from sochdb import Database
 
 # Test basic operations
 db = Database.open("./verify_db")
-
-with db.transaction() as txn:
-    db.put(b"test/key", b"value", txn.id)
+db.put(b"test/key", b"value")
 
 value = db.get(b"test/key")
 assert value == b"value", "Basic KV operations failed"

@@ -10,7 +10,8 @@ The short version:
 
 - Use `pip install sochdb` for the published package
 - Use `sochdb-python/` + `maturin develop --release` when working from this monorepo
-- On macOS, your Python architecture must match the native extension architecture
+- On Apple Silicon Macs, prefer a native `arm64` Python env for the packaged path
+- Avoid `x86_64` / Rosetta Python envs on Apple Silicon for the packaged path unless you know you need them
 
 ---
 
@@ -21,7 +22,7 @@ The short version:
 | Try SochDB quickly as a Python user | `pip install sochdb` | Recommended |
 | Work on the Python SDK from source | `cd sochdb-python && maturin develop --release` | Recommended |
 | Apple Silicon Mac with native Python | `pip install sochdb` in an `arm64` Python env | Validated |
-| Apple Silicon Mac with Rosetta / Intel Python | Prefer switching to native `arm64` Python first | Use carefully |
+| Apple Silicon Mac with Rosetta / Intel Python | Switch to native `arm64` Python first | Not recommended for the packaged path |
 
 ---
 
@@ -60,6 +61,8 @@ Expected on Apple Silicon:
 ```text
 machine: arm64
 ```
+
+This is the packaged Python path we should recommend first to new users on Apple Silicon Macs.
 
 ### 2. Monorepo source build
 
@@ -119,6 +122,8 @@ Avoid mixing:
 - Intel/Rosetta Python
 - native Apple Silicon builds
 
+In our validation, the published `pip install sochdb` path worked cleanly in a native `arm64` macOS environment. The confusing failures showed up in `x86_64` / Rosetta-style Python envs on Apple Silicon.
+
 ---
 
 ## Quick Troubleshooting
@@ -144,6 +149,8 @@ PY
 
 If this prints `x86_64` on an Apple Silicon Mac, switch to a native `arm64` Python environment.
 
+If you want the simplest first path on Apple Silicon, do not debug the Rosetta env first. Create a native `arm64` venv and retry there.
+
 ### Working from source but imports still look wrong
 
 Make sure you built from the monorepo Python package:
@@ -163,9 +170,7 @@ Then run your demo or script from that same Python environment.
 from sochdb import Database
 
 db = Database.open("./verify_db")
-
-with db.transaction() as txn:
-    db.put(b"test/key", b"value", txn.id)
+db.put(b"test/key", b"value")
 
 value = db.get(b"test/key")
 assert value == b"value"
