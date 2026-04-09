@@ -46,6 +46,7 @@ COPY sochdb-wasm ./sochdb-wasm
 COPY sochdb-tools ./sochdb-tools
 COPY sochdb-plugin-logging ./sochdb-plugin-logging
 COPY proto ./proto
+COPY sochdb-fusion ./sochdb-fusion
 
 # Build release binary (limit jobs to avoid compiler SIGSEGV on memory-constrained hosts)
 RUN CARGO_BUILD_JOBS=4 cargo build --release --package sochdb-grpc --bin sochdb-grpc-server
@@ -63,6 +64,8 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifi
 RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
     sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null; true
 
+COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 \
+    /ko-app/grpc-health-probe /bin/grpc_health_probe
 # Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \

@@ -8,7 +8,13 @@ Demonstrates RAG with:
 - Query engine with SochDB retrieval
 
 Usage:
-    pip install llama-index llama-index-embeddings-azure-openai
+    pip install sochdb python-dotenv requests numpy llama-index llama-index-embeddings-azure-openai
+    python3 examples/python/llamaindex_rag.py
+
+    # Or from this monorepo:
+    cd sochdb-python
+    maturin develop --release
+    cd ..
     python3 examples/python/llamaindex_rag.py
 """
 
@@ -23,8 +29,8 @@ import requests
 from typing import List, Any, Optional
 from dataclasses import dataclass
 
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
+# Add SochDB package path for monorepo source usage
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python"))
 
 from dotenv import load_dotenv
 load_dotenv()

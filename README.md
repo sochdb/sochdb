@@ -209,11 +209,11 @@ sochdb = "0.2"
 
 ### SDK Repositories
 
-Language SDKs are maintained in separate repositories with their own release cycles:
+Language SDKs are maintained in separate packages and repos with their own release cycles:
 
 | Language | Repository | Installation |
 |----------|------------|-------------|
-| **Python** | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb` |
+| **Python** | [`sochdb-python/`](./sochdb-python) | `pip install sochdb` |
 
 ### 🐳 Docker Deployment
 

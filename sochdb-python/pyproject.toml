@@ -75,8 +75,9 @@ features = ["abi3"]
 python-source = "python"
 module-name = "sochdb._native"
 
-# Strip binaries for smaller wheels
-strip = true
+# Keep local `maturin develop --release` working consistently across environments.
+# Wheel size optimization can still be handled in release packaging workflows.
+strip = false
 
 # Compatibility settings
 # ABI3 means one wheel works for Python 3.9+
