@@ -3395,26 +3395,41 @@ impl HnswIndex {
         let phase2_elapsed = phase2_start.elapsed();
         
         // =========================================================================
-        // DEFERRED PHASE 3: Push to pending buffer for lazy connection building.
+        // EAGER PHASE 3: Build HNSW connections with parallel waves.
         // =========================================================================
         let phase3_start = std::time::Instant::now();
-        {
-            let mut pending = self.pending_nodes.lock();
-            pending.reserve(nodes.len());
-            for (id, node) in &nodes {
-                pending.push((*id, Arc::clone(node)));
+        
+        // Process in parallel waves: each wave connects multiple nodes concurrently.
+        // Smaller waves = better graph quality (nodes see more edges from prior waves).
+        let wave_size = 8; // Small waves for high recall
+        let connected = std::sync::atomic::AtomicUsize::new(0);
+        
+        for wave in nodes.chunks(wave_size) {
+            // Snapshot nav state once per wave
+            let nav_state = self.navigation_state();
+            
+            // Connect all nodes in this wave in parallel
+            wave.par_iter().for_each(|(id, node)| {
+                let _ = self.connect_node_fast(*id, node, &nav_state);
+                connected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+            
+            // Update entry points after each wave completes
+            for (id, node) in wave {
+                if let Some(dense) = self.node_id_to_dense(*id) {
+                    if self.nav_state.update_if_higher(dense as u64, node.layer) {
+                        self.entry_point_dense.store(dense, AtomicOrdering::Release);
+                    }
+                }
             }
         }
+        let total_connected = connected.load(std::sync::atomic::Ordering::Relaxed);
         let phase3_elapsed = phase3_start.elapsed();
         
         eprintln!(
-            "[HNSW] insert_batch_bulk n={}: phase1={:?} phase2={:?} defer={:?} total={:?}",
-            n, phase1_elapsed, phase2_elapsed, phase3_elapsed, phase1_start.elapsed()
+            "[HNSW] insert_batch_bulk n={}: phase1={:?} phase2={:?} connect={:?} total={:?} ({} connected)",
+            n, phase1_elapsed, phase2_elapsed, phase3_elapsed, phase1_start.elapsed(), total_connected
         );
-        
-        // DON'T update entry point here for deferred indexing — pending nodes
-        // have no connections yet. The entry point stays at the scaffold's EP.
-        // build_pending_connections will update it after connections are built.
         
         metrics::INSERT_COUNT.inc_by(n as f64);
         
@@ -3441,9 +3456,9 @@ impl HnswIndex {
         tracing::info!("Building HNSW connections for {} deferred nodes", n);
         
         let ef = self.config.ef_construction;
-        // wave_size=1 → fully sequential build for optimal graph quality.
-        // Each node sees all previous connections during search.
-        let wave_size = 1;
+        // wave_size=512 → process 512 nodes per wave for faster deferred build.
+        // Nodes within the same wave share the same graph snapshot.
+        let wave_size = 512;
         let mut connected = 0;
         
         let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
@@ -5450,7 +5465,8 @@ impl HnswIndex {
 
     /// Search with a specific ef value
     ///
-    /// Useful for benchmarking different ef values or manual tuning.
+    /// Uses the same high-quality search path as search() with consistent
+    /// lock snapshots via search_layer_ref.
     pub fn search_with_ef(
         &self,
         query: &[f32],
@@ -5462,6 +5478,11 @@ impl HnswIndex {
         let node_count = self.nodes.len();
         if node_count > 0 && node_count <= 50_000 {
             return self.search(query, k);
+        }
+
+        // Safety: build deferred connections if any exist
+        if !self.pending_nodes.lock().is_empty() {
+            self.build_pending_connections();
         }
 
         let _timer = metrics::SEARCH_LATENCY.start_timer();
@@ -5476,6 +5497,7 @@ impl HnswIndex {
             ));
         }
 
+        // Single atomic snapshot at search start
         let nav = self.navigation_state();
         let max_layer = nav.max_layer;
 
@@ -5485,31 +5507,67 @@ impl HnswIndex {
 
         let ep_id = nav.entry_point.unwrap();
 
-        let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
+        // Acquire all read locks ONCE for consistent graph view
         let vector_store = self.vector_store.read();
-        let ep_vector = vector_store
-            .get(ep_node.vector_index as usize)
-            .unwrap_or(&ep_node.vector);
+        let internal_nodes = self.internal_nodes.read();
+
+        // Resolve entry point via dense array (zero DashMap)
+        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        let ep_node_ref = if ep_dense != u32::MAX {
+            internal_nodes.get(ep_dense as usize).and_then(|opt| opt.as_ref())
+        } else {
+            None
+        };
+        let ep_vector = if let Some(ep_n) = ep_node_ref {
+            vector_store
+                .get(ep_n.vector_index as usize)
+                .unwrap_or(&ep_n.vector)
+        } else {
+            let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
+            let vi = ep_node.vector_index as usize;
+            &vector_store[vi]
+        };
 
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
-        let query_quantized = if matches!(self.config.metric, DistanceMetric::Cosine) {
+        let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest;
+        let query_quantized = if use_normalized {
             QuantizedVector::from_f32_normalized(ndarray::Array1::from_vec(query.to_vec()), precision)
         } else {
             QuantizedVector::from_f32(ndarray::Array1::from_vec(query.to_vec()), precision)
         };
 
+        let initial_distance = if use_normalized {
+            self.calculate_distance_normalized(&query_quantized, ep_vector)
+        } else {
+            self.calculate_distance(&query_quantized, ep_vector)
+        };
         let mut curr_nearest = vec![SearchCandidate {
-            distance: self.calculate_distance_normalized(&query_quantized, ep_vector),
+            distance: initial_distance,
             id: ep_id,
         }];
 
+        // Navigate upper layers with ef=1 using consistent snapshot
         for lc in (1..=max_layer).rev() {
-            curr_nearest = self.search_layer_concurrent(&query_quantized, &curr_nearest, 1, lc);
+            curr_nearest = self.search_layer_ref(
+                &query_quantized,
+                &curr_nearest,
+                1,
+                lc,
+                &vector_store,
+                &internal_nodes,
+            );
         }
 
-        // Use provided ef value
-        let candidates =
-            self.search_layer_concurrent(&query_quantized, &curr_nearest, ef.max(k), 0);
+        // Final search at layer 0 with caller-specified ef
+        let candidates = self.search_layer_ref(
+            &query_quantized,
+            &curr_nearest,
+            ef.max(k),
+            0,
+            &vector_store,
+            &internal_nodes,
+        );
 
         let results: Vec<(u128, f32)> = candidates
             .into_iter()
@@ -7984,7 +8042,96 @@ impl HnswIndex {
     /// scaffold and batch partitions. Graph quality is handled by
     /// `refine_graph()` (GNR) which properly re-searches the complete graph.
     pub fn repair_connectivity(&self) -> usize {
-        0
+        let (reachable, total, orphans) = self.diagnose_connectivity();
+        if orphans.is_empty() {
+            return 0;
+        }
+
+        // For each orphan, find its nearest reachable neighbor and add edges
+        let vector_store = self.vector_store.read();
+        let internal_nodes = self.internal_nodes.read();
+        let mut repaired = 0usize;
+
+        for &orphan_id in &orphans {
+            let orphan_node = match self.nodes.get(&orphan_id) {
+                Some(n) => n,
+                None => continue,
+            };
+            let orphan_vector = vector_store
+                .get(orphan_node.vector_index as usize)
+                .unwrap_or(&orphan_node.vector);
+
+            // Search from entry point to find nearest reachable node
+            let nav = self.navigation_state();
+            let ep_id = match nav.entry_point {
+                Some(ep) => ep,
+                None => continue,
+            };
+            let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+            let ep_vector = if ep_dense != u32::MAX {
+                if let Some(Some(ep_n)) = internal_nodes.get(ep_dense as usize) {
+                    vector_store
+                        .get(ep_n.vector_index as usize)
+                        .unwrap_or(&ep_n.vector)
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+            
+            let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
+                && self.config.rng_optimization.normalize_at_ingest;
+            let initial_distance = if use_normalized {
+                self.calculate_distance_normalized(orphan_vector, ep_vector)
+            } else {
+                self.calculate_distance(orphan_vector, ep_vector)
+            };
+            let mut curr_nearest = vec![SearchCandidate {
+                distance: initial_distance,
+                id: ep_id,
+            }];
+
+            // Navigate to orphan's neighborhood
+            for lc in (1..=nav.max_layer).rev() {
+                curr_nearest = self.search_layer_ref(
+                    orphan_vector, &curr_nearest, 1, lc,
+                    &vector_store, &internal_nodes,
+                );
+            }
+            
+            // Search layer 0 to find nearest neighbors
+            let candidates = self.search_layer_ref(
+                orphan_vector, &curr_nearest, self.config.ef_construction, 0,
+                &vector_store, &internal_nodes,
+            );
+
+            if candidates.is_empty() { continue; }
+
+            // Set orphan's layer-0 neighbors
+            let m0 = self.config.max_connections_layer0;
+            let neighbors: SmallVec<[u128; MAX_M]> = candidates.iter()
+                .filter(|c| c.id != orphan_id)
+                .take(m0)
+                .map(|c| c.id)
+                .collect();
+
+            if neighbors.is_empty() { continue; }
+
+            {
+                let mut ld = orphan_node.layers[0].write();
+                ld.neighbors = self.ids_to_dense_neighbors(&neighbors);
+                ld.version += 1;
+            }
+
+            // Add reverse edges
+            for &neighbor_id in &neighbors {
+                self.force_add_reverse_edge(orphan_id, neighbor_id, orphan_vector, 0);
+            }
+            repaired += 1;
+        }
+
+        repaired
     }
 
     /// Post-construction graph refinement pass.

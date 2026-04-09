@@ -368,7 +368,7 @@ impl PyHnswIndex {
         py: Python<'py>,
         query: PyReadonlyArray1<'py, f32>,
         k: usize,
-        ef_search: Option<usize>,  // TODO: Support runtime ef_search override
+        ef_search: Option<usize>,
     ) -> PyResult<(Py<PyArray1<u64>>, Py<PyArray1<f32>>)> {
         let query_slice = query.as_slice().map_err(|e| {
             PyValueError::new_err(format!("Query must be contiguous: {}", e))
@@ -386,7 +386,10 @@ impl PyHnswIndex {
         let query_vec: Vec<f32> = query_slice.to_vec();
         
         let results = py.allow_threads(move || {
-            inner.search(&query_vec, k)
+            match ef_search {
+                Some(ef) => inner.search_with_ef(&query_vec, k, ef),
+                None => inner.search(&query_vec, k),
+            }
         }).map_err(|e| PyRuntimeError::new_err(e))?;
         
         // Convert to numpy arrays using ndarray
@@ -568,6 +571,21 @@ impl PyHnswIndex {
         let inner = Arc::clone(&self.inner);
         let result = py.allow_threads(move || {
             inner.rebuild_layer0_exact()
+        });
+        Ok(result)
+    }
+
+    /// Repair graph connectivity by reconnecting orphaned nodes.
+    ///
+    /// After batch insertion, some nodes may be unreachable from the entry point.
+    /// This method finds orphans via BFS and reconnects them.
+    ///
+    /// Returns:
+    ///     Number of nodes repaired.
+    fn repair<'py>(&self, py: Python<'py>) -> PyResult<usize> {
+        let inner = Arc::clone(&self.inner);
+        let result = py.allow_threads(move || {
+            inner.repair_connectivity()
         });
         Ok(result)
     }
