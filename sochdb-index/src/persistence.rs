@@ -105,12 +105,13 @@ impl HnswIndex {
             });
         }
 
+        let nav = self.navigation_state();
         let snapshot = IndexSnapshot {
             version: 1,
             config: self.config.clone(),
             nodes: serializable_nodes,
-            entry_point: *self.entry_point.read(),
-            max_layer: *self.max_layer.read(),
+            entry_point: nav.entry_point,
+            max_layer: nav.max_layer,
             dimension: self.dimension,
             created_at: SystemTime::now(),
         };
@@ -217,9 +218,13 @@ impl HnswIndex {
             }
         }
 
-        // Restore metadata
-        *index.entry_point.write() = snapshot.entry_point;
-        *index.max_layer.write() = snapshot.max_layer;
+        // Restore metadata via atomic nav_state
+        if let Some(ep_id) = snapshot.entry_point {
+            if let Some(dense) = index.node_id_to_dense(ep_id) {
+                index.nav_state.store(Some(dense as u64), snapshot.max_layer);
+                index.entry_point_dense.store(dense, std::sync::atomic::Ordering::Release);
+            }
+        }
 
         Ok(index)
     }
@@ -248,12 +253,13 @@ impl HnswIndex {
             });
         }
 
+        let nav = self.navigation_state();
         let snapshot = IndexSnapshot {
             version: 1,
             config: self.config.clone(),
             nodes: serializable_nodes,
-            entry_point: *self.entry_point.read(),
-            max_layer: *self.max_layer.read(),
+            entry_point: nav.entry_point,
+            max_layer: nav.max_layer,
             dimension: self.dimension,
             created_at: SystemTime::now(),
         };
@@ -353,8 +359,13 @@ impl HnswIndex {
             }
         }
 
-        *index.entry_point.write() = snapshot.entry_point;
-        *index.max_layer.write() = snapshot.max_layer;
+        // Restore metadata via atomic nav_state
+        if let Some(ep_id) = snapshot.entry_point {
+            if let Some(dense) = index.node_id_to_dense(ep_id) {
+                index.nav_state.store(Some(dense as u64), snapshot.max_layer);
+                index.entry_point_dense.store(dense, std::sync::atomic::Ordering::Release);
+            }
+        }
 
         Ok(index)
     }
@@ -737,8 +748,15 @@ impl HnswIndex {
                 self.nodes.remove(id);
             }
             HnswWalEntry::SetEntryPoint { id, max_layer } => {
-                *self.entry_point.write() = *id;
-                *self.max_layer.write() = *max_layer;
+                if let Some(ep_id) = *id {
+                    if let Some(dense) = self.node_id_to_dense(ep_id) {
+                        self.nav_state.store(Some(dense as u64), *max_layer);
+                        self.entry_point_dense.store(dense, std::sync::atomic::Ordering::Release);
+                    }
+                } else {
+                    self.nav_state.store(None, *max_layer);
+                    self.entry_point_dense.store(u32::MAX, std::sync::atomic::Ordering::Release);
+                }
             }
             // AddNeighbor and RemoveNeighbor are handled by insert()
             // which rebuilds connections. For incremental edge updates,

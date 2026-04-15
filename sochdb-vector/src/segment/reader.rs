@@ -221,6 +221,27 @@ impl Segment {
         }
     }
 
+    /// Get BPS quantization parameters (min, inv_range per slot).
+    ///
+    /// Returns `None` if qparams were not stored (legacy segments).
+    /// The number of slots = num_bps_blocks × bps_proj.
+    pub fn bps_qparams(&self) -> Option<&[super::bps::BpsQParam]> {
+        if self.header.off_bps_qparams == 0 {
+            return None;
+        }
+        let num_slots = self.header.num_bps_blocks() as usize * self.header.bps_proj as usize;
+        if num_slots == 0 {
+            return None;
+        }
+        unsafe {
+            Some(std::slice::from_raw_parts(
+                self.mmap.as_ptr().add(self.header.off_bps_qparams as usize)
+                    as *const super::bps::BpsQParam,
+                num_slots,
+            ))
+        }
+    }
+
     /// Get fp32 vector for a specific ID
     pub fn get_fp32_vector(&self, vid: VectorId) -> Option<&[f32]> {
         let fp32 = self.fp32_data()?;

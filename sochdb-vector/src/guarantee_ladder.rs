@@ -585,7 +585,7 @@ mod tests {
         let b = ScoreEnvelope::new(0.8, 0.05);
         
         // Note: With equal scores, this may not always hold deterministically
-        assert!(a.definitely_beats(&b) || a.score == b.score); // 0.85 > 0.85 is false, wait...
+        assert!(a.definitely_beats(&b) || a.proxy == b.proxy); // 0.85 > 0.85 is false, wait...
         // a.lower = 0.85, b.upper = 0.85, not strictly greater
         
         let c = ScoreEnvelope::new(0.9, 0.02);

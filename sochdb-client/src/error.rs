@@ -102,6 +102,10 @@ pub enum ClientError {
     #[error("Connection pool exhausted")]
     PoolExhausted,
 
+    /// SQL query execution error
+    #[error("Query error: {0}")]
+    Query(String),
+
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),

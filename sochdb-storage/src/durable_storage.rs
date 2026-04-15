@@ -2466,6 +2466,74 @@ impl DurableStorage {
         Self::open_with_full_config_internal(path, true, MemTableType::Standard, false)
     }
 
+    /// Open an ephemeral (in-memory-like) DurableStorage backed by a temp directory.
+    ///
+    /// Uses the full DurableStorage engine (WAL, MVCC, SSI) but writes to a
+    /// temporary directory that is automatically cleaned up when the
+    /// `EphemeralHandle` is dropped. This ensures test and production code paths
+    /// are identical — bugs found in tests are guaranteed to reproduce in production.
+    ///
+    /// # Returns
+    /// An `EphemeralHandle` that owns both the storage and the temp directory.
+    /// Access the storage via `handle.storage()` or `Deref` coercion.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let handle = DurableStorage::open_ephemeral()?;
+    /// let txn = handle.begin_transaction()?;
+    /// handle.write(txn, b"key".to_vec(), b"value".to_vec())?;
+    /// handle.commit(txn)?;
+    /// // temp directory cleaned up when `handle` drops
+    /// ```
+    pub fn open_ephemeral() -> Result<EphemeralHandle> {
+        let tmp = tempfile::tempdir()
+            .map_err(|e| SochDBError::Io(e))?;
+        let storage = Self::open_with_full_config_internal(
+            tmp.path(),
+            true,
+            MemTableType::Standard,
+            false, // No lock needed for ephemeral
+        )?;
+        Ok(EphemeralHandle {
+            storage,
+            _tmpdir: tmp,
+        })
+    }
+
+    /// Open an ephemeral DurableStorage with group commit enabled.
+    ///
+    /// Same as `open_ephemeral()` but with group commit for higher throughput.
+    pub fn open_ephemeral_with_group_commit() -> Result<EphemeralHandle> {
+        let tmp = tempfile::tempdir()
+            .map_err(|e| SochDBError::Io(e))?;
+        let mut storage = Self::open_with_full_config_internal(
+            tmp.path(),
+            true,
+            MemTableType::Standard,
+            false,
+        )?;
+
+        let wal = storage.wal.clone();
+        let gc = EventDrivenGroupCommit::new(move |txn_ids: &[u64]| {
+            for &txn_id in txn_ids {
+                let entry = TxnWalEntry::txn_commit(txn_id);
+                wal.append_no_flush(&entry).map_err(|e| e.to_string())?;
+            }
+            wal.flush().map_err(|e| e.to_string())?;
+            wal.sync().map_err(|e| e.to_string())?;
+            Ok(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64)
+        });
+        storage.group_commit = Some(Arc::new(gc));
+
+        Ok(EphemeralHandle {
+            storage,
+            _tmpdir: tmp,
+        })
+    }
+
     fn open_with_full_config_internal<P: AsRef<Path>>(
         path: P,
         enable_ordered_index: bool,
@@ -3149,6 +3217,62 @@ impl DurableStorage {
 impl Drop for DurableStorage {
     fn drop(&mut self) {
         let _ = self.shutdown();
+    }
+}
+
+// =============================================================================
+// EphemeralHandle - Temp-directory-backed DurableStorage for testing
+// =============================================================================
+
+/// Owns a `DurableStorage` instance backed by a temporary directory.
+///
+/// The temp directory is automatically cleaned up when this handle is dropped.
+/// Access the underlying storage via `Deref` coercion or `.storage()`.
+///
+/// # Why this exists
+///
+/// SochDB previously had two storage engines — `LscsStorage` (BTreeMap-backed,
+/// in-memory WAL, used by tests) and `DurableStorage` (SkipMap-backed, real WAL,
+/// used in production). This dual-engine architecture meant bugs could surface
+/// only in production because the test path exercised different code.
+///
+/// `EphemeralHandle` eliminates this divergence: tests use the exact same
+/// `DurableStorage` engine as production, just backed by a temp directory.
+pub struct EphemeralHandle {
+    storage: DurableStorage,
+    _tmpdir: tempfile::TempDir,
+}
+
+impl EphemeralHandle {
+    /// Get a reference to the underlying storage
+    pub fn storage(&self) -> &DurableStorage {
+        &self.storage
+    }
+
+    /// Get a mutable reference to the underlying storage
+    pub fn storage_mut(&mut self) -> &mut DurableStorage {
+        &mut self.storage
+    }
+
+    /// Consume the handle and return the storage and temp directory.
+    ///
+    /// Useful when you need an `Arc<DurableStorage>` — the caller must keep
+    /// the `TempDir` alive for the lifetime of the storage.
+    pub fn into_parts(self) -> (DurableStorage, tempfile::TempDir) {
+        (self.storage, self._tmpdir)
+    }
+}
+
+impl std::ops::Deref for EphemeralHandle {
+    type Target = DurableStorage;
+    fn deref(&self) -> &DurableStorage {
+        &self.storage
+    }
+}
+
+impl std::ops::DerefMut for EphemeralHandle {
+    fn deref_mut(&mut self) -> &mut DurableStorage {
+        &mut self.storage
     }
 }
 

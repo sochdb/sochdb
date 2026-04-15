@@ -33,6 +33,7 @@ dashmap = "5.5"
 rand = "0.8"
 rand_xoshiro = "0.6"
 ahash = "0.8"
+crc32fast = "1.3"
 
 # Logging
 tracing = "0.1"

@@ -32,6 +32,7 @@ try:
         build_index,
         version,
         is_safe_mode,
+        TableDatabase,
     )
     _HAS_NATIVE = True
 except ImportError as e:
@@ -43,6 +44,7 @@ __all__ = [
     # Core classes
     "Database",
     "HnswIndex",
+    "TableDatabase",
     "Transaction",
     # Functions
     "build_index",

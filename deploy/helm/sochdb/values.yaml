@@ -61,6 +61,18 @@ service:
   httpPort: 8080
   annotations: {}
 
+# Ingress configuration
+ingress:
+  enabled: false
+  className: "public"
+  host: ""
+  httpEnabled: true
+  annotations: {}
+  tls:
+    enabled: false
+    certManager: true
+    clusterIssuer: "letsencrypt-prod"
+
 # Health probes aligned with Boot FSM
 probes:
   # startupProbe: Tolerates long recovery (WAL replay, migrations)
@@ -138,14 +150,27 @@ security:
   # TLS configuration
   tls:
     enabled: false
+    # Name of K8s TLS Secret containing tls.crt and tls.key
     certSecretName: ""
-    # Enable mTLS for client authentication
+    # Enable mTLS for client certificate verification
     mtls: false
+    # Name of K8s Secret containing ca.crt for mTLS
+    caSecretName: ""
   # JWT/JWKS authentication
   auth:
     enabled: false
     jwksUrl: ""
     issuer: ""
+  # Kubernetes Secrets for credentials
+  secrets:
+    # Secret name containing: jwt-secret, api-keys, encryption-key
+    secretName: ""
+    # Mount path inside pod
+    mountPath: "/etc/sochdb/secrets"
+  # Data-at-rest encryption
+  encryption:
+    enabled: false
+    # Encryption key loaded from secrets.secretName/encryption-key
 
 # Network Policy
 networkPolicy:

@@ -131,6 +131,13 @@ seahash = "4.1"
 blake3 = "1.5"
 hex = "0.4"
 
+# Cryptography
+ring = "0.17"
+hmac = "0.12"
+sha2 = "0.10"
+jsonwebtoken = "9.3"
+argon2 = "0.5"
+
 # Math and vectors
 # NOTE: nalgebra was removed - unused (ndarray is used for vector ops)
 ndarray = "0.15"

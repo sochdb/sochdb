@@ -330,14 +330,16 @@ impl<'a> ScanBuilder<'a> {
 
     /// Execute scan with columnar projection
     pub fn execute(self) -> Result<ColumnIterator> {
-        // Get the range bounds
-        let start = self.range.as_ref().map(|r| r.start.as_slice()).unwrap_or(b"");
-        let end = self.range.as_ref().map(|r| r.end.as_slice()).unwrap_or(&[0xFF; 256]);
-        let limit = self.limit.unwrap_or(usize::MAX);
+        // Get the range bounds — use start as prefix for DurableStorage scan
+        let prefix = self.range.as_ref().map(|r| r.start.as_slice()).unwrap_or(b"");
         
-        // Use LscsStorage's scan method
-        let results = self.storage.conn.storage.scan(start, end, limit)?;
-        let count = results.len();
+        // Use DurableStorage's scan method via SochConnection
+        let results = self.storage.conn.scan_prefix(prefix)?;
+        let count = if let Some(limit) = self.limit {
+            results.len().min(limit)
+        } else {
+            results.len()
+        };
         
         // Record stats
         self.storage.record_scan(self.columns.len(), count);
@@ -348,12 +350,15 @@ impl<'a> ScanBuilder<'a> {
 
     /// Count matching rows (without fetching data)
     pub fn count(self) -> Result<usize> {
-        let start = self.range.as_ref().map(|r| r.start.as_slice()).unwrap_or(b"");
-        let end = self.range.as_ref().map(|r| r.end.as_slice()).unwrap_or(&[0xFF; 256]);
-        let limit = self.limit.unwrap_or(usize::MAX);
+        let prefix = self.range.as_ref().map(|r| r.start.as_slice()).unwrap_or(b"");
         
-        let results = self.storage.conn.storage.scan(start, end, limit)?;
-        Ok(results.len())
+        let results = self.storage.conn.scan_prefix(prefix)?;
+        let count = if let Some(limit) = self.limit {
+            results.len().min(limit)
+        } else {
+            results.len()
+        };
+        Ok(count)
     }
 }
 

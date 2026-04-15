@@ -7,6 +7,7 @@
 //!
 //! Provides collection management for vectors/documents via gRPC.
 
+use crate::auth_interceptor::{extract_principal, require_capability, require_namespace_access};
 use crate::proto::{
     collection_service_server::{CollectionService, CollectionServiceServer},
     AddDocumentsRequest, AddDocumentsResponse, Collection, CreateCollectionRequest,
@@ -16,6 +17,8 @@ use crate::proto::{
     ListCollectionsRequest, ListCollectionsResponse, SearchCollectionRequest,
     SearchCollectionResponse,
 };
+use crate::namespace_server::NamespaceServer;
+use crate::security::Capability;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -30,12 +33,23 @@ struct CollectionData {
 /// Collection gRPC Server
 pub struct CollectionServer {
     collections: DashMap<String, Arc<CollectionData>>,
+    /// Shared namespace server for quota enforcement
+    ns_server: Option<NamespaceServer>,
 }
 
 impl CollectionServer {
     pub fn new() -> Self {
         Self {
             collections: DashMap::new(),
+            ns_server: None,
+        }
+    }
+
+    /// Create with a shared NamespaceServer for quota enforcement.
+    pub fn with_namespace_server(ns: NamespaceServer) -> Self {
+        Self {
+            collections: DashMap::new(),
+            ns_server: Some(ns),
         }
     }
 
@@ -82,7 +96,16 @@ impl CollectionService for CollectionServer {
         &self,
         request: Request<CreateCollectionRequest>,
     ) -> Result<Response<CreateCollectionResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::ManageCollections)?;
+        require_namespace_access(&principal, &req.namespace)?;
+
+        // Enforce collection quota before creating
+        if let Some(ref ns) = self.ns_server {
+            ns.check_collection_quota(&req.namespace)?;
+        }
+
         let key = Self::collection_key(&req.namespace, &req.name);
 
         if self.collections.contains_key(&key) {
@@ -115,6 +138,11 @@ impl CollectionService for CollectionServer {
 
         self.collections.insert(key, data);
 
+        // Track the new collection in namespace stats
+        if let Some(ref ns) = self.ns_server {
+            ns.increment_collection_count(&req.namespace);
+        }
+
         Ok(Response::new(CreateCollectionResponse {
             success: true,
             collection: Some(collection),
@@ -126,7 +154,10 @@ impl CollectionService for CollectionServer {
         &self,
         request: Request<GetCollectionRequest>,
     ) -> Result<Response<GetCollectionResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let key = Self::collection_key(&req.namespace, &req.name);
 
         match self.collections.get(&key) {
@@ -149,7 +180,12 @@ impl CollectionService for CollectionServer {
         &self,
         request: Request<ListCollectionsRequest>,
     ) -> Result<Response<ListCollectionsResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        if !req.namespace.is_empty() {
+            require_namespace_access(&principal, &req.namespace)?;
+        }
 
         let collections: Vec<Collection> = self
             .collections
@@ -171,14 +207,23 @@ impl CollectionService for CollectionServer {
         &self,
         request: Request<DeleteCollectionRequest>,
     ) -> Result<Response<DeleteCollectionResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::ManageCollections)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let key = Self::collection_key(&req.namespace, &req.name);
 
         match self.collections.remove(&key) {
-            Some(_) => Ok(Response::new(DeleteCollectionResponse {
-                success: true,
-                error: String::new(),
-            })),
+            Some(_) => {
+                // Decrement collection count in namespace stats
+                if let Some(ref ns) = self.ns_server {
+                    ns.decrement_collection_count(&req.namespace);
+                }
+                Ok(Response::new(DeleteCollectionResponse {
+                    success: true,
+                    error: String::new(),
+                }))
+            }
             None => Ok(Response::new(DeleteCollectionResponse {
                 success: false,
                 error: format!("Collection '{}' not found", req.name),
@@ -190,11 +235,21 @@ impl CollectionService for CollectionServer {
         &self,
         request: Request<AddDocumentsRequest>,
     ) -> Result<Response<AddDocumentsResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
+
+        // Enforce vector quota before adding documents
+        if let Some(ref ns) = self.ns_server {
+            ns.check_vector_quota(&req.namespace, req.documents.len() as u64)?;
+        }
+
         let key = Self::collection_key(&req.namespace, &req.collection_name);
 
         match self.collections.get(&key) {
             Some(data) => {
+                let added_count = req.documents.len() as u64;
                 let mut ids = Vec::new();
                 for doc in req.documents {
                     let id = if doc.id.is_empty() {
@@ -207,6 +262,11 @@ impl CollectionService for CollectionServer {
                     let mut stored_doc = doc;
                     stored_doc.id = id.clone();
                     data.documents.insert(id, stored_doc);
+                }
+
+                // Track vectors added in namespace stats
+                if let Some(ref ns) = self.ns_server {
+                    ns.increment_vector_count(&req.namespace, added_count);
                 }
 
                 Ok(Response::new(AddDocumentsResponse {
@@ -228,16 +288,30 @@ impl CollectionService for CollectionServer {
         request: Request<SearchCollectionRequest>,
     ) -> Result<Response<SearchCollectionResponse>, Status> {
         let start = std::time::Instant::now();
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let key = Self::collection_key(&req.namespace, &req.collection_name);
 
         match self.collections.get(&key) {
             Some(data) => {
+                let tenant_id = principal.tenant_id.clone();
+                let is_admin = principal.has_capability(&Capability::Admin);
                 let mut scored: Vec<(Document, f32)> = data
                     .documents
                     .iter()
                     .filter(|entry| {
-                        // Apply metadata filter
+                        // Record-level ACL: non-admin users can only see docs
+                        // owned by their tenant (if _tenant_id metadata is set)
+                        if !is_admin {
+                            if let Some(doc_tenant) = entry.value().metadata.get("_tenant_id") {
+                                if doc_tenant != &tenant_id && tenant_id != "default" {
+                                    return false;
+                                }
+                            }
+                        }
+                        // Apply user metadata filter
                         if req.filter.is_empty() {
                             return true;
                         }
@@ -290,7 +364,10 @@ impl CollectionService for CollectionServer {
         &self,
         request: Request<GetDocumentRequest>,
     ) -> Result<Response<GetDocumentResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let key = Self::collection_key(&req.namespace, &req.collection_name);
 
         match self.collections.get(&key) {
@@ -315,7 +392,10 @@ impl CollectionService for CollectionServer {
         &self,
         request: Request<DeleteDocumentRequest>,
     ) -> Result<Response<DeleteDocumentResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let key = Self::collection_key(&req.namespace, &req.collection_name);
 
         match self.collections.get(&key) {

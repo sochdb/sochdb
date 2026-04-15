@@ -206,3 +206,78 @@ impl PolicyService for PolicyServer {
         }
     }
 }
+
+// ============================================================================
+// Internal API for data-path enforcement (called by KvServer, VectorServer, etc.)
+// ============================================================================
+
+impl PolicyServer {
+    /// Evaluate policies for a data-path operation without going through gRPC.
+    ///
+    /// This is the hot-path integration point. Called by `KvServer::put()`,
+    /// `KvServer::get()`, and `KvServer::delete()` before executing the operation.
+    ///
+    /// Returns directly — no gRPC overhead, no serialization.
+    pub async fn evaluate_internal(
+        &self,
+        key: &[u8],
+        operation: &str,
+        _value: &[u8],
+    ) -> EvaluatePolicyResponse {
+        let key_str = String::from_utf8_lossy(key);
+        let mut matched_policies = Vec::new();
+        let mut final_action = PolicyActionType::PolicyActionAllow;
+        let mut reason = String::new();
+
+        for entry in self.policies.iter() {
+            let compiled = entry.value();
+            let rule = &compiled.rule;
+
+            let trigger_matches = match operation {
+                "read" => {
+                    rule.trigger == PolicyTrigger::BeforeRead as i32
+                        || rule.trigger == PolicyTrigger::AfterRead as i32
+                }
+                "write" => {
+                    rule.trigger == PolicyTrigger::BeforeWrite as i32
+                        || rule.trigger == PolicyTrigger::AfterWrite as i32
+                }
+                "delete" => {
+                    rule.trigger == PolicyTrigger::BeforeDelete as i32
+                        || rule.trigger == PolicyTrigger::AfterDelete as i32
+                }
+                _ => false,
+            };
+
+            if !trigger_matches {
+                continue;
+            }
+
+            let pattern_matches = match &compiled.pattern {
+                Some(regex) => regex.is_match(&key_str),
+                None => true,
+            };
+
+            if pattern_matches {
+                matched_policies.push(rule.id.clone());
+
+                if rule.default_action == PolicyActionType::PolicyActionDeny as i32 {
+                    final_action = PolicyActionType::PolicyActionDeny;
+                    reason = format!("Denied by policy: {}", rule.name);
+                } else if rule.default_action == PolicyActionType::PolicyActionLog as i32
+                    && final_action != PolicyActionType::PolicyActionDeny
+                {
+                    final_action = PolicyActionType::PolicyActionLog;
+                    reason = format!("Logged by policy: {}", rule.name);
+                }
+            }
+        }
+
+        EvaluatePolicyResponse {
+            action: final_action.into(),
+            modified_value: Vec::new(),
+            reason,
+            matched_policies,
+        }
+    }
+}

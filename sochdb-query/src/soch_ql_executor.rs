@@ -241,12 +241,26 @@ impl Predicate {
 }
 
 /// SOCH-QL Query Executor
-pub struct SochQlExecutor;
+///
+/// When constructed with a `StorageBackend`, queries read real data from storage.
+/// Without a backend (`new()`), returns empty result sets (for testing/planning only).
+pub struct SochQlExecutor {
+    storage: Option<std::sync::Arc<dyn crate::optimizer_integration::StorageBackend>>,
+}
 
 impl SochQlExecutor {
-    /// Create a new executor
+    /// Create a new executor without storage (returns empty results)
     pub fn new() -> Self {
-        Self
+        Self { storage: None }
+    }
+
+    /// Create an executor wired to a real storage backend
+    pub fn with_storage(
+        storage: std::sync::Arc<dyn crate::optimizer_integration::StorageBackend>,
+    ) -> Self {
+        Self {
+            storage: Some(storage),
+        }
     }
 
     /// Execute a SOCH-QL query string
@@ -395,10 +409,11 @@ impl SochQlExecutor {
     }
 
     /// Execute a query plan
+    ///
+    /// When a `StorageBackend` is present, this reads real data from storage.
+    /// Without one, returns empty result sets (legacy behavior).
     #[allow(clippy::only_used_in_recursion)]
     pub fn execute_plan(&self, plan: &QueryPlan, catalog: &Catalog) -> Result<SochResult> {
-        // For now, return empty results (storage integration pending)
-        // This is the interface that will connect to StorageEngine
         match plan {
             QueryPlan::Empty => Ok(SochResult {
                 table: "result".to_string(),
@@ -421,19 +436,113 @@ impl SochQlExecutor {
                     columns.clone()
                 };
 
+                // ---- Phase 0: Read from storage if backend is wired ----
+                let rows = if let Some(storage) = &self.storage {
+                    let raw_rows = storage.table_scan(table, &schema_columns, None)?;
+                    raw_rows
+                        .into_iter()
+                        .map(|row| {
+                            schema_columns
+                                .iter()
+                                .map(|c| row.get(c).cloned().unwrap_or(SochValue::Null))
+                                .collect()
+                        })
+                        .collect()
+                } else {
+                    vec![] // No storage backend — empty results (legacy)
+                };
+
                 Ok(SochResult {
                     table: table.clone(),
                     columns: schema_columns,
-                    rows: vec![], // Storage integration will populate this
+                    rows,
                 })
             }
-            QueryPlan::Filter { input, .. } => self.execute_plan(input, catalog),
+            QueryPlan::Filter { input, predicate } => {
+                let mut result = self.execute_plan(input, catalog)?;
+                // Build column index map
+                let col_map: HashMap<String, usize> = result
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (c.clone(), i))
+                    .collect();
+                // Filter rows using predicate
+                result.rows.retain(|row| {
+                    let matches: Vec<bool> = predicate
+                        .conditions
+                        .iter()
+                        .map(|cond| {
+                            if let Some(&idx) = col_map.get(&cond.column) {
+                                if idx < row.len() {
+                                    Self::eval_predicate_condition(cond, &row[idx])
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        })
+                        .collect();
+                    match predicate.operator {
+                        LogicalOp::And => matches.iter().all(|&m| m),
+                        LogicalOp::Or => matches.iter().any(|&m| m),
+                    }
+                });
+                Ok(result)
+            }
             QueryPlan::Project { input, columns } => {
                 let mut result = self.execute_plan(input, catalog)?;
+                // Build index map from current columns
+                let col_map: HashMap<String, usize> = result
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (c.clone(), i))
+                    .collect();
+                // Re-project rows
+                result.rows = result
+                    .rows
+                    .into_iter()
+                    .map(|row| {
+                        columns
+                            .iter()
+                            .map(|c| {
+                                col_map
+                                    .get(c)
+                                    .and_then(|&i| row.get(i).cloned())
+                                    .unwrap_or(SochValue::Null)
+                            })
+                            .collect()
+                    })
+                    .collect();
                 result.columns = columns.clone();
                 Ok(result)
             }
-            QueryPlan::Sort { input, .. } => self.execute_plan(input, catalog),
+            QueryPlan::Sort { input, order_by } => {
+                let mut result = self.execute_plan(input, catalog)?;
+                let col_map: HashMap<String, usize> = result
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (c.clone(), i))
+                    .collect();
+                result.rows.sort_by(|a, b| {
+                    for (col, ascending) in order_by {
+                        if let Some(&idx) = col_map.get(col) {
+                            let va = a.get(idx);
+                            let vb = b.get(idx);
+                            let cmp = Self::compare_soch_values(va, vb);
+                            let cmp = if *ascending { cmp } else { cmp.reverse() };
+                            if cmp != std::cmp::Ordering::Equal {
+                                return cmp;
+                            }
+                        }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+                Ok(result)
+            }
             QueryPlan::Limit {
                 input,
                 count,
@@ -443,18 +552,69 @@ impl SochQlExecutor {
                 result.rows = result.rows.into_iter().skip(*offset).take(*count).collect();
                 Ok(result)
             }
-            QueryPlan::IndexSeek { .. } => Ok(SochResult {
-                table: "result".to_string(),
-                columns: vec![],
-                rows: vec![],
-            }),
+            QueryPlan::IndexSeek { .. } => {
+                // Index seek — fallback to empty (TODO: wire to storage index)
+                Ok(SochResult {
+                    table: "result".to_string(),
+                    columns: vec![],
+                    rows: vec![],
+                })
+            }
+        }
+    }
+
+    /// Compare two optional SochValues for sorting
+    fn compare_soch_values(a: Option<&SochValue>, b: Option<&SochValue>) -> std::cmp::Ordering {
+        match (a, b) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(a), Some(b)) => match (a, b) {
+                (SochValue::Int(a), SochValue::Int(b)) => a.cmp(b),
+                (SochValue::UInt(a), SochValue::UInt(b)) => a.cmp(b),
+                (SochValue::Float(a), SochValue::Float(b)) => {
+                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                }
+                (SochValue::Text(a), SochValue::Text(b)) => a.cmp(b),
+                (SochValue::Bool(a), SochValue::Bool(b)) => a.cmp(b),
+                _ => std::cmp::Ordering::Equal,
+            },
+        }
+    }
+
+    /// Evaluate a single predicate condition against a SochValue
+    fn eval_predicate_condition(cond: &PredicateCondition, value: &SochValue) -> bool {
+        // Convert SochValue to CoreSochValue for comparison
+        let core_val = PredicateCondition::convert_value(value);
+        match cond.operator {
+            ComparisonOp::Eq => core_val == cond.value,
+            ComparisonOp::Ne => core_val != cond.value,
+            ComparisonOp::Lt => {
+                PredicateCondition::compare(&core_val, &cond.value)
+                    == Some(std::cmp::Ordering::Less)
+            }
+            ComparisonOp::Le => matches!(
+                PredicateCondition::compare(&core_val, &cond.value),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            ),
+            ComparisonOp::Gt => {
+                PredicateCondition::compare(&core_val, &cond.value)
+                    == Some(std::cmp::Ordering::Greater)
+            }
+            ComparisonOp::Ge => matches!(
+                PredicateCondition::compare(&core_val, &cond.value),
+                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+            ),
+            ComparisonOp::Like => PredicateCondition::like_match(&core_val, &cond.value),
+            ComparisonOp::In => PredicateCondition::in_match(&core_val, &cond.value),
+            ComparisonOp::SimilarTo => PredicateCondition::like_match(&core_val, &cond.value),
         }
     }
 }
 
 impl Default for SochQlExecutor {
     fn default() -> Self {
-        Self::new()
+        Self { storage: None }
     }
 }
 

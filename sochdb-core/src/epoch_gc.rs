@@ -249,7 +249,12 @@ impl ReaderRegistry {
     ///
     /// Cost: O(MAX_READER_SLOTS) worst-case scan, O(1) amortised with low occupancy.
     /// Fully lock-free — uses compare_exchange to claim an empty slot.
-    pub fn register(&self, epoch: u64) -> u64 {
+    ///
+    /// Returns `None` if all slots are exhausted. Callers must back-pressure
+    /// or retry after a brief yield — silently overwriting a slot would allow
+    /// the GC watermark to advance past a still-active reader's epoch,
+    /// leading to use-after-free on version data.
+    pub fn register(&self, epoch: u64) -> Option<u64> {
         for (i, slot) in self.slots.iter().enumerate() {
             if slot
                 .epoch
@@ -257,16 +262,14 @@ impl ReaderRegistry {
                 .is_ok()
             {
                 self.active_count.fetch_add(1, Ordering::Relaxed);
-                return i as u64;
+                return Some(i as u64);
             }
         }
-        // All slots full — extremely unlikely with MAX_READER_SLOTS=256.
-        // Fall back to last slot (overwrite is safe; worst case is delayed GC).
-        self.slots[MAX_READER_SLOTS - 1]
-            .epoch
-            .store(epoch, Ordering::Release);
-        self.active_count.fetch_add(1, Ordering::Relaxed);
-        (MAX_READER_SLOTS - 1) as u64
+        // All slots full — must NOT overwrite an occupied slot.
+        // Overwriting would erase a live reader's epoch, causing
+        // min_active_epoch() to return a value that is too high,
+        // which lets GC reclaim versions still visible to that reader.
+        None
     }
 
     /// Unregister a reader by slot index.
@@ -476,10 +479,20 @@ where
             .map(|v| v.value.clone())
     }
 
-    /// Begin a read transaction at current epoch
+    /// Begin a read transaction at current epoch.
+    ///
+    /// Panics if all reader slots are exhausted (256 concurrent readers).
+    /// This indicates a concurrency design issue in the caller — either
+    /// readers are not being dropped or the workload exceeds the slot limit.
     pub fn begin_read(&self) -> ReadGuard {
         let epoch = self.current_epoch.load(Ordering::SeqCst);
-        let reader_id = self.readers.register(epoch);
+        let reader_id = self.readers.register(epoch).unwrap_or_else(|| {
+            panic!(
+                "EpochGC: all {} reader slots exhausted — too many concurrent readers. \
+                 Ensure ReadGuards are dropped promptly.",
+                MAX_READER_SLOTS
+            )
+        });
         ReadGuard {
             epoch,
             reader_id,
@@ -708,8 +721,8 @@ mod tests {
     fn test_reader_registry() {
         let registry = ReaderRegistry::new();
 
-        let r1 = registry.register(10);
-        let _r2 = registry.register(20);
+        let r1 = registry.register(10).unwrap();
+        let _r2 = registry.register(20).unwrap();
 
         assert_eq!(registry.active_count(), 2);
         assert_eq!(registry.min_active_epoch(), Some(10));
@@ -906,9 +919,9 @@ mod tests {
         let registry = ReaderRegistry::new();
 
         // Register multiple readers — each gets a unique slot
-        let id0 = registry.register(10);
-        let id1 = registry.register(20);
-        let id2 = registry.register(30);
+        let id0 = registry.register(10).unwrap();
+        let id1 = registry.register(20).unwrap();
+        let id2 = registry.register(30).unwrap();
 
         assert_ne!(id0, id1);
         assert_ne!(id1, id2);

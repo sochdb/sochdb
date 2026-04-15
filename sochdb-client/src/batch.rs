@@ -246,7 +246,7 @@ impl<'a> BatchWriter<'a> {
         }
 
         // Single fsync for this chunk
-        self.conn.storage.fsync()?;
+        self.conn.fsync()?;
 
         let duration = start.elapsed().as_millis() as u64;
         self.chunks_committed += 1;

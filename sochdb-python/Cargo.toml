@@ -35,6 +35,9 @@ tracing = "0.1"
 # Error handling
 thiserror = "1.0"
 
+# CSV parsing (for load_csv)
+csv = "1"
+
 [dev-dependencies]
 tempfile = "3.15"
 

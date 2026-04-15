@@ -274,7 +274,8 @@ impl<'a> RdfScorer<'a> {
             scored.truncate(top_t);
         }
         
-        // Get query dims (excluding stopwords)
+        // Get query dims (excluding stopwords — but keep dims that pass
+        // the directory bounds check even if all are stopwords)
         let query_dims: Vec<(usize, f32, f32)> = scored
             .into_iter()
             .filter(|&(d, _, _)| {
@@ -283,18 +284,59 @@ impl<'a> RdfScorer<'a> {
             .collect();
         
         if query_dims.is_empty() {
-            return Vec::new();
+            // All query dimensions were stopwords — fall back to using
+            // the original dimensions WITHOUT the stopword filter.
+            // Returning empty here would cause zero recall for common
+            // queries where all top-t dimensions happen to be stop-dims.
+            // IDF-based dim_weights will naturally downweight these.
+            let query_dims_fallback: Vec<(usize, f32, f32)> = {
+                let mut s: Vec<(usize, f32, f32)> = query
+                    .iter()
+                    .enumerate()
+                    .map(|(d, &v)| {
+                        let w = if d < self.dim_weights.len() { self.dim_weights[d] } else { 1.0 };
+                        (d, v.abs() * w, v)
+                    })
+                    .collect();
+                if s.len() > top_t {
+                    s.select_nth_unstable_by(top_t - 1, |a, b| {
+                        b.1.partial_cmp(&a.1).unwrap()
+                    });
+                    s.truncate(top_t);
+                }
+                s.into_iter()
+                    .filter(|&(d, _, _)| d < self.directory.len())
+                    .collect()
+            };
+            if query_dims_fallback.is_empty() {
+                return Vec::new();
+            }
+            return self.score_with_dims(&query_dims_fallback, l_a);
         }
         
+        self.score_with_dims(&query_dims, l_a)
+    }
+
+    /// Internal scoring with a given set of query dimensions.
+    /// Separated from `score()` to allow fallback when all dims are stopwords.
+    fn score_with_dims(
+        &self,
+        query_dims: &[(usize, f32, f32)],
+        l_a: usize,
+    ) -> Vec<ScoredCandidate> {
         // Use stripe-based accumulation
         let num_stripes = (self.n_vec as usize + self.stripe_size - 1) / self.stripe_size;
         let mut global_candidates = Vec::new();
         
+        // Allocate stripe accumulator ONCE, clear per-stripe (avoids N allocs)
+        let mut stripe_acc = vec![0.0f32; self.stripe_size];
+        
         // Process stripe by stripe for cache locality
         for stripe_id in 0..num_stripes as u32 {
-            let mut stripe_acc = vec![0.0f32; self.stripe_size];
+            // Clear accumulator (memset — vectorizes to single SIMD store)
+            stripe_acc.iter_mut().for_each(|x| *x = 0.0);
             
-            for &(dim_idx, _, q_value) in &query_dims {
+            for &(dim_idx, _, q_value) in query_dims {
                 let entry = &self.directory[dim_idx];
                 if entry.length == 0 {
                     continue;

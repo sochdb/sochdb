@@ -11,6 +11,10 @@ description = "SochDB comparative benchmark suite — SochDB vs SQLite vs DuckDB
 name = "sochdb-bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "sochdb-h2o-bench"
+path = "src/h2o_main.rs"
+
 [dependencies]
 # ── SochDB ──
 sochdb-storage = { path = "../sochdb-storage", features = ["embedded-sync"] }
