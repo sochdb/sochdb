@@ -19,10 +19,10 @@ name = "sochdb"
 path = "src/cli.rs"
 
 [dependencies]
-sochdb-index = { version = "0.5.0", path = "../sochdb-index" }
-sochdb-core = { version = "0.5.0", path = "../sochdb-core" }
-sochdb-storage = { version = "0.5.0", path = "../sochdb-storage" }
-sochdb-query = { version = "0.5.0", path = "../sochdb-query" }
+sochdb-index = { version = "2.0.0", path = "../sochdb-index" }
+sochdb-core = { version = "2.0.0", path = "../sochdb-core" }
+sochdb-storage = { version = "2.0.0", path = "../sochdb-storage" }
+sochdb-query = { version = "2.0.0", path = "../sochdb-query" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "color", "env"] }

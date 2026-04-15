@@ -691,12 +691,12 @@ def test_metrics_per_pod():
             body = resp.read().decode()
             dt = (time.monotonic() - t0) * 1000
             
-            has_version = 'version="0.5.0"' in body
+            has_version = 'version="2.0.0"' in body
             has_uptime = "sochdb_uptime_seconds" in body
             
             report.add(TestResult(
                 f"metrics:{pod_name}", has_version and has_uptime, dt,
-                f"version=0.5.0={'found' if has_version else 'MISSING'}, "
+                f"version=2.0.0={'found' if has_version else 'MISSING'}, "
                 f"uptime={'found' if has_uptime else 'MISSING'}"
             ))
         except Exception as e:

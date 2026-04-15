@@ -56,7 +56,7 @@ __all__ = [
     "bulk_build_index",
 ]
 
-__version__ = "0.5.0"
+__version__ = "2.0.0"
 
 
 def _check_native():

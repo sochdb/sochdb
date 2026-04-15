@@ -58,13 +58,13 @@ def main():
     
     # 5. KV operations
     print("\n=== KV Put/Get ===")
-    client.put(b"config:version", b"0.5.0")
+    client.put(b"config:version", b"2.0.0")
     val = client.get(b"config:version")
     print(f"  config:version = {val}")
     
     print("\n========================================")
     print("  All Tests Passed!")
-    print("  SochDB v0.5.0 running in minikube")
+    print("  SochDB v2.0.0 running in minikube")
     print("========================================")
     
     client.close()
