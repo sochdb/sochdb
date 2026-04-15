@@ -8,6 +8,8 @@ This is the clearest current evaluator path for SochDB.
 
 If you want to understand the product quickly and practically, start here instead of trying every feature in the repo.
 
+If you are a Python-first ML or AI engineer, also read [Python / ML / AI Start Here](/getting-started/python-ml-ai-start-here).
+
 ## Who This Path Is For
 
 This path is best for:
@@ -80,16 +82,16 @@ That page helps answer:
 - what you would actually manage locally
 - how SochDB compares to SQLite + FAISS, pgvector, and vector-first tools
 
-### 5. Look at the benchmark summary
+### 5. Look at the benchmark and evaluation notes
 
 Use:
 
-- [Local Retrieval Benchmark Summary](/Users/saisandeepkantareddy/Downloads/sochdb/benchmarks/retrieval/summary.md)
+- [Retrieval Evaluation](/guides/retrieval-evaluation)
 
 That gives you:
 
-- starter benchmark results
-- SciFact public-dataset results
+- benchmark structure and comparison method
+- starter and public-dataset evaluation context
 - SochDB fast and quality presets
 - workflow-complexity interpretation
 
@@ -134,6 +136,7 @@ A good first evaluation asks:
 
 - [Installation](/getting-started/installation)
 - [Python Install Matrix](/getting-started/python-install-matrix)
+- [Python / ML / AI Start Here](/getting-started/python-ml-ai-start-here)
 - [Use SochDB When](/getting-started/use-sochdb-when)
 - [Local Knowledge Retrieval Comparison](/getting-started/local-knowledge-retrieval-comparison)
 - [What Works Today](/getting-started/what-works-today)
