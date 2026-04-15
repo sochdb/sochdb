@@ -97,8 +97,8 @@ jobs:
             binary_ext: ""
             lib_ext: ".dylib"
 
-          # macOS x86_64 (Intel)
-          - os: macos-13
+          # macOS x86_64 (Intel) — cross-compiled on Apple Silicon
+          - os: macos-latest
             target: x86_64-apple-darwin
             binary_ext: ""
             lib_ext: ".dylib"
