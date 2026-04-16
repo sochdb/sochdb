@@ -244,7 +244,18 @@ jobs:
             if [ "$DRY_RUN" = "true" ]; then
               cargo publish --dry-run --allow-dirty
             else
-              cargo publish --allow-dirty || echo "⚠️ $pkg_name may already be published"
+              # Attempt publish; tolerate "already uploaded" (exit 0) but fail on real errors
+              OUTPUT=$(cargo publish --allow-dirty 2>&1) && RC=0 || RC=$?
+              if [ $RC -ne 0 ]; then
+                if echo "$OUTPUT" | grep -q "already uploaded"; then
+                  echo "⚠️ $pkg_name is already published, skipping"
+                else
+                  echo "❌ Failed to publish $pkg_name (exit code $RC):"
+                  echo "$OUTPUT"
+                  cd ..
+                  return $RC
+                fi
+              fi
               # Wait for crates.io to index — dependents need this available
               echo "⏳ Waiting for $pkg_name to be indexed on crates.io..."
               sleep 45
