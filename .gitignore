@@ -89,3 +89,5 @@ benchmarks/retrieval/results_tfidf/
 benchmarks/retrieval/results_st/
 benchmarks/retrieval/results_scifact/
 benchmarks/retrieval/datasets/
+full_test_remote.py
+full_test_v2.py

@@ -1,6 +1,6 @@
 [package]
 name = "sochdb-plugin-logging"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 description = "JSON structured logging plugin for SochDB"
 license.workspace = true

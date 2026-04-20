@@ -369,7 +369,7 @@ impl<'a> StagedBuilder<'a> {
         // =====================================================================
         if !self.config.skip_repair_passes {
             self.index.repair_connectivity();
-            self.index.improve_search_quality();
+            self.index.refine_graph_additive();
         }
         
         let total_inserted = self.stats.scaffold_count + self.stats.wave_count;
@@ -812,17 +812,21 @@ impl<'a> StagedBuilder<'a> {
             }
             
             // Check if candidate is shadowed by any already-selected neighbor
+            let vector_store_guard = self.index.vector_store.read();
             let is_shadowed = result.iter().any(|selected: &SearchCandidate| {
                 if let (Some(c_node), Some(s_node)) = (
                     self.index.nodes.get(&candidate.id),
                     self.index.nodes.get(&selected.id)
                 ) {
-                    let dist_c_to_s = self.calculate_distance(&c_node.vector, &s_node.vector);
+                    let c_vec = vector_store_guard.get(c_node.vector_index as usize).unwrap_or(&c_node.vector);
+                    let s_vec = vector_store_guard.get(s_node.vector_index as usize).unwrap_or(&s_node.vector);
+                    let dist_c_to_s = self.calculate_distance(c_vec, s_vec);
                     candidate.distance > ALPHA * dist_c_to_s
                 } else {
                     false
                 }
             });
+            drop(vector_store_guard);
             
             if !is_shadowed {
                 result.push(candidate);

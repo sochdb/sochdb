@@ -103,7 +103,7 @@ fn log_insert_path(path: &str, contiguous: bool, n: usize) {
 ///     >>> from sochdb import HnswIndex
 ///     >>> 
 ///     >>> # Create index
-///     >>> index = HnswIndex(dimension=768, m=16, ef_construction=100)
+///     >>> index = HnswIndex(dimension=768, m=32, ef_construction=200)
 ///     >>> 
 ///     >>> # Insert vectors (zero-copy from numpy)
 ///     >>> embeddings = np.random.randn(10000, 768).astype(np.float32)
@@ -125,15 +125,15 @@ impl PyHnswIndex {
     ///
     /// Args:
     ///     dimension: Vector dimension (e.g., 768 for text embeddings).
-    ///     m: Max connections per node (default: 16). Higher = better recall, more memory.
-    ///     ef_construction: Construction search depth (default: 100). Higher = better quality, slower build.
+    ///     m: Max connections per node (default: 32). Higher = better recall, more memory.
+    ///     ef_construction: Construction search depth (default: 200). Higher = better quality, slower build.
     ///     metric: Distance metric ("cosine", "euclidean", "dot"). Default: "cosine".
     ///     precision: Quantization precision ("f32", "f16", "bf16"). Default: "f32".
     ///
     /// Example:
     ///     >>> index = HnswIndex(768, m=32, ef_construction=200)
     #[new]
-    #[pyo3(signature = (dimension, m=16, ef_construction=100, metric="cosine", precision="f32"))]
+    #[pyo3(signature = (dimension, m=32, ef_construction=200, metric="cosine", precision="f32"))]
     fn new(
         dimension: usize,
         m: usize,
@@ -166,6 +166,7 @@ impl PyHnswIndex {
         let config = HnswConfig {
             max_connections: m,
             max_connections_layer0: m * 2,
+            level_multiplier: 1.0 / (m as f32).ln(),
             ef_construction,
             metric: distance_metric,
             quantization_precision: Some(quant_precision),
@@ -494,7 +495,138 @@ impl PyHnswIndex {
     fn is_empty(&self) -> bool {
         self.inner.len() == 0
     }
+
+    /// Store metadata for a batch of vectors (for filtered search).
+    ///
+    /// Args:
+    ///     dense_indices: 1D uint32 array of dense indices.
+    ///     metadata_list: List of dicts, one per index. Each dict has string keys/values.
+    ///
+    /// Example:
+    ///     >>> index.set_metadata_batch(
+    ///     ...     np.array([0, 1, 2], dtype=np.uint32),
+    ///     ...     [{"tags": "28"}, {"tags": "5"}, {"tags": "28"}],
+    ///     ... )
+    fn set_metadata_batch(
+        &self,
+        node_ids: PyReadonlyArray1<'_, u64>,
+        metadata_list: Vec<std::collections::HashMap<String, String>>,
+    ) -> PyResult<()> {
+        let ids = node_ids.as_slice().map_err(|e| {
+            PyValueError::new_err(format!("IDs must be contiguous: {}", e))
+        })?;
+        if ids.len() != metadata_list.len() {
+            return Err(PyValueError::new_err(format!(
+                "ID count {} != metadata count {}",
+                ids.len(), metadata_list.len()
+            )));
+        }
+        let entries: Vec<(u128, Vec<(String, String)>)> = ids
+            .iter()
+            .zip(metadata_list.iter())
+            .map(|(&id, meta)| {
+                let pairs: Vec<(String, String)> = meta
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                (id as u128, pairs)
+            })
+            .collect();
+        self.inner.set_metadata_batch(&entries);
+        Ok(())
+    }
+
+    /// Set metadata for a single node as a list of (key, value) pairs.
+    /// Supports repeated keys (e.g. multiple "tags" values).
+    fn set_metadata(
+        &self,
+        node_id: u64,
+        metadata: Vec<(String, String)>,
+    ) -> PyResult<()> {
+        self.inner.set_metadata(node_id as u128, metadata);
+        Ok(())
+    }
+
+    /// Filtered ANN search — returns only results whose metadata matches the filter.
+    ///
+    /// Args:
+    ///     query: 1D float32 array of dimension D.
+    ///     k: Number of neighbors to return.
+    ///     filter: List of (key, value) tuples. ALL must match (AND semantics).
+    ///     ef_search: Search depth (default: 200).
+    ///
+    /// Returns:
+    ///     Tuple of (ids, distances) as numpy arrays.
+    ///
+    /// Example:
+    ///     >>> ids, dists = index.search_filtered(query, k=10, filter=[("tags", "28")])
+    #[pyo3(signature = (query, k, filter, ef_search=None))]
+    fn search_filtered<'py>(
+        &self,
+        py: Python<'py>,
+        query: PyReadonlyArray1<'py, f32>,
+        k: usize,
+        filter: Vec<(String, String)>,
+        ef_search: Option<usize>,
+    ) -> PyResult<(Py<PyArray1<u64>>, Py<PyArray1<f32>>)> {
+        let query_slice = query.as_slice().map_err(|e| {
+            PyValueError::new_err(format!("Query must be contiguous: {}", e))
+        })?;
+        if query_slice.len() != self.dimension {
+            return Err(PyValueError::new_err(format!(
+                "Query dimension {} != index dimension {}",
+                query_slice.len(), self.dimension
+            )));
+        }
+
+        let ef = ef_search.unwrap_or(200);
+        let filter_pairs: Vec<(String, String)> = filter.into_iter().collect();
+
+        let inner = Arc::clone(&self.inner);
+        let query_vec: Vec<f32> = query_slice.to_vec();
+
+        let results = py.allow_threads(move || {
+            inner.search_filtered(&query_vec, k, ef, &filter_pairs)
+        }).map_err(|e| PyRuntimeError::new_err(e))?;
+
+        let ids: Vec<u64> = results.iter().map(|(id, _)| *id as u64).collect();
+        let distances: Vec<f32> = results.iter().map(|(_, d)| *d as f32).collect();
+
+        let ids_array = Array1::from_vec(ids).into_pyarray(py);
+        let dists_array = Array1::from_vec(distances).into_pyarray(py);
+
+        Ok((ids_array.into(), dists_array.into()))
+    }
     
+    /// Refine graph quality after batch construction.
+    ///
+    /// Re-searches the complete graph to find better neighbors for every node,
+    /// fixing suboptimal edges from parallel wave construction. Call this once
+    /// after all inserts are complete.
+    ///
+    /// Returns:
+    ///     Number of nodes whose neighbors were improved.
+    fn refine_graph(&self, py: Python<'_>) -> PyResult<usize> {
+        let inner = Arc::clone(&self.inner);
+        let improved = py.allow_threads(move || {
+            inner.refine_graph()
+        });
+        Ok(improved)
+    }
+
+    /// Additive-only graph refinement: fills empty neighbor slots by
+    /// re-searching the complete graph. Never removes existing edges.
+    ///
+    /// Returns:
+    ///     Number of edges added.
+    fn refine_graph_additive(&self, py: Python<'_>) -> PyResult<usize> {
+        let inner = Arc::clone(&self.inner);
+        let added = py.allow_threads(move || {
+            inner.refine_graph_additive()
+        });
+        Ok(added)
+    }
+
     /// Save index to disk (compressed).
     ///
     /// Args:
@@ -625,8 +757,8 @@ impl PyHnswIndex {
 ///
 /// Args:
 ///     embeddings: 2D float32 array of shape (N, D).
-///     m: HNSW max connections (default: 16).
-///     ef_construction: Construction depth (default: 100).
+///     m: HNSW max connections (default: 32).
+///     ef_construction: Construction depth (default: 200).
 ///     metric: Distance metric (default: "cosine").
 ///     ids: Optional 1D uint64 array of IDs.
 ///
@@ -635,10 +767,10 @@ impl PyHnswIndex {
 ///
 /// Example:
 ///     >>> embeddings = np.random.randn(10000, 768).astype(np.float32)
-///     >>> index = build_index(embeddings, m=16, ef_construction=100)
+///     >>> index = build_index(embeddings, m=32, ef_construction=200)
 ///     >>> index.save("my_index.hnsw")
 #[pyfunction]
-#[pyo3(signature = (embeddings, m=16, ef_construction=100, metric="cosine", ids=None))]
+#[pyo3(signature = (embeddings, m=32, ef_construction=200, metric="cosine", ids=None))]
 fn build_index<'py>(
     py: Python<'py>,
     embeddings: PyReadonlyArray2<'py, f32>,
