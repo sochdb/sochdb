@@ -1,6 +1,6 @@
 [package]
 name = "sochdb-kernel"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 description = "SochDB Kernel - Minimal ACID core with plugin architecture"
 license.workspace = true

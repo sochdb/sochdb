@@ -85,8 +85,9 @@ impl HnswIndex {
     /// index.save_to_disk("embeddings.hnsw").unwrap();
     /// ```
     pub fn save_to_disk<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
-        // Collect all nodes
+        // Collect all nodes — read vectors from vector_store (primary)
         let mut serializable_nodes = Vec::with_capacity(self.nodes.len());
+        let store = self.vector_store.read();
 
         for entry in self.nodes.iter() {
             let node = entry.value();
@@ -97,13 +98,19 @@ impl HnswIndex {
                 neighbors.push(self.dense_neighbors_to_ids(&dense_neighbors));
             }
 
+            let vector = store
+                .get(node.vector_index as usize)
+                .map(|v| v.to_f32().to_vec())
+                .unwrap_or_else(|| node.vector.to_f32().to_vec());
+
             serializable_nodes.push(SerializableNode {
                 id: *entry.key(),
-                vector: node.vector.to_f32().to_vec(), // Convert back to f32 for storage
+                vector,
                 neighbors,
                 layer: node.layer,
             });
         }
+        drop(store);
 
         let nav = self.navigation_state();
         let snapshot = IndexSnapshot {
@@ -235,6 +242,7 @@ impl HnswIndex {
         use flate2::write::GzEncoder;
 
         let mut serializable_nodes = Vec::with_capacity(self.nodes.len());
+        let store = self.vector_store.read();
 
         for entry in self.nodes.iter() {
             let node = entry.value();
@@ -245,13 +253,19 @@ impl HnswIndex {
                 neighbors.push(self.dense_neighbors_to_ids(&dense_neighbors));
             }
 
+            let vector = store
+                .get(node.vector_index as usize)
+                .map(|v| v.to_f32().to_vec())
+                .unwrap_or_else(|| node.vector.to_f32().to_vec());
+
             serializable_nodes.push(SerializableNode {
                 id: *entry.key(),
-                vector: node.vector.to_f32().to_vec(),
+                vector,
                 neighbors,
                 layer: node.layer,
             });
         }
+        drop(store);
 
         let nav = self.navigation_state();
         let snapshot = IndexSnapshot {
