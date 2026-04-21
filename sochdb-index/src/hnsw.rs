@@ -2042,6 +2042,104 @@ impl Default for NavigationState {
     }
 }
 
+// =============================================================================
+// ShardedVectorStore — future replacement for global RwLock<Vec<QuantizedVector>> (TODO T7)
+//
+// Ready to use but not yet wired into HnswIndex.  The 64-shard design means
+// concurrent searches and inserts will only contend on 1/64 of the shard locks
+// instead of the single global lock.  Wire-up requires updating ~35 callsites
+// from `.read()/.write()` guard API to per-vector `.get(u32)/.push()` calls.
+// =============================================================================
+#[allow(dead_code)]
+const SVS_SHARDS: usize = 64;
+
+#[allow(dead_code)]
+pub(crate) struct ShardedVectorStore {
+    shards: [RwLock<Vec<QuantizedVector>>; SVS_SHARDS],
+    /// Total vectors inserted — used to claim the next sequential index atomically.
+    total_count: AtomicUsize,
+}
+
+#[allow(dead_code)]
+impl ShardedVectorStore {
+    fn new() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| RwLock::new(Vec::new())),
+            total_count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Append a vector and return its sequential index.
+    /// Thread-safe: two concurrent pushes claim different indices.
+    #[inline]
+    pub(crate) fn push(&self, vector: QuantizedVector) -> u32 {
+        let idx = self.total_count.fetch_add(1, AtomicOrdering::AcqRel) as u32;
+        let shard_idx = idx as usize % SVS_SHARDS;
+        let local_idx = idx as usize / SVS_SHARDS;
+        let mut shard = self.shards[shard_idx].write();
+        if local_idx >= shard.len() {
+            shard.resize(local_idx + 1, QuantizedVector::empty());
+        }
+        shard[local_idx] = vector;
+        idx
+    }
+
+    /// Set a vector at a known index (used during serialization restore).
+    #[inline]
+    pub(crate) fn set(&self, idx: u32, vector: QuantizedVector) {
+        let shard_idx = idx as usize % SVS_SHARDS;
+        let local_idx = idx as usize / SVS_SHARDS;
+        let mut shard = self.shards[shard_idx].write();
+        if local_idx >= shard.len() {
+            shard.resize(local_idx + 1, QuantizedVector::empty());
+        }
+        shard[local_idx] = vector;
+    }
+
+    /// Return a cloned copy of the vector.
+    /// On the hot distance-computation path prefer `with()` to avoid the clone.
+    #[inline]
+    pub(crate) fn get(&self, idx: u32) -> Option<QuantizedVector> {
+        let shard_idx = idx as usize % SVS_SHARDS;
+        let local_idx = idx as usize / SVS_SHARDS;
+        let shard = self.shards[shard_idx].read();
+        shard.get(local_idx).cloned()
+    }
+
+    /// Apply `f` to a borrowed reference — avoids cloning on the hot path.
+    #[inline]
+    pub(crate) fn with<F, R>(&self, idx: u32, f: F) -> Option<R>
+    where
+        F: FnOnce(&QuantizedVector) -> R,
+    {
+        let shard_idx = idx as usize % SVS_SHARDS;
+        let local_idx = idx as usize / SVS_SHARDS;
+        let shard = self.shards[shard_idx].read();
+        shard.get(local_idx).map(f)
+    }
+
+    /// Current logical length (next sequential index that would be returned by push).
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        self.total_count.load(AtomicOrdering::Acquire)
+    }
+
+    /// Clear all shards.
+    pub(crate) fn clear(&self) {
+        self.total_count.store(0, AtomicOrdering::Release);
+        for shard in &self.shards {
+            shard.write().clear();
+        }
+    }
+}
+
+// Manually implement Debug.
+impl std::fmt::Debug for ShardedVectorStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ShardedVectorStore(shards={}, len={})", SVS_SHARDS, self.len())
+    }
+}
+
 /// HNSW Index for approximate nearest neighbor search with fine-grained locking
 pub struct HnswIndex {
     pub(crate) config: HnswConfig,
@@ -2073,14 +2171,9 @@ pub struct HnswIndex {
     pub(crate) dense_to_id: Arc<RwLock<Vec<u128>>>,
     /// Contiguous vector slab for sequential access
     ///
-    /// ⚠️ KNOWN BOTTLENECK: This global RwLock serializes all concurrent searches
-    /// when writers (insert/delete) are active. Under write-heavy workloads,
-    /// search p99 latency degrades significantly because `parking_lot::RwLock`
-    /// uses a write-preferring policy.
-    ///
-    /// TODO(T7): Replace with `ShardedVectorStore` or per-shard `RwLock<Vec<_>>`
-    /// to allow concurrent reads across shards. Expected improvement: 3-5× under
-    /// mixed read/write workloads (measured on 16-core machines).
+    /// ⚠️ KNOWN BOTTLENECK: global RwLock serialises concurrent searches vs inserts.
+    /// TODO(T7): migrate to `ShardedVectorStore` (64 independent shard locks).
+    /// Expected improvement: 3–5× under mixed read/write workloads.
     pub(crate) vector_store: Arc<RwLock<Vec<QuantizedVector>>>,
     /// Per-node metadata for filtered search, indexed by dense_index.
     /// Stored as pre-serialized key-value pairs for O(1) filter matching.
