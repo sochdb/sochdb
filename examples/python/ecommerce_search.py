@@ -16,7 +16,6 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 import random
@@ -24,8 +23,6 @@ from typing import List, Dict, Optional, Set
 from dataclasses import dataclass, field
 import numpy as np
 import requests
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -64,13 +61,13 @@ class EcommerceSearch:
     """E-commerce semantic search with faceted filtering."""
     
     def __init__(self):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         self.dimension = 1536
         
         # Separate indexes for title and description (multi-vector approach)
-        self.title_index = VectorIndex(dimension=self.dimension, max_connections=32, ef_construction=200)
-        self.desc_index = VectorIndex(dimension=self.dimension, max_connections=32, ef_construction=200)
+        self.title_index = HnswIndex(dimension=self.dimension, m=32, ef_construction=200)
+        self.desc_index = HnswIndex(dimension=self.dimension, m=32, ef_construction=200)
         
         self.products: Dict[str, Product] = {}
         self.id_to_idx: Dict[str, int] = {}
@@ -109,8 +106,8 @@ class EcommerceSearch:
         start_idx = self.next_idx
         ids = np.arange(start_idx, start_idx + len(products), dtype=np.uint64)
         
-        self.title_index.insert_batch(ids, title_embeddings)
-        self.desc_index.insert_batch(ids, desc_embeddings)
+        self.title_index.insert_batch_with_ids(ids, title_embeddings)
+        self.desc_index.insert_batch_with_ids(ids, desc_embeddings)
         
         for i, product in enumerate(products):
             idx = start_idx + i
@@ -138,27 +135,30 @@ class EcommerceSearch:
         
         # Search both indexes (over-fetch for filtering)
         k_fetch = top_k * 5
-        title_results = self.title_index.search(query_embedding, k=k_fetch)
-        desc_results = self.desc_index.search(query_embedding, k=k_fetch)
+        title_ids, title_dists = self.title_index.search(query_embedding, k=k_fetch)
+        desc_ids, desc_dists = self.desc_index.search(query_embedding, k=k_fetch)
         
         # Merge results with score fusion
         scores: Dict[str, Dict] = {}
         
-        for idx, score in title_results:
-            product_id = self.idx_to_id.get(int(idx))
+        for i in range(len(title_ids)):
+            idx = int(title_ids[i])
+            score = float(title_dists[i])
+            product_id = self.idx_to_id.get(idx)
             if product_id:
-                scores[product_id] = {"title": float(score), "desc": float('inf'), "best": "title"}
+                scores[product_id] = {"title": score, "desc": float('inf'), "best": "title"}
         
-        for idx, score in desc_results:
-            product_id = self.idx_to_id.get(int(idx))
+        for i in range(len(desc_ids)):
+            idx = int(desc_ids[i])
+            score = float(desc_dists[i])
+            product_id = self.idx_to_id.get(idx)
             if product_id:
                 if product_id in scores:
-                    scores[product_id]["desc"] = float(score)
-                    # Use minimum distance as combined score
-                    if float(score) < scores[product_id]["title"]:
+                    scores[product_id]["desc"] = score
+                    if score < scores[product_id]["title"]:
                         scores[product_id]["best"] = "description"
                 else:
-                    scores[product_id] = {"title": float('inf'), "desc": float(score), "best": "description"}
+                    scores[product_id] = {"title": float('inf'), "desc": score, "best": "description"}
         
         # Apply filters and build results
         results = []

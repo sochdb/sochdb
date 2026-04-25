@@ -72,4 +72,50 @@ task.md
 sochdb_agent_memory/
 toondb_rust.txt
 test_k8s_concurrency.py
-test_k8s_deployment.py
+test_k8s_deployment.py__pycache__/
+*.ipynb_checkpoints/
+
+node_modules/
+demo_kv_db/
+*.log
+.clean_shutdown
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+.env
+*.env
+
+node_modules/
+demo_kv_db/
+*.log
+.clean_shutdown
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+.env
+*.env
+
+# Runtime/generated DB files
+notebooks/*_db/
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/wal.log
+**/.lock
+
+# Chroma / vector DB artifacts
+notebooks/chroma_bench/
+**/chroma.sqlite3
+**/data_level0.bin
+**/*.bin
+
+# Chroma/vector DB runtime artifacts
+notebooks/chroma_search/
+notebooks/chroma_bench/
+**/chroma.sqlite3
+**/index_metadata.pickle
+**/*.bin
+
+# SochDB runtime artifacts
+notebooks/mydb/
+notebooks/sochdb_search/
+**/wal.log
+**/.lock

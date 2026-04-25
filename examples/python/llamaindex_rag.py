@@ -16,15 +16,11 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import time
 import numpy as np
 import requests
 from typing import List, Any, Optional
 from dataclasses import dataclass
-
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -51,10 +47,10 @@ class SochDBVectorStore:
     """
     
     def __init__(self, dimension: int = 1536):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         self.dimension = dimension
-        self.index = VectorIndex(dimension=dimension, max_connections=16, ef_construction=100)
+        self.index = HnswIndex(dimension=dimension, m=16, ef_construction=100)
         self.nodes: List[TextNode] = []
         
         # Azure embeddings
@@ -79,7 +75,7 @@ class SochDBVectorStore:
         start_id = len(self.nodes)
         ids = np.arange(start_id, start_id + len(nodes), dtype=np.uint64)
         
-        self.index.insert_batch(ids, embeddings)
+        self.index.insert_batch_with_ids(ids, embeddings)
         self.nodes.extend(nodes)
         
         return [node.id for node in nodes]
@@ -87,12 +83,12 @@ class SochDBVectorStore:
     def query(self, query_str: str, top_k: int = 5) -> List[TextNode]:
         """Query the vector store."""
         query_embedding = self._embed([query_str])[0]
-        results = self.index.search(query_embedding, k=top_k)
+        ids, dists = self.index.search(query_embedding, k=top_k)
         
         retrieved = []
-        for idx, score in results:
-            if int(idx) < len(self.nodes):
-                retrieved.append(self.nodes[int(idx)])
+        for i in range(len(ids)):
+            if int(ids[i]) < len(self.nodes):
+                retrieved.append(self.nodes[int(ids[i])])
         
         return retrieved
 
@@ -274,24 +270,24 @@ def run_llamaindex_example():
 
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
 from llama_index.core.vector_stores import VectorStore
-from sochdb import VectorIndex
+from sochdb import HnswIndex
 
 class SochDBVectorStore(VectorStore):
     """Custom LlamaIndex vector store using SochDB."""
     
     def __init__(self, dimension: int = 1536):
-        self._index = VectorIndex(dimension=dimension)
+        self._index = HnswIndex(dimension=dimension)
         self._nodes = []
     
     def add(self, nodes, **kwargs):
         embeddings = np.array([node.embedding for node in nodes])
         ids = np.arange(len(self._nodes), len(self._nodes) + len(nodes))
-        self._index.insert_batch(ids, embeddings)
+        self._index.insert_batch_with_ids(ids, embeddings)
         self._nodes.extend(nodes)
     
     def query(self, query_embedding, top_k=10):
-        results = self._index.search(query_embedding, k=top_k)
-        return [self._nodes[int(idx)] for idx, _ in results]
+        ids, dists = self._index.search(query_embedding, k=top_k)
+        return [self._nodes[int(id_)] for id_ in ids]
 
 # Usage
 vector_store = SochDBVectorStore()

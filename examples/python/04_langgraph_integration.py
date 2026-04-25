@@ -20,21 +20,14 @@ Expected Output:
 
 Usage:
     # Set environment variables
-    export PYTHONPATH=sochdb-python-sdk/src
-    export SOCHDB_LIB_PATH=target/release
-    
-    # Run example
     python3 examples/python/04_langgraph_integration.py
 """
 
-import os
 import sys
 import json
 import time
 from typing import TypedDict, List, Dict, Any
 from dataclasses import dataclass
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 import numpy as np
 
@@ -67,15 +60,16 @@ class SochDBMemory:
     """
     
     def __init__(self, dimension: int = 768):
-        from sochdb import VectorIndex, Database
-        
+        from sochdb import HnswIndex, Database
+
         self.dimension = dimension
-        self.index = VectorIndex(
+        self.index = HnswIndex(
             dimension=dimension,
-            max_connections=16,
+            m=16,
             ef_construction=100
         )
-        self.documents = {}  # id -> document
+        self.db = Database()
+        self.documents = {}
         self.next_id = 0
     
     def add_document(self, content: str, embedding: np.ndarray, metadata: Dict = None):
@@ -88,25 +82,28 @@ class SochDBMemory:
             "content": content,
             "metadata": metadata or {}
         }
-        
-        # Insert into vector index
+
+        self.db.put(str(doc_id).encode(), json.dumps({"content": content, "metadata": metadata or {}}).encode())
+
         ids = np.array([doc_id], dtype=np.uint64)
         vectors = embedding.reshape(1, -1).astype(np.float32)
-        self.index.insert_batch(ids, vectors)
+        self.index.insert_batch_with_ids(ids, vectors)
         
         return doc_id
     
     def search(self, query_embedding: np.ndarray, k: int = 5) -> List[Dict]:
         """Search for similar documents."""
-        results = self.index.search(query_embedding.astype(np.float32), k=k)
-        
+        ids, dists = self.index.search(query_embedding.astype(np.float32), k=k)
+
         docs = []
-        for doc_id, distance in results:
+        for i in range(len(ids)):
+            doc_id = int(ids[i])
+            distance = float(dists[i])
             if doc_id in self.documents:
                 doc = self.documents[doc_id].copy()
                 doc["distance"] = distance
                 docs.append(doc)
-        
+
         return docs
     
     def build_context(self, query_embedding: np.ndarray, 

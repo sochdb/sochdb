@@ -18,7 +18,6 @@ Uses real Azure OpenAI embeddings and GPT-4.1 for end-to-end validation.
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 import random
@@ -30,9 +29,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
-
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../sochdb-python-sdk/src"))
+import sochdb
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -136,9 +133,10 @@ def test_kv_user_profiles(n: int = 1000) -> TestResult:
     print("  Inserting users...")
     start = time.perf_counter()
     
-    with db.transaction() as txn:
+    txn = sochdb.Transaction(db)
+    with txn as t:
         for user in users:
-            txn.put(user["key"].encode(), json.dumps(user["value"]).encode())
+            db.put(user["key"].encode(), json.dumps(user["value"]).encode(), txn=t.id)
     
     insert_time = (time.perf_counter() - start) * 1000
     insert_rate = n / (insert_time / 1000)
@@ -206,7 +204,7 @@ def test_vector_similarity(n_vectors: int = 1000, n_queries: int = 50, dim: int 
     print("  TEST 2: Vector Similarity Search")
     print("="*70)
     
-    from sochdb import VectorIndex
+    from sochdb import HnswIndex
     
     # Generate vectors
     print(f"\n  Generating {n_vectors} vectors ({dim}-dim)...")
@@ -229,11 +227,11 @@ def test_vector_similarity(n_vectors: int = 1000, n_queries: int = 50, dim: int 
     
     # Build SochDB index
     print("  Building SochDB index...")
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     
     start = time.perf_counter()
     ids = np.arange(n_vectors, dtype=np.uint64)
-    inserted = index.insert_batch(ids, vectors)
+    inserted = index.insert_batch_with_ids(ids, vectors)
     build_time = (time.perf_counter() - start) * 1000
     print(f"  Built index in {build_time:.0f}ms ({inserted/build_time*1000:.0f} vec/s)")
     
@@ -244,10 +242,10 @@ def test_vector_similarity(n_vectors: int = 1000, n_queries: int = 50, dim: int 
     
     for i, q in enumerate(queries):
         start = time.perf_counter()
-        results = index.search(q, k=k)
+        search_ids, search_dists = index.search(q, k=k)
         latencies.append((time.perf_counter() - start) * 1000)
         
-        result_ids = [int(r[0]) for r in results]
+        result_ids = [int(idx) for idx in search_ids]
         gt = set(ground_truth[i])
         recall = len(set(result_ids) & gt) / k
         recalls.append(recall)
@@ -263,8 +261,8 @@ def test_vector_similarity(n_vectors: int = 1000, n_queries: int = 50, dim: int 
     # Sanity check: query with exact vector should return that ID in top results
     print("  Running sanity check (query vector 42)...")
     test_id = 42
-    results = index.search(vectors[test_id], k=10)
-    result_ids = [int(r[0]) for r in results]
+    search_ids, _ = index.search(vectors[test_id], k=10)
+    result_ids = [int(idx) for idx in search_ids]
     
     if test_id not in result_ids:
         print(f"  ⚠️  Sanity check: vector 42 not in top-10 (got {result_ids})")
@@ -295,7 +293,7 @@ def test_agent_memory_real() -> TestResult:
     print("  TEST 3: Agent Memory (Real Embeddings)")
     print("="*70)
     
-    from sochdb import VectorIndex
+    from sochdb import HnswIndex
     
     embeddings = AzureEmbeddings()
     
@@ -320,9 +318,9 @@ def test_agent_memory_real() -> TestResult:
     print(f"  Embedded in {embed_time:.0f}ms ({dim}-dim)")
     
     # Build index
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     ids = np.array([m["id"] for m in memories], dtype=np.uint64)
-    index.insert_batch(ids, mem_embeddings)
+    index.insert_batch_with_ids(ids, mem_embeddings)
     
     # Test queries
     test_queries = [
@@ -336,9 +334,9 @@ def test_agent_memory_real() -> TestResult:
     
     for test in test_queries:
         query_embed = embeddings.embed_single(test["query"])
-        results = index.search(query_embed, k=3)
+        search_ids, search_dists = index.search(query_embed, k=3)
         
-        top_id = int(results[0][0])
+        top_id = int(search_ids[0])
         top_memory = memories[top_id]
         
         is_correct = top_memory["topic"] == test["expected_topic"]
@@ -370,7 +368,7 @@ def test_rag_retrieval() -> TestResult:
     print("  TEST 4: RAG Retrieval with Filters")
     print("="*70)
     
-    from sochdb import VectorIndex
+    from sochdb import HnswIndex
     
     embeddings = AzureEmbeddings()
     
@@ -390,9 +388,9 @@ def test_rag_retrieval() -> TestResult:
     dim = chunk_embeddings.shape[1]
     
     # Build index
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     ids = np.array([c["id"] for c in chunks], dtype=np.uint64)
-    index.insert_batch(ids, chunk_embeddings)
+    index.insert_batch_with_ids(ids, chunk_embeddings)
     
     # Test with filters (post-filter since SochDB doesn't have server-side filtering yet)
     print("\n  Testing filtered retrieval...")
@@ -401,8 +399,8 @@ def test_rag_retrieval() -> TestResult:
     query_embed = embeddings.embed_single(query)
     
     # Get all results
-    results = index.search(query_embed, k=6)
-    retrieved = [chunks[int(r[0])] for r in results]
+    search_ids, search_dists = index.search(query_embed, k=6)
+    retrieved = [chunks[int(idx)] for idx in search_ids]
     
     # Filter: English only, access <= 1
     filtered = [c for c in retrieved if c["lang"] == "en" and c["access"] <= 1]
@@ -451,7 +449,7 @@ def test_langgraph_integration() -> TestResult:
     except ImportError as e:
         return TestResult("LangGraph Integration", False, f"Import error: {e}")
     
-    from sochdb import VectorIndex, Database
+    from sochdb import HnswIndex, Database
     
     embeddings = AzureEmbeddings()
     llm = AzureLLM()
@@ -468,9 +466,9 @@ def test_langgraph_integration() -> TestResult:
     kb_embeddings = embeddings.embed(kb_docs)
     dim = kb_embeddings.shape[1]
     
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     ids = np.arange(len(kb_docs), dtype=np.uint64)
-    index.insert_batch(ids, kb_embeddings)
+    index.insert_batch_with_ids(ids, kb_embeddings)
     
     # Memory store
     memory_store = {}
@@ -489,9 +487,9 @@ def test_langgraph_integration() -> TestResult:
         """Retrieve relevant context from SochDB."""
         last_message = state["messages"][-1].content
         query_embed = embeddings.embed_single(last_message)
-        results = index.search(query_embed, k=2)
+        search_ids, search_dists = index.search(query_embed, k=2)
         
-        context_parts = [kb_docs[int(r[0])] for r in results]
+        context_parts = [kb_docs[int(idx)] for idx in search_ids]
         context = "\n".join(context_parts)
         
         return {"context": context}
@@ -582,27 +580,28 @@ def test_mixed_workload(duration_s: int = 10) -> TestResult:
     print(f"  TEST 6: Mixed Workload ({duration_s}s)")
     print("="*70)
     
-    from sochdb import VectorIndex, Database
+    from sochdb import HnswIndex, Database
     
     # Setup
     db_path = tempfile.mktemp(prefix="sochdb_mixed_")
     db = Database.open(db_path)
     
     dim = 128
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     
     # Pre-populate
     print("\n  Pre-populating data...")
     np.random.seed(42)
     
     for i in range(1000):
-        with db.transaction() as txn:
-            txn.put(f"data/{i}".encode(), json.dumps({"id": i, "value": i * 10}).encode())
+        txn = sochdb.Transaction(db)
+        with txn as t:
+            db.put(f"data/{i}".encode(), json.dumps({"id": i, "value": i * 10}).encode(), txn=t.id)
     
     vectors = np.random.randn(1000, dim).astype(np.float32)
     vectors = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
     ids = np.arange(1000, dtype=np.uint64)
-    index.insert_batch(ids, vectors)
+    index.insert_batch_with_ids(ids, vectors)
     
     print("  ✓ Pre-populated 1000 KV entries + 1000 vectors")
     
@@ -634,8 +633,9 @@ def test_mixed_workload(duration_s: int = 10) -> TestResult:
                 
             elif op_type == "kv_write":
                 key = f"data/{random.randint(1000, 1999)}".encode()
-                with db.transaction() as txn:
-                    txn.put(key, json.dumps({"id": key.decode(), "ts": time.time()}).encode())
+                txn = sochdb.Transaction(db)
+                with txn as t:
+                    db.put(key, json.dumps({"id": key.decode(), "ts": time.time()}).encode(), txn=t.id)
                 ops["kv_write"] += 1
                 
         except Exception as e:

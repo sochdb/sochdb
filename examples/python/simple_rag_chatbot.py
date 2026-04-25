@@ -16,16 +16,12 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 import tempfile
 from typing import List, Dict, Generator
 import numpy as np
 import requests
-
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -39,7 +35,7 @@ class RAGChatbot:
     """Simple RAG chatbot powered by SochDB."""
     
     def __init__(self):
-        from sochdb import VectorIndex, Database
+        from sochdb import HnswIndex, Database, Transaction
         
         # Azure credentials
         self.embed_endpoint = os.getenv("AZURE_EMEBEDDING_ENDPOINT")
@@ -54,7 +50,7 @@ class RAGChatbot:
         
         # SochDB components
         self.dimension = 1536
-        self.vector_index = VectorIndex(dimension=self.dimension, max_connections=16, ef_construction=100)
+        self.vector_index = HnswIndex(dimension=self.dimension, m=16, ef_construction=100)
         self.documents: List[Dict] = []
         
         # Memory store
@@ -99,7 +95,7 @@ class RAGChatbot:
         
         start_id = len(self.documents)
         ids = np.arange(start_id, start_id + len(all_chunks), dtype=np.uint64)
-        self.vector_index.insert_batch(ids, embeddings)
+        self.vector_index.insert_batch_with_ids(ids, embeddings)
         self.documents.extend(all_chunks)
         
         return len(all_chunks)
@@ -107,8 +103,8 @@ class RAGChatbot:
     def retrieve(self, query: str, k: int = 3) -> List[str]:
         """Retrieve relevant documents."""
         query_embed = self._embed([query])[0]
-        results = self.vector_index.search(query_embed, k=k)
-        return [self.documents[int(r[0])]["text"] for r in results if int(r[0]) < len(self.documents)]
+        ids, dists = self.vector_index.search(query_embed, k=k)
+        return [self.documents[int(i)]["text"] for i in ids if int(i) < len(self.documents)]
     
     def chat(self, user_message: str) -> str:
         """Process a chat message."""
@@ -144,8 +140,9 @@ Be conversational and friendly. If you don't know something, say so."""}
         
         # Save to SochDB memory
         key = f"chat/{len(self.conversation_history)}".encode()
-        with self.memory_db.transaction() as txn:
-            txn.put(key, json.dumps(self.conversation_history[-1]).encode())
+        txn = Transaction(self.memory_db)
+        with txn as t:
+            self.memory_db.put(key, json.dumps(self.conversation_history[-1]).encode(), txn=t.id)
         
         return response
     

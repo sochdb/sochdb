@@ -15,8 +15,6 @@ Usage:
 # Copyright 2025 Sushanth (https://github.com/sushanthpy)
 # Licensed under the Apache License, Version 2.0
 
-import os
-import sys
 import json
 import time
 import random
@@ -24,8 +22,6 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 import numpy as np
 import requests
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -68,13 +64,13 @@ class PersonalizationEngine:
     """Two-stage personalization with user and item vectors."""
     
     def __init__(self, dimension: int = 128):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         self.dimension = dimension
         
         # Separate indexes for users and items
-        self.user_index = VectorIndex(dimension=dimension, max_connections=16, ef_construction=100)
-        self.item_index = VectorIndex(dimension=dimension, max_connections=32, ef_construction=200)
+        self.user_index = HnswIndex(dimension=dimension, m=16, ef_construction=100)
+        self.item_index = HnswIndex(dimension=dimension, m=32, ef_construction=200)
         
         self.users: Dict[str, User] = {}
         self.items: Dict[str, Item] = {}
@@ -107,7 +103,7 @@ class PersonalizationEngine:
         start_idx = self.next_item_idx
         ids = np.arange(start_idx, start_idx + len(items), dtype=np.uint64)
         embeddings_arr = np.stack(embeddings)
-        self.item_index.insert_batch(ids, embeddings_arr)
+        self.item_index.insert_batch_with_ids(ids, embeddings_arr)
         
         for i, item in enumerate(items):
             idx = start_idx + i
@@ -131,7 +127,7 @@ class PersonalizationEngine:
         start_idx = self.next_user_idx
         ids = np.arange(start_idx, start_idx + len(users), dtype=np.uint64)
         embeddings_arr = np.stack(embeddings)
-        self.user_index.insert_batch(ids, embeddings_arr)
+        self.user_index.insert_batch_with_ids(ids, embeddings_arr)
         
         for i, user in enumerate(users):
             idx = start_idx + i
@@ -187,12 +183,12 @@ class PersonalizationEngine:
         is_cold_start = user.interaction_count < 5
         
         # Search item index with user embedding
-        results = self.item_index.search(user.embedding, k=top_k * 3)
+        ids, dists = self.item_index.search(user.embedding, k=top_k * 3)
         
         recommendations = []
         
-        for idx, score in results:
-            item_id = self.item_idx_to_id.get(int(idx))
+        for i in range(len(ids)):
+            item_id = self.item_idx_to_id.get(int(ids[i]))
             if not item_id or item_id not in self.items:
                 continue
             
@@ -206,7 +202,7 @@ class PersonalizationEngine:
             
             recommendations.append(Recommendation(
                 item=item,
-                score=float(score),
+                score=float(dists[i]),
                 reason=reason
             ))
             
@@ -221,13 +217,13 @@ class PersonalizationEngine:
             return []
         
         user = self.users[user_id]
-        results = self.user_index.search(user.embedding, k=top_k + 1)
+        ids, dists = self.user_index.search(user.embedding, k=top_k + 1)
         
         similar = []
-        for idx, score in results:
-            other_id = self.user_idx_to_id.get(int(idx))
+        for i in range(len(ids)):
+            other_id = self.user_idx_to_id.get(int(ids[i]))
             if other_id and other_id != user_id:
-                similar.append((other_id, float(score)))
+                similar.append((other_id, float(dists[i])))
         
         return similar[:top_k]
 

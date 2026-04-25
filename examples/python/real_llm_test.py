@@ -16,7 +16,6 @@ Requires .env file with Azure credentials.
 # you may not use this file except in compliance with the License.
 
 import os
-import sys
 import json
 import time
 import requests
@@ -25,9 +24,6 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from dotenv import load_dotenv
 import numpy as np
-
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../sochdb-python-sdk/src"))
 
 # Load environment variables
 load_dotenv()
@@ -135,9 +131,9 @@ def run_real_e2e_test():
     # Initialize SochDB
     print("\n2. Initializing SochDB...")
     try:
-        from sochdb import VectorIndex
-        if VectorIndex is None:
-            raise ImportError("VectorIndex not available")
+        from sochdb import HnswIndex
+        if HnswIndex is None:
+            raise ImportError("HnswIndex not available")
     except ImportError as e:
         print(f"   ✗ SochDB not available: {e}")
         return
@@ -184,11 +180,11 @@ def run_real_e2e_test():
     
     # Build SochDB index
     print("\n4. Building SochDB index...")
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     
     ids = np.arange(len(knowledge_base), dtype=np.uint64)
     start = time.perf_counter()
-    inserted = index.insert_batch(ids, doc_embeddings)
+    inserted = index.insert_batch_with_ids(ids, doc_embeddings)
     index_time = (time.perf_counter() - start) * 1000
     
     print(f"   ✓ Indexed {inserted} documents in {index_time:.0f}ms")
@@ -234,12 +230,12 @@ def run_real_e2e_test():
         
         # Retrieve from SochDB
         start = time.perf_counter()
-        search_results = index.search(query_embed, k=3)
+        result_ids, result_dists = index.search(query_embed, k=3)
         retrieval_ms = (time.perf_counter() - start) * 1000
         total_retrieval_ms += retrieval_ms
         
         # Get retrieved context
-        retrieved_docs = [knowledge_base[int(r[0])] for r in search_results]
+        retrieved_docs = [knowledge_base[int(result_ids[i])] for i in range(len(result_ids))]
         context = "\n\n".join([f"[{doc['topic']}]: {doc['content']}" for doc in retrieved_docs])
         
         # Call LLM
@@ -307,7 +303,7 @@ def run_memory_test():
     embeddings = AzureEmbeddings()
     llm = AzureLLM()
     
-    from sochdb import VectorIndex
+    from sochdb import HnswIndex
     
     # Simulate agent memory (session history)
     memories = [
@@ -327,9 +323,9 @@ def run_memory_test():
     
     # Build index
     dim = mem_embeddings.shape[1]
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     ids = np.arange(len(memories), dtype=np.uint64)
-    index.insert_batch(ids, mem_embeddings)
+    index.insert_batch_with_ids(ids, mem_embeddings)
     print(f"   ✓ Indexed {len(memories)} memories")
     
     # Test memory retrieval
@@ -346,10 +342,10 @@ def run_memory_test():
     for query in test_queries:
         # Retrieve relevant memories
         query_embed = embeddings.embed_single(query)
-        results = index.search(query_embed, k=3)
+        result_ids, result_dists = index.search(query_embed, k=3)
         
         # Build context from memories
-        relevant_mems = [memories[int(r[0])] for r in results]
+        relevant_mems = [memories[int(result_ids[i])] for i in range(len(result_ids))]
         context = "\n".join([f"[Turn {m['turn']}] {m['role']}: {m['content']}" for m in relevant_mems])
         
         # Ask LLM

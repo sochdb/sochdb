@@ -17,7 +17,7 @@ services:
   sochdb:
     build:
       context: ..
-      dockerfile: sochdb_docker/Dockerfile
+      dockerfile: docker/Dockerfile
     image: sochdb/sochdb-grpc:latest
     container_name: sochdb-grpc
     restart: unless-stopped
@@ -51,7 +51,7 @@ services:
   sochdb-dev:
     build:
       context: ..
-      dockerfile: sochdb_docker/Dockerfile
+      dockerfile: docker/Dockerfile
     image: sochdb/sochdb-grpc:latest
     container_name: sochdb-grpc-dev
     profiles:

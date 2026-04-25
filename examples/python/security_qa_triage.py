@@ -16,7 +16,6 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 import re
@@ -26,8 +25,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import numpy as np
 import requests
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -151,10 +148,10 @@ class SecureQASystem:
     """Security-hardened QA with SochDB RAG."""
     
     def __init__(self):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         self.dimension = 1536
-        self.index = VectorIndex(dimension=self.dimension)
+        self.index = HnswIndex(dimension=self.dimension)
         
         self.documents: Dict[str, str] = {}
         self.id_to_idx: Dict[str, int] = {}
@@ -202,7 +199,7 @@ class SecureQASystem:
         
         start_idx = self.next_idx
         ids = np.arange(start_idx, start_idx + len(docs), dtype=np.uint64)
-        self.index.insert_batch(ids, embeddings)
+        self.index.insert_batch_with_ids(ids, embeddings)
         
         for i, (doc_id, content) in enumerate(docs.items()):
             idx = start_idx + i
@@ -240,13 +237,13 @@ class SecureQASystem:
         
         # 3. Retrieve relevant documents
         query_embedding = self._embed([question])[0]
-        results = self.index.search(query_embedding, k=top_k)
+        ids, dists = self.index.search(query_embedding, k=top_k)
         
         sources = []
         context_parts = []
         
-        for idx, score in results:
-            doc_id = self.idx_to_id.get(int(idx))
+        for i in range(len(ids)):
+            doc_id = self.idx_to_id.get(int(ids[i]))
             if doc_id and doc_id in self.documents:
                 sources.append(doc_id)
                 context_parts.append(self.documents[doc_id])

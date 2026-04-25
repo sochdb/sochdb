@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@sochdb/sochdb": "^0.5.3"
+  }
+}

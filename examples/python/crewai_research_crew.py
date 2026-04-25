@@ -3,7 +3,7 @@
 CrewAI + SochDB Integration Example
 
 Demonstrates a multi-agent research crew with:
-- SochDB VectorIndex for knowledge retrieval
+- SochDB HnswIndex for knowledge retrieval
 - CrewAI for multi-agent orchestration
 - Real embeddings via Azure OpenAI
 
@@ -16,14 +16,10 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import time
 import numpy as np
 import requests
 from typing import List, Dict
-
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -37,7 +33,7 @@ class SochDBRetriever:
     """SochDB-powered retrieval tool for CrewAI agents."""
     
     def __init__(self):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         # Azure embeddings
         self.embed_endpoint = os.getenv("AZURE_EMEBEDDING_ENDPOINT")
@@ -47,7 +43,7 @@ class SochDBRetriever:
         
         # Initialize index
         self.dim = 1536  # Azure embedding dimension
-        self.index = VectorIndex(dimension=self.dim, max_connections=16, ef_construction=100)
+        self.index = HnswIndex(dimension=self.dim, m=16, ef_construction=100)
         self.documents = []
     
     def embed(self, texts: List[str]) -> np.ndarray:
@@ -63,15 +59,15 @@ class SochDBRetriever:
         embeddings = self.embed(docs)
         start_id = len(self.documents)
         ids = np.arange(start_id, start_id + len(docs), dtype=np.uint64)
-        self.index.insert_batch(ids, embeddings)
+        self.index.insert_batch_with_ids(ids, embeddings)
         self.documents.extend(docs)
         return len(docs)
     
     def search(self, query: str, k: int = 3) -> List[str]:
         """Search for relevant documents."""
         query_embed = self.embed([query])[0]
-        results = self.index.search(query_embed, k=k)
-        return [self.documents[int(r[0])] for r in results if int(r[0]) < len(self.documents)]
+        ids, dists = self.index.search(query_embed, k=k)
+        return [self.documents[int(ids[i])] for i in range(len(ids)) if int(ids[i]) < len(self.documents)]
 
 
 # =============================================================================
@@ -181,7 +177,7 @@ def run_crewai_style_research():
 
 from crewai import Agent, Task, Crew
 from crewai.tools import BaseTool
-from sochdb import VectorIndex
+from sochdb import HnswIndex
 
 # Create a SochDB retrieval tool
 class SochDBSearchTool(BaseTool):

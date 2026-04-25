@@ -16,7 +16,6 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 import random
@@ -25,8 +24,6 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 import numpy as np
 import requests
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -64,10 +61,10 @@ class CustomerSupportRAG:
     """Multi-tenant customer support RAG with ACL and time decay."""
     
     def __init__(self):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         self.dimension = 1536
-        self.index = VectorIndex(dimension=self.dimension, max_connections=32, ef_construction=200)
+        self.index = HnswIndex(dimension=self.dimension, m=32, ef_construction=200)
         self.articles: Dict[str, SupportArticle] = {}
         self.id_to_idx: Dict[str, int] = {}
         self.idx_to_id: Dict[int, str] = {}
@@ -101,7 +98,7 @@ class CustomerSupportRAG:
         
         start_idx = self.next_idx
         ids = np.arange(start_idx, start_idx + len(articles), dtype=np.uint64)
-        self.index.insert_batch(ids, embeddings)
+        self.index.insert_batch_with_ids(ids, embeddings)
         
         for i, article in enumerate(articles):
             article.embedding = embeddings[i]
@@ -129,12 +126,14 @@ class CustomerSupportRAG:
         
         # Over-fetch for filtering
         k_fetch = top_k * 5
-        results = self.index.search(query_embedding, k=k_fetch)
+        result_ids, result_dists = self.index.search(query_embedding, k=k_fetch)
         
         search_results = []
         now = datetime.now()
         
-        for idx, score in results:
+        for i in range(len(result_ids)):
+            idx = result_ids[i]
+            score = result_dists[i]
             article_id = self.idx_to_id.get(int(idx))
             if not article_id or article_id not in self.articles:
                 continue

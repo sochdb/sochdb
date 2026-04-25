@@ -28,9 +28,9 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
-# Setup paths
+import sochdb
+
 PROJECT_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_DIR / "sochdb-python-sdk/src"))
 
 ENV = {
     **os.environ,
@@ -142,7 +142,7 @@ def test_t2_1_toon_vs_json_tokens() -> Tuple[bool, str, str]:
 def test_t3_1_insert_throughput() -> Tuple[bool, str, str]:
     """T3.1: Insert throughput ≥50K ops/sec"""
     try:
-        from sochdb.database import Database
+        from sochdb import Database
     except ImportError:
         return (True, "FFI bindings", "SKIPPED - bindings not found")
     
@@ -153,13 +153,13 @@ def test_t3_1_insert_throughput() -> Tuple[bool, str, str]:
         n = 50_000
         
         start = time.perf_counter()
-        with db.transaction() as txn:
+        txn = sochdb.Transaction(db)
+        with txn as t:
             for i in range(n):
-                txn.put(f"key{i}".encode(), f'{{"id":{i}}}'.encode())
+                db.put(f"key{i}".encode(), f'{{"id":{i}}}'.encode(), txn=t.id)
         duration = time.perf_counter() - start
         
         ops_per_sec = n / duration
-        db.close()
         
         passed = ops_per_sec >= 50_000
         return (passed, "≥50K ops/sec", f"{ops_per_sec:,.0f} ops/sec")
@@ -170,7 +170,7 @@ def test_t3_2_sqlite_comparison() -> Tuple[bool, str, str]:
     import sqlite3
     
     try:
-        from sochdb.database import Database
+        from sochdb import Database
     except ImportError:
         return (True, "FFI bindings", "SKIPPED - bindings not found")
     
@@ -195,11 +195,11 @@ def test_t3_2_sqlite_comparison() -> Tuple[bool, str, str]:
         db = Database.open(toon_path)
         
         start = time.perf_counter()
-        with db.transaction() as txn:
+        txn = sochdb.Transaction(db)
+        with txn as t:
             for i in range(n):
-                txn.put(f"key{i}".encode(), f"value{i}".encode())
+                db.put(f"key{i}".encode(), f"value{i}".encode(), txn=t.id)
         toon_time = time.perf_counter() - start
-        db.close()
         
         ratio = toon_time / sqlite_time
         passed = ratio < 2.0
@@ -215,7 +215,7 @@ def test_t4_1_vector_recall() -> Tuple[bool, str, str]:
     """T4.1: Vector search recall@10 ≥90%"""
     try:
         import numpy as np
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
     except ImportError:
         return (True, "numpy + FFI", "SKIPPED - deps not found")
     
@@ -225,9 +225,9 @@ def test_t4_1_vector_recall() -> Tuple[bool, str, str]:
     vectors = np.random.randn(n, dim).astype(np.float32)
     vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
     
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     ids = np.arange(n, dtype=np.uint64)
-    index.insert_batch(ids, vectors)
+    index.insert_batch_with_ids(ids, vectors)
     
     num_queries = 50
     query_indices = np.random.choice(n, num_queries, replace=False)
@@ -235,14 +235,14 @@ def test_t4_1_vector_recall() -> Tuple[bool, str, str]:
     recalls = []
     for qi in query_indices:
         query = vectors[qi]
-        results = index.search(query, k=k)
-        result_ids = set([r[0] for r in results])
+        result_ids, result_dists = index.search(query, k=k)
+        result_id_set = set(result_ids.tolist())
         
         # Ground truth (cosine similarity)
         similarities = np.dot(vectors, query)
         ground_truth = set(np.argsort(similarities)[-k:])
         
-        recall = len(result_ids & ground_truth) / k
+        recall = len(result_id_set & ground_truth) / k
         recalls.append(recall)
     
     avg_recall = np.mean(recalls)
@@ -255,7 +255,7 @@ def test_t4_2_vector_latency() -> Tuple[bool, str, str]:
     """T4.2: Search latency p99 <50ms"""
     try:
         import numpy as np
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
     except ImportError:
         return (True, "numpy + FFI", "SKIPPED - deps not found")
     
@@ -265,9 +265,9 @@ def test_t4_2_vector_latency() -> Tuple[bool, str, str]:
     vectors = np.random.randn(n, dim).astype(np.float32)
     vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
     
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     ids = np.arange(n, dtype=np.uint64)
-    index.insert_batch(ids, vectors)
+    index.insert_batch_with_ids(ids, vectors)
     
     # Warmup
     for _ in range(10):
@@ -294,7 +294,7 @@ def test_t4_2_vector_latency() -> Tuple[bool, str, str]:
 def test_t6_1_data_persistence() -> Tuple[bool, str, str]:
     """T6.1: Data survives close/reopen"""
     try:
-        from sochdb.database import Database
+        from sochdb import Database
     except ImportError:
         return (True, "FFI bindings", "SKIPPED - bindings not found")
     
@@ -324,7 +324,7 @@ def test_t6_1_data_persistence() -> Tuple[bool, str, str]:
 def test_t6_2_transaction_atomicity() -> Tuple[bool, str, str]:
     """T6.2: Failed transactions don't corrupt"""
     try:
-        from sochdb.database import Database
+        from sochdb import Database
     except ImportError:
         return (True, "FFI bindings", "SKIPPED - bindings not found")
     
@@ -336,14 +336,14 @@ def test_t6_2_transaction_atomicity() -> Tuple[bool, str, str]:
         
         # Try transaction that fails
         try:
-            with db.transaction() as txn:
-                txn.put(b"counter", b"100")
+            txn = sochdb.Transaction(db)
+            with txn as t:
+                db.put(b"counter", b"100", txn=t.id)
                 raise Exception("Simulated failure")
         except:
             pass
         
         val = db.get(b"counter")
-        db.close()
         
         passed = val == b"0"
         return (passed, "rollback works", "original value preserved" if passed else f"got {val}")
@@ -356,7 +356,7 @@ def test_t6_2_transaction_atomicity() -> Tuple[bool, str, str]:
 def test_t7_1_large_values() -> Tuple[bool, str, str]:
     """T7.1: Large values (up to 1MB) work"""
     try:
-        from sochdb.database import Database
+        from sochdb import Database
     except ImportError:
         return (True, "FFI bindings", "SKIPPED - bindings not found")
     
@@ -376,14 +376,13 @@ def test_t7_1_large_values() -> Tuple[bool, str, str]:
                 passed_all = False
                 break
         
-        db.close()
         return (passed_all, "1MB works", "all sizes OK" if passed_all else "failed")
 
 
 def test_t7_2_unicode_safety() -> Tuple[bool, str, str]:
     """T7.2: Unicode and binary data handled correctly"""
     try:
-        from sochdb.database import Database
+        from sochdb import Database
     except ImportError:
         return (True, "FFI bindings", "SKIPPED - bindings not found")
     
@@ -406,14 +405,13 @@ def test_t7_2_unicode_safety() -> Tuple[bool, str, str]:
                 passed_all = False
                 break
         
-        db.close()
         return (passed_all, "all encodings", "all passed" if passed_all else "failed")
 
 
 def test_t7_3_concurrent_access() -> Tuple[bool, str, str]:
     """T7.3: Concurrent readers/writers don't corrupt"""
     try:
-        from sochdb.database import Database
+        from sochdb import Database
     except ImportError:
         return (True, "FFI bindings", "SKIPPED - bindings not found")
     
@@ -447,8 +445,6 @@ def test_t7_3_concurrent_access() -> Tuple[bool, str, str]:
             t.start()
         for t in threads:
             t.join()
-        
-        db.close()
         
         passed = len(errors) == 0
         return (passed, "no errors", "concurrent safe" if passed else f"{len(errors)} errors")

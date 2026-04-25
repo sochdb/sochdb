@@ -17,7 +17,6 @@ Usage:
 """
 
 import os
-import sys
 import json
 import time
 import hashlib
@@ -31,11 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-# Add sochdb-python-sdk to path
-SDK_PATH = Path(__file__).parent.parent.parent / "sochdb-python-sdk" / "src"
-sys.path.insert(0, str(SDK_PATH))
-
-from sochdb import Database, VectorIndex
+from sochdb import Database, HnswIndex
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -242,7 +237,7 @@ class TestScenario:
     def persist_trace(self, trace: TraceRecord, db: Database):
         """Persist trace to SochDB."""
         path = f"traces/{trace.scenario_id}/{trace.run_id}"
-        db.put_path(path, json.dumps(asdict(trace)).encode())
+        db.put(path.encode(), json.dumps(asdict(trace)).encode())
 
 
 # =============================================================================
@@ -398,7 +393,7 @@ class Scenario2ToolExplosion(TestScenario):
         query = "Restart the payment worker and check error rate after restart"
         
         # Create vector index for tools
-        index = VectorIndex(dimension=self.config.dimension)
+        index = HnswIndex(dimension=self.config.dimension)
         tool_embeddings = []
         tool_ids = []
         
@@ -407,7 +402,7 @@ class Scenario2ToolExplosion(TestScenario):
             tool_embeddings.append(emb)
             tool_ids.append(i)
         
-        index.insert_batch(
+        index.insert_batch_with_ids(
             np.array(tool_ids, dtype=np.uint64),
             np.array(tool_embeddings, dtype=np.float32)
         )
@@ -468,19 +463,19 @@ class Scenario2ToolExplosion(TestScenario):
         
         return trace
     
-    def _run_sochdb(self, tools: List[Dict], query: str, index: VectorIndex, tool_ids: List[int]) -> TraceRecord:
+    def _run_sochdb(self, tools: List[Dict], query: str, index: HnswIndex, tool_ids: List[int]) -> TraceRecord:
         """SochDB: shortlist top-k tools."""
         trace = self.create_trace(self.SCENARIO_ID, "sochdb")
         
         # Embed query and find top 5 tools
         query_emb = self.embedder.embed(query)
-        results = index.search(query_emb, k=5)
+        ids, dists = index.search(query_emb, k=5)
         
         shortlist = []
         shortlisted_tools = []
-        for idx, score in results:
-            tool = tools[idx]
-            shortlist.append({"name": tool["name"], "score": float(score)})
+        for i in range(len(ids)):
+            tool = tools[ids[i]]
+            shortlist.append({"name": tool["name"], "score": float(dists[i])})
             shortlisted_tools.append(tool)
         
         trace.tool_shortlist = shortlist
@@ -531,13 +526,13 @@ class Scenario3WrongToolAvoidance(TestScenario):
         all_tools = read_tools + destructive_tools
         
         # Index tools
-        index = VectorIndex(dimension=self.config.dimension)
+        index = HnswIndex(dimension=self.config.dimension)
         embeddings = []
         for tool in all_tools:
             emb = self.embedder.embed(f"{tool['name']} {tool['description']}")
             embeddings.append(emb)
         
-        index.insert_batch(
+        index.insert_batch_with_ids(
             np.arange(len(all_tools), dtype=np.uint64),
             np.array(embeddings, dtype=np.float32)
         )
@@ -545,14 +540,14 @@ class Scenario3WrongToolAvoidance(TestScenario):
         # Test read-only query
         query = "Show me last 10 invoices for customer 9182"
         query_emb = self.embedder.embed(query)
-        results = index.search(query_emb, k=5)
+        ids, dists = index.search(query_emb, k=5)
         
         shortlist = []
         destructive_in_shortlist = 0
         
-        for idx, score in results:
-            tool = all_tools[idx]
-            shortlist.append({"name": tool["name"], "score": float(score)})
+        for i in range(len(ids)):
+            tool = all_tools[ids[i]]
+            shortlist.append({"name": tool["name"], "score": float(dists[i])})
             if tool in destructive_tools:
                 destructive_in_shortlist += 1
         
@@ -596,9 +591,9 @@ class Scenario4MultiTurnMemory(TestScenario):
         ]
         
         # Index memories
-        index = VectorIndex(dimension=self.config.dimension)
+        index = HnswIndex(dimension=self.config.dimension)
         embeddings = [self.embedder.embed(m) for m in memories]
-        index.insert_batch(
+        index.insert_batch_with_ids(
             np.arange(len(memories), dtype=np.uint64),
             np.array(embeddings, dtype=np.float32)
         )
@@ -613,11 +608,11 @@ class Scenario4MultiTurnMemory(TestScenario):
         all_results = []
         for query in queries:
             query_emb = self.embedder.embed(query)
-            results = index.search(query_emb, k=3)
-            result_ids = set(idx for idx, _ in results)
+            ids, dists = index.search(query_emb, k=3)
+            result_ids = set(ids)
             all_results.append(result_ids)
             print(f"\n  Query: {query}")
-            print(f"  Results: {[memories[idx][:50] for idx, _ in results]}")
+            print(f"  Results: {[memories[ids[i]][:50] for i in range(len(ids))]}")
         
         # Calculate Jaccard similarity
         jaccard_scores = []
@@ -667,7 +662,7 @@ class Scenario5TopicShift(TestScenario):
         }
         
         # Index knowledge
-        index = VectorIndex(dimension=self.config.dimension)
+        index = HnswIndex(dimension=self.config.dimension)
         embeddings = []
         kb_items = list(knowledge.items())
         
@@ -675,7 +670,7 @@ class Scenario5TopicShift(TestScenario):
             emb = self.embedder.embed(f"{key} {content}")
             embeddings.append(emb)
         
-        index.insert_batch(
+        index.insert_batch_with_ids(
             np.arange(len(kb_items), dtype=np.uint64),
             np.array(embeddings, dtype=np.float32)
         )
@@ -683,12 +678,12 @@ class Scenario5TopicShift(TestScenario):
         # Topic-shift query (from HR history to IT question)
         query = "What's the current on-call escalation policy?"
         query_emb = self.embedder.embed(query)
-        results = index.search(query_emb, k=3)
+        ids, dists = index.search(query_emb, k=3)
         
         retrieved = []
-        for idx, score in results:
-            key, content = kb_items[idx]
-            retrieved.append({"key": key, "score": float(score)})
+        for i in range(len(ids)):
+            key, content = kb_items[ids[i]]
+            retrieved.append({"key": key, "score": float(dists[i])})
         
         # Check if IT docs are in top results
         it_in_top = any("it_" in r["key"] for r in retrieved)
@@ -874,8 +869,8 @@ class Scenario8RetrievalQuality(TestScenario):
         
         # Build HNSW index
         print("  Building HNSW index...")
-        index = VectorIndex(dimension=self.config.dimension)
-        index.insert_batch(
+        index = HnswIndex(dimension=self.config.dimension)
+        index.insert_batch_with_ids(
             np.arange(num_docs, dtype=np.uint64),
             doc_embeddings
         )
@@ -888,10 +883,10 @@ class Scenario8RetrievalQuality(TestScenario):
         
         for qi, qe in enumerate(query_embeddings):
             start = time.time()
-            results = index.search(qe, k=100)
+            ids, dists = index.search(qe, k=100)
             latencies.append((time.time() - start) * 1000)
             
-            result_ids = set(idx for idx, _ in results)
+            result_ids = set(ids)
             gt = ground_truth[qi]
             
             recall_10 = len(result_ids & set(list(gt)[:10])) / 10
@@ -958,25 +953,25 @@ class Scenario9MultiTenant(TestScenario):
             doc["embedding"] /= np.linalg.norm(doc["embedding"])
         
         # Build separate indices (simulating filter pushdown)
-        index_a = VectorIndex(dimension=self.config.dimension)
-        index_b = VectorIndex(dimension=self.config.dimension)
+        index_a = HnswIndex(dimension=self.config.dimension)
+        index_b = HnswIndex(dimension=self.config.dimension)
         
         embeddings_a = np.array([d["embedding"] for d in tenant_a_docs])
         embeddings_b = np.array([d["embedding"] for d in tenant_b_docs])
         
-        index_a.insert_batch(np.arange(100, dtype=np.uint64), embeddings_a)
-        index_b.insert_batch(np.arange(100, dtype=np.uint64), embeddings_b)
+        index_a.insert_batch_with_ids(np.arange(100, dtype=np.uint64), embeddings_a)
+        index_b.insert_batch_with_ids(np.arange(100, dtype=np.uint64), embeddings_b)
         
         # Query from each tenant's perspective
         query_emb = rng.standard_normal(self.config.dimension).astype(np.float32)
         query_emb /= np.linalg.norm(query_emb)
         
-        results_a = index_a.search(query_emb, k=10)
-        results_b = index_b.search(query_emb, k=10)
+        ids_a, dists_a = index_a.search(query_emb, k=10)
+        ids_b, dists_b = index_b.search(query_emb, k=10)
         
         # Verify isolation
-        a_ids = [f"A_{idx}" for idx, _ in results_a]
-        b_ids = [f"B_{idx}" for idx, _ in results_b]
+        a_ids = [f"A_{ids_a[i]}" for i in range(len(ids_a))]
+        b_ids = [f"B_{ids_b[i]}" for i in range(len(ids_b))]
         
         cross_leak_a = sum(1 for id in a_ids if id.startswith("B_"))
         cross_leak_b = sum(1 for id in b_ids if id.startswith("A_"))
@@ -1016,14 +1011,14 @@ class Scenario10IngestBenchmark(TestScenario):
         
         # Test 1: Batch insert (simulating bulk)
         print(f"\n  Testing batch insert ({num_docs} docs)...")
-        index_batch = VectorIndex(dimension=self.config.dimension)
+        index_batch = HnswIndex(dimension=self.config.dimension)
         
         start = time.time()
         batch_size = 1000
         for i in range(0, num_docs, batch_size):
             end = min(i + batch_size, num_docs)
             ids = np.arange(i, end, dtype=np.uint64)
-            index_batch.insert_batch(ids, embeddings[i:end])
+            index_batch.insert_batch_with_ids(ids, embeddings[i:end])
         batch_time = time.time() - start
         batch_throughput = num_docs / batch_time
         
@@ -1031,13 +1026,13 @@ class Scenario10IngestBenchmark(TestScenario):
         
         # Test 2: Insert one by one (incremental)
         print(f"\n  Testing incremental insert (first 1000 docs)...")
-        index_incr = VectorIndex(dimension=self.config.dimension)
+        index_incr = HnswIndex(dimension=self.config.dimension)
         
         sample_size = min(1000, num_docs)
         start = time.time()
         for i in range(sample_size):
             ids = np.array([i], dtype=np.uint64)
-            index_incr.insert_batch(ids, embeddings[i:i+1])
+            index_incr.insert_batch_with_ids(ids, embeddings[i:i+1])
         incr_time = time.time() - start
         incr_throughput = sample_size / incr_time
         
@@ -1075,24 +1070,24 @@ class Scenario11FFIFallback(TestScenario):
         print("Scenario 11: FFI Fallback (CLI Path)")
         print("="*60)
         
-        # Test that VectorIndex works (FFI is available)
+        # Test that HnswIndex works (FFI is available)
         try:
-            index = VectorIndex(dimension=128)
+            index = HnswIndex(dimension=128)
             rng = np.random.default_rng(42)
             embeddings = rng.standard_normal((100, 128)).astype(np.float32)
             embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
             
-            index.insert_batch(np.arange(100, dtype=np.uint64), embeddings)
+            index.insert_batch_with_ids(np.arange(100, dtype=np.uint64), embeddings)
             
             query = embeddings[0]
             start = time.time()
-            results = index.search(query, k=5)
+            ids, dists = index.search(query, k=5)
             latency = (time.time() - start) * 1000
             
             ffi_available = True
             print(f"\n  FFI available: {ffi_available}")
             print(f"  Query latency: {latency:.2f}ms")
-            print(f"  Results: {results[:3]}")
+            print(f"  Results: {list(zip(ids.tolist()[:3], dists.tolist()[:3]))}")
             
             passed = latency < 100
             

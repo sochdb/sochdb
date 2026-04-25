@@ -30,6 +30,8 @@ try:
         build_index,
         version,
         is_safe_mode,
+        Database,
+        Transaction,
     )
     _HAS_NATIVE = True
 except ImportError as e:
@@ -40,6 +42,8 @@ except ImportError as e:
 __all__ = [
     # Core classes
     "HnswIndex",
+    "Database",
+    "Transaction",
     # Functions
     "build_index",
     "build_index_from_numpy",
@@ -50,7 +54,7 @@ __all__ = [
     "bulk_build_index",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 
 
 def _check_native():
@@ -244,4 +248,63 @@ else:
         
         @staticmethod
         def load(path: str) -> "HnswIndex":
+            _check_native()
+
+    class Database:
+        """SochDB Database (stub - native extension not loaded)."""
+
+        @staticmethod
+        def open(path: str, config: str = None):
+            _check_native()
+
+        def put(self, key: bytes, value: bytes, txn: int = None):
+            _check_native()
+
+        def get(self, key: bytes, txn: int = None):
+            _check_native()
+
+        def delete(self, key: bytes, txn: int = None):
+            _check_native()
+
+        def scan(self, prefix: bytes, txn: int = None):
+            _check_native()
+
+        def begin(self):
+            _check_native()
+
+        def commit(self, txn: int = None):
+            _check_native()
+
+        def abort(self, txn: int = None):
+            _check_native()
+
+        def fsync(self):
+            _check_native()
+
+        def checkpoint(self):
+            _check_native()
+
+        def gc(self):
+            _check_native()
+
+    class Transaction:
+        """SochDB Transaction (stub - native extension not loaded)."""
+
+        def __init__(self, db):
+            _check_native()
+
+        def __enter__(self):
+            _check_native()
+
+        def __exit__(self, *args):
+            _check_native()
+
+        @property
+        def id(self):
+            _check_native()
+
+        def commit(self):
+            _check_native()
+
+        def abort(self):
             _check_native()

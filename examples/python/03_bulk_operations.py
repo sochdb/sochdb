@@ -1,99 +1,58 @@
 #!/usr/bin/env python3
-"""
-SochDB Bulk Operations Example
-==============================
-
-This example demonstrates high-performance bulk operations that bypass
-Python FFI overhead by using the native sochdb-bulk CLI.
-
-Key Benefits:
-- ~10x faster than FFI for large datasets
-- Zero Python↔Rust marshalling during build
-- Memory-efficient streaming
-
-Expected Output:
-    ✓ Binary found at target/release/sochdb-bulk
-    ✓ Built 10000 vectors at ~1000+ vec/s
-    ✓ Index saved to temp file
-
-Usage:
-    PYTHONPATH=sochdb-python-sdk/src SOCHDB_LIB_PATH=target/release python3 examples/python/03_bulk_operations.py
-"""
 
 import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
-
 import numpy as np
+from sochdb import HnswIndex, build_index_from_numpy
+from sochdb._bulk import bulk_build_from_file
 
 
 def main():
     print("=" * 60)
     print("  SochDB Bulk Operations Example")
     print("=" * 60)
-    
-    try:
-        from sochdb.bulk import bulk_build_index, get_sochdb_bulk_path
-    except ImportError as e:
-        print(f"❌ Import failed: {e}")
-        return 1
-    
-    # 1. Check binary
-    print("\n[1] Checking sochdb-bulk binary...")
-    try:
-        binary_path = get_sochdb_bulk_path()
-        print(f"    ✓ Binary found at: {binary_path}")
-    except RuntimeError as e:
-        print(f"    ❌ Binary not found: {e}")
-        print("    Build with: cargo build --release -p sochdb-tools")
-        return 1
-    
-    # 2. Generate test vectors
-    print("\n[2] Generating test vectors...")
+
     n_vectors = 10000
-    dimension = 384  # Smaller dimension for faster test
-    
+    dimension = 384
     np.random.seed(42)
     vectors = np.random.randn(n_vectors, dimension).astype(np.float32)
-    print(f"    Generated {n_vectors} × {dimension}D vectors ({vectors.nbytes / 1024 / 1024:.1f} MB)")
-    
-    # 3. Build index using bulk API
-    print("\n[3] Building index with bulk API...")
-    
+    print(f"\n    Generated {n_vectors} × {dimension}D vectors ({vectors.nbytes / 1024 / 1024:.1f} MB)")
+
+    print("\n[1] Building index with build_index_from_numpy...")
     with tempfile.TemporaryDirectory() as tmpdir:
         output_path = os.path.join(tmpdir, "bulk_index.hnsw")
-        
-        try:
-            stats = bulk_build_index(
-                vectors,
-                output=output_path,
-                m=16,
-                ef_construction=48,  # Lower for speed
-                quiet=False,
-            )
-            
-            print(f"\n    Results:")
-            print(f"    - Vectors: {stats.vectors}")
-            print(f"    - Dimension: {stats.dimension}")
-            print(f"    - Time: {stats.elapsed_secs:.2f}s")
-            print(f"    - Rate: {stats.rate:.0f} vec/s")
-            print(f"    - Output size: {stats.output_size_mb:.1f} MB")
-            
-            # Check if index was created
-            if os.path.exists(output_path):
-                print(f"\n    ✓ Index saved to: {output_path}")
-            else:
-                print(f"\n    ❌ Index file not created")
-                return 1
-            
-        except Exception as e:
-            print(f"\n    ❌ Bulk build failed: {e}")
-            return 1
-    
+        index = build_index_from_numpy(vectors, m=16, ef_construction=100)
+        index.save(output_path)
+        print(f"    ✓ Index saved to: {output_path}")
+        ids, dists = index.search(vectors[0], k=5)
+        print(f"    ✓ Query returned {len(ids)} results, distances: {dists[:5]}")
+
+    print("\n[2] Building index with incremental insert_batch...")
+    index2 = HnswIndex(dimension, m=16, ef_construction=100)
+    batch_size = 1000
+    for i in range(0, n_vectors, batch_size):
+        batch = vectors[i:i + batch_size]
+        index2.insert_batch(batch)
+    ids2, dists2 = index2.search(vectors[0], k=5)
+    print(f"    ✓ Inserted {n_vectors} vectors in {n_vectors // batch_size} batches")
+    print(f"    ✓ Query returned {len(ids2)} results, distances: {dists2[:5]}")
+
+    print("\n[3] Bulk build from file using bulk_build_from_file...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vec_path = os.path.join(tmpdir, "vectors.bin")
+        output_path = os.path.join(tmpdir, "file_bulk_index.hnsw")
+        vectors.tofile(vec_path)
+        bulk_build_from_file(vec_path, output_path, dimension=dimension, m=16, ef_construction=100)
+        print(f"    ✓ Bulk build from file complete")
+        loaded = HnswIndex(dimension)
+        loaded.load(output_path)
+        ids3, dists3 = loaded.search(vectors[0], k=5)
+        print(f"    ✓ Query returned {len(ids3)} results, distances: {dists3[:5]}")
+
     print("\n" + "=" * 60)
-    print("  ✅ Bulk operations example complete!")
+    print("  Bulk operations example complete!")
     print("=" * 60)
     return 0
 

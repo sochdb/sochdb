@@ -16,7 +16,6 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 import uuid
@@ -24,9 +23,6 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 import numpy as np
 import requests
-
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -60,16 +56,16 @@ class SemanticSearchService:
     """Production-ready semantic search service using SochDB."""
     
     def __init__(self, collection_name: str = "default"):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         self.collection_name = collection_name
         self.dimension = 1536
         
         # Vector index
-        self.index = VectorIndex(
+        self.index = HnswIndex(
             dimension=self.dimension,
-            max_connections=32,  # Higher for better recall
-            ef_construction=200  # Higher for better index quality
+            m=32,
+            ef_construction=200
         )
         
         # Document storage (in production, use SochDB KV)
@@ -117,7 +113,7 @@ class SemanticSearchService:
         self.next_idx += 1
         
         ids = np.array([idx], dtype=np.uint64)
-        self.index.insert_batch(ids, embedding.reshape(1, -1))
+        self.index.insert_batch_with_ids(ids, embedding.reshape(1, -1))
         
         self.documents[doc_id] = doc
         self.id_to_idx[doc_id] = idx
@@ -133,7 +129,7 @@ class SemanticSearchService:
         
         start_idx = self.next_idx
         ids = np.arange(start_idx, start_idx + len(items), dtype=np.uint64)
-        self.index.insert_batch(ids, embeddings)
+        self.index.insert_batch_with_ids(ids, embeddings)
         
         for i, (item, embedding) in enumerate(zip(items, embeddings)):
             doc_id = item.get("id") or str(uuid.uuid4())
@@ -180,11 +176,13 @@ class SemanticSearchService:
         
         # Get more results if filtering
         k = top_k * 3 if filter_metadata else top_k
-        results = self.index.search(query_embedding, k=k)
+        ids, dists = self.index.search(query_embedding, k=k)
         
         search_results = []
-        for idx, score in results:
-            doc_id = self.idx_to_id.get(int(idx))
+        for i in range(len(ids)):
+            idx = int(ids[i])
+            score = float(dists[i])
+            doc_id = self.idx_to_id.get(idx)
             if doc_id and doc_id in self.documents:
                 doc = self.documents[doc_id]
                 
@@ -197,7 +195,7 @@ class SemanticSearchService:
                     if not match:
                         continue
                 
-                search_results.append(SearchResult(document=doc, score=float(score)))
+                search_results.append(SearchResult(document=doc, score=score))
                 
                 if len(search_results) >= top_k:
                     break

@@ -16,7 +16,6 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 import random
@@ -25,8 +24,6 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 import numpy as np
 import requests
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -61,11 +58,11 @@ class SemanticDedup:
     """Near-duplicate detection using semantic similarity."""
     
     def __init__(self, similarity_threshold: float = 0.85):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         self.dimension = 1536
         self.similarity_threshold = similarity_threshold
-        self.index = VectorIndex(dimension=self.dimension, max_connections=32, ef_construction=200)
+        self.index = HnswIndex(dimension=self.dimension, m=32, ef_construction=200)
         
         self.tickets: Dict[str, Ticket] = {}
         self.embeddings: Dict[str, np.ndarray] = {}
@@ -105,7 +102,7 @@ class SemanticDedup:
         
         start_idx = self.next_idx
         ids = np.arange(start_idx, start_idx + len(tickets), dtype=np.uint64)
-        self.index.insert_batch(ids, embeddings)
+        self.index.insert_batch_with_ids(ids, embeddings)
         
         for i, ticket in enumerate(tickets):
             idx = start_idx + i
@@ -130,15 +127,17 @@ class SemanticDedup:
         
         # Search with over-fetch
         k_fetch = top_k * 3
-        results = self.index.search(query_embedding, k=k_fetch)
+        result_ids, result_dists = self.index.search(query_embedding, k=k_fetch)
         
         now = datetime.now()
         cutoff = now - timedelta(days=time_window_days)
         
         duplicates = []
         
-        for idx, distance in results:
-            ticket_id = self.idx_to_id.get(int(idx))
+        for j in range(len(result_ids)):
+            idx = int(result_ids[j])
+            distance = float(result_dists[j])
+            ticket_id = self.idx_to_id.get(idx)
             if not ticket_id or ticket_id not in self.tickets:
                 continue
             

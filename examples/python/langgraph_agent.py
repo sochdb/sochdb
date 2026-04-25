@@ -3,7 +3,7 @@
 LangGraph + SochDB Integration Example
 
 Demonstrates a complete agentic workflow with:
-1. SochDB VectorIndex for knowledge retrieval
+1. SochDB HnswIndex for knowledge retrieval
 2. SochDB Database for memory storage
 3. Azure OpenAI for embeddings and LLM
 4. LangGraph for workflow orchestration
@@ -16,16 +16,12 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 from datetime import datetime
 from typing import TypedDict, Sequence, Dict, List
 import numpy as np
 import requests
-
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -88,7 +84,8 @@ def run_langgraph_agent():
     from langchain_core.messages import HumanMessage, AIMessage
     
     # Import SochDB
-    from sochdb import VectorIndex, Database
+    from sochdb import HnswIndex, Database
+    import sochdb
     
     # Initialize clients
     embeddings = AzureEmbeddings()
@@ -110,9 +107,9 @@ def run_langgraph_agent():
     kb_embeddings = embeddings.embed(knowledge)
     dim = kb_embeddings.shape[1]
     
-    index = VectorIndex(dimension=dim, max_connections=16, ef_construction=100)
+    index = HnswIndex(dimension=dim, m=16, ef_construction=100)
     ids = np.arange(len(knowledge), dtype=np.uint64)
-    index.insert_batch(ids, kb_embeddings)
+    index.insert_batch_with_ids(ids, kb_embeddings)
     
     print(f"   ✓ Indexed {len(knowledge)} knowledge chunks ({dim}-dim)")
     
@@ -143,12 +140,12 @@ def run_langgraph_agent():
         """Retrieve relevant context from SochDB vector index."""
         query = state["messages"][-1].content
         query_embed = embeddings.embed_single(query)
-        results = index.search(query_embed, k=2)
+        ids, dists = index.search(query_embed, k=2)
         
-        context_parts = [knowledge[int(r[0])] for r in results]
+        context_parts = [knowledge[int(idx)] for idx in ids]
         context = "\n".join(f"- {c}" for c in context_parts)
         
-        print(f"\n   [Retrieve] Found {len(results)} relevant chunks")
+        print(f"\n   [Retrieve] Found {len(ids)} relevant chunks")
         return {"context": context}
     
     def load_memory(state: AgentState) -> dict:
@@ -215,8 +212,9 @@ Be concise and accurate."""},
         }
         
         key = f"memory/{user_id}/{turn}".encode()
-        with db.transaction() as txn:
-            txn.put(key, json.dumps(memory).encode())
+        txn = sochdb.Transaction(db)
+        with txn as t:
+            db.put(key, json.dumps(memory).encode(), txn=t.id)
         
         print(f"   [Save] Memory saved for turn {turn}")
         return {}

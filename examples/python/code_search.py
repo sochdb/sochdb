@@ -16,7 +16,6 @@ Usage:
 # Licensed under the Apache License, Version 2.0
 
 import os
-import sys
 import json
 import time
 import random
@@ -24,8 +23,6 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 import numpy as np
 import requests
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -61,10 +58,10 @@ class CodeSearch:
     """Semantic code search with hybrid keyword matching."""
     
     def __init__(self):
-        from sochdb import VectorIndex
+        from sochdb import HnswIndex
         
         self.dimension = 1536
-        self.index = VectorIndex(dimension=self.dimension, max_connections=32, ef_construction=200)
+        self.index = HnswIndex(dimension=self.dimension, m=32, ef_construction=200)
         
         self.snippets: Dict[str, CodeSnippet] = {}
         self.id_to_idx: Dict[str, int] = {}
@@ -99,7 +96,7 @@ class CodeSearch:
         
         start_idx = self.next_idx
         ids = np.arange(start_idx, start_idx + len(snippets), dtype=np.uint64)
-        self.index.insert_batch(ids, embeddings)
+        self.index.insert_batch_with_ids(ids, embeddings)
         
         for i, snippet in enumerate(snippets):
             idx = start_idx + i
@@ -127,11 +124,13 @@ class CodeSearch:
         
         # Over-fetch for filtering
         k_fetch = top_k * 5
-        results = self.index.search(query_embedding, k=k_fetch)
+        search_ids, search_dists = self.index.search(query_embedding, k=k_fetch)
         
         search_results = []
         
-        for idx, score in results:
+        for i in range(len(search_ids)):
+            idx = search_ids[i]
+            score = search_dists[i]
             snippet_id = self.idx_to_id.get(int(idx))
             if not snippet_id or snippet_id not in self.snippets:
                 continue

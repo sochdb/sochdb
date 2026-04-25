@@ -40,6 +40,7 @@ COPY sochdb-mcp ./sochdb-mcp
 COPY sochdb-wasm ./sochdb-wasm
 COPY sochdb-tools ./sochdb-tools
 COPY sochdb-plugin-logging ./sochdb-plugin-logging
+COPY sochdb-fusion ./sochdb-fusion
 COPY proto ./proto
 
 # Build release binary
@@ -54,8 +55,15 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
-    && rm -rf /var/lib/apt/lists/* \
+    curl \
+    && rm -rf /var/lib/apt/lists* \
     && useradd -r -s /bin/false sochdb
+
+# Download grpc-health-probe from GitHub
+RUN curl -L -o /usr/local/bin/grpc_health_probe \
+    https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/v0.4.46/grpc_health_probe-linux-amd64 && \
+    chmod +x /usr/local/bin/grpc_health_probe
+
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/sochdb-grpc-server /usr/local/bin/

@@ -991,7 +991,7 @@ impl PyTransaction {
 ///     >>> db.put(b"key", b"value")
 ///     >>> value = db.get(b"key")
 #[pymodule]
-fn sochdb(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Vector index
     m.add_class::<PyHnswIndex>()?;
     m.add_function(wrap_pyfunction!(build_index, m)?)?;
