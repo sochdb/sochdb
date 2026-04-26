@@ -1438,7 +1438,7 @@ impl PyTableDatabase {
 
         // Release GIL during bulk insert
         py.allow_threads(move || {
-            let txn = db.begin_write_only()
+            let mut txn = db.begin_write_only()
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
             let mut rdr = csv::ReaderBuilder::new()
@@ -1495,11 +1495,8 @@ impl PyTableDatabase {
                 if row_id % 100_000 == 0 {
                     db.commit(txn)
                         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-                    // Start new txn — need mutable; use begin_write_only
-                    let _new_txn = db.begin_write_only()
+                    txn = db.begin_write_only()
                         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-                    // We can't reassign txn because it's bound; just continue with the same handle
-                    // The commit above finalized the old writes, next inserts go to the new internal txn
                 }
             }
 
@@ -1659,6 +1656,74 @@ impl PyTableDatabase {
 
     fn __repr__(&self) -> String {
         format!("TableDatabase(tables={})", self.inner.list_tables().len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn load_csv_rolls_over_transactions_after_batch_commit() {
+        pyo3::prepare_freethreaded_python();
+
+        let dir = tempdir().unwrap();
+        let csv_path = dir.path().join("users.csv");
+        let total_rows = 100_005u64;
+
+        let mut csv_file = File::create(&csv_path).unwrap();
+        writeln!(csv_file, "id,name").unwrap();
+        for row_id in 0..total_rows {
+            writeln!(csv_file, "{},user_{}", row_id, row_id).unwrap();
+        }
+        drop(csv_file);
+
+        Python::with_gil(|py| {
+            let db = PyTableDatabase::open(dir.path().to_str().unwrap(), Some("throughput")).unwrap();
+            db.register_table(
+                "users",
+                vec![
+                    ("id".to_string(), "int64".to_string()),
+                    ("name".to_string(), "text".to_string()),
+                ],
+            )
+            .unwrap();
+
+            let inserted = db.load_csv("users", csv_path.to_str().unwrap(), py).unwrap();
+            assert_eq!(inserted, total_rows);
+            assert_eq!(db.table_count(), 1);
+
+            let txn = db.inner.begin_read_only_fast();
+
+            let row_before_boundary = db.inner.read_row(txn, "users", 99_999, None).unwrap().unwrap();
+            assert_eq!(row_before_boundary.get("id"), Some(&SochValue::Int(99_999)));
+            assert_eq!(
+                row_before_boundary.get("name"),
+                Some(&SochValue::Text("user_99999".to_string()))
+            );
+
+            let row_at_boundary = db.inner.read_row(txn, "users", 100_000, None).unwrap().unwrap();
+            assert_eq!(row_at_boundary.get("id"), Some(&SochValue::Int(100_000)));
+            assert_eq!(
+                row_at_boundary.get("name"),
+                Some(&SochValue::Text("user_100000".to_string()))
+            );
+
+            let row_after_boundary = db.inner.read_row(txn, "users", total_rows - 1, None).unwrap().unwrap();
+            assert_eq!(
+                row_after_boundary.get("id"),
+                Some(&SochValue::Int((total_rows - 1) as i64))
+            );
+            assert_eq!(
+                row_after_boundary.get("name"),
+                Some(&SochValue::Text(format!("user_{}", total_rows - 1)))
+            );
+
+            db.inner.abort_read_only_fast(txn);
+        });
     }
 }
 
