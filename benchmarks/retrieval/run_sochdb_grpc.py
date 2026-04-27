@@ -18,10 +18,15 @@ from typing import Any
 import grpc
 import numpy as np
 
+from evaluate import evaluate_run
+
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT = ROOT / "results" / "sochdb_grpc.json"
 DEFAULT_K = 5
+DEFAULT_M = 16
+DEFAULT_EF_CONSTRUCTION = 100
+DEFAULT_EF_SEARCH = 64
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -65,21 +70,40 @@ def main() -> None:
     )
     parser.add_argument("--k", type=int, default=DEFAULT_K, help="Top-k results")
     parser.add_argument(
+        "--m",
+        type=int,
+        default=DEFAULT_M,
+        help="HNSW max connections per node",
+    )
+    parser.add_argument(
+        "--ef-construction",
+        type=int,
+        default=DEFAULT_EF_CONSTRUCTION,
+        help="HNSW construction search depth",
+    )
+    parser.add_argument(
+        "--ef-search",
+        type=int,
+        default=DEFAULT_EF_SEARCH,
+        help="HNSW search breadth used for index config and query-time search",
+    )
+    parser.add_argument(
         "--index-name",
         default=f"bench_{int(time.time())}",
         help="Remote index name to create for this run",
     )
     args = parser.parse_args()
 
-    generated_dir = Path(__file__).resolve().parents[2] / "sochdb-sdk" / "python" / "sochdb_sdk" / "generated"
+    sdk_python_dir = Path(__file__).resolve().parents[2] / "sochdb-sdk" / "python"
+    generated_dir = sdk_python_dir / "sochdb_sdk" / "generated"
     if not generated_dir.exists():
         raise SystemExit(
             "Generated Python stubs not found. Run: cd sochdb-sdk && ./generate.sh python"
         )
 
-    sys.path.insert(0, str(generated_dir))
-    import sochdb_pb2  # type: ignore
-    import sochdb_pb2_grpc  # type: ignore
+    sys.path.insert(0, str(sdk_python_dir))
+    from sochdb_sdk.generated import sochdb_pb2  # type: ignore
+    from sochdb_sdk.generated import sochdb_pb2_grpc  # type: ignore
 
     corpus = load_jsonl(args.dataset_dir / "corpus.jsonl")
     queries = load_jsonl(args.dataset_dir / "queries.jsonl")
@@ -111,9 +135,9 @@ def main() -> None:
             dimension=int(doc_embeddings.shape[1]),
             metric=sochdb_pb2.DISTANCE_METRIC_COSINE,
             config=sochdb_pb2.HnswConfig(
-                max_connections=16,
-                ef_construction=100,
-                ef_search=64,
+                max_connections=args.m,
+                ef_construction=args.ef_construction,
+                ef_search=args.ef_search,
             ),
         )
     )
@@ -149,7 +173,7 @@ def main() -> None:
                 index_name=args.index_name,
                 query=query_vec.astype(np.float32).tolist(),
                 k=args.k,
-                ef=64,
+                ef=args.ef_search,
             )
         )
         query_elapsed = time.perf_counter() - query_start
@@ -198,9 +222,9 @@ def main() -> None:
             "index_create_time_ms": round(create_elapsed * 1000, 3),
             "insert_time_ms": round(insert_elapsed * 1000, 3),
             "indexed_vectors": int(insert_resp.inserted_count),
-            "m": 16,
-            "ef_construction": 100,
-            "ef_search": 64,
+            "m": args.m,
+            "ef_construction": args.ef_construction,
+            "ef_search": args.ef_search,
         },
         "query_latency": {
             "p50_ms": round(percentile(query_timings, 50) * 1000, 3),
@@ -209,6 +233,7 @@ def main() -> None:
         },
         "queries": query_results,
     }
+    output["quality"] = evaluate_run(output, args.k)
 
     args.output.write_text(json.dumps(output, indent=2), encoding="utf-8")
     print(f"Saved benchmark results to {args.output}")
