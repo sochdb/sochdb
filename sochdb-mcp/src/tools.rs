@@ -1059,7 +1059,7 @@ impl ToolExecutor {
         };
         
         // Extract table name
-        let after_from = &query[from_idx + 4..];
+        let after_from = query[from_idx + 4..].trim_start();
         let table_end = after_from.find(|c: char| c.is_whitespace())
             .unwrap_or(after_from.len());
         let table = after_from[..table_end].trim()
@@ -1342,31 +1342,30 @@ impl ToolExecutor {
             .get("include_metadata")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-
-        // Begin transaction for scan
-        self.conn.begin().map_err(|e| e.to_string())?;
-        
-        // Scan all paths and extract unique top-level prefixes
-        let tables = match self.conn.scan("/") {
+        // Root discovery needs an unrestricted scan because the storage layer
+        // enforces a minimum prefix length for normal scans.
+        let kernel = self.conn.connection().kernel();
+        let txn = kernel.begin_read_only_fast();
+        let tables = match kernel.scan_unchecked(txn, b"") {
             Ok(results) => {
                 let mut table_set = std::collections::HashSet::new();
                 for (key, _) in results {
-                    // Extract first path segment as table/collection name
-                    let parts: Vec<&str> = key.trim_start_matches('/').split('/').collect();
-                    if let Some(first) = parts.first() {
-                        if !first.is_empty() {
-                            table_set.insert(first.to_string());
+                    if let Ok(path) = String::from_utf8(key) {
+                        let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+                        if let Some(first) = parts.first() {
+                            if !first.is_empty() {
+                                table_set.insert(first.to_string());
+                            }
                         }
                     }
                 }
-                self.conn.abort().ok();
-                table_set.into_iter().collect::<Vec<_>>()
+                let mut tables = table_set.into_iter().collect::<Vec<_>>();
+                tables.sort();
+                tables
             }
-            Err(_) => {
-                self.conn.abort().ok();
-                Vec::new()
-            }
+            Err(_) => Vec::new(),
         };
+        kernel.abort_read_only_fast(txn);
 
         let result: Vec<Value> = tables
             .iter()
