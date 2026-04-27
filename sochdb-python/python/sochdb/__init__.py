@@ -285,16 +285,37 @@ class MultiShardHnswIndex:
             self._total_inserted += total
         return total
 
-    def search(self, query, k: int = 10, ef_search: int | None = None) -> tuple:
+    def search(
+        self,
+        query,
+        k: int = 10,
+        ef_search: int | None = None,
+        failure_policy: str = "raise",
+    ) -> tuple:
         """
         Scatter-gather search across all shards.
 
         Each shard returns up to k results; the global top-k are selected
         by distance (ascending — works for both cosine 1-sim and L2).
         Shards are queried in parallel via a thread pool.
+
+        Args:
+            query: Query vector.
+            k: Number of results to return.
+            ef_search: Optional shard-level ef_search override.
+            failure_policy: How to handle shard failures.
+                - ``"raise"``: raise if any shard search fails.
+                - ``"partial"``: return partial results and emit a warning.
+                - ``"ignore"``: return partial results without surfacing errors.
         """
         import numpy as np
         import threading
+        import warnings
+
+        if failure_policy not in {"raise", "partial", "ignore"}:
+            raise ValueError(
+                "failure_policy must be one of: 'raise', 'partial', 'ignore'"
+            )
 
         ef = ef_search if ef_search is not None else self._ef_search
         if query.dtype != np.float32:
@@ -320,6 +341,13 @@ class MultiShardHnswIndex:
             t.start()
         for t in threads:
             t.join()
+
+        if errors:
+            message = f"{len(errors)} shard searches failed: {errors[0]}"
+            if failure_policy == "raise":
+                raise RuntimeError(message) from errors[0]
+            if failure_policy == "partial":
+                warnings.warn(message, RuntimeWarning, stacklevel=2)
 
         if not all_ids:
             return np.array([], dtype=np.uint64), np.array([], dtype=np.float32)
