@@ -5,6 +5,9 @@ Generate reproducible embeddings for the retrieval benchmark corpus and queries.
 Preferred backend:
     sentence-transformers/all-MiniLM-L6-v2
 
+Server-friendly alternative:
+    fastembed (for example: BAAI/bge-small-en-v1.5)
+
 Fallback backend:
     scikit-learn TF-IDF + TruncatedSVD
 """
@@ -29,6 +32,7 @@ DEFAULT_DATASET_DIR = ROOT
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_BACKEND = "auto"
 FALLBACK_MODEL = "tfidf-svd"
+FASTEMBED_DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_BATCH_SIZE = 128
 
 
@@ -124,6 +128,39 @@ def encode_with_sentence_transformers(
     return doc_embeddings, query_embeddings, model_name
 
 
+def encode_with_fastembed(
+    model_name: str,
+    doc_texts: list[str],
+    query_texts: list[str],
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    from fastembed import TextEmbedding
+
+    print(f"Loading fastembed model: {model_name}")
+    model = TextEmbedding(model_name=model_name)
+
+    def encode_batches(texts: list[str], label: str) -> np.ndarray:
+        total = len(texts)
+        if total == 0:
+            return np.zeros((0, 0), dtype=np.float32)
+
+        print(f"Embedding {total} {label} with fastembed (batch_size={batch_size})...")
+        batches: list[np.ndarray] = []
+        total_batches = (total + batch_size - 1) // batch_size
+        for batch_idx, start in enumerate(range(0, total, batch_size), start=1):
+            end = min(start + batch_size, total)
+            print(f"  {label} batch {batch_idx}/{total_batches}: rows {start}-{end - 1}")
+            batch_vectors = list(model.embed(texts[start:end]))
+            batch_embeddings = normalize_rows(np.vstack(batch_vectors).astype(np.float32))
+            batches.append(batch_embeddings)
+        return np.vstack(batches)
+
+    doc_embeddings = encode_batches(doc_texts, "corpus documents")
+    query_embeddings = encode_batches(query_texts, "queries")
+
+    return doc_embeddings, query_embeddings, model_name
+
+
 def encode_with_tfidf_svd(
     doc_texts: list[str],
     query_texts: list[str],
@@ -162,7 +199,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--backend",
-        choices=["auto", "sentence-transformers", "tfidf-svd"],
+        choices=["auto", "sentence-transformers", "fastembed", "tfidf-svd"],
         default=DEFAULT_BACKEND,
         help="Embedding backend to use",
     )
@@ -221,6 +258,8 @@ def main() -> None:
 
     backend_used = args.backend
     model_name = args.model
+    doc_embeddings = None
+    query_embeddings = None
 
     if args.backend in {"auto", "sentence-transformers"}:
         try:
@@ -245,7 +284,30 @@ def main() -> None:
                 svd_dim=args.svd_dim,
             )
             backend_used = "tfidf-svd"
-    else:
+
+    if doc_embeddings is None and args.backend in {"auto", "fastembed"}:
+        try:
+            fastembed_model = (
+                FASTEMBED_DEFAULT_MODEL
+                if args.backend == "auto" and args.model == DEFAULT_MODEL
+                else args.model
+            )
+            doc_embeddings, query_embeddings, model_name = encode_with_fastembed(
+                fastembed_model,
+                doc_texts,
+                query_texts,
+                args.batch_size,
+            )
+            backend_used = "fastembed"
+        except Exception as exc:
+            if args.backend == "fastembed":
+                raise
+            print(
+                "fastembed backend unavailable; "
+                f"falling back to TF-IDF + SVD ({exc.__class__.__name__}: {exc})"
+            )
+
+    if doc_embeddings is None:
         doc_embeddings, query_embeddings, model_name = encode_with_tfidf_svd(
             doc_texts,
             query_texts,
