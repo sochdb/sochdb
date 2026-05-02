@@ -69,8 +69,8 @@ fn main() {
     let result = instance.call("get_metrics", &[]).unwrap();
     println!("   get_metrics() returned: {:?}", result);
 
-    let result = instance.call("transform", &[WasmValue::F64(3.14)]).unwrap();
-    println!("   transform(3.14) returned: {:?}", result);
+    let result = instance.call("transform", &[WasmValue::F64(3.15)]).unwrap();
+    println!("   transform(3.15) returned: {:?}", result);
     println!();
 
     // Step 4: Check plugin statistics
