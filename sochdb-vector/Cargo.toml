@@ -38,7 +38,7 @@ ahash = "0.8"
 tracing = "0.1"
 
 # Error handling
-thiserror = "1.0"
+thiserror = { workspace = true }
 anyhow = "1.0"
 
 # SIMD helpers
