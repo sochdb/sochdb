@@ -12,9 +12,9 @@ path = "src/lib.rs"
 
 [dependencies]
 # SochDB dependencies
-sochdb-core = { version = "0.5.0", path = "../sochdb-core" }
-sochdb-storage = { version = "0.5.0", path = "../sochdb-storage" }
-sochdb-index = { version = "0.5.0", path = "../sochdb-index" }
+sochdb-core = { version = "2.0.0", path = "../sochdb-core" }
+sochdb-storage = { version = "2.0.0", path = "../sochdb-storage" }
+sochdb-index = { version = "2.0.0", path = "../sochdb-index" }
 
 # Memory mapping for segment files
 memmap2 = "0.9"
@@ -33,6 +33,7 @@ dashmap = "5.5"
 rand = "0.8"
 rand_xoshiro = "0.6"
 ahash = "0.8"
+crc32fast = "1.3"
 
 # Logging
 tracing = "0.1"

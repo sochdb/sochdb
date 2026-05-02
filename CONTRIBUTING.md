@@ -54,7 +54,7 @@ If you prefer manual setup or `make setup` fails:
 
 | Requirement | Version | Check | Install |
 |-------------|---------|-------|---------|
-| **Rust** | ≥1.75.0 (2024 edition) | `rustc --version` | [rustup.rs](https://rustup.rs/) |
+| **Rust** | ≥1.85.0 (2024 edition) | `rustc --version` | [rustup.rs](https://rustup.rs/) |
 | **Git** | Any recent | `git --version` | OS package manager |
 | **Clang** | ≥14 (optional, for SIMD) | `clang --version` | OS package manager |
 | **Python** | ≥3.9 (for SDK) | `python --version` | OS package manager |

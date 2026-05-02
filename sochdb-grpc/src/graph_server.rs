@@ -7,6 +7,7 @@
 //!
 //! Provides graph overlay operations for agent memory via gRPC.
 
+use crate::auth_interceptor::{extract_principal, require_capability, require_namespace_access};
 use crate::proto::{
     graph_service_server::{GraphService, GraphServiceServer},
     AddEdgeRequest, AddEdgeResponse, AddNodeRequest, AddNodeResponse,
@@ -17,6 +18,8 @@ use crate::proto::{
     ShortestPathResponse, TraverseRequest, TraverseResponse,
     QueryTemporalGraphRequest, QueryTemporalGraphResponse, TemporalEdge,
 };
+use crate::namespace_server::NamespaceServer;
+use crate::security::Capability;
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -44,12 +47,23 @@ impl NamespaceGraph {
 /// Graph gRPC Server
 pub struct GraphServer {
     namespaces: DashMap<String, Arc<NamespaceGraph>>,
+    /// Shared namespace server for quota enforcement
+    ns_server: Option<NamespaceServer>,
 }
 
 impl GraphServer {
     pub fn new() -> Self {
         Self {
             namespaces: DashMap::new(),
+            ns_server: None,
+        }
+    }
+
+    /// Create with a shared NamespaceServer for quota enforcement.
+    pub fn with_namespace_server(ns: NamespaceServer) -> Self {
+        Self {
+            namespaces: DashMap::new(),
+            ns_server: Some(ns),
         }
     }
 
@@ -77,7 +91,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<AddNodeRequest>,
     ) -> Result<Response<AddNodeResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         if let Some(node) = req.node {
@@ -98,7 +115,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<GetNodeRequest>,
     ) -> Result<Response<GetNodeResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         match ns.nodes.get(&req.node_id) {
@@ -117,7 +137,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<DeleteNodeRequest>,
     ) -> Result<Response<DeleteNodeResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         match ns.nodes.remove(&req.node_id) {
@@ -141,7 +164,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<AddEdgeRequest>,
     ) -> Result<Response<AddEdgeResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         if let Some(edge) = req.edge {
@@ -173,7 +199,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<GetEdgesRequest>,
     ) -> Result<Response<GetEdgesResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let mut edges = Vec::new();
@@ -208,7 +237,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<DeleteEdgeRequest>,
     ) -> Result<Response<DeleteEdgeResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let mut found = false;
@@ -245,7 +277,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<TraverseRequest>,
     ) -> Result<Response<TraverseResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let mut visited_nodes = Vec::new();
@@ -297,7 +332,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<ShortestPathRequest>,
     ) -> Result<Response<ShortestPathResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         // BFS for shortest path
@@ -350,7 +388,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<GetNeighborsRequest>,
     ) -> Result<Response<GetNeighborsResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let mut neighbor_nodes = Vec::new();
@@ -402,7 +443,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<AddTemporalEdgeRequest>,
     ) -> Result<Response<AddTemporalEdgeResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let temporal_edge = TemporalEdge {
@@ -429,7 +473,10 @@ impl GraphService for GraphServer {
         &self,
         request: Request<QueryTemporalGraphRequest>,
     ) -> Result<Response<QueryTemporalGraphResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let mut result_edges = Vec::new();

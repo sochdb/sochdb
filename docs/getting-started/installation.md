@@ -9,10 +9,12 @@ Complete installation guide for SochDB across different platforms and use cases.
 ## Python SDK
 
 ```bash
-pip install sochdb-client
+pip install sochdb
 ```
 
-**Pre-built binaries** are available for Linux (x86_64), macOS (Apple Silicon), and Windows (x86_64).
+**Recommended first path on Apple Silicon:** use a native `arm64` Python environment.
+
+We validated the packaged Python path successfully in a clean native `arm64` macOS environment. If you are on Apple Silicon but your Python reports `x86_64`, you are likely in a Rosetta/Intel environment and should switch to native `arm64` first.
 
 ### Verify Installation
 
@@ -21,6 +23,7 @@ from sochdb import Database
 
 db = Database.open("./test_db")
 db.put(b"test", b"hello")
+
 value = db.get(b"test")
 print(f"SochDB installed! Value: {value.decode()}")
 db.close()
@@ -133,7 +136,7 @@ cargo install --path sochdb-cli
 ### Build Python Bindings from Source
 
 ```bash
-cd sochdb-python-sdk
+cd sochdb-python
 
 # Create virtual environment
 python -m venv .venv
@@ -160,6 +163,8 @@ python -c "import platform; print(platform.machine())"
 # Should output: arm64
 ```
 
+If this prints `x86_64` on an Apple Silicon Mac, do not treat that as the recommended packaged path. Switch to a native `arm64` Python environment first.
+
 ### Linux
 
 For best performance, ensure your kernel supports `io_uring`:
@@ -175,7 +180,7 @@ Use PowerShell or Windows Terminal for the best experience:
 
 ```powershell
 # Install via pip
-pip install sochdb-client
+pip install sochdb
 ```
 
 ---
@@ -185,30 +190,18 @@ pip install sochdb-client
 Run the diagnostic script to verify everything is working:
 
 ```python
-from sochdb import Database, VectorIndex
-import numpy as np
+from sochdb import Database
 
 # Test basic operations
-db = Database(":memory:")
+db = Database.open("./verify_db")
+db.put(b"test/key", b"value")
 
-with db.transaction() as txn:
-    txn.put("test/key", b"value")
-    
-value = db.get("test/key")
+value = db.get(b"test/key")
 assert value == b"value", "Basic KV operations failed"
 print("✓ Key-value operations working")
 
-# Test vector index (if available)
-try:
-    index = VectorIndex(dimension=128)
-    vectors = np.random.rand(10, 128).astype(np.float32)
-    index.insert_batch(vectors, list(range(10)))
-    
-    query = np.random.rand(128).astype(np.float32)
-    results = index.search(query, k=5)
-    print(f"✓ Vector search working (found {len(results)} results)")
-except Exception as e:
-    print(f"⚠ Vector search not available: {e}")
+db.close()
+print("✓ Database opened and closed successfully")
 
 print("\n🎉 SochDB is ready to use!")
 ```
@@ -218,5 +211,6 @@ print("\n🎉 SochDB is ready to use!")
 ## Next Steps
 
 - [Quick Start Guide](/getting-started/quickstart) — Your first SochDB application
+- [Python Install Matrix](/getting-started/python-install-matrix) — Choose the right Python setup path
 - [Python SDK Guide](/guides/python-sdk) — Complete Python tutorial
 - [Vector Search](/guides/vector-search) — HNSW indexing guide

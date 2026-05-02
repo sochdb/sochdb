@@ -19,11 +19,13 @@ Expected Output:
     ✓ Response generated
 
 Usage:
-    # Set environment variables
-    export PYTHONPATH=sochdb-python-sdk/src
-    export SOCHDB_LIB_PATH=target/release
-    
-    # Run example
+    pip install sochdb
+    python3 examples/python/04_langgraph_integration.py
+
+    # Or from this monorepo:
+    cd sochdb-python
+    maturin develop --release
+    cd ..
     python3 examples/python/04_langgraph_integration.py
 """
 
@@ -34,7 +36,7 @@ import time
 from typing import TypedDict, List, Dict, Any
 from dataclasses import dataclass
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python"))
 
 import numpy as np
 

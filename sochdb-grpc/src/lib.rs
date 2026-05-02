@@ -61,6 +61,8 @@ pub mod error;
 pub mod blocking_pool; // Async boundary hardening with bounded pools
 pub mod health_service; // Probe semantics + degraded mode + watchdog
 pub mod observability; // Observability hardening: cardinality, slow query, SLOs
+pub mod auth_interceptor; // gRPC authentication interceptor (Task 7)
+pub mod metrics_server; // Prometheus /metrics HTTP endpoint (Task 8)
 pub mod security; // Security baseline: mTLS, AuthZ, audit, rate limiting
 
 // Service implementations
@@ -74,6 +76,9 @@ pub mod trace_server;
 pub mod checkpoint_server;
 pub mod mcp_server;
 pub mod kv_server;
+pub mod subscription_server;
+pub mod ws_server; // WebSocket gateway (Task 4)
+pub mod pg_wire; // PostgreSQL wire protocol (Task 5)
 
 pub use server::VectorIndexServer;
 pub use error::GrpcError;

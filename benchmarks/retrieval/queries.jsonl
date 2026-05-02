@@ -1,0 +1,20 @@
+{"query_id":"q-001","query":"How do I access internal dashboards securely from my laptop?","relevant_ids":["doc-001","doc-023"]}
+{"query_id":"q-002","query":"What is the process for reimbursing travel meals?","relevant_ids":["doc-003","doc-025"]}
+{"query_id":"q-003","query":"What should I do when production is down and I am on call?","relevant_ids":["doc-005","doc-006","doc-022"]}
+{"query_id":"q-004","query":"How should urgent customer issues be escalated?","relevant_ids":["doc-007","doc-008"]}
+{"query_id":"q-005","query":"When do managers review employee tool access?","relevant_ids":["doc-009"]}
+{"query_id":"q-006","query":"What needs to happen when an employee leaves the company?","relevant_ids":["doc-010"]}
+{"query_id":"q-007","query":"What is the recommended deployment and rollback process?","relevant_ids":["doc-011","doc-012","doc-029"]}
+{"query_id":"q-008","query":"How early should I request a laptop for a new hire?","relevant_ids":["doc-013","doc-014"]}
+{"query_id":"q-009","query":"How often are production databases backed up?","relevant_ids":["doc-015","doc-016"]}
+{"query_id":"q-010","query":"When should service API keys be rotated?","relevant_ids":["doc-017","doc-018"]}
+{"query_id":"q-011","query":"What approvals are needed before buying software?","relevant_ids":["doc-019","doc-020"]}
+{"query_id":"q-012","query":"How should support documentation be written?","relevant_ids":["doc-021"]}
+{"query_id":"q-013","query":"What belongs in an incident postmortem?","relevant_ids":["doc-022"]}
+{"query_id":"q-014","query":"Who can get production access and what is required?","relevant_ids":["doc-023","doc-002"]}
+{"query_id":"q-015","query":"What are the expectations for reviewing pull requests?","relevant_ids":["doc-024"]}
+{"query_id":"q-016","query":"How do flight bookings need to be handled for business travel?","relevant_ids":["doc-025","doc-003"]}
+{"query_id":"q-017","query":"What is the process for approving a large customer refund?","relevant_ids":["doc-026"]}
+{"query_id":"q-018","query":"How should personal customer data be handled in logs and screenshots?","relevant_ids":["doc-027","doc-028"]}
+{"query_id":"q-019","query":"How should new features be rolled out safely?","relevant_ids":["doc-029","doc-011"]}
+{"query_id":"q-020","query":"How is pager duty ownership supposed to be organized?","relevant_ids":["doc-030","doc-005"]}

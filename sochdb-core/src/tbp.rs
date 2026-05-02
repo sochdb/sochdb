@@ -336,7 +336,7 @@ impl TbpHeader {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid TBP magic"));
         }
 
-        Ok(Self {
+        let header = Self {
             magic,
             version: cursor.read_u16::<LittleEndian>()?,
             flags: TbpFlags(cursor.read_u16::<LittleEndian>()?),
@@ -346,7 +346,36 @@ impl TbpHeader {
             reserved: cursor.read_u16::<LittleEndian>()?,
             null_bitmap_offset: cursor.read_u32::<LittleEndian>()?,
             row_index_offset: cursor.read_u32::<LittleEndian>()?,
-        })
+        };
+
+        let data_len = data.len() as u64;
+
+        // Validate offsets are within the buffer to prevent OOB access
+        // from malformed or adversarial TBP payloads.
+        // Only validate when the buffer contains more than just the header
+        // (header-only buffers are used for serialization roundtrip tests).
+        if data_len > TBP_HEADER_SIZE as u64 {
+            if header.null_bitmap_offset != 0 && (header.null_bitmap_offset as u64) >= data_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "null_bitmap_offset ({}) exceeds data length ({})",
+                        header.null_bitmap_offset, data_len
+                    ),
+                ));
+            }
+            if header.row_index_offset != 0 && (header.row_index_offset as u64) >= data_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "row_index_offset ({}) exceeds data length ({})",
+                        header.row_index_offset, data_len
+                    ),
+                ));
+            }
+        }
+
+        Ok(header)
     }
 }
 

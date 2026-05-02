@@ -15,6 +15,10 @@
 # =============================================================================
 FROM rust:1.91-bookworm AS builder
 
+# Use HTTPS sources (some servers block outbound port 80)
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
+    sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null; true
+
 # Install protobuf compiler for gRPC codegen
 RUN apt-get update && apt-get install -y \
     protobuf-compiler \
@@ -33,6 +37,7 @@ COPY sochdb-kernel ./sochdb-kernel
 COPY sochdb-storage ./sochdb-storage
 COPY sochdb-index ./sochdb-index
 COPY sochdb-query ./sochdb-query
+COPY sochdb-fusion ./sochdb-fusion
 COPY sochdb-client ./sochdb-client
 COPY sochdb-grpc ./sochdb-grpc
 COPY sochdb-vector ./sochdb-vector
@@ -41,15 +46,26 @@ COPY sochdb-wasm ./sochdb-wasm
 COPY sochdb-tools ./sochdb-tools
 COPY sochdb-plugin-logging ./sochdb-plugin-logging
 COPY proto ./proto
+COPY sochdb-fusion ./sochdb-fusion
 
-# Build release binary
-RUN cargo build --release --package sochdb-grpc --bin sochdb-grpc-server
+# Build release binary (limit jobs to avoid compiler SIGSEGV on memory-constrained hosts)
+RUN CARGO_BUILD_JOBS=4 cargo build --release --package sochdb-grpc --bin sochdb-grpc-server
 
 # =============================================================================
 # Stage 2: Runtime
 # =============================================================================
 FROM debian:bookworm-slim AS runtime
 
+# Bootstrap: copy CA certificates from builder stage so HTTPS apt works.
+# Needed on servers that block outbound port 80 (bookworm-slim ships without CA certs).
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+# Use HTTPS sources (some servers block outbound port 80)
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
+    sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null; true
+
+COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 \
+    /ko-app/grpc-health-probe /bin/grpc_health_probe
 # Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \

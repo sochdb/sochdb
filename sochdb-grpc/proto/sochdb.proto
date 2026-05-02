@@ -1388,3 +1388,123 @@ message KvBatchPutResponse {
   uint32 success_count = 1;
   string error = 2;
 }
+
+// =============================================================================
+// Subscription Service (Task 2 — Delta-evaluation subscription engine)
+// =============================================================================
+
+service SubscriptionService {
+  // Subscribe to CDC events with optional filters.
+  // Returns a server-side stream of change events.
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeEvent);
+
+  // Watch a specific key for changes.
+  rpc WatchKey(WatchKeyRequest) returns (stream WatchKeyEvent);
+
+  // List active subscriptions.
+  rpc ListSubscriptions(ListSubscriptionsRequest) returns (ListSubscriptionsResponse);
+
+  // Cancel an active subscription (client can also just drop the stream).
+  rpc CancelSubscription(CancelSubscriptionRequest) returns (CancelSubscriptionResponse);
+}
+
+// Subscription request — specifies what to subscribe to.
+message SubscribeRequest {
+  // Namespace for multi-tenant isolation
+  string namespace = 1;
+
+  // Optional: filter to specific tables
+  repeated string tables = 2;
+
+  // Optional: filter to specific operation types
+  repeated OperationType operations = 3;
+
+  // Starting sequence number (0 = from latest, >0 = resume from position)
+  uint64 start_sequence = 4;
+
+  // Optional: SQL WHERE predicate for row-level filtering (delta evaluation)
+  string where_predicate = 5;
+
+  // Maximum batch size per message (0 = unbounded)
+  uint32 batch_size = 6;
+}
+
+// Operation type filter for subscriptions
+enum OperationType {
+  OPERATION_UNSPECIFIED = 0;
+  OPERATION_INSERT = 1;
+  OPERATION_UPDATE = 2;
+  OPERATION_DELETE = 3;
+  OPERATION_SCHEMA_CHANGE = 4;
+}
+
+// A change event delivered to subscribers.
+message SubscribeEvent {
+  // Monotonically increasing sequence number
+  uint64 sequence = 1;
+
+  // Microseconds since epoch
+  uint64 timestamp_us = 2;
+
+  // Transaction that produced this event
+  uint64 txn_id = 3;
+
+  // Affected table name
+  string table = 4;
+
+  // Primary key (raw bytes)
+  bytes key = 5;
+
+  // Operation type
+  OperationType operation = 6;
+
+  // After-image (serialized row value)
+  bytes after_value = 7;
+
+  // Before-image (may be empty if not available)
+  bytes before_value = 8;
+
+  // DDL statement for schema changes
+  string ddl = 9;
+}
+
+// Watch a single key for changes
+message WatchKeyRequest {
+  string namespace = 1;
+  string table = 2;
+  bytes key = 3;
+}
+
+message WatchKeyEvent {
+  uint64 sequence = 1;
+  uint64 timestamp_us = 2;
+  OperationType operation = 3;
+  bytes after_value = 4;
+  bytes before_value = 5;
+}
+
+message ListSubscriptionsRequest {
+  string namespace = 1;
+}
+
+message ListSubscriptionsResponse {
+  repeated SubscriptionInfo subscriptions = 1;
+}
+
+message SubscriptionInfo {
+  string subscription_id = 1;
+  string namespace = 2;
+  repeated string tables = 3;
+  uint64 start_sequence = 4;
+  uint64 current_sequence = 5;
+  uint64 created_at_us = 6;
+}
+
+message CancelSubscriptionRequest {
+  string subscription_id = 1;
+}
+
+message CancelSubscriptionResponse {
+  bool success = 1;
+  string error = 2;
+}

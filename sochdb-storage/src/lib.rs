@@ -76,12 +76,14 @@
 pub mod actor; // Actor-based connection manager (mm.md Task 7.2)
 pub mod admission_control; // Admission control with cost model + tenant fairness (Task 6)
 pub mod aries_recovery; // ARIES-style crash recovery (Task 1)
+pub mod cdc; // WAL-derived Change Data Capture (T1)
 pub mod checkpoint; // ARIES-style checkpointing with WAL truncation (mm.md Task 1.4)
 pub mod columnar_compression;
 pub mod correctness_testing; // Property-based correctness testing (Task 13)
 pub mod database; // Database Kernel (shared by embedded + server)
 pub mod durable_storage; // Fully wired durable storage with MVCC
 pub mod durability_contract; // Durability contract hardening (Task 4)
+pub mod encryption; // Data-at-rest encryption (AES-256-GCM-SIV, Enterprise Security)
 pub mod ffi;
 pub mod group_commit; // Event-driven Group Commit (Task 4)
 pub mod hlc; // Hybrid Logical Clock for commit timestamps (mm.md Task 1.3)
@@ -261,7 +263,7 @@ pub use two_level_index::{
 pub use validation::{SSTableValidator, validate_sstable_file};
 
 // Re-exports for durable storage
-pub use durable_storage::{ArenaMvccMemTable, DurableStorage, MvccMemTable, TransactionMode};
+pub use durable_storage::{ArenaMvccMemTable, DurableStorage, EphemeralHandle, MvccMemTable, TransactionMode};
 
 // Re-exports for concurrent MVCC (Task: Concurrent Embedded)
 pub use mvcc_concurrent::{
@@ -345,6 +347,9 @@ pub use index_policy::{
 pub use queue_index::{
     CompositeQueueKey, QueueIndex, QueueIndexConfig, QueueIndexStats, QueueTableRegistry,
 };
+
+// Re-exports for CDC engine
+pub use cdc::{CdcConfig, CdcEmitter, CdcError, CdcEvent, CdcLog, CdcOperation, CdcSubscriber};
 
 // Re-exports for database kernel
 pub use database::{

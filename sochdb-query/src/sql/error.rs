@@ -55,6 +55,9 @@ pub enum SqlError {
 
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
 }
 
 impl SqlError {

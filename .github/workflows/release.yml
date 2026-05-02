@@ -96,6 +96,12 @@ jobs:
             target: aarch64-apple-darwin
             binary_ext: ""
             lib_ext: ".dylib"
+
+          # macOS x86_64 (Intel) — cross-compiled on Apple Silicon
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_ext: ""
+            lib_ext: ".dylib"
             
           # Windows x64
           - os: windows-latest
@@ -238,7 +244,18 @@ jobs:
             if [ "$DRY_RUN" = "true" ]; then
               cargo publish --dry-run --allow-dirty
             else
-              cargo publish --allow-dirty || echo "⚠️ $pkg_name may already be published"
+              # Attempt publish; tolerate "already uploaded" (exit 0) but fail on real errors
+              OUTPUT=$(cargo publish --allow-dirty 2>&1) && RC=0 || RC=$?
+              if [ $RC -ne 0 ]; then
+                if echo "$OUTPUT" | grep -q "already uploaded"; then
+                  echo "⚠️ $pkg_name is already published, skipping"
+                else
+                  echo "❌ Failed to publish $pkg_name (exit code $RC):"
+                  echo "$OUTPUT"
+                  cd ..
+                  return $RC
+                fi
+              fi
               # Wait for crates.io to index — dependents need this available
               echo "⏳ Waiting for $pkg_name to be indexed on crates.io..."
               sleep 45
@@ -301,7 +318,7 @@ jobs:
         run: |
           mkdir -p release-assets
           
-          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
             if [ -d "release-binaries/$target" ]; then
               cd release-binaries
               if [ "$target" = "x86_64-pc-windows-msvc" ]; then
@@ -356,7 +373,8 @@ jobs:
             This release includes pre-built binaries for:
             - Linux x86_64
             - Linux aarch64 (ARM64) — AWS Graviton, Ampere Altra
-            - macOS ARM64 (Apple Silicon) - Intel Macs use Rosetta 2
+            - macOS ARM64 (Apple Silicon)
+            - macOS x86_64 (Intel)
             - Windows x64
             
             See [CHANGELOG.md](https://github.com/sochdb/sochdb/blob/main/CHANGELOG.md) for details.
@@ -401,4 +419,5 @@ jobs:
           echo "- ✅ Linux x86_64" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Linux aarch64 (ARM64)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ macOS ARM64 (Apple Silicon)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ macOS x86_64 (Intel)" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Windows x64" >> $GITHUB_STEP_SUMMARY

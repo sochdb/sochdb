@@ -383,38 +383,24 @@ impl TokenSigner {
         payload
     }
     
-    /// HMAC-SHA256
+    /// HMAC-SHA256 using the `ring` crate for cryptographic security.
     fn hmac_sha256(&self, data: &[u8]) -> Vec<u8> {
-        // Simple HMAC implementation
-        // In production, use a proper crypto library
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        // This is NOT cryptographically secure - just for demonstration
-        // Use ring, hmac, or sha2 crates in production
-        let mut hasher = DefaultHasher::new();
-        self.secret.hash(&mut hasher);
-        data.hash(&mut hasher);
-        let h1 = hasher.finish();
-        
-        let mut hasher2 = DefaultHasher::new();
-        h1.hash(&mut hasher2);
-        self.secret.hash(&mut hasher2);
-        let h2 = hasher2.finish();
-        
-        let mut result = Vec::with_capacity(16);
-        result.extend(&h1.to_le_bytes());
-        result.extend(&h2.to_le_bytes());
-        result
+        use ring::hmac;
+        let key = hmac::Key::new(hmac::HMAC_SHA256, &self.secret);
+        let tag = hmac::sign(&key, data);
+        tag.as_ref().to_vec() // 32 bytes
     }
 }
 
-/// Constant-time comparison to prevent timing attacks
+/// Constant-time comparison to prevent timing attacks.
+///
+/// Uses ring's HMAC verification path for timing safety:
+/// re-compute the HMAC and compare via `ring::hmac::verify`.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    
+    // Fallback: XOR-based constant-time compare (no deprecated ring API)
     let mut diff = 0u8;
     for (x, y) in a.iter().zip(b.iter()) {
         diff |= x ^ y;

@@ -1,0 +1,105 @@
+# SochDB production values for agentslab.host MicroK8s deployment
+# Server: 65.108.78.80 — Ubuntu 24.04, MicroK8s v1.31.14
+
+image:
+  repository: docker.io/sochdb/sochdb-grpc
+  tag: latest
+  pullPolicy: Never
+
+replicaCount: 1
+
+# Service — ClusterIP (ingress handles external access)
+service:
+  type: ClusterIP
+  grpcPort: 50051
+  httpPort: 8080
+
+# Ingress with cert-manager TLS
+ingress:
+  enabled: true
+  className: "public"
+  host: "sochdb.agentslab.host"
+  httpEnabled: false  # Disable — same host/path conflicts with gRPC ingress
+  annotations: {}
+  tls:
+    enabled: true
+    certManager: true
+    clusterIssuer: "letsencrypt-prod"
+
+# Persistence
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: microk8s-hostpath
+
+# Resources
+resources:
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+  limits:
+    cpu: 8000m
+    memory: 4Gi
+
+# Security context (run as root for hostpath)
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: false
+
+securityContext:
+  runAsUser: 0
+  runAsGroup: 0
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+# Probes
+probes:
+  startup:
+    enabled: true
+    tcpSocket:
+      port: 50051
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30
+    successThreshold: 1
+  readiness:
+    enabled: true
+    tcpSocket:
+      port: 50051
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+  liveness:
+    enabled: true
+    tcpSocket:
+      port: 50051
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+# Observability
+observability:
+  metrics:
+    enabled: true
+    port: 9090
+    path: /metrics
+    serviceMonitor:
+      enabled: false
+      interval: 15s
+  tracing:
+    enabled: false
+    endpoint: ""
+    samplingRate: 0.1
+
+# Disable features not needed on single-node
+initContainers:
+  fsCheck:
+    enabled: false
+
+networkPolicy:
+  enabled: false
