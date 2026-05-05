@@ -13,6 +13,7 @@ members = [
     "sochdb-wasm",
     "sochdb-vector",
     "sochdb-tools",
+    "examples/rust",
 ]
 # sochdb-python is excluded from workspace - it must be built with maturin
 # Use: cd sochdb-python && maturin develop --release

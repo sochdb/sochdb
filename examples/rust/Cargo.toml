@@ -1,0 +1,26 @@
+[package]
+name = "sochdb-examples"
+version = "0.5.0"
+edition = "2024"
+authors = ["SochDB Authors"]
+license = "AGPL-3.0-or-later"
+description = "SochDB Rust examples"
+
+[dependencies]
+sochdb = { path = "../../sochdb-client" }
+
+[[bin]]
+name = "01_basic_database"
+path = "01_basic_database.rs"
+
+[[bin]]
+name = "02_transactions"
+path = "02_transactions.rs"
+
+[[bin]]
+name = "03_vector_search"
+path = "03_vector_search.rs"
+
+[[bin]]
+name = "04_sql_queries"
+path = "04_sql_queries.rs"
