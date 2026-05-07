@@ -1,33 +1,28 @@
 //! Vector Search Example
-//! 
+//!
 //! This example demonstrates vector similarity search:
-//! - Creating a vector index with HNSW
+//! - Creating a vector collection
 //! - Bulk loading embeddings
 //! - Finding nearest neighbors
-//! - Distance metrics
 
-use sochdb::{VectorIndex, VectorIndexConfig, DistanceMetric};
-use anyhow::Result;
+use sochdb::vectors::VectorCollection;
+use sochdb::SochConnection;
+use std::error::Error;
+use std::sync::Arc;
 
-fn main() -> Result<()> {
-    // Configuration for the vector index
-    let config = VectorIndexConfig {
-        dimension: 128,                    // Embedding dimension
-        metric: DistanceMetric::Cosine,    // Cosine similarity
-        m: 16,                             // HNSW connections per node
-        ef_construction: 100,              // Construction quality factor
-        ef_search: 50,                     // Search quality factor
-    };
+fn main() -> Result<(), Box<dyn Error>> {
+    let conn = SochConnection::open("./vector_db")?;
+    let arc_conn = Arc::new(conn);
 
-    let index = VectorIndex::new("./vector_index", config)?;
-    println!("✓ Vector index created");
+    // Create a vector collection with 128 dimensions
+    let mut collection = VectorCollection::create(&arc_conn, "demo", 128)?;
+    println!("✓ Vector collection created");
 
     // Generate sample embeddings (in practice, use a real embedding model)
     let mut vectors: Vec<Vec<f32>> = Vec::new();
     let mut labels: Vec<String> = Vec::new();
-    
+
     for i in 0..100 {
-        // Create a simple pattern-based embedding for demo
         let mut vec = vec![0.0f32; 128];
         for j in 0..128 {
             vec[j] = ((i * j) % 256) as f32 / 255.0;
@@ -36,42 +31,29 @@ fn main() -> Result<()> {
         labels.push(format!("document_{}", i));
     }
 
-    // Bulk build the index
-    index.bulk_build(&vectors, Some(&labels))?;
+    // Bulk add vectors
+    let ids: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+    collection.add(&ids, &vectors)?;
     println!("✓ Indexed {} vectors", vectors.len());
 
-    // Create a query vector
+    // Create a query vector (similar to document_42)
     let mut query = vec![0.0f32; 128];
     for j in 0..128 {
-        query[j] = ((42 * j) % 256) as f32 / 255.0;  // Similar to document_42
+        query[j] = ((42 * j) % 256) as f32 / 255.0;
     }
 
     // Search for nearest neighbors
-    let results = index.query(&query, 5)?;  // k=5
+    let results = collection.search(&query, 5)?;
 
     println!("\n✓ Top 5 nearest neighbors:");
     for (i, result) in results.iter().enumerate() {
-        println!("  {}. {} (distance: {:.4})", 
+        println!(
+            "  {}. {} (distance: {:.4})",
             i + 1,
-            result.label.as_deref().unwrap_or("<no label>"),
-            result.distance);
+            result.id,
+            result.distance
+        );
     }
-
-    // Distance utility functions
-    let a = vec![1.0, 0.0, 0.0];
-    let b = vec![0.707, 0.707, 0.0];
-
-    let cosine_dist = sochdb::vector::cosine_distance(&a, &b);
-    let euclidean_dist = sochdb::vector::euclidean_distance(&a, &b);
-
-    println!("\n✓ Distance calculations:");
-    println!("  Cosine distance: {:.4}", cosine_dist);
-    println!("  Euclidean distance: {:.4}", euclidean_dist);
-
-    // Normalize a vector
-    let v = vec![3.0, 4.0];
-    let normalized = sochdb::vector::normalize(&v);
-    println!("  Normalized [3, 4]: {:?}", normalized);
 
     Ok(())
 }
