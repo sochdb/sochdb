@@ -108,7 +108,7 @@ impl<'a> RowBuilder<'a> {
                 // Value: bincode serialized row data
                 if let Ok(value) = bincode::serialize(row) {
                     let key = format!("{}:{}", self.table, id);
-                    let _ = self.conn.storage.put(key.as_bytes(), &value);
+                    let _ = self.conn.put(key.as_bytes().to_vec(), value);
                 }
             }
         }

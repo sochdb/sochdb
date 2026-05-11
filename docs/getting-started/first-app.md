@@ -31,7 +31,7 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Install dependencies
-pip install sochdb-client numpy
+pip install sochdb numpy
 ```
 
 ### Rust
@@ -502,7 +502,7 @@ Query: Summarize our conversation
 ### `ModuleNotFoundError: No module named 'sochdb'`
 
 ```bash
-pip install --upgrade sochdb-client
+pip install --upgrade sochdb
 ```
 
 ### `Permission denied` on database path

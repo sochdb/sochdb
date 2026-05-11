@@ -596,6 +596,19 @@ pub mod dynamic {
     //!
     //! Enabled with the `dynamic-plugins` feature.
     //! Allows loading plugins from shared libraries at runtime.
+    //!
+    //! # Security Warning
+    //!
+    //! Loading a native shared library (`dlopen`) executes arbitrary code
+    //! in the host process — including the library's `_init()` constructors
+    //! which run *before* any symbol lookup.  A malicious `.so/.dylib` can:
+    //!
+    //! - Exfiltrate data from the database process
+    //! - Spawn background threads or open network connections
+    //! - Corrupt kernel memory (no isolation boundary)
+    //!
+    //! **Only load libraries you have built from audited source code.**
+    //! For untrusted extensions, use the WASM plugin sandbox instead.
 
     use super::*;
     use libloading::{Library, Symbol};
@@ -615,18 +628,42 @@ pub mod dynamic {
             }
         }
 
-        /// Load an observability plugin from a shared library
+        /// Load an observability plugin from a shared library.
         ///
-        /// The library must export a function:
+        /// # Safety
+        ///
+        /// This function is `unsafe` because loading a native shared library
+        /// can execute arbitrary code.  The caller MUST ensure:
+        ///
+        /// 1. The library at `path` was built from audited, trusted source code.
+        /// 2. The path is an absolute, canonicalized path (no symlink races).
+        /// 3. The file permissions prevent modification by unprivileged users.
+        ///
+        /// The library must export:
         /// ```c
         /// extern "C" fn create_observability_plugin() -> *mut dyn ObservabilityExtension
         /// ```
-        pub fn load_observability(
+        pub unsafe fn load_observability(
             &mut self,
             path: &Path,
         ) -> KernelResult<Arc<dyn ObservabilityExtension>> {
+            // Validate the path is absolute to prevent relative-path hijacking
+            if !path.is_absolute() {
+                return Err(KernelError::Plugin {
+                    message: format!(
+                        "plugin path must be absolute to prevent path hijacking: {}",
+                        path.display()
+                    ),
+                });
+            }
+
+            // Canonicalize to resolve symlinks and detect TOCTOU races
+            let canonical = path.canonicalize().map_err(|e| KernelError::Plugin {
+                message: format!("failed to canonicalize plugin path: {}", e),
+            })?;
+
             unsafe {
-                let lib = Library::new(path).map_err(|e| KernelError::Plugin {
+                let lib = Library::new(&canonical).map_err(|e| KernelError::Plugin {
                     message: format!("failed to load library: {}", e),
                 })?;
 

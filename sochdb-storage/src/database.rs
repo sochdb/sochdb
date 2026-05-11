@@ -923,6 +923,8 @@ pub struct Database {
     shutdown: AtomicU64,
     /// Whether this database is in concurrent mode
     is_concurrent: bool,
+    /// CDC (Change Data Capture) log for streaming mutations
+    cdc_log: Option<Arc<crate::cdc::CdcLog>>,
 }
 
 /// Database statistics
@@ -1005,6 +1007,7 @@ impl Database {
             stats: DatabaseStats::new(),
             shutdown: AtomicU64::new(0),
             is_concurrent: false,
+            cdc_log: None,
         });
 
         db.recover()?;
@@ -1044,6 +1047,7 @@ impl Database {
             stats: DatabaseStats::new(),
             shutdown: AtomicU64::new(0),
             is_concurrent: false,
+            cdc_log: None,
         });
 
         // Perform crash recovery if needed
@@ -1126,7 +1130,7 @@ impl Database {
             stats: DatabaseStats::new(),
             shutdown: AtomicU64::new(0),
             is_concurrent: true,
-        });
+            cdc_log: None,        });
 
         // Perform crash recovery if needed
         db.recover()?;
@@ -1608,10 +1612,52 @@ impl Database {
         self.tables.get(name).map(|s| s.clone())
     }
 
+    /// Update the schema for an existing table (used by ALTER TABLE).
+    ///
+    /// Replaces the schema in both the `tables` DashMap and the packed schema
+    /// cache atomically (per-key). The caller is responsible for validating
+    /// the new schema.
+    pub fn update_table_schema(&self, old_name: &str, schema: TableSchema) -> Result<()> {
+        if !self.tables.contains_key(old_name) {
+            return Err(SochDBError::InvalidArgument(format!(
+                "Table '{}' not found",
+                old_name
+            )));
+        }
+        // Remove old entries
+        self.tables.remove(old_name);
+        self.packed_schemas.remove(old_name);
+        // Insert new
+        let packed = Self::to_packed_schema(&schema);
+        self.packed_schemas.insert(schema.name.clone(), packed);
+        self.tables.insert(schema.name.clone(), schema);
+        Ok(())
+    }
+
     /// List all tables
     pub fn list_tables(&self) -> Vec<String> {
         self.tables.iter().map(|e| e.key().clone()).collect()
     }
+
+    // =========================================================================
+    // CDC (Change Data Capture)
+    // =========================================================================
+
+    /// Enable CDC on this database, returning the CDC log handle.
+    ///
+    /// Subsequent mutations emitted via the SQL execution layer will be
+    /// recorded in the CDC log for subscriber consumption.
+    pub fn enable_cdc(&mut self, config: crate::cdc::CdcConfig) -> Arc<crate::cdc::CdcLog> {
+        let log = crate::cdc::CdcLog::new(config);
+        self.cdc_log = Some(log.clone());
+        log
+    }
+
+    /// Get the CDC log handle, if CDC is enabled.
+    pub fn cdc_log(&self) -> Option<&Arc<crate::cdc::CdcLog>> {
+        self.cdc_log.as_ref()
+    }
+
     /// Convert TableSchema to PackedTableSchema for efficient storage
     fn to_packed_schema(schema: &TableSchema) -> PackedTableSchema {
         let columns = schema

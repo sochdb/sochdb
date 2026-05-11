@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sochdb"
-version = "0.5.0"
+version = "2.0.0"
 description = "SochDB - AI-native database with zero-copy vector search via PyO3"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -75,8 +75,9 @@ features = ["abi3"]
 python-source = "python"
 module-name = "sochdb._native"
 
-# Strip binaries for smaller wheels
-strip = true
+# Keep local `maturin develop --release` working consistently across environments.
+# Wheel size optimization can still be handled in release packaging workflows.
+strip = false
 
 # Compatibility settings
 # ABI3 means one wheel works for Python 3.9+

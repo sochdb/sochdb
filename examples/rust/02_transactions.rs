@@ -1,53 +1,61 @@
 //! Transaction Example
-//! 
+//!
 //! This example demonstrates ACID transactions:
-//! - Using with_transaction for automatic commit/rollback
-//! - Manual transaction control
+//! - Manual transaction control with begin/commit/abort
 //! - Read operations within transactions
+//! - Rollback on error
 
-use sochdb::Database;
-use anyhow::Result;
+use sochdb::Connection;
+use std::error::Error;
 
-fn main() -> Result<()> {
-    let db = Database::open("./txn_example_db")?;
+fn main() -> Result<(), Box<dyn Error>> {
+    let conn = Connection::open("./txn_example_db")?;
     println!("✓ Database opened");
 
-    // Automatic transaction with closure (recommended)
-    db.with_transaction(|txn| {
-        txn.put(b"accounts/alice/balance", b"1000")?;
-        txn.put(b"accounts/bob/balance", b"500")?;
-        println!("✓ Transaction: wrote initial balances");
-        Ok(())
-    })?;
-    println!("✓ Transaction committed automatically");
+    // Transaction 1: Write initial balances
+    conn.begin_txn()?;
+    conn.put(b"accounts/alice/balance", b"1000")?;
+    conn.put(b"accounts/bob/balance", b"500")?;
+    println!("✓ Transaction: wrote initial balances");
+    conn.commit_txn()?;
+    println!("✓ Transaction committed");
 
-    // Simulate a transfer
-    db.with_transaction(|txn| {
-        // Read current balances
-        let alice_balance: i64 = txn.get(b"accounts/alice/balance")?
-            .map(|v| String::from_utf8_lossy(&v).parse().unwrap_or(0))
-            .unwrap_or(0);
-        let bob_balance: i64 = txn.get(b"accounts/bob/balance")?
-            .map(|v| String::from_utf8_lossy(&v).parse().unwrap_or(0))
-            .unwrap_or(0);
+    // Transaction 2: Simulate a transfer
+    conn.begin_txn()?;
 
-        let transfer_amount = 250;
+    // Read current balances
+    let alice_bytes = conn.get(b"accounts/alice/balance")?.unwrap_or_default();
+    let alice_balance: i64 = String::from_utf8_lossy(&alice_bytes)
+        .parse()
+        .unwrap_or(0);
 
-        // Update balances
-        txn.put(b"accounts/alice/balance", 
-                (alice_balance - transfer_amount).to_string().as_bytes())?;
-        txn.put(b"accounts/bob/balance", 
-                (bob_balance + transfer_amount).to_string().as_bytes())?;
+    let bob_bytes = conn.get(b"accounts/bob/balance")?.unwrap_or_default();
+    let bob_balance: i64 = String::from_utf8_lossy(&bob_bytes)
+        .parse()
+        .unwrap_or(0);
 
-        println!("✓ Transfer: Alice -> Bob: ${}", transfer_amount);
-        Ok(())
-    })?;
+    let transfer_amount = 250;
+
+    // Update balances
+    conn.put(
+        b"accounts/alice/balance",
+        (alice_balance - transfer_amount).to_string().as_bytes(),
+    )?;
+    conn.put(
+        b"accounts/bob/balance",
+        (bob_balance + transfer_amount).to_string().as_bytes(),
+    )?;
+
+    println!("✓ Transfer: Alice -> Bob: ${}", transfer_amount);
+    conn.commit_txn()?;
 
     // Verify final balances
-    let alice = db.get(b"accounts/alice/balance")?
+    let alice = conn
+        .get(b"accounts/alice/balance")?
         .map(|v| String::from_utf8_lossy(&v).to_string())
         .unwrap_or_default();
-    let bob = db.get(b"accounts/bob/balance")?
+    let bob = conn
+        .get(b"accounts/bob/balance")?
         .map(|v| String::from_utf8_lossy(&v).to_string())
         .unwrap_or_default();
 
@@ -55,20 +63,15 @@ fn main() -> Result<()> {
     println!("  Alice: ${}", alice);
     println!("  Bob: ${}", bob);
 
-    // Transaction rollback on error
-    let result = db.with_transaction(|txn| {
-        txn.put(b"accounts/alice/balance", b"9999")?;
-        // Simulate an error
-        Err(anyhow::anyhow!("Simulated failure"))
-    });
-
-    match result {
-        Ok(_) => println!("Transaction committed"),
-        Err(e) => println!("✓ Transaction rolled back: {}", e),
-    }
+    // Transaction 3: Rollback on error
+    conn.begin_txn()?;
+    conn.put(b"accounts/alice/balance", b"9999")?;
+    println!("✓ Transaction rolled back");
+    conn.abort_txn()?;
 
     // Verify balance unchanged after rollback
-    let alice_after = db.get(b"accounts/alice/balance")?
+    let alice_after = conn
+        .get(b"accounts/alice/balance")?
         .map(|v| String::from_utf8_lossy(&v).to_string())
         .unwrap_or_default();
     println!("✓ Alice's balance after rollback: ${}", alice_after);

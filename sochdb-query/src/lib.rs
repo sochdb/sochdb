@@ -62,6 +62,7 @@ pub mod context_query;
 pub mod cost_optimizer; // Cost-based query optimizer (Task 6)
 pub mod embedding_provider; // Task 2: Automatic embedding generation
 pub mod exact_token_counter; // Task 6: BPE-accurate token counting
+pub mod executor; // v1.0: Unified Volcano query executor
 pub mod filter_ir; // Task 1: Canonical Filter IR (CNF/DNF)
 pub mod filtered_vector_search; // Task 5: Filter-aware vector search with selectivity fallback
 pub mod hybrid_retrieval; // Task 3: Vector + BM25 + RRF fusion
@@ -74,6 +75,7 @@ pub mod query_optimizer;
 pub mod semantic_triggers; // Task 7: Vector percolator triggers
 pub mod simd_filter; // SIMD vectorized query filters (mm.md Task 5.3)
 pub mod sql; // SQL-92 compatible query engine with SochDB extensions
+pub mod storage_bridge; // Phase 0: Wire SQL execution to real storage
 pub mod streaming_context; // Task 1: Streaming context generation
 pub mod temporal_decay; // Task 4: Recency-biased scoring
 pub mod token_budget;
@@ -121,6 +123,19 @@ pub use soch_ql::{
 pub use soch_ql_executor::{
     KeyRange, Predicate, PredicateCondition, QueryPlan, TokenReductionStats, SochQlExecutor,
     estimate_token_reduction, execute_sochql,
+};
+pub use storage_bridge::{
+    DatabaseStorageBackend, DatabaseSqlConnection,
+    convert_core_to_query, convert_query_to_core,
+};
+
+// v1.0: Unified Volcano query executor
+pub use executor::{
+    Row, Schema, ColumnMeta, PlanNode,
+    SeqScanNode, IndexSeekNode, FilterNode, ProjectNode, SortNode, LimitNode,
+    HashJoinNode, NestedLoopJoinNode, MergeJoinNode, HashAggregateNode,
+    ExplainNode, QueryPlanner,
+    execute_sql, execute_statement, ExecutorConfig,
 };
 
 // Streaming Top-K for ORDER BY + LIMIT (Task: Fix ORDER BY Semantics)

@@ -8,7 +8,7 @@ title: Introduction
 
 Welcome to the official SochDB documentation. SochDB is **The LLM-Native Database** — a high-performance embedded database designed specifically for AI applications.
 
-**Current Version:** v0.5.0 (Core) | Python SDK v0.5.3 | Node.js SDK v0.5.2 | Go SDK v0.4.4
+**Current Version:** v2.0.0 (Core) | Python SDK v2.0.0 | Node.js SDK v2.0.0 | Go SDK v2.0.0
 
 ---
 
@@ -151,6 +151,11 @@ Step-by-step guides to get you up and running quickly.
 
 - [Quick Start](/getting-started/quickstart) — 5-minute intro
 - [Installation](/getting-started/installation) — All platforms
+- [Python / ML / AI Start Here](/getting-started/python-ml-ai-start-here) — Best first path if you want `pip install` and a concrete workflow
+- [Local Retrieval Start Here](/getting-started/local-retrieval-start-here) — Best current evaluator path
+- [Use SochDB When](/getting-started/use-sochdb-when) — Decide if SochDB fits your workflow
+- [Local Retrieval Comparison](/getting-started/local-knowledge-retrieval-comparison) — Compare the first local evaluation path
+- [What Works Today](/getting-started/what-works-today) — Current product maturity map
 - [First App](/getting-started/first-app) — Build something real
 
 ### 📖 Guides
@@ -165,6 +170,7 @@ Task-oriented guides for specific use cases.
 **Features:**
 - [SQL Guide](/guides/sql-guide) — Working with SQL queries
 - [Vector Search](/guides/vector-search) — HNSW indexing
+- [Retrieval Evaluation](/guides/retrieval-evaluation) — Benchmark and comparison framework
 - [Bulk Operations](/guides/bulk-operations) — Batch processing
 - [Deployment](/guides/deployment) — Production setup
 
@@ -234,7 +240,7 @@ Recipes for common tasks.
 
 - [**sochdb.dev**](https://sochdb.dev) — Main website
 - [**GitHub**](https://github.com/sochdb/sochdb) — Source code
-- [**Python SDK**](https://github.com/sochdb/sochdb-python-sdk) — Python SDK repo
+- [**Python Source**](https://github.com/sochdb/sochdb/tree/main/sochdb-python) — Python package in the monorepo
 - [**Node.js SDK**](https://github.com/sochdb/sochdb-nodejs-sdk) — Node.js SDK repo
 - [**Go SDK**](https://github.com/sochdb/sochdb-go) — Go SDK repo
 - [**Discussions**](https://github.com/sochdb/sochdb/discussions) — Community Q&A

@@ -110,6 +110,7 @@ impl SochDbAdapter {
 
     /// Fast read-only transaction: no WAL record written, O(1) cleanup.
     #[inline]
+    #[allow(dead_code)]
     fn with_ro_fast<F, T>(&self, f: F) -> BenchResult<T>
     where
         F: FnOnce(TxnHandle) -> BenchResult<T>,
@@ -461,6 +462,7 @@ fn vector_to_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
+#[allow(dead_code)]
 fn bytes_to_vector(b: &[u8]) -> Vec<f32> {
     b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))

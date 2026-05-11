@@ -17,7 +17,9 @@
 
 //! gRPC Server implementation for Vector Index Service
 
+use crate::auth_interceptor::{extract_principal, require_capability, require_namespace_access};
 use crate::error::GrpcError;
+use crate::namespace_server::NamespaceServer;
 use crate::proto::{
     self,
     vector_index_service_server::{VectorIndexService, VectorIndexServiceServer},
@@ -28,6 +30,7 @@ use crate::proto::{
     SearchBatchRequest, SearchBatchResponse, SearchRequest, SearchResponse, SearchResult,
 };
 use dashmap::DashMap;
+use crate::security::Capability;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_stream::StreamExt;
@@ -50,8 +53,10 @@ struct IndexEntry {
 
 /// Vector Index gRPC Server
 pub struct VectorIndexServer {
-    /// Map of index name -> index entry
+    /// Map of index name -> index entry (keyed as "namespace:name")
     indexes: DashMap<String, IndexEntry>,
+    /// Shared namespace server for quota enforcement
+    ns_server: Option<NamespaceServer>,
 }
 
 impl VectorIndexServer {
@@ -59,6 +64,24 @@ impl VectorIndexServer {
     pub fn new() -> Self {
         Self {
             indexes: DashMap::new(),
+            ns_server: None,
+        }
+    }
+
+    /// Create with a shared NamespaceServer for quota enforcement.
+    pub fn with_namespace_server(ns: NamespaceServer) -> Self {
+        Self {
+            indexes: DashMap::new(),
+            ns_server: Some(ns),
+        }
+    }
+
+    /// Build a namespace-prefixed index key.
+    fn index_key(namespace: &str, name: &str) -> String {
+        if namespace.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}:{}", namespace, name)
         }
     }
     
@@ -99,14 +122,15 @@ impl Default for VectorIndexServer {
         Self::new()
     }
 }
-
 #[tonic::async_trait]
 impl VectorIndexService for VectorIndexServer {
     async fn create_index(
         &self,
         request: Request<CreateIndexRequest>,
     ) -> Result<Response<CreateIndexResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::ManageCollections)?;
         let name = req.name.clone();
         
         // Check if index already exists
@@ -139,7 +163,7 @@ impl VectorIndexService for VectorIndexServer {
             ef_search: if proto_config.ef_search > 0 {
                 proto_config.ef_search as usize
             } else {
-                50
+                300
             },
             metric: Self::convert_metric(req.metric()),
             ..Default::default()
@@ -182,6 +206,8 @@ impl VectorIndexService for VectorIndexServer {
         &self,
         request: Request<DropIndexRequest>,
     ) -> Result<Response<DropIndexResponse>, Status> {
+        let principal = extract_principal(&request);
+        require_capability(&principal, &Capability::ManageCollections)?;
         let name = request.into_inner().name;
         
         match self.indexes.remove(&name) {
@@ -204,7 +230,9 @@ impl VectorIndexService for VectorIndexServer {
         request: Request<InsertBatchRequest>,
     ) -> Result<Response<InsertBatchResponse>, Status> {
         let start = Instant::now();
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
         
         let (index, dimension) = self.get_index_with_dim(&req.index_name)?;
         
@@ -224,11 +252,12 @@ impl VectorIndexService for VectorIndexServer {
         match index.insert_batch_flat(&ids, &req.vectors, dimension) {
             Ok(count) => {
                 let duration_us = start.elapsed().as_micros() as u64;
-                tracing::debug!(
-                    "Inserted {} vectors into '{}' in {}µs",
+                tracing::info!(
+                    "Inserted {} vectors into '{}' in {}µs ({}ms)",
                     count,
                     req.index_name,
-                    duration_us
+                    duration_us,
+                    duration_us / 1000
                 );
                 Ok(Response::new(InsertBatchResponse {
                     inserted_count: count as u32,
@@ -249,6 +278,9 @@ impl VectorIndexService for VectorIndexServer {
         request: Request<Streaming<InsertStreamRequest>>,
     ) -> Result<Response<InsertStreamResponse>, Status> {
         let start = Instant::now();
+        // Auth check: extract principal from request metadata
+        let principal = extract_principal(&request);
+        require_capability(&principal, &Capability::Write)?;
         let mut stream = request.into_inner();
         
         let mut index_name: Option<String> = None;
@@ -314,7 +346,9 @@ impl VectorIndexService for VectorIndexServer {
         request: Request<SearchRequest>,
     ) -> Result<Response<SearchResponse>, Status> {
         let start = Instant::now();
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
         
         let (index, dimension) = self.get_index_with_dim(&req.index_name)?;
         
@@ -329,15 +363,31 @@ impl VectorIndexService for VectorIndexServer {
         
         let k = req.k.max(1) as usize;
         
+        // Honor per-query ef override for recall tuning; fall back to index default
+        let ef = if req.ef > 0 { req.ef as usize } else { 0 };
+        
         // Perform search
-        let results = match index.search(&req.query, k) {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(Response::new(SearchResponse {
-                    results: vec![],
-                    duration_us: start.elapsed().as_micros() as u64,
-                    error: e,
-                }));
+        let results = if ef > 0 {
+            match index.search_with_ef(&req.query, k, ef.max(k)) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Ok(Response::new(SearchResponse {
+                        results: vec![],
+                        duration_us: start.elapsed().as_micros() as u64,
+                        error: e,
+                    }));
+                }
+            }
+        } else {
+            match index.search(&req.query, k) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Ok(Response::new(SearchResponse {
+                        results: vec![],
+                        duration_us: start.elapsed().as_micros() as u64,
+                        error: e,
+                    }));
+                }
             }
         };
         
@@ -361,7 +411,9 @@ impl VectorIndexService for VectorIndexServer {
         request: Request<SearchBatchRequest>,
     ) -> Result<Response<SearchBatchResponse>, Status> {
         let start = Instant::now();
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
         
         let (index, dimension) = self.get_index_with_dim(&req.index_name)?;
         let num_queries = req.num_queries as usize;
@@ -409,6 +461,8 @@ impl VectorIndexService for VectorIndexServer {
         &self,
         request: Request<GetStatsRequest>,
     ) -> Result<Response<GetStatsResponse>, Status> {
+        let principal = extract_principal(&request);
+        require_capability(&principal, &Capability::Read)?;
         let name = request.into_inner().index_name;
         
         match self.indexes.get(&name) {

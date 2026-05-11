@@ -1,11 +1,11 @@
-# ToonDB Makefile
+# SochDB Makefile
 # One-command development setup and common tasks
 
 .PHONY: setup build test check clean docs bench help
 
 # Default target
 help:
-	@echo "ToonDB Development Commands"
+	@echo "SochDB Development Commands"
 	@echo "==========================="
 	@echo ""
 	@echo "  make setup    - One-command development environment setup"
@@ -17,12 +17,12 @@ help:
 	@echo "  make clean    - Clean build artifacts"
 	@echo ""
 	@echo "Quick Start:"
-	@echo "  git clone https://github.com/toondb/toondb && cd toondb && make setup"
+	@echo "  git clone https://github.com/sochdb/sochdb && cd sochdb && make setup"
 
 # One-command setup for new contributors
 setup: check-rust install-tools build test
 	@echo ""
-	@echo "✅ ToonDB development environment is ready!"
+	@echo "✅ SochDB development environment is ready!"
 	@echo ""
 	@echo "Next steps:"
 	@echo "  1. Read CONTRIBUTING.md"
@@ -93,13 +93,13 @@ lint:
 docs:
 	@echo "Building documentation..."
 	cargo doc --no-deps --all
-	@echo "Documentation available at: target/doc/toondb/index.html"
+	@echo "Documentation available at: target/doc/sochdb/index.html"
 
 # Open documentation in browser
 docs-open: docs
-	@open target/doc/toondb/index.html 2>/dev/null || \
-	 xdg-open target/doc/toondb/index.html 2>/dev/null || \
-	 echo "Open target/doc/toondb/index.html in your browser"
+	@open target/doc/sochdb/index.html 2>/dev/null || \
+	 xdg-open target/doc/sochdb/index.html 2>/dev/null || \
+	 echo "Open target/doc/sochdb/index.html in your browser"
 
 # Run benchmarks
 bench:
@@ -108,7 +108,7 @@ bench:
 
 # Run specific benchmark
 bench-%:
-	cargo bench -p toondb-$*
+	cargo bench -p sochdb-$*
 
 # Clean build artifacts
 clean:
@@ -131,21 +131,21 @@ watch-build:
 
 # Python SDK
 python-build:
-	cd toondb-python && maturin build --release
+	cd sochdb-python && maturin build --release
 
 python-develop:
-	cd toondb-python && maturin develop
+	cd sochdb-python && maturin develop
 
 # MCP server
 mcp-build:
-	cargo build --release -p toondb-mcp
+	cargo build --release -p sochdb-mcp
 
 mcp-run:
-	cargo run --release -p toondb-mcp -- --db ./test_mcp_db
+	cargo run --release -p sochdb-mcp -- --db ./test_mcp_db
 
 # Server
 server-run:
-	cargo run --release -p toondb-grpc -- --config toondb-server-config.toml
+	cargo run --release -p sochdb-grpc -- --config sochdb-server-config.toml
 
 # Security audit
 audit:

@@ -1,9 +1,9 @@
 [package]
 name = "sochdb-python"
-version = "0.5.0"
+version = "2.0.2"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
-license.workspace = true
+license = "Apache-2.0"
 description = "SochDB Python native extension with PyO3 - zero-copy vector operations"
 
 [lib]
@@ -34,6 +34,9 @@ tracing = "0.1"
 
 # Error handling
 thiserror = "1.0"
+
+# CSV parsing (for load_csv)
+csv = "1"
 
 [dev-dependencies]
 tempfile = "3.15"

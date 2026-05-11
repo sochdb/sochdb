@@ -93,8 +93,10 @@ pub struct ClientTransaction<'a> {
 impl<'a> ClientTransaction<'a> {
     /// Begin new transaction with isolation level
     pub fn begin(conn: &'a SochConnection, isolation: IsolationLevel) -> Result<Self> {
-        let txn_id = conn.wal_manager.begin_txn()?;
-        let start_ts = conn.txn_manager.current_timestamp();
+        let txn_id = conn.storage
+            .begin_transaction()
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        let start_ts = txn_id; // DurableStorage txn_id serves as logical timestamp
 
         Ok(Self {
             conn,
@@ -150,13 +152,11 @@ impl<'a> ClientTransaction<'a> {
             });
         }
 
-        // Read from storage with MVCC visibility
-        // Placeholder - real impl would check version visibility
+        // Read from storage with MVCC visibility via DurableStorage
         self.conn
             .storage
-            .get(table, key)
-            .map_err(|_| ClientError::Storage("Read failed".into()))
-            .map(|_| None)
+            .read(self.txn_id, key)
+            .map_err(|e| ClientError::Storage(format!("Read failed: {}", e)))
     }
 
     /// Write (buffered until commit)
@@ -198,8 +198,10 @@ impl<'a> ClientTransaction<'a> {
             self.check_conflicts()?;
         }
 
-        // Commit via WAL manager
-        let commit_ts = self.conn.wal_manager.commit(self.txn_id)?;
+        // Commit via DurableStorage (WAL + MVCC)
+        let commit_ts = self.conn.storage
+            .commit(self.txn_id)
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
 
         self.committed = true;
         self.state = TxnState::Committed;
@@ -217,7 +219,9 @@ impl<'a> ClientTransaction<'a> {
             return Err(ClientError::Transaction("Transaction not active".into()));
         }
 
-        self.conn.wal_manager.abort(self.txn_id)?;
+        self.conn.storage
+            .abort(self.txn_id)
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
         self.committed = true; // Prevent double-rollback in Drop
         self.state = TxnState::Aborted;
 
@@ -237,8 +241,8 @@ impl<'a> ClientTransaction<'a> {
 impl<'a> Drop for ClientTransaction<'a> {
     fn drop(&mut self) {
         if !self.committed && self.state == TxnState::Active {
-            // Best-effort rollback
-            let _ = self.conn.wal_manager.abort(self.txn_id);
+            // Best-effort rollback via DurableStorage
+            let _ = self.conn.storage.abort(self.txn_id);
         }
     }
 }
@@ -288,7 +292,10 @@ pub enum VisibilityReason {
 impl<'a> SnapshotReader<'a> {
     /// Create snapshot at current timestamp
     pub fn now(conn: &'a SochConnection) -> Result<Self> {
-        let snapshot_ts = conn.txn_manager.current_timestamp();
+        // Use DurableStorage begin_transaction to get a consistent snapshot point
+        let snapshot_ts = conn.storage
+            .begin_transaction()
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
         Ok(Self {
             conn,
             snapshot_ts,
@@ -320,12 +327,11 @@ impl<'a> SnapshotReader<'a> {
 
     /// Read a key with MVCC visibility
     pub fn get(&mut self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        // Placeholder - real impl would check version visibility
+        // Use the snapshot txn_id for MVCC-consistent reads
         self.conn
             .storage
-            .get(table, key)
-            .map_err(|_| ClientError::Storage("Read failed".into()))
-            .map(|_| None)
+            .read(self.snapshot_ts, key)
+            .map_err(|e| ClientError::Storage(format!("Read failed: {}", e)))
     }
 
     /// Get visibility diagnostics
@@ -379,8 +385,29 @@ impl<'a> BatchWriter<'a> {
         }
 
         let start = std::time::Instant::now();
-        let txn_id = self.conn.wal_manager.begin_txn()?;
-        let _commit_ts = self.conn.wal_manager.commit(txn_id)?;
+        let txn_id = self.conn.storage
+            .begin_transaction()
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
+
+        // Apply all pending writes within the transaction
+        for write in &self.pending_writes {
+            match &write.value {
+                Some(value) => {
+                    self.conn.storage
+                        .write(txn_id, write.key.clone(), value.clone())
+                        .map_err(|e| ClientError::Storage(e.to_string()))?;
+                }
+                None => {
+                    self.conn.storage
+                        .delete(txn_id, write.key.clone())
+                        .map_err(|e| ClientError::Storage(e.to_string()))?;
+                }
+            }
+        }
+
+        let _commit_ts = self.conn.storage
+            .commit(txn_id)
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
         let duration = start.elapsed();
 
         let count = self.pending_writes.len();

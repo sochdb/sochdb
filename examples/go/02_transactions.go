@@ -12,11 +12,11 @@ import (
 	"log"
 	"strconv"
 
-	toondb "github.com/toondb/toondb-go"
+	sochdb "github.com/sochdb/sochdb-go"
 )
 
 func main() {
-	db, err := toondb.Open("./txn_example_db")
+	db, err := sochdb.Open("./txn_example_db")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func main() {
 	fmt.Println("✓ Database opened")
 
 	// Automatic transaction with callback (recommended)
-	err = db.WithTransaction(func(txn *toondb.Transaction) error {
+	err = db.WithTransaction(func(txn *sochdb.Transaction) error {
 		if err := txn.Put("accounts/alice/balance", []byte("1000")); err != nil {
 			return err
 		}
@@ -40,7 +40,7 @@ func main() {
 	fmt.Println("✓ Transaction committed automatically")
 
 	// Simulate a transfer
-	err = db.WithTransaction(func(txn *toondb.Transaction) error {
+	err = db.WithTransaction(func(txn *sochdb.Transaction) error {
 		// Read current balances
 		aliceData, _ := txn.Get("accounts/alice/balance")
 		bobData, _ := txn.Get("accounts/bob/balance")
@@ -76,7 +76,7 @@ func main() {
 	fmt.Printf("  Bob: $%s\n", string(bob))
 
 	// Transaction rollback on error
-	err = db.WithTransaction(func(txn *toondb.Transaction) error {
+	err = db.WithTransaction(func(txn *sochdb.Transaction) error {
 		txn.Put("accounts/alice/balance", []byte("9999"))
 		return fmt.Errorf("simulated failure")
 	})

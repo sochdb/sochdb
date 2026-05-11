@@ -1,0 +1,722 @@
+[
+  {
+    "question": "sum v1 by id1",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.0183,
+    "out_rows": 100,
+    "out_cols": 2
+  },
+  {
+    "question": "sum v1 by id1",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.0143,
+    "out_rows": 100,
+    "out_cols": 2
+  },
+  {
+    "question": "sum v1 by id1:id2",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.0455,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 by id1:id2",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.0442,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 mean v3 by id3",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.186,
+    "out_rows": 100000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 mean v3 by id3",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.2075,
+    "out_rows": 100000,
+    "out_cols": 3
+  },
+  {
+    "question": "mean v1:v3 by id4",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.0158,
+    "out_rows": 100,
+    "out_cols": 4
+  },
+  {
+    "question": "mean v1:v3 by id4",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.0115,
+    "out_rows": 100,
+    "out_cols": 4
+  },
+  {
+    "question": "sum v1:v3 by id6",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.2069,
+    "out_rows": 100000,
+    "out_cols": 4
+  },
+  {
+    "question": "sum v1:v3 by id6",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.2194,
+    "out_rows": 100000,
+    "out_cols": 4
+  },
+  {
+    "question": "median v3 sd v3 by id4 id5",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.1696,
+    "out_rows": 10000,
+    "out_cols": 4
+  },
+  {
+    "question": "median v3 sd v3 by id4 id5",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.1048,
+    "out_rows": 10000,
+    "out_cols": 4
+  },
+  {
+    "question": "max v1 - min v2 by id3",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.1462,
+    "out_rows": 100000,
+    "out_cols": 2
+  },
+  {
+    "question": "max v1 - min v2 by id3",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.1527,
+    "out_rows": 100000,
+    "out_cols": 2
+  },
+  {
+    "question": "largest two v3 by id6",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.2851,
+    "out_rows": 200000,
+    "out_cols": 2
+  },
+  {
+    "question": "largest two v3 by id6",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.2187,
+    "out_rows": 200000,
+    "out_cols": 2
+  },
+  {
+    "question": "regression v1 v2 by id2 id4",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 0.0491,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "regression v1 v2 by id2 id4",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 0.0451,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v3 count by id1:id6",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 6.4675,
+    "out_rows": 10000000,
+    "out_cols": 8
+  },
+  {
+    "question": "sum v3 count by id1:id6",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 8.2763,
+    "out_rows": 10000000,
+    "out_cols": 8
+  },
+  {
+    "question": "sum v1 by id1",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.0426,
+    "out_rows": 100,
+    "out_cols": 2
+  },
+  {
+    "question": "sum v1 by id1",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.0143,
+    "out_rows": 100,
+    "out_cols": 2
+  },
+  {
+    "question": "sum v1 by id1:id2",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.1759,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 by id1:id2",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.1652,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 mean v3 by id3",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.1733,
+    "out_rows": 100000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 mean v3 by id3",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.1738,
+    "out_rows": 100000,
+    "out_cols": 3
+  },
+  {
+    "question": "mean v1:v3 by id4",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.0161,
+    "out_rows": 100,
+    "out_cols": 4
+  },
+  {
+    "question": "mean v1:v3 by id4",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.0123,
+    "out_rows": 100,
+    "out_cols": 4
+  },
+  {
+    "question": "sum v1:v3 by id6",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.1235,
+    "out_rows": 100000,
+    "out_cols": 4
+  },
+  {
+    "question": "sum v1:v3 by id6",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.1229,
+    "out_rows": 100000,
+    "out_cols": 4
+  },
+  {
+    "question": "median v3 sd v3 by id4 id5",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.1644,
+    "out_rows": 10000,
+    "out_cols": 4
+  },
+  {
+    "question": "median v3 sd v3 by id4 id5",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.1573,
+    "out_rows": 10000,
+    "out_cols": 4
+  },
+  {
+    "question": "max v1 - min v2 by id3",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.1734,
+    "out_rows": 100000,
+    "out_cols": 2
+  },
+  {
+    "question": "max v1 - min v2 by id3",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.1742,
+    "out_rows": 100000,
+    "out_cols": 2
+  },
+  {
+    "question": "largest two v3 by id6",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.1289,
+    "out_rows": 200000,
+    "out_cols": 2
+  },
+  {
+    "question": "largest two v3 by id6",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.1274,
+    "out_rows": 200000,
+    "out_cols": 2
+  },
+  {
+    "question": "regression v1 v2 by id2 id4",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.2687,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "regression v1 v2 by id2 id4",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.2555,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v3 count by id1:id6",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.9171,
+    "out_rows": 10000000,
+    "out_cols": 8
+  },
+  {
+    "question": "sum v3 count by id1:id6",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.9212,
+    "out_rows": 10000000,
+    "out_cols": 8
+  },
+  {
+    "question": "sum v1 by id1",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 0.9764,
+    "out_rows": 100,
+    "out_cols": 2
+  },
+  {
+    "question": "sum v1 by id1",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 0.8777,
+    "out_rows": 100,
+    "out_cols": 2
+  },
+  {
+    "question": "sum v1 by id1:id2",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 1.9874,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 by id1:id2",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 1.8941,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 mean v3 by id3",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 3.4916,
+    "out_rows": 100000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v1 mean v3 by id3",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 3.2902,
+    "out_rows": 100000,
+    "out_cols": 3
+  },
+  {
+    "question": "mean v1:v3 by id4",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 1.7157,
+    "out_rows": 100,
+    "out_cols": 4
+  },
+  {
+    "question": "mean v1:v3 by id4",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 1.7147,
+    "out_rows": 100,
+    "out_cols": 4
+  },
+  {
+    "question": "sum v1:v3 by id6",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 3.3838,
+    "out_rows": 100000,
+    "out_cols": 4
+  },
+  {
+    "question": "sum v1:v3 by id6",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 3.7714,
+    "out_rows": 100000,
+    "out_cols": 4
+  },
+  {
+    "question": "median v3 sd v3 by id4 id5",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 7.962,
+    "out_rows": 10000,
+    "out_cols": 4
+  },
+  {
+    "question": "median v3 sd v3 by id4 id5",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 7.8273,
+    "out_rows": 10000,
+    "out_cols": 4
+  },
+  {
+    "question": "max v1 - min v2 by id3",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 3.0403,
+    "out_rows": 100000,
+    "out_cols": 2
+  },
+  {
+    "question": "max v1 - min v2 by id3",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 3.0323,
+    "out_rows": 100000,
+    "out_cols": 2
+  },
+  {
+    "question": "largest two v3 by id6",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 4.0093,
+    "out_rows": 200000,
+    "out_cols": 2
+  },
+  {
+    "question": "largest two v3 by id6",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 3.9183,
+    "out_rows": 200000,
+    "out_cols": 2
+  },
+  {
+    "question": "regression v1 v2 by id2 id4",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 4.2453,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "regression v1 v2 by id2 id4",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 4.2213,
+    "out_rows": 10000,
+    "out_cols": 3
+  },
+  {
+    "question": "sum v3 count by id1:id6",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 4.0541,
+    "out_rows": 10000000,
+    "out_cols": 8
+  },
+  {
+    "question": "sum v3 count by id1:id6",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 3.6592,
+    "out_rows": 10000000,
+    "out_cols": 8
+  },
+  {
+    "question": "small inner on int",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 8.3138,
+    "out_rows": 10000000,
+    "out_cols": 9
+  },
+  {
+    "question": "small inner on int",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 11.2296,
+    "out_rows": 10000000,
+    "out_cols": 9
+  },
+  {
+    "question": "medium inner on int",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 12.1626,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on int",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 12.2895,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium outer on int",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 12.203,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium outer on int",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 12.6924,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on factor",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 12.7555,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on factor",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 12.1002,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "big inner on int",
+    "solution": "duckdb",
+    "run": 1,
+    "time_sec": 14.7439,
+    "out_rows": 10004480,
+    "out_cols": 11
+  },
+  {
+    "question": "big inner on int",
+    "solution": "duckdb",
+    "run": 2,
+    "time_sec": 14.2057,
+    "out_rows": 10004480,
+    "out_cols": 11
+  },
+  {
+    "question": "small inner on int",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.1844,
+    "out_rows": 10000000,
+    "out_cols": 9
+  },
+  {
+    "question": "small inner on int",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.1737,
+    "out_rows": 10000000,
+    "out_cols": 9
+  },
+  {
+    "question": "medium inner on int",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.283,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on int",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.3027,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium outer on int",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.1086,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium outer on int",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.0995,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on factor",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.2966,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on factor",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.2865,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "big inner on int",
+    "solution": "polars",
+    "run": 1,
+    "time_sec": 0.8206,
+    "out_rows": 10004480,
+    "out_cols": 13
+  },
+  {
+    "question": "big inner on int",
+    "solution": "polars",
+    "run": 2,
+    "time_sec": 0.7751,
+    "out_rows": 10004480,
+    "out_cols": 13
+  },
+  {
+    "question": "small inner on int",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 0.9274,
+    "out_rows": 10000000,
+    "out_cols": 9
+  },
+  {
+    "question": "small inner on int",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 0.8914,
+    "out_rows": 10000000,
+    "out_cols": 9
+  },
+  {
+    "question": "medium inner on int",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 1.1152,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on int",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 1.0578,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium outer on int",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 1.0946,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium outer on int",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 1.1263,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on factor",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 1.5709,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "medium inner on factor",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 1.3229,
+    "out_rows": 10000000,
+    "out_cols": 11
+  },
+  {
+    "question": "big inner on int",
+    "solution": "sochdb",
+    "run": 1,
+    "time_sec": 3.894,
+    "out_rows": 10004480,
+    "out_cols": 11
+  },
+  {
+    "question": "big inner on int",
+    "solution": "sochdb",
+    "run": 2,
+    "time_sec": 4.0232,
+    "out_rows": 10004480,
+    "out_cols": 11
+  }
+]

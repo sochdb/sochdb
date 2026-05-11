@@ -43,6 +43,36 @@ Complete guide to SochDB's Python SDK covering dual-mode architecture (embedded 
 pip install sochdb
 ```
 
+### Local Development From Source
+
+If you're working from this monorepo rather than consuming the published PyPI package,
+build the editable package from `sochdb-python/`:
+
+```bash
+cd sochdb-python
+pip install maturin
+maturin develop --release
+```
+
+Then use the package from that same Python environment:
+
+```python
+from sochdb import Database
+```
+
+For a concise environment matrix and architecture troubleshooting guide, see
+[Python Install Matrix](/getting-started/python-install-matrix).
+
+### macOS Architecture Note
+
+SochDB's Python package uses native Rust extensions. On macOS, your Python runtime
+architecture must match the native library architecture:
+
+- Apple Silicon Python should use `arm64` builds
+- Intel / Rosetta Python should use `x86_64` builds
+
+Mixed environments can fail at import/load time with native library errors.
+
 **What's New in 0.4.7:**
 - ✅ Improved FFI stability and error messages
 - ✅ Better platform detection for native libraries
@@ -84,12 +114,15 @@ pip install sochdb
 from sochdb import Database
 
 # Open database
-with Database.open("./my_database") as db:
-    # Put and Get
-    db.put(b"user:123", b'{"name":"Alice","age":30}')
-    value = db.get(b"user:123")
-    print(value.decode())
-    # Output: {"name":"Alice","age":30}
+db = Database.open("./my_database")
+
+# Put and Get
+db.put(b"user:123", b'{"name":"Alice","age":30}')
+value = db.get(b"user:123")
+print(value.decode())
+
+db.close()
+# Output: {"name":"Alice","age":30}
 ```
 
 **Output:**
@@ -111,9 +144,10 @@ Direct FFI bindings to Rust libraries. No server required.
 from sochdb import Database
 
 # Direct FFI - no server needed
-with Database.open("./mydb") as db:
-    db.put(b"key", b"value")
-    value = db.get(b"key")
+db = Database.open("./mydb")
+db.put(b"key", b"value")
+value = db.get(b"key")
+db.close()
 ```
 
 **Best for:** Local development, notebooks, simple apps, edge deployments.
@@ -1039,7 +1073,7 @@ print(f"Active transactions: {stats['active_transactions']}")
 
 ## CLI Tools
 
-Three CLI tools are available globally after `pip install sochdb-client`:
+Three CLI tools are available globally after `pip install sochdb`:
 
 ### sochdb-bulk
 

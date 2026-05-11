@@ -7,12 +7,16 @@
 //!
 //! Provides basic key-value operations via gRPC.
 
+use crate::auth_interceptor::{extract_principal, require_capability, require_namespace_access};
+use crate::policy_server::PolicyServer;
 use crate::proto::{
     kv_service_server::{KvService, KvServiceServer},
-    KvBatchGetRequest, KvBatchGetResponse, KvBatchPutRequest, KvBatchPutResponse,
-    KvDeleteRequest, KvDeleteResponse, KvEntry, KvGetRequest, KvGetResponse, KvPutRequest,
-    KvPutResponse, KvScanRequest, KvScanResponse,
+    EvaluatePolicyRequest, KvBatchGetRequest, KvBatchGetResponse, KvBatchPutRequest,
+    KvBatchPutResponse, KvDeleteRequest, KvDeleteResponse, KvEntry, KvGetRequest, KvGetResponse,
+    KvPutRequest, KvPutResponse, KvScanRequest, KvScanResponse, PolicyActionType,
 };
+use crate::namespace_server::NamespaceServer;
+use crate::security::Capability;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,13 +46,34 @@ impl NamespaceKv {
 /// KV gRPC Server
 pub struct KvServer {
     namespaces: DashMap<String, Arc<NamespaceKv>>,
+    /// Shared namespace server for quota enforcement
+    ns_server: Option<NamespaceServer>,
+    /// Optional policy server for data-path enforcement
+    policy_server: Option<Arc<PolicyServer>>,
 }
 
 impl KvServer {
     pub fn new() -> Self {
         Self {
             namespaces: DashMap::new(),
+            ns_server: None,
+            policy_server: None,
         }
+    }
+
+    /// Create with a shared NamespaceServer for quota enforcement.
+    pub fn with_namespace_server(ns: NamespaceServer) -> Self {
+        Self {
+            namespaces: DashMap::new(),
+            ns_server: Some(ns),
+            policy_server: None,
+        }
+    }
+
+    /// Attach a policy server for data-path enforcement.
+    pub fn with_policy_server(mut self, policy: Arc<PolicyServer>) -> Self {
+        self.policy_server = Some(policy);
+        self
     }
 
     pub fn into_service(self) -> KvServiceServer<Self> {
@@ -60,6 +85,32 @@ impl KvServer {
             .entry(namespace.to_string())
             .or_insert_with(|| Arc::new(NamespaceKv::new()))
             .clone()
+    }
+
+    /// Evaluate policies for a KV operation. Returns `Ok(())` if allowed,
+    /// or `Err(Status::permission_denied)` if a DENY policy matches.
+    async fn evaluate_policy(
+        &self,
+        key: &[u8],
+        operation: &str,
+        value: &[u8],
+    ) -> Result<(), Status> {
+        let Some(ref policy) = self.policy_server else {
+            return Ok(()); // No policy server — allow by default
+        };
+
+        let response = policy
+            .evaluate_internal(key, operation, value)
+            .await;
+
+        if response.action == PolicyActionType::PolicyActionDeny as i32 {
+            return Err(Status::permission_denied(format!(
+                "Denied by policy: {}",
+                response.reason
+            )));
+        }
+
+        Ok(())
     }
 }
 
@@ -75,7 +126,14 @@ impl KvService for KvServer {
         &self,
         request: Request<KvGetRequest>,
     ) -> Result<Response<KvGetResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
+
+        // Policy enforcement: evaluate before read
+        self.evaluate_policy(&req.key, "read", &[]).await?;
+
         let ns = self.get_or_create_namespace(&req.namespace);
         let now = Instant::now();
 
@@ -111,7 +169,19 @@ impl KvService for KvServer {
         &self,
         request: Request<KvPutRequest>,
     ) -> Result<Response<KvPutResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
+
+        // Policy enforcement: evaluate before write
+        self.evaluate_policy(&req.key, "write", &req.value).await?;
+
+        // Enforce storage quota before writing
+        if let Some(ref ns_srv) = self.ns_server {
+            ns_srv.check_storage_quota(&req.namespace, req.value.len() as u64)?;
+        }
+
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let expires_at = if req.ttl_seconds > 0 {
@@ -120,6 +190,7 @@ impl KvService for KvServer {
             None
         };
 
+        let bytes_written = req.value.len() as u64;
         ns.entries.insert(
             req.key,
             KvEntryData {
@@ -127,6 +198,11 @@ impl KvService for KvServer {
                 expires_at,
             },
         );
+
+        // Track storage bytes
+        if let Some(ref ns_srv) = self.ns_server {
+            ns_srv.increment_storage_bytes(&req.namespace, bytes_written);
+        }
 
         Ok(Response::new(KvPutResponse {
             success: true,
@@ -138,7 +214,14 @@ impl KvService for KvServer {
         &self,
         request: Request<KvDeleteRequest>,
     ) -> Result<Response<KvDeleteResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
+
+        // Policy enforcement: evaluate before delete
+        self.evaluate_policy(&req.key, "delete", &[]).await?;
+
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let success = ns.entries.remove(&req.key).is_some();
@@ -155,7 +238,10 @@ impl KvService for KvServer {
         &self,
         request: Request<KvScanRequest>,
     ) -> Result<Response<Self::ScanStream>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
         let now = Instant::now();
 
@@ -204,7 +290,10 @@ impl KvService for KvServer {
         &self,
         request: Request<KvBatchGetRequest>,
     ) -> Result<Response<KvBatchGetResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Read)?;
+        require_namespace_access(&principal, &req.namespace)?;
         let ns = self.get_or_create_namespace(&req.namespace);
         let now = Instant::now();
 
@@ -246,7 +335,17 @@ impl KvService for KvServer {
         &self,
         request: Request<KvBatchPutRequest>,
     ) -> Result<Response<KvBatchPutResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_capability(&principal, &Capability::Write)?;
+        require_namespace_access(&principal, &req.namespace)?;
+
+        // Enforce storage quota before batch write
+        let total_bytes: u64 = req.entries.iter().map(|e| e.value.len() as u64).sum();
+        if let Some(ref ns_srv) = self.ns_server {
+            ns_srv.check_storage_quota(&req.namespace, total_bytes)?;
+        }
+
         let ns = self.get_or_create_namespace(&req.namespace);
 
         let mut success_count = 0u32;
@@ -266,6 +365,11 @@ impl KvService for KvServer {
                 },
             );
             success_count += 1;
+        }
+
+        // Track storage bytes
+        if let Some(ref ns_srv) = self.ns_server {
+            ns_srv.increment_storage_bytes(&req.namespace, total_bytes);
         }
 
         Ok(Response::new(KvBatchPutResponse {

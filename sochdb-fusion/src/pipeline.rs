@@ -280,12 +280,25 @@ impl FusionEngine {
         let start = Instant::now();
         let num_objects = self.objects.len();
 
-        let mut stage_times = Vec::new();
-        let mut candidate_counts = Vec::new();
+        // Pre-allocate metric buffers with known capacity to avoid
+        // per-stage heap allocations in the hot path.
+        let stage_count = query.stages.len();
+        let mut stage_times: Vec<(String, u64)> = if self.config.collect_metrics {
+            Vec::with_capacity(stage_count)
+        } else {
+            Vec::new()
+        };
+        let mut candidate_counts: Vec<(String, usize)> = if self.config.collect_metrics {
+            Vec::with_capacity(stage_count + 1)
+        } else {
+            Vec::new()
+        };
 
         // Start with the universe mask
         let mut mask = CandidateMask::all(num_objects);
-        candidate_counts.push(("initial".to_string(), mask.count()));
+        if self.config.collect_metrics {
+            candidate_counts.push(("initial".into(), mask.count()));
+        }
 
         // Execute each stage, narrowing the candidate set
         for (i, stage) in query.stages.iter().enumerate() {
@@ -294,10 +307,19 @@ impl FusionEngine {
             let stage_mask = self.execute_stage(stage, &mask);
             mask = mask.intersect(&stage_mask);
 
-            let stage_name = format!("stage_{}", i);
             if self.config.collect_metrics {
-                stage_times.push((stage_name.clone(), stage_start.elapsed().as_micros() as u64));
-                candidate_counts.push((stage_name, mask.count()));
+                // Use a small stack buffer to avoid format!() heap alloc
+                let mut name = String::with_capacity(8);
+                name.push_str("stage_");
+                // itoa-style: single digit fast path covers most cases
+                if i < 10 {
+                    name.push((b'0' + i as u8) as char);
+                } else {
+                    use std::fmt::Write;
+                    let _ = write!(name, "{}", i);
+                }
+                stage_times.push((name.clone(), stage_start.elapsed().as_micros() as u64));
+                candidate_counts.push((name, mask.count()));
             }
 
             // Early exit if no candidates remain

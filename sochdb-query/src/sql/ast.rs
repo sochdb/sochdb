@@ -40,6 +40,38 @@ pub enum Statement {
     Savepoint(String),
     Release(String),
     Explain(Box<Statement>),
+
+    // ====================================================================
+    // Security DDL (P2 — Scope-Based Auth)
+    // ====================================================================
+
+    /// DEFINE SCOPE <name> SESSION <duration>
+    ///   SIGNIN (<expr>)
+    ///   SIGNUP (<expr>)
+    DefineScope(DefineScopeStmt),
+
+    /// DEFINE TABLE <name> PERMISSIONS
+    ///   FOR select WHERE <expr>
+    ///   FOR create WHERE <expr>
+    ///   FOR update WHERE <expr>
+    ///   FOR delete WHERE <expr>
+    DefineTablePermissions(DefineTablePermissionsStmt),
+
+    /// REMOVE SCOPE <name>
+    RemoveScope(String),
+
+    // ====================================================================
+    // Graph & Real-Time (P1 — Multi-Model)
+    // ====================================================================
+
+    /// RELATE <from> -> <edge> -> <to> [SET ... | CONTENT ...]
+    Relate(RelateStmt),
+
+    /// LIVE SELECT [DIFF] <columns> FROM <table> [WHERE ...]
+    LiveSelect(LiveSelectStmt),
+
+    /// DEFINE EVENT <name> ON TABLE <table> WHEN <condition> THEN <action>
+    DefineEvent(DefineEventStmt),
 }
 
 /// SELECT statement
@@ -610,6 +642,12 @@ pub enum Expr {
         max_tokens: u32,
         priority: Option<Box<Expr>>,
     },
+
+    /// Record ID literal: table:id (e.g. person:1, post:abc)
+    RecordId {
+        table: String,
+        id: Box<Expr>,
+    },
 }
 
 /// Literal values
@@ -678,6 +716,11 @@ pub enum BinaryOperator {
     BitXor,
     LeftShift,
     RightShift,
+
+    // Graph traversal
+    GraphRight, // ->  (outgoing edge)
+    GraphLeft,  // <-  (incoming edge)
+    GraphBi,    // <-> (bidirectional edge)
 }
 
 /// Unary operators
@@ -736,4 +779,126 @@ pub enum VectorMetric {
     Euclidean,
     DotProduct,
     Manhattan,
+}
+
+// ============================================================================
+// Security DDL AST nodes (P2 — Scope-Based Auth)
+// ============================================================================
+
+/// DEFINE SCOPE statement — creates an authentication scope.
+///
+/// Mirrors SurrealDB's `DEFINE SCOPE`:
+/// ```sql
+/// DEFINE SCOPE user_scope SESSION 24h
+///   SIGNIN (SELECT * FROM user WHERE email = $email AND crypto::argon2::compare(password, $password))
+///   SIGNUP (CREATE user SET email = $email, password = crypto::argon2::generate($password))
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefineScopeStmt {
+    /// Scope name (e.g. "user_scope")
+    pub name: String,
+    /// Session duration in seconds (e.g. 86400 for 24h)
+    pub session_duration_secs: Option<u64>,
+    /// SIGNIN expression — evaluated to authenticate
+    pub signin: Option<Box<Expr>>,
+    /// SIGNUP expression — evaluated to register
+    pub signup: Option<Box<Expr>>,
+}
+
+/// DEFINE TABLE PERMISSIONS — row-level security policies per operation.
+///
+/// Mirrors SurrealDB's per-table permissions:
+/// ```sql
+/// DEFINE TABLE post PERMISSIONS
+///   FOR select WHERE published = true OR user = $auth.id
+///   FOR create WHERE $auth.role = 'editor'
+///   FOR update WHERE user = $auth.id
+///   FOR delete WHERE $auth.role = 'admin'
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefineTablePermissionsStmt {
+    /// Table name
+    pub table: ObjectName,
+    /// Permission rules per operation
+    pub permissions: Vec<TablePermission>,
+}
+
+/// A single permission rule for a table operation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TablePermission {
+    /// Operation this permission applies to
+    pub operation: PermissionOp,
+    /// WHERE clause — row is accessible if this evaluates to true
+    pub condition: Expr,
+}
+
+/// Operations that can have per-table permissions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionOp {
+    Select,
+    Create,
+    Update,
+    Delete,
+}
+
+// ============================================================================
+// Graph & Real-Time AST nodes (P1 — Multi-Model)
+// ============================================================================
+
+/// RELATE statement — creates a graph edge between two records.
+///
+/// ```sql
+/// RELATE person:1 -> knows -> person:2 SET since = '2024-01-01';
+/// RELATE person:1 -> knows -> person:2 CONTENT { "since": "2024-01-01" };
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelateStmt {
+    pub span: Span,
+    /// Source record (e.g. person:1)
+    pub from: Expr,
+    /// Edge table name (e.g. knows)
+    pub edge: ObjectName,
+    /// Target record (e.g. person:2)
+    pub to: Expr,
+    /// SET field = value, ...
+    pub set: Vec<Assignment>,
+    /// CONTENT { ... } — alternative to SET
+    pub content: Option<Expr>,
+    /// RETURNING clause
+    pub returning: Option<Vec<SelectItem>>,
+}
+
+/// LIVE SELECT statement — subscribes to real-time changes on a table.
+///
+/// ```sql
+/// LIVE SELECT * FROM person WHERE age > 18;
+/// LIVE SELECT DIFF FROM person;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveSelectStmt {
+    pub span: Span,
+    /// The underlying SELECT statement
+    pub select: SelectStmt,
+    /// Whether to return diffs instead of full records
+    pub diff: bool,
+}
+
+/// DEFINE EVENT statement — registers a trigger on table mutations.
+///
+/// ```sql
+/// DEFINE EVENT email_notification ON TABLE user
+///   WHEN $event = "CREATE"
+///   THEN (CREATE notification SET body = "Welcome " + $after.name);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefineEventStmt {
+    pub span: Span,
+    /// Event name
+    pub name: String,
+    /// Table this event is attached to
+    pub table: ObjectName,
+    /// WHEN condition
+    pub condition: Expr,
+    /// THEN action (typically a statement wrapped in parens)
+    pub action: Expr,
 }

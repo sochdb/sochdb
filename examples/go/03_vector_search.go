@@ -12,19 +12,19 @@ import (
 	"fmt"
 	"log"
 
-	toondb "github.com/toondb/toondb-go"
+	sochdb "github.com/sochdb/sochdb-go"
 )
 
 func main() {
 	// Configuration for the vector index
-	config := toondb.VectorIndexConfig{
+	config := sochdb.VectorIndexConfig{
 		Dimension:      128,                      // Embedding dimension
-		Metric:         toondb.DistanceMetricCosine, // Cosine similarity
+		Metric:         sochdb.DistanceMetricCosine, // Cosine similarity
 		M:              16,                       // HNSW connections per node
 		EfConstruction: 100,                      // Construction quality factor
 	}
 
-	index, err := toondb.NewVectorIndex("./vector_index", config)
+	index, err := sochdb.NewVectorIndex("./vector_index", config)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -76,8 +76,8 @@ func main() {
 	a := []float32{1.0, 0.0, 0.0}
 	b := []float32{0.707, 0.707, 0.0}
 
-	cosineDist := toondb.ComputeCosineDistance(a, b)
-	euclideanDist := toondb.ComputeEuclideanDistance(a, b)
+	cosineDist := sochdb.ComputeCosineDistance(a, b)
+	euclideanDist := sochdb.ComputeEuclideanDistance(a, b)
 
 	fmt.Println("\n✓ Distance calculations:")
 	fmt.Printf("  Cosine distance: %.4f\n", cosineDist)
@@ -85,6 +85,6 @@ func main() {
 
 	// Normalize a vector
 	v := []float32{3.0, 4.0}
-	normalized := toondb.NormalizeVector(v)
+	normalized := sochdb.NormalizeVector(v)
 	fmt.Printf("  Normalized [3, 4]: [%.2f, %.2f]\n", normalized[0], normalized[1])
 }

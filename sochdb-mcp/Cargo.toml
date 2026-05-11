@@ -35,9 +35,9 @@ toon-format = { version = "0.4", default-features = false }
 fastembed = { version = "4", optional = true }
 
 # SochDB crates
-sochdb = { version = "0.5.0", path = "../sochdb-client", features = ["embedded"] }
-sochdb-core = { version = "0.5.0", path = "../sochdb-core" }
-sochdb-query = { version = "0.5.0", path = "../sochdb-query" }
+sochdb = { version = "2.0.0", path = "../sochdb-client", features = ["embedded"] }
+sochdb-core = { version = "2.0.0", path = "../sochdb-core" }
+sochdb-query = { version = "2.0.0", path = "../sochdb-query" }
 
 # Minimal additional deps
 tracing = "0.1"

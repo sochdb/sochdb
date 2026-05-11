@@ -204,16 +204,16 @@ Choose your preferred SDK:
 
 ```bash
 # Rust - add to Cargo.toml
-sochdb = "0.2"
+sochdb = "0.5"
 ```
 
 ### SDK Repositories
 
-Language SDKs are maintained in separate repositories with their own release cycles:
+Language SDKs are maintained in separate packages and repos with their own release cycles:
 
 | Language | Repository | Installation |
 |----------|------------|-------------|
-| **Python** | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb` |
+| **Python** | [`sochdb-python/`](./sochdb-python) | `pip install sochdb` |
 
 ### 🐳 Docker Deployment
 
@@ -1202,7 +1202,7 @@ with index.batch_accumulator(estimated_size=50_000) as acc:
 
 ### MemoryAgentBench: Head-to-Head RAG Comparison
 
-> **Version**: 0.5.0 | **Benchmark Date**: February 2026 | **LLM**: Azure OpenAI gpt-4.1-mini | **Framework**: [MemoryAgentBench](https://arxiv.org/abs/2507.05257) (UCSD)
+> **Version**: 2.0.0 | **Benchmark Date**: February 2026 | **LLM**: Azure OpenAI gpt-4.1-mini | **Framework**: [MemoryAgentBench](https://arxiv.org/abs/2507.05257) (UCSD)
 
 We evaluated SochDB head-to-head against **7 RAG competitors** using **MemoryAgentBench** — an academic benchmark from UCSD that tests how well memory systems help LLMs retrieve facts from multi-turn conversations over long contexts (up to 197K+ tokens).
 
