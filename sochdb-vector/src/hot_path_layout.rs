@@ -207,7 +207,8 @@ pub fn alloc_aligned(size: usize, alignment: usize) -> Option<NonNull<u8>> {
 /// Free aligned memory
 pub unsafe fn free_aligned(ptr: NonNull<u8>, size: usize, alignment: usize) {
     if let Ok(layout) = Layout::from_size_align(size, alignment) {
-        dealloc(ptr.as_ptr(), layout);
+        // SAFETY: layout was created from valid size/align, ptr was allocated with alloc_zeroed
+        unsafe { dealloc(ptr.as_ptr(), layout); }
     }
 }
 

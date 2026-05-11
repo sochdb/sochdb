@@ -16,6 +16,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! SochDB Index Layer
+
+#![allow(unsafe_op_in_unsafe_fn)]
 //!
 //! Novel indexing structures for TOON-native data access.
 //!
