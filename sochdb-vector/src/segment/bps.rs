@@ -172,6 +172,16 @@ impl<'a> BpsBuilder<'a> {
     }
 
     /// Legacy: Compute query sketch without stored params (for backwards compat)
+    ///
+    /// **DEPRECATED**: This function uses symmetric quantization which does NOT
+    /// match the asymmetric quantization used when building the index.  The
+    /// mismatch inflates L1 distances and degrades recall.
+    /// Use `compute_query_sketch_with_params()` instead, passing the `BpsQParam`s
+    /// stored during index build.
+    #[deprecated(
+        since = "0.5.0",
+        note = "use compute_query_sketch_with_params() — symmetric quantization mismatches index qparams"
+    )]
     pub fn compute_query_sketch(config: &BpsConfig, rotated_query: &[f32]) -> Vec<u8> {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(BPS_SEED);
         let num_blocks = config.num_blocks as usize;

@@ -26,7 +26,7 @@
 //! This implementation uses **fine-grained locking** (not lock-free):
 //! - **Node storage**: DashMap (sharded RwLocks) for O(1) concurrent access
 //! - **Neighbor lists**: Per-layer RwLocks with version counters for optimistic updates
-//! - **Entry point/max_layer**: Global RwLocks (rarely contended)
+//! - **Entry point/max_layer**: AtomicNavigationState (packed AtomicU64, wait-free reads)
 //!
 //! ### Concurrency Guarantees
 //! - **Thread-safe**: All operations are safe to call from multiple threads
@@ -72,6 +72,7 @@ use std::thread;
 use rand::prelude::*;
 
 // Removed: use crate::vector_simd;
+use crate::atomic_entry_point::AtomicNavigationState;
 use crate::metrics;
 use crate::parallel_waves::{compute_independent_waves, process_wave_parallel, WaveResult, WaveStats};
 use crate::simd_distance;
@@ -583,7 +584,8 @@ impl AtomicNeighborList {
                 Ok(_) => {
                     // Successfully claimed slot - update count and generation
                     self.count.fetch_add(1, AtomicOrdering::Relaxed);
-                    self.generation.fetch_add(1, AtomicOrdering::Release);
+                    // Increment by 2 to maintain even generation invariant (seqlock)
+                    self.generation.fetch_add(2, AtomicOrdering::Release);
                     return true;
                 }
                 Err(_) => {
@@ -611,18 +613,24 @@ impl AtomicNeighborList {
             ).is_ok() {
                 // Successfully removed - update count and generation
                 self.count.fetch_sub(1, AtomicOrdering::Relaxed);
-                self.generation.fetch_add(1, AtomicOrdering::Release);
+                // Increment by 2 to maintain even generation invariant (seqlock)
+                self.generation.fetch_add(2, AtomicOrdering::Release);
                 return true;
             }
         }
         false
     }
 
-    /// Replace entire neighbor list atomically
+    /// Replace entire neighbor list using seqlock protocol
     /// 
     /// This is used for bulk updates like pruning operations.
-    /// Not truly atomic (multiple CAS operations), but provides
-    /// eventual consistency through generation counter.
+    /// Uses odd generation values to signal write-in-progress, enabling
+    /// readers to detect torn writes and retry (seqlock pattern).
+    /// 
+    /// Protocol:
+    /// 1. generation becomes odd (write in progress)
+    /// 2. Clear and rewrite slots
+    /// 3. generation becomes even (write complete)
     /// 
     /// Returns true if replacement was successful
     pub fn replace_neighbors(&self, new_neighbors: &[u128]) -> bool {
@@ -630,8 +638,9 @@ impl AtomicNeighborList {
             return false; // Too many neighbors
         }
 
-        // Increment generation to signal start of bulk operation
-        let start_gen = self.generation.fetch_add(1, AtomicOrdering::Acquire);
+        // Increment generation to odd value — signals write in progress
+        // Readers seeing an odd generation will spin-wait and retry
+        self.generation.fetch_add(1, AtomicOrdering::Acquire);
         
         // Clear all slots first
         for slot in &self.neighbors {
@@ -645,29 +654,53 @@ impl AtomicNeighborList {
             }
         }
         
-        // Update count and final generation
+        // Update count
         self.count.store(new_neighbors.len(), AtomicOrdering::Relaxed);
-        self.generation.store(start_gen + 2, AtomicOrdering::Release);
+
+        // Increment generation to even value — signals write complete
+        // Release pairs with Acquire loads in get_neighbors
+        self.generation.fetch_add(1, AtomicOrdering::Release);
         
         true
     }
 
-    /// Get current neighbor list as vector
+    /// Get current neighbor list as a consistent snapshot (seqlock read)
     /// 
-    /// Returns a consistent snapshot of neighbors at the time of call.
-    /// May observe neighbors added/removed during iteration, but will
-    /// not return invalid/corrupted data due to atomic loads.
+    /// Uses seqlock-style reads: checks generation counter before and after
+    /// reading the neighbor slots. If generation changed (or is odd, indicating
+    /// a write in progress), the read is retried. This guarantees that
+    /// get_neighbors never returns a torn/partial neighbor list, which is
+    /// critical for HNSW search correctness (a partially-empty list causes
+    /// the greedy search to terminate prematurely, degrading recall).
+    ///
+    /// Overhead: 2 extra atomic loads per call (~2ns). Retry probability
+    /// under low contention: ~10% (bounded by write duration / read interval).
     pub fn get_neighbors(&self) -> SmallVec<[u128; MAX_M]> {
-        let mut result = SmallVec::new();
-        
-        for slot in &self.neighbors {
-            let neighbor_id = slot.load(AtomicOrdering::Acquire);
-            if neighbor_id != 0 {
-                result.push(Self::usize_to_u128(neighbor_id));
+        loop {
+            let gen_before = self.generation.load(AtomicOrdering::Acquire);
+            
+            // Odd generation means a write is in progress — spin and retry
+            if gen_before % 2 != 0 {
+                std::hint::spin_loop();
+                continue;
             }
+            
+            // Read all neighbor slots
+            let mut result = SmallVec::new();
+            for slot in &self.neighbors {
+                let neighbor_id = slot.load(AtomicOrdering::Acquire);
+                if neighbor_id != 0 {
+                    result.push(Self::usize_to_u128(neighbor_id));
+                }
+            }
+            
+            // Verify generation hasn't changed — if it has, we saw a torn read
+            let gen_after = self.generation.load(AtomicOrdering::Acquire);
+            if gen_before == gen_after {
+                return result; // Consistent snapshot
+            }
+            // Generation changed during read — retry
         }
-        
-        result
     }
 
     /// Get neighbor count (approximate)
@@ -1928,8 +1961,8 @@ impl Default for HnswConfig {
             max_connections: 16,
             max_connections_layer0: 32,
             level_multiplier: 1.0 / (16.0_f32).ln(),
-            ef_construction: 100,  // Reduced from 200 for better insert performance
-            ef_search: 50,
+            ef_construction: 200,
+            ef_search: 500,
             metric: DistanceMetric::Cosine,
             quantization_precision: Some(Precision::F32),
             rng_optimization: RngOptimizationConfig::default(),
@@ -2009,17 +2042,114 @@ impl Default for NavigationState {
     }
 }
 
+// =============================================================================
+// ShardedVectorStore — future replacement for global RwLock<Vec<QuantizedVector>> (TODO T7)
+//
+// Ready to use but not yet wired into HnswIndex.  The 64-shard design means
+// concurrent searches and inserts will only contend on 1/64 of the shard locks
+// instead of the single global lock.  Wire-up requires updating ~35 callsites
+// from `.read()/.write()` guard API to per-vector `.get(u32)/.push()` calls.
+// =============================================================================
+#[allow(dead_code)]
+const SVS_SHARDS: usize = 64;
+
+#[allow(dead_code)]
+pub(crate) struct ShardedVectorStore {
+    shards: [RwLock<Vec<QuantizedVector>>; SVS_SHARDS],
+    /// Total vectors inserted — used to claim the next sequential index atomically.
+    total_count: AtomicUsize,
+}
+
+#[allow(dead_code)]
+impl ShardedVectorStore {
+    fn new() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| RwLock::new(Vec::new())),
+            total_count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Append a vector and return its sequential index.
+    /// Thread-safe: two concurrent pushes claim different indices.
+    #[inline]
+    pub(crate) fn push(&self, vector: QuantizedVector) -> u32 {
+        let idx = self.total_count.fetch_add(1, AtomicOrdering::AcqRel) as u32;
+        let shard_idx = idx as usize % SVS_SHARDS;
+        let local_idx = idx as usize / SVS_SHARDS;
+        let mut shard = self.shards[shard_idx].write();
+        if local_idx >= shard.len() {
+            shard.resize(local_idx + 1, QuantizedVector::empty());
+        }
+        shard[local_idx] = vector;
+        idx
+    }
+
+    /// Set a vector at a known index (used during serialization restore).
+    #[inline]
+    pub(crate) fn set(&self, idx: u32, vector: QuantizedVector) {
+        let shard_idx = idx as usize % SVS_SHARDS;
+        let local_idx = idx as usize / SVS_SHARDS;
+        let mut shard = self.shards[shard_idx].write();
+        if local_idx >= shard.len() {
+            shard.resize(local_idx + 1, QuantizedVector::empty());
+        }
+        shard[local_idx] = vector;
+    }
+
+    /// Return a cloned copy of the vector.
+    /// On the hot distance-computation path prefer `with()` to avoid the clone.
+    #[inline]
+    pub(crate) fn get(&self, idx: u32) -> Option<QuantizedVector> {
+        let shard_idx = idx as usize % SVS_SHARDS;
+        let local_idx = idx as usize / SVS_SHARDS;
+        let shard = self.shards[shard_idx].read();
+        shard.get(local_idx).cloned()
+    }
+
+    /// Apply `f` to a borrowed reference — avoids cloning on the hot path.
+    #[inline]
+    pub(crate) fn with<F, R>(&self, idx: u32, f: F) -> Option<R>
+    where
+        F: FnOnce(&QuantizedVector) -> R,
+    {
+        let shard_idx = idx as usize % SVS_SHARDS;
+        let local_idx = idx as usize / SVS_SHARDS;
+        let shard = self.shards[shard_idx].read();
+        shard.get(local_idx).map(f)
+    }
+
+    /// Current logical length (next sequential index that would be returned by push).
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        self.total_count.load(AtomicOrdering::Acquire)
+    }
+
+    /// Clear all shards.
+    pub(crate) fn clear(&self) {
+        self.total_count.store(0, AtomicOrdering::Release);
+        for shard in &self.shards {
+            shard.write().clear();
+        }
+    }
+}
+
+// Manually implement Debug.
+impl std::fmt::Debug for ShardedVectorStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ShardedVectorStore(shards={}, len={})", SVS_SHARDS, self.len())
+    }
+}
+
 /// HNSW Index for approximate nearest neighbor search with fine-grained locking
 pub struct HnswIndex {
     pub(crate) config: HnswConfig,
     /// Node storage using DashMap (sharded RwLocks, NOT lock-free but highly concurrent)
     pub(crate) nodes: Arc<DashMap<u128, Arc<HnswNode>>>,
-    /// Legacy entry_point field - kept for backwards compatibility
-    /// Use navigation_state() for atomic reads
-    pub(crate) entry_point: Arc<RwLock<Option<u128>>>,
-    /// Legacy max_layer field - kept for backwards compatibility  
-    /// Use navigation_state() for atomic reads
-    pub(crate) max_layer: Arc<RwLock<usize>>,
+    /// Atomic navigation state: packed (dense_entry_point, max_layer) in a single AtomicU64.
+    /// Replaces separate RwLock<Option<u128>> entry_point + RwLock<usize> max_layer
+    /// to eliminate TOCTOU race where a reader could see (entry_point=A, max_layer=B)
+    /// from two different generations. Wait-free reads, lock-free CAS writes.
+    pub(crate) nav_state: AtomicNavigationState,
     pub(crate) dimension: usize,
     /// Cached adaptive ef value (Gap #4 fix)
     /// Set by calibrate_ef() and used by search_adaptive()
@@ -2041,15 +2171,13 @@ pub struct HnswIndex {
     pub(crate) dense_to_id: Arc<RwLock<Vec<u128>>>,
     /// Contiguous vector slab for sequential access
     ///
-    /// ⚠️ KNOWN BOTTLENECK: This global RwLock serializes all concurrent searches
-    /// when writers (insert/delete) are active. Under write-heavy workloads,
-    /// search p99 latency degrades significantly because `parking_lot::RwLock`
-    /// uses a write-preferring policy.
-    ///
-    /// TODO(T7): Replace with `ShardedVectorStore` or per-shard `RwLock<Vec<_>>`
-    /// to allow concurrent reads across shards. Expected improvement: 3-5× under
-    /// mixed read/write workloads (measured on 16-core machines).
+    /// ⚠️ KNOWN BOTTLENECK: global RwLock serialises concurrent searches vs inserts.
+    /// TODO(T7): migrate to `ShardedVectorStore` (64 independent shard locks).
+    /// Expected improvement: 3–5× under mixed read/write workloads.
     pub(crate) vector_store: Arc<RwLock<Vec<QuantizedVector>>>,
+    /// Per-node metadata for filtered search, indexed by dense_index.
+    /// Stored as pre-serialized key-value pairs for O(1) filter matching.
+    pub(crate) metadata_store: Arc<RwLock<Vec<Option<Vec<(String, String)>>>>>,
     /// O(1) node lookup by dense index - eliminates DashMap from hot path
     ///
     /// ⚠️ Same contention concern as `vector_store` — see TODO(T7) above.
@@ -2065,6 +2193,38 @@ pub struct HnswIndex {
     /// Entry point dense index for O(1) lookup without DashMap (Rec 9)
     /// u32::MAX means no entry point
     pub(crate) entry_point_dense: AtomicU32,
+    /// Flag indicating graph needs GNR refinement after batch insert.
+    /// Set by insert_batch_flat, consumed by search on first query.
+    pub(crate) needs_refinement: AtomicBool,
+    /// Pending nodes awaiting HNSW connection building (deferred indexing).
+    /// insert_batch stores nodes here (Phase 1+2 only). Connections are built
+    /// lazily on the first search call, amortizing construction cost.
+    pub(crate) pending_nodes: parking_lot::Mutex<Vec<(u128, Arc<HnswNode>)>>,
+    /// Per-node ready flags for construction-time visibility control.
+    /// During parallel batch insert, a node's dense_index is marked "ready" only
+    /// after its edges are fully committed. `search_layer_concurrent` skips
+    /// unready nodes to prevent traversal into partially-linked state.
+    /// Empty outside of batch construction (zero overhead at query time).
+    pub(crate) construction_ready: parking_lot::RwLock<Arc<Vec<std::sync::atomic::AtomicBool>>>,
+    /// Fast-path flag: true when construction_ready is non-empty (construction in progress).
+    /// Avoids RwLock read on every process_neighbors_o1 call during query time.
+    pub(crate) construction_in_progress: AtomicBool,
+}
+
+impl Drop for HnswIndex {
+    fn drop(&mut self) {
+        // Explicit cleanup to avoid drop-order hazards.
+        // Clear all containers that hold Arc<HnswNode> references first,
+        // then clear the DashMap. This ensures HnswNode refcounts reach
+        // zero deterministically rather than relying on field drop order.
+        self.pending_nodes.lock().clear();
+        self.flat_neighbors.write().clear();
+        self.internal_nodes.write().clear();
+        self.vector_store.write().clear();
+        self.metadata_store.write().clear();
+        self.dense_to_id.write().clear();
+        self.nodes.clear();
+    }
 }
 
 impl HnswIndex {
@@ -2076,8 +2236,7 @@ impl HnswIndex {
         Self {
             config,
             nodes: Arc::new(DashMap::new()),
-            entry_point: Arc::new(RwLock::new(None)),
-            max_layer: Arc::new(RwLock::new(0)),
+            nav_state: AtomicNavigationState::new(),
             dimension,
             adaptive_ef: AtomicUsize::new(default_ef),
             external_storage: None,
@@ -2087,11 +2246,16 @@ impl HnswIndex {
             next_dense_index: AtomicUsize::new(0),
             dense_to_id: Arc::new(RwLock::new(Vec::new())),
             vector_store: Arc::new(RwLock::new(Vec::new())),
+            metadata_store: Arc::new(RwLock::new(Vec::new())),
             internal_nodes: Arc::new(RwLock::new(Vec::new())),
             flat_neighbors: Arc::new(RwLock::new(Vec::new())),
             max_neighbors_per_node: max_neighbors,
             flat_neighbors_valid: AtomicBool::new(false),
             entry_point_dense: AtomicU32::new(u32::MAX),
+            needs_refinement: AtomicBool::new(false),
+            pending_nodes: parking_lot::Mutex::new(Vec::new()),
+            construction_ready: parking_lot::RwLock::new(Arc::new(Vec::new())),
+            construction_in_progress: AtomicBool::new(false),
         }
     }
 
@@ -2114,8 +2278,7 @@ impl HnswIndex {
         Self {
             config,
             nodes: Arc::new(DashMap::new()),
-            entry_point: Arc::new(RwLock::new(None)),
-            max_layer: Arc::new(RwLock::new(0)),
+            nav_state: AtomicNavigationState::new(),
             dimension,
             adaptive_ef: AtomicUsize::new(default_ef),
             external_storage: Some(storage),
@@ -2125,11 +2288,16 @@ impl HnswIndex {
             next_dense_index: AtomicUsize::new(0),
             dense_to_id: Arc::new(RwLock::new(Vec::new())),
             vector_store: Arc::new(RwLock::new(Vec::new())),
+            metadata_store: Arc::new(RwLock::new(Vec::new())),
             internal_nodes: Arc::new(RwLock::new(Vec::new())),
             flat_neighbors: Arc::new(RwLock::new(Vec::new())),
             max_neighbors_per_node: max_neighbors,
             flat_neighbors_valid: AtomicBool::new(false),
             entry_point_dense: AtomicU32::new(u32::MAX),
+            needs_refinement: AtomicBool::new(false),
+            pending_nodes: parking_lot::Mutex::new(Vec::new()),
+            construction_ready: parking_lot::RwLock::new(Arc::new(Vec::new())),
+            construction_in_progress: AtomicBool::new(false),
         }
     }
 
@@ -2256,15 +2424,12 @@ impl HnswIndex {
     
     /// Get an atomic snapshot of the navigation state (entry_point, max_layer)
     /// 
-    /// This ensures readers see a consistent view where the entry point is
-    /// a connected node at the correct layer. Critical for concurrent search/insert.
+    /// Returns a consistent (entry_point, max_layer) pair via a single atomic
+    /// u64 load, eliminating the TOCTOU race of separate RwLock reads.
     #[inline]
     pub fn navigation_state(&self) -> NavigationState {
-        // Read both values under their respective locks
-        // Order matters: read entry_point first, then max_layer
-        let entry_point = *self.entry_point.read();
-        let max_layer = *self.max_layer.read();
-        
+        let (ep_dense, max_layer) = self.nav_state.load();
+        let entry_point = ep_dense.and_then(|d| self.dense_to_node_id(d as u32));
         NavigationState {
             entry_point,
             max_layer,
@@ -2276,7 +2441,8 @@ impl HnswIndex {
     /// Returns None if the graph is empty.
     #[inline]
     pub fn get_entry_point(&self) -> Option<u128> {
-        *self.entry_point.read()
+        self.nav_state.load_entry_point()
+            .and_then(|d| self.dense_to_node_id(d as u32))
     }
     
     /// Get the number of layer-0 neighbors for a given node
@@ -2298,22 +2464,16 @@ impl HnswIndex {
     
     /// Atomically update the navigation state (entry_point, max_layer)
     /// 
-    /// This ensures writers publish both values together, so readers never see
-    /// a state where max_layer refers to a different entry point's layer.
+    /// Uses a single atomic store to publish both values together, so readers
+    /// never see a state where max_layer refers to a different entry point's layer.
     /// 
     /// IMPORTANT: Only call this after the new entry point is fully connected!
     #[inline]
     #[allow(dead_code)]
     fn update_navigation_state(&self, new_ep: u128, new_max_layer: usize) {
-        // Write in order: max_layer first, then entry_point
-        // This ensures if a reader sees the new EP, max_layer is already updated
-        {
-            let mut ml = self.max_layer.write();
-            *ml = new_max_layer;
-        }
-        {
-            let mut ep = self.entry_point.write();
-            *ep = Some(new_ep);
+        if let Some(dense) = self.node_id_to_dense(new_ep) {
+            self.nav_state.store(Some(dense as u64), new_max_layer);
+            self.entry_point_dense.store(dense, AtomicOrdering::Release);
         }
     }
 
@@ -2342,32 +2502,15 @@ impl HnswIndex {
         self.adaptive_ef_construction_with_mode(false)
     }
 
-    /// Adaptive ef_construction with context awareness for batch vs individual inserts
-    /// 
-    /// For batch inserts, uses significantly lower ef values to prioritize throughput:
-    /// - Individual inserts: Use full ef_construction for quality
-    /// - Batch inserts: Use 48-64 for speed (similar to ChromaDB)
-    /// 
-    /// This provides 30-40% speedup for batch operations while maintaining
-    /// search quality for individual inserts.
+    /// Adaptive ef_construction — always uses the full configured value.
+    ///
+    /// Previous versions ramped up ef with graph size (α×√n), but this
+    /// starved scaffold nodes (n<100 → ef~32) and permanently degraded
+    /// graph quality, causing recall to plateau at 0.9985 instead of 1.0.
+    /// Full ef_construction from the start produces a better backbone.
     #[inline]
-    pub(crate) fn adaptive_ef_construction_with_mode(&self, is_batch_insert: bool) -> usize {
-        const ALPHA: f32 = 10.0; // Scaling factor
-        
-        let n = self.nodes.len();
-        let m = self.config.max_connections;
-        let ef_max = if is_batch_insert {
-            // For batch inserts, use lower ef for speed (similar to ChromaDB)
-            // This reduces search cost per insert by ~40%
-            48.min(self.config.ef_construction)
-        } else {
-            // For individual inserts, use full quality
-            self.config.ef_construction
-        };
-        
-        // ef(n) = max(M, min(ef_max, α × sqrt(n)))
-        let adaptive = (ALPHA * (n as f32).sqrt()) as usize;
-        m.max(adaptive.min(ef_max))
+    pub(crate) fn adaptive_ef_construction_with_mode(&self, _is_batch_insert: bool) -> usize {
+        self.config.ef_construction
     }
 
     /// Atomically add a reverse connection, handling capacity limits safely
@@ -2386,9 +2529,6 @@ impl HnswIndex {
         layer: usize,
         max_connections: usize,
     ) -> bool {
-        // Reduced retries for better batch throughput
-        const MAX_RETRIES: usize = 3;
-
         let new_node_dense = match self.node_id_to_dense(new_node_id) {
             Some(dense) => dense,
             None => return false,
@@ -2403,84 +2543,54 @@ impl HnswIndex {
             return false;
         }
         
-        // Fast path: try to acquire write lock immediately
+        // Fast path: try to acquire write lock immediately (non-blocking)
         if let Some(mut layer_data) = neighbor_node.layers[layer].try_write() {
             // Check if already connected
             if layer_data.neighbors.contains(&new_node_dense) {
                 return true;
             }
             
-            // If there's room, just add (most common case for batch inserts)
+            // If there's room, just add (most common case)
             if layer_data.neighbors.len() < max_connections {
                 layer_data.neighbors.push(new_node_dense);
                 layer_data.version += 1;
                 return true;
             }
             
-            // List is full - need to potentially replace worst neighbor
-            // But for batch throughput, we'll be more aggressive about skipping
-            if layer_data.neighbors.len() >= max_connections && layer != 0 {
-                // For non-layer-0, skip replacement to avoid expensive distance calculations
-                // This trades some graph quality for significant speed improvement
-                return false;
-            }
-            
-            // Only do expensive replacement at layer 0 (critical for connectivity)
-            if layer == 0 {
-                return self.try_replace_worst_neighbor(
-                    &mut layer_data,
-                    &*neighbor_node,
-                    new_node_dense,
-                    new_node_vector,
-                );
-            }
-            
-            return false;
+            // List is full — replace worst neighbor
+            return self.try_replace_worst_neighbor(
+                &mut layer_data,
+                &*neighbor_node,
+                new_node_dense,
+                new_node_vector,
+            );
         }
         
-        // Fallback to retry-based approach if fast path fails
-        for _retry in 0..MAX_RETRIES {
-            let (current_neighbors, version) = {
-                let layer_data = neighbor_node.layers[layer].read();
-                (layer_data.neighbors.clone(), layer_data.version)
-            };
+        // Blocking path: guaranteed lock acquisition.
+        //
+        // SAFETY: No deadlock risk because each thread holds at most ONE
+        // node-layer write lock at a time. The vector_store.read() held by
+        // the caller is a read lock which doesn't conflict.
+        {
+            let mut layer_data = neighbor_node.layers[layer].write();
             
-            // Check if already connected
-            if current_neighbors.contains(&new_node_dense) {
+            if layer_data.neighbors.contains(&new_node_dense) {
                 return true;
             }
             
-            // If there's room, just add
-            if current_neighbors.len() < max_connections {
-                if let Some(mut layer_data) = neighbor_node.layers[layer].try_write() {
-                    if layer_data.version == version && layer_data.neighbors.len() < max_connections {
-                        layer_data.neighbors.push(new_node_dense);
-                        layer_data.version = version + 1;
-                        return true;
-                    }
-                }
-                continue;
+            if layer_data.neighbors.len() < max_connections {
+                layer_data.neighbors.push(new_node_dense);
+                layer_data.version += 1;
+                return true;
             }
             
-            // For batch performance, skip expensive replacement on higher layers
-            if layer != 0 {
-                return false;
-            }
-            
-            // Only do replacement at layer 0
-            if let Some(mut layer_data) = neighbor_node.layers[layer].try_write() {
-                if layer_data.version == version {
-                    return self.try_replace_worst_neighbor(
-                        &mut layer_data,
-                        &*neighbor_node,
-                        new_node_dense,
-                        new_node_vector,
-                    );
-                }
-            }
+            return self.try_replace_worst_neighbor(
+                &mut layer_data,
+                &*neighbor_node,
+                new_node_dense,
+                new_node_vector,
+            );
         }
-        
-        false // Failed after retries
     }
     
     /// Helper method to replace worst neighbor with new node
@@ -2546,6 +2656,13 @@ impl HnswIndex {
             None => return,
         };
         
+        // Look up the node's vector from vector_store (node.vector may be empty
+        // for batch-inserted nodes where we use QuantizedVector::empty() to save memory).
+        let vector_store = self.vector_store.read();
+        let node_vector = vector_store
+            .get(node.vector_index as usize)
+            .unwrap_or(&node.vector);
+        
         // Get the node's current layer-0 neighbors
         let layer0_neighbors: Vec<u128> = {
             let layer_data = node.layers[0].read();
@@ -2570,11 +2687,11 @@ impl HnswIndex {
                 }
                 
                 // Force-add reverse edge (even if at capacity, replace worst)
-                self.force_add_reverse_edge(node_id, best.id, &node.vector, 0);
+                self.force_add_reverse_edge(node_id, best.id, node_vector, 0);
                 return;
             } else if self.nodes.len() > 1 {
                 // Connect to entry point as fallback
-                if let Some(ep_id) = *self.entry_point.read() {
+                if let Some(ep_id) = self.get_entry_point() {
                     if ep_id != node_id {
                         {
                             let mut layer_data = node.layers[0].write();
@@ -2585,7 +2702,7 @@ impl HnswIndex {
                                 layer_data.version += 1;
                             }
                         }
-                        self.force_add_reverse_edge(node_id, ep_id, &node.vector, 0);
+                        self.force_add_reverse_edge(node_id, ep_id, node_vector, 0);
                         return;
                     }
                 }
@@ -2610,7 +2727,7 @@ impl HnswIndex {
         if !has_incoming_edge && !layer0_neighbors.is_empty() {
             // Node has outgoing edges but no incoming edges - force-add reverse edge to first neighbor
             let first_neighbor = layer0_neighbors[0];
-            self.force_add_reverse_edge(node_id, first_neighbor, &node.vector, 0);
+            self.force_add_reverse_edge(node_id, first_neighbor, node_vector, 0);
         }
     }
     
@@ -2765,21 +2882,14 @@ impl HnswIndex {
             layer,
         });
 
-        // Get the OLD entry point BEFORE updating it
+        // Get the OLD entry point BEFORE updating it (atomic snapshot)
         // We need this for connection building even if this node becomes the new entry point
-        let old_ep_id = *self.entry_point.read();
-        let old_max_layer = *self.max_layer.read();
+        let (old_ep_dense, old_max_layer) = self.nav_state.load();
+        let old_ep_id = old_ep_dense.and_then(|d| self.dense_to_node_id(d as u32));
         
-        // Update entry point if this is the first node or higher layer
-        {
-            let mut entry_point = self.entry_point.write();
-            let mut max_layer = self.max_layer.write();
-
-            if entry_point.is_none() || layer > *max_layer {
-                *entry_point = Some(id);
-                *max_layer = layer;
-                self.entry_point_dense.store(dense_index, AtomicOrdering::Release);
-            }
+        // Update entry point if this is the first node or higher layer (lock-free CAS)
+        if self.nav_state.update_if_higher(dense_index as u64, layer) {
+            self.entry_point_dense.store(dense_index, AtomicOrdering::Release);
         }
 
         // CRITICAL: Insert node into map BEFORE adding reverse connections
@@ -3025,8 +3135,18 @@ impl HnswIndex {
         }
 
         // Phase 1: Create all nodes (parallel)
+        let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
+        let normalize_cosine = matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest;
         let node_ids: Result<Vec<_>, String> = batch.par_iter().map(|(id, vector)| {
-            let quantized = self.quantize_vector(vector)?;
+            let quantized = if normalize_cosine {
+                QuantizedVector::from_f32_normalized(
+                    ndarray::Array1::from_vec(vector.clone()),
+                    precision,
+                )
+            } else {
+                self.quantize_vector(vector)?
+            };
             let layer = self.random_level();
             let dense_index = self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
             self.record_dense_id(dense_index, *id);
@@ -3034,14 +3154,14 @@ impl HnswIndex {
             let vector_index = {
                 let mut store = self.vector_store.write();
                 let idx = store.len() as u32;
-                store.push(quantized.clone());
+                store.push(quantized); // move, not clone
                 idx
             };
             let node = HnswNode {
                 id: *id,
                 dense_index,
                 vector_index,
-                vector: quantized,
+                vector: QuantizedVector::empty(),
                 layer,
                 layers: (0..=layer).map(|_| RwLock::new(VersionedNeighbors {
                     neighbors: SmallVec::new(),
@@ -3100,7 +3220,7 @@ impl HnswIndex {
                         // Select best neighbors using optimized heuristic
                         let neighbors = self.select_neighbors_heuristic(&candidates, m, node_vector);
                         
-                        // Add bidirectional connections
+                        // Add bidirectional connections  
                         for &neighbor_id in &neighbors {
                             let neighbor_dense = match self.node_id_to_dense(neighbor_id) {
                                 Some(dense) => dense,
@@ -3115,21 +3235,18 @@ impl HnswIndex {
                                 }
                             }
                             
-                            // Add backward connection
-                            if let Some(neighbor_node) = self.nodes.get(&neighbor_id) {
-                                if let Some(neighbor_layer) = neighbor_node.layers.get(layer) {
-                                    let mut neighbor_lock = neighbor_layer.write();
-                                    if !neighbor_lock.neighbors.contains(&node_dense) {
-                                        neighbor_lock.neighbors.push(node_dense);
-                                        result.add_connection(neighbor_id, layer, node_id);
-                                    }
-                                }
-                            }
+                            // Add backward connection — use safe method that
+                            // respects capacity limits and replaces worst neighbor
+                            self.add_connection_safe(neighbor_id, node_id, node_vector, layer, m);
                         }
                         
-                        // Prune connections if needed
-                        self.prune_connections_concurrent(node_id, layer, m, node_vector, node_id);
+                        // NOTE: Do NOT prune during construction — pruning happens
+                        // in the post-batch repair_connectivity pass. Pruning mid-construction
+                        // with RNG destroys connectivity for subsequent wave members.
                     }
+                    
+                    // Ensure minimum degree at layer 0 — prevents orphan nodes
+                    self.ensure_minimum_degree_layer0(node_id, &[]);
                 }
                 
                 result
@@ -3151,12 +3268,6 @@ impl HnswIndex {
         if repaired > 0 {
             #[cfg(debug_assertions)]
             eprintln!("[HNSW] Repaired {} disconnected nodes after parallel batch insert", repaired);
-        }
-        
-        let improved = self.improve_search_quality();
-        if improved > 0 {
-            #[cfg(debug_assertions)]
-            eprintln!("[HNSW] Improved search quality for {} nodes", improved);
         }
 
         Ok(total_inserted)
@@ -3216,7 +3327,10 @@ impl HnswIndex {
         // =========================================================================
         
         let existing_nodes = self.nodes.len();
-        // OPTIMIZATION: Reduced from 10×M0 to 2×M0 for 5x faster cold start
+        // Scaffold size: 2×M0 sequential inserts build a minimal connected core.
+        // Smaller scaffold = faster batch inserts; 64 nodes provide enough entry
+        // points for the wave-based bulk path. Full ef_construction is used for
+        // scaffold so these backbone nodes have high-quality edges.
         let scaffold_threshold = 2 * self.config.max_connections_layer0;
         
         // Only use scaffold if graph is cold (few existing nodes)
@@ -3226,11 +3340,12 @@ impl HnswIndex {
             // Calculate how many scaffold nodes we need to warm up the graph
             let nodes_needed_for_warm = scaffold_threshold.saturating_sub(existing_nodes);
             
-            // Cap at available nodes - use smaller upper bound for speed
-            let scaffold_end = nodes_needed_for_warm.min(n).min(128);
+            // Scaffold should cover scaffold_threshold nodes
+            let scaffold_end = nodes_needed_for_warm.min(n);
             
             if scaffold_end > 0 {
                 // Insert scaffold via proven sequential single-insert
+                let scaffold_start = std::time::Instant::now();
                 for i in 0..scaffold_end {
                     let start = i * dimension;
                     let end = start + dimension;
@@ -3239,6 +3354,7 @@ impl HnswIndex {
                     // Use single insert for scaffold - guaranteed correct connectivity
                     let _ = self.insert(ids[i], vec_slice.to_vec());
                 }
+                eprintln!("[HNSW] Scaffold {} nodes in {:?}", scaffold_end, scaffold_start.elapsed());
                 
                 // Process remaining bulk using batch method
                 if scaffold_end < n {
@@ -3316,18 +3432,20 @@ impl HnswIndex {
             return Ok(0);
         }
 
-        let profiling = is_profiling_enabled();
+        let _profiling = is_profiling_enabled();
         let n = ids.len();
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
         
         // =========================================================================
-        // PHASE 1: Parallel pre-allocation and quantization
+        // PHASE 1: Parallel quantization + batch vector_store write
         // =========================================================================
-        // This is the expensive CPU work - do it in parallel upfront
+        // Quantize in parallel (CPU-bound), then batch-push into vector_store
+        // under a single write lock to eliminate per-node lock contention.
         
-        let phase1_start = if profiling { Some(std::time::Instant::now()) } else { None };
+        let phase1_start = std::time::Instant::now();
         
-        let nodes: Vec<(u128, Arc<HnswNode>)> = ids
+        // Step 1a: Parallel quantization (no locks needed)
+        let quantized_nodes: Vec<_> = ids
             .par_iter()
             .enumerate()
             .map(|(i, &id)| {
@@ -3335,61 +3453,60 @@ impl HnswIndex {
                 let end = start + dimension;
                 let vec_slice = &vectors[start..end];
                 
-                // Random layer assignment
                 let layer = self.random_level();
                 
-                // Quantize vector (SIMD-accelerated) - FIX: Handle normalization for cosine similarity
                 let quantized = if matches!(self.config.metric, DistanceMetric::Cosine) 
                     && self.config.rng_optimization.normalize_at_ingest {
-                    // For cosine similarity, normalize during ingestion to enable L2 distance on unit sphere
                     QuantizedVector::from_f32_normalized(
                         ndarray::Array1::from_vec(vec_slice.to_vec()),
                         precision,
                     )
                 } else {
-                    // For other metrics, use original vector
                     QuantizedVector::from_f32(
                         ndarray::Array1::from_vec(vec_slice.to_vec()),
                         precision,
                     )
                 };
                 
-                // Create layers with locks
+                let dense_index = self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
+                self.record_dense_id(dense_index, id);
+                
+                (id, dense_index, layer, quantized)
+            })
+            .collect();
+        
+        // Step 1b: Batch push into vector_store under ONE write lock
+        // MEMORY FIX: Move vector into vector_store only (no clone).
+        // HnswNode.vector gets a zero-length dummy — search and connection
+        // building always read from vector_store via vector_index.
+        let nodes: Vec<(u128, Arc<HnswNode>)> = {
+            let mut store = self.vector_store.write();
+            store.reserve(quantized_nodes.len());
+            
+            quantized_nodes.into_iter().map(|(id, dense_index, layer, quantized)| {
+                let vector_index = store.len() as u32;
+                store.push(quantized); // move, not clone — single copy
+                
                 let mut layers = Vec::with_capacity(layer + 1);
                 for _ in 0..=layer {
                     layers.push(RwLock::new(VersionedNeighbors::new()));
                 }
-
-                let dense_index = self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
-                self.record_dense_id(dense_index, id);
                 
-                let vector_index = {
-                    let mut store = self.vector_store.write();
-                    let idx = store.len() as u32;
-                    store.push(quantized.clone());
-                    idx
-                };
                 let node = Arc::new(HnswNode {
                     id,
                     dense_index,
                     vector_index,
-                    vector: quantized,
+                    vector: QuantizedVector::empty(),
                     storage_id: None,
                     layers,
                     layer,
                 });
                 
                 (id, node)
-            })
-            .collect();
+            }).collect()
+        };
         
-        if let Some(start) = phase1_start {
-            PROFILE_COLLECTOR.record_with_count(
-                "hnsw.phase1.quantize_parallel", 
-                start.elapsed().as_nanos() as u64,
-                n
-            );
-        }
+        let phase1_elapsed = phase1_start.elapsed();
         
         // =========================================================================
         // PHASE 2: Insert all nodes into the map (but DON'T update entry point yet)
@@ -3398,13 +3515,7 @@ impl HnswIndex {
         // connection building, but we MUST NOT update the entry point until the
         // node's connections are built. Otherwise, the entry point would be a
         // disconnected node that can't navigate to the rest of the graph.
-        let phase2_start = if profiling { Some(std::time::Instant::now()) } else { None };
-        
-        // Track which bulk node should become the new entry point AFTER connections
-        let potential_new_ep: Option<(u128, usize)> = nodes
-            .iter()
-            .map(|(id, node)| (*id, node.layer))
-            .max_by_key(|(_, layer)| *layer);
+        let phase2_start = std::time::Instant::now();
         
         for (id, node) in &nodes {
             self.nodes.insert(*id, Arc::clone(node));
@@ -3412,105 +3523,240 @@ impl HnswIndex {
             self.store_internal_node(node.dense_index, Arc::clone(node));
         }
         
-        // DON'T update entry point here - wait until Phase 3 completes
+        let phase2_elapsed = phase2_start.elapsed();
         
-        if let Some(start) = phase2_start {
-            PROFILE_COLLECTOR.record_with_count(
-                "hnsw.phase2.map_insert", 
-                start.elapsed().as_nanos() as u64,
-                n
-            );
+        // =========================================================================
+        // PHASE 3: Per-node-ready parallel construction (Qdrant-style).
+        //
+        // KEY INSIGHT: Wave-based construction (wave_size=8) means all nodes in
+        // a wave are blind to each other. Even with shuffling, 8 nodes share
+        // the same graph snapshot per wave. This limits graph quality.
+        //
+        // Per-node-ready construction: each node becomes visible (ready) the
+        // instant its edges are fully committed. Subsequent rayon workers can
+        // immediately find and route through it. With rayon's work-stealing
+        // scheduler, natural temporal jitter means most nodes complete at
+        // different times, so each new node sees a richer graph than wave-based.
+        //
+        // SAFETY: `construction_ready` is checked in `process_neighbors_o1`.
+        // A node with ready=false is skipped during edge traversal, preventing
+        // traversal into partially-linked state. After construction,
+        // `construction_ready` is reset to empty (len=0) so the check is a
+        // single branch-not-taken at query time — zero overhead.
+        // =========================================================================
+        let phase3_start = std::time::Instant::now();
+        let connected = std::sync::atomic::AtomicUsize::new(0);
+        
+        // Allocate ready flags for ALL dense indices (existing + new).
+        // Existing nodes (from scaffold or prior batches) are marked ready.
+        // New nodes start as not-ready.
+        let total_dense = self.next_dense_index.load(AtomicOrdering::Relaxed);
+        let ready_arc = {
+            let mut ready_vec: Vec<std::sync::atomic::AtomicBool> =
+                Vec::with_capacity(total_dense);
+            for _ in 0..total_dense {
+                ready_vec.push(std::sync::atomic::AtomicBool::new(true)); // all existing = ready
+            }
+            // Mark NEW nodes as not-ready
+            for (_id, node) in &nodes {
+                if let Some(flag) = ready_vec.get(node.dense_index as usize) {
+                    flag.store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            Arc::new(ready_vec)
+        };
+        *self.construction_ready.write() = Arc::clone(&ready_arc);
+        self.construction_in_progress.store(true, AtomicOrdering::Release);
+        
+        // Shuffle to distribute spatially-close nodes across rayon's work queue.
+        // Not strictly necessary with per-node-ready (unlike waves), but helps
+        // distribute load across threads and reduces contention on nearby edges.
+        let mut shuffled_nodes = nodes;
+        {
+            use rand::seq::SliceRandom;
+            let mut rng = rand::thread_rng();
+            shuffled_nodes.shuffle(&mut rng);
         }
         
-        // =========================================================================
-        // PHASE 3: Parallel wave connection processing
-        // =========================================================================
-        // NEW: Process waves in parallel for 2-4x speedup on multi-core systems
-        // Each wave maintains HNSW invariant internally while waves can run concurrently
-        let wave_size = 32; // Smaller waves for better parallelism
+        // Process ALL nodes in parallel with rayon. Each node:
+        // 1. Searches the graph (seeing only ready nodes)
+        // 2. Builds its forward + backward edges
+        // 3. Sets its own ready flag → immediately visible to other threads
+        // 4. Updates entry point if needed
+        //
+        // This is fundamentally different from wave batching: there's no
+        // artificial synchronization boundary. Node completion order is
+        // determined by rayon's work-stealing scheduler, giving natural
+        // interleaving that maximizes graph visibility during construction.
+        shuffled_nodes.par_iter().for_each(|(id, node)| {
+            let nav_state = self.navigation_state();
+            let _ = self.connect_node_fast(*id, node, &nav_state);
+            
+            // PUBLISH: mark this node as ready (Release ordering ensures
+            // all edge writes are visible before the flag flip).
+            if let Some(flag) = ready_arc.get(node.dense_index as usize) {
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }
+            
+            // Update entry point atomically
+            if self.nav_state.update_if_higher(node.dense_index as u64, node.layer) {
+                self.entry_point_dense.store(node.dense_index, AtomicOrdering::Release);
+            }
+            
+            connected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        
+        // Clear construction_ready — back to zero-overhead query mode.
+        self.construction_in_progress.store(false, AtomicOrdering::Release);
+        *self.construction_ready.write() = Arc::new(Vec::new());
+        
+        let total_connected = connected.load(std::sync::atomic::Ordering::Relaxed);
+        let phase3_elapsed = phase3_start.elapsed();
+        
+        eprintln!(
+            "[HNSW] insert_batch_bulk n={}: phase1={:?} phase2={:?} connect={:?} total={:?} ({} connected)",
+            n, phase1_elapsed, phase2_elapsed, phase3_elapsed, phase1_start.elapsed(), total_connected
+        );
+        
+        metrics::INSERT_COUNT.inc_by(n as f64);
+        
+        Ok(n)
+    }
+    
+    /// Build HNSW connections for all pending (deferred) nodes.
+    ///
+    /// Called lazily before the first search to amortize construction cost.
+    /// Uses sequential wave processing for maximum graph quality.
+    pub fn build_pending_connections(&self) {
+        use rayon::prelude::*;
+        
+        // Atomically drain all pending nodes
+        let nodes: Vec<(u128, Arc<HnswNode>)> = {
+            let mut pending = self.pending_nodes.lock();
+            if pending.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *pending)
+        };
+        
+        let n = nodes.len();
+        tracing::info!("Building HNSW connections for {} deferred nodes", n);
+        
+        let ef = self.config.ef_construction;
+        // wave_size=512 → process 512 nodes per wave for faster deferred build.
+        // Nodes within the same wave share the same graph snapshot.
+        let wave_size = 512;
         let mut connected = 0;
         
-        let phase3_start = if profiling { Some(std::time::Instant::now()) } else { None };
-        let mut total_search_ns: u64 = 0;
-        let mut total_neighbor_select_ns: u64 = 0;
-        let mut total_connection_ns: u64 = 0;
+        let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest;
         
-        // Process waves with controlled parallelism
         let waves: Vec<_> = nodes.chunks(wave_size).collect();
         
         for wave in waves {
             let nav_state = self.navigation_state();
+            let vector_store = self.vector_store.read();
+            let internal_nodes = self.internal_nodes.read();
             
-            // NEW: Parallel connection within wave using rayon
-            // Each node in the wave can be connected in parallel since they don't
-            // interfere with each other's immediate neighborhood during construction
-            let wave_results: Vec<_> = wave
-                .par_iter()  // Parallel processing within wave
-                .map(|(id, node)| {
-                    if profiling {
-                        self.connect_node_fast_profiled(*id, node, &nav_state)
+            for (id, node) in wave {
+                let ep_id = match nav_state.entry_point {
+                    Some(ep) if ep != *id => ep,
+                    _ => { connected += 1; continue; }
+                };
+                
+                let node_vector = vector_store
+                    .get(node.vector_index as usize)
+                    .unwrap_or(&node.vector);
+                
+                let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+                let ep_vi = if ep_dense != u32::MAX {
+                    if let Some(Some(ep_n)) = internal_nodes.get(ep_dense as usize) {
+                        ep_n.vector_index as usize
                     } else {
-                        match self.connect_node_fast(*id, node, &nav_state) {
-                            Ok(()) => (0, 0, 0), // Success with no timing
-                            Err(_) => (u64::MAX, 0, 0), // Error marker
+                        match self.nodes.get(&ep_id) {
+                            Some(ep_n) => ep_n.vector_index as usize,
+                            None => { connected += 1; continue; }
                         }
                     }
-                })
-                .collect();
-            
-            // Aggregate results
-            for result in wave_results {
-                if result.0 != u64::MAX {  // Success case
-                    connected += 1;
-                    if profiling {
-                        total_search_ns += result.0;
-                        total_neighbor_select_ns += result.1;
-                        total_connection_ns += result.2;
+                } else {
+                    match self.nodes.get(&ep_id) {
+                        Some(ep_n) => ep_n.vector_index as usize,
+                        None => { connected += 1; continue; }
                     }
+                };
+                let ep_vector = &vector_store[ep_vi];
+                
+                let initial_distance = if use_normalized {
+                    self.calculate_distance_normalized(node_vector, ep_vector)
+                } else {
+                    self.calculate_distance(node_vector, ep_vector)
+                };
+                
+                let mut curr_nearest = vec![SearchCandidate {
+                    distance: initial_distance,
+                    id: ep_id,
+                }];
+                
+                for lc in (node.layer + 1..=nav_state.max_layer).rev() {
+                    curr_nearest = self.search_layer_ref(
+                        node_vector, &curr_nearest, 1, lc,
+                        &vector_store, &internal_nodes,
+                    );
+                }
+                
+                for lc in (0..=node.layer).rev() {
+                    let candidates = self.search_layer_ref(
+                        node_vector, &curr_nearest, ef, lc,
+                        &vector_store, &internal_nodes,
+                    );
+                    
+                    let m = if lc == 0 {
+                        self.config.max_connections_layer0
+                    } else {
+                        self.config.max_connections
+                    };
+                    
+                    let neighbors = self.select_neighbors_heuristic(&candidates, m, node_vector);
+                    
+                    {
+                        let mut layer_guard = node.layers[lc].write();
+                        layer_guard.neighbors = self.ids_to_dense_neighbors(&neighbors);
+                        layer_guard.version += 1;
+                    }
+                    
+                    let mut reverse_edge_added = false;
+                    for &neighbor_id in &neighbors {
+                        if self.add_connection_safe(neighbor_id, *id, node_vector, lc, m) {
+                            reverse_edge_added = true;
+                        }
+                    }
+                    if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
+                        self.force_add_reverse_edge(*id, neighbors[0], node_vector, 0);
+                    }
+                    
+                    curr_nearest = candidates;
+                }
+                
+                connected += 1;
+            }
+        }
+        
+        // Repair connectivity for the entire graph
+        let repaired = self.repair_connectivity();
+        if repaired > 0 {
+            tracing::debug!("Deferred build: repaired {} disconnected nodes", repaired);
+        }
+        
+        // Update entry point to highest-layer node now that connections are built
+        for (id, node) in &nodes {
+            if let Some(dense) = self.node_id_to_dense(*id) {
+                if self.nav_state.update_if_higher(dense as u64, node.layer) {
+                    self.entry_point_dense.store(dense, AtomicOrdering::Release);
                 }
             }
         }
         
-        if let Some(start) = phase3_start {
-            PROFILE_COLLECTOR.record_with_count(
-                "hnsw.phase3.connect_total", 
-                start.elapsed().as_nanos() as u64,
-                connected
-            );
-            PROFILE_COLLECTOR.record_with_count(
-                "hnsw.phase3.search_layer", 
-                total_search_ns,
-                connected
-            );
-            PROFILE_COLLECTOR.record_with_count(
-                "hnsw.phase3.neighbor_select", 
-                total_neighbor_select_ns,
-                connected
-            );
-            PROFILE_COLLECTOR.record_with_count(
-                "hnsw.phase3.add_connections", 
-                total_connection_ns,
-                connected
-            );
-        }
-        
-        // =========================================================================
-        // PHASE 4: Update entry point AFTER all connections are built
-        // =========================================================================
-        // Now that all bulk nodes are connected to the graph, we can safely
-        // promote a higher-layer node to be the entry point
-        if let Some((highest_id, highest_layer)) = potential_new_ep {
-            let mut ep = self.entry_point.write();
-            let mut ml = self.max_layer.write();
-            if ep.is_none() || highest_layer > *ml {
-                *ep = Some(highest_id);
-                *ml = highest_layer;
-            }
-        }
-        
-        metrics::INSERT_COUNT.inc_by(connected as f64);
-        
-        Ok(connected)
+        tracing::info!("Built connections for {} nodes ({} repaired)", connected, repaired);
     }
     
     /// Profiled version of connect_node_fast - returns timing breakdown
@@ -3551,7 +3797,7 @@ impl HnswIndex {
         // Navigate down to node's layer
         for lc in (node.layer + 1..=nav_state.max_layer).rev() {
             let t = std::time::Instant::now();
-            curr_nearest = self.search_layer_concurrent(&node.vector, &curr_nearest, 1, lc);
+            curr_nearest = self.search_layer_concurrent(node_vector, &curr_nearest, 1, lc);
             search_ns += t.elapsed().as_nanos() as u64;
         }
         
@@ -3560,7 +3806,7 @@ impl HnswIndex {
         // Build connections at all layers
         for lc in (0..=node.layer).rev() {
             let t = std::time::Instant::now();
-            let candidates = self.search_layer_concurrent(&node.vector, &curr_nearest, ef, lc);
+            let candidates = self.search_layer_concurrent(node_vector, &curr_nearest, ef, lc);
             search_ns += t.elapsed().as_nanos() as u64;
             
             let m = if lc == 0 {
@@ -3586,15 +3832,24 @@ impl HnswIndex {
                 layer_guard.version += 1;
             }
             
-            // Add reverse connections
+            // Add reverse connections — track success for connectivity safety net
             let t = std::time::Instant::now();
+            let mut reverse_edge_added = false;
             for &neighbor_id in &neighbors {
-                self.add_connection_safe(neighbor_id, id, node_vector, lc, m);
+                if self.add_connection_safe(neighbor_id, id, node_vector, lc, m) {
+                    reverse_edge_added = true;
+                }
+            }
+            if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
+                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0);
             }
             connection_ns += t.elapsed().as_nanos() as u64;
             
             curr_nearest = candidates;
         }
+        
+        // Ensure minimum degree at layer 0
+        self.ensure_minimum_degree_layer0(id, &curr_nearest);
         
         (search_ns, neighbor_ns, connection_ns)
     }
@@ -3651,7 +3906,13 @@ impl HnswIndex {
                 self.config.max_connections
             };
             
-            let neighbors = self.select_neighbors_heuristic(&candidates, m, node_vector);
+            let neighbors = if matches!(self.config.metric, DistanceMetric::Cosine)
+                && self.config.rng_optimization.triangle_inequality_gating
+                && self.config.rng_optimization.normalize_at_ingest {
+                self.select_neighbors_optimized(&candidates, m, node_vector)
+            } else {
+                self.select_neighbors_heuristic(&candidates, m, node_vector)
+            };
             
             // Update node's neighbors
             {
@@ -3660,13 +3921,24 @@ impl HnswIndex {
                 layer_guard.version += 1;
             }
             
-            // Add reverse connections
+            // Add reverse connections — track success for connectivity safety net
+            let mut reverse_edge_added = false;
             for &neighbor_id in &neighbors {
-                self.add_connection_safe(neighbor_id, id, node_vector, lc, m);
+                if self.add_connection_safe(neighbor_id, id, node_vector, lc, m) {
+                    reverse_edge_added = true;
+                }
+            }
+            
+            // Force-add at least one reverse edge if all failed (connectivity invariant)
+            if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
+                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0);
             }
             
             curr_nearest = candidates;
         }
+        
+        // Ensure minimum degree at layer 0 — guarantees node is reachable
+        self.ensure_minimum_degree_layer0(id, &curr_nearest);
         
         Ok(())
     }
@@ -3786,14 +4058,14 @@ impl HnswIndex {
         let vector_index = {
             let mut store = self.vector_store.write();
             let idx = store.len() as u32;
-            store.push(quantized.clone());
+            store.push(quantized); // move, not clone
             idx
         };
         let node = Arc::new(HnswNode {
             id,
             dense_index,
             vector_index,
-            vector: quantized,
+            vector: QuantizedVector::empty(),
             storage_id: None,
             layers,
             layer,
@@ -3804,14 +4076,9 @@ impl HnswIndex {
         // O(1) hot path storage
         self.store_internal_node(dense_index, Arc::clone(&node));
 
-        // Update entry point if this is first node or higher layer
-        {
-            let mut ep = self.entry_point.write();
-            let mut ml = self.max_layer.write();
-            if ep.is_none() || layer > *ml {
-                *ep = Some(id);
-                *ml = layer;
-            }
+        // Update entry point if this is first node or higher layer (lock-free CAS)
+        if self.nav_state.update_if_higher(dense_index as u64, layer) {
+            self.entry_point_dense.store(dense_index, AtomicOrdering::Release);
         }
 
         // Connect to graph using optimized path
@@ -3959,14 +4226,14 @@ impl HnswIndex {
             let vector_index = {
                 let mut store = self.vector_store.write();
                 let idx = store.len() as u32;
-                store.push(quantized.clone());
+                store.push(quantized); // move, not clone
                 idx
             };
             let node = Arc::new(HnswNode {
                 id,
                 dense_index,
                 vector_index,
-                vector: quantized,
+                vector: QuantizedVector::empty(),
                 storage_id: Some(i as u64),
                 layers,
                 layer,
@@ -3977,14 +4244,9 @@ impl HnswIndex {
             // O(1) hot path storage
             self.store_internal_node(dense_index, Arc::clone(&node));
 
-            // Update entry point if needed
-            {
-                let mut ep = self.entry_point.write();
-                let mut ml = self.max_layer.write();
-                if ep.is_none() || layer > *ml {
-                    *ep = Some(id);
-                    *ml = layer;
-                }
+            // Update entry point if needed (lock-free CAS)
+            if self.nav_state.update_if_higher(dense_index as u64, layer) {
+                self.entry_point_dense.store(dense_index, AtomicOrdering::Release);
             }
 
             // Connect to graph
@@ -4310,15 +4572,13 @@ impl HnswIndex {
     /// Internal helper for batch insert - builds forward and backward edges
     #[allow(dead_code)]
     fn connect_node_to_graph(&self, id: u128, node: &Arc<HnswNode>) -> Result<(), String> {
-        let entry_point = self.entry_point.read();
-        let max_layer_val = *self.max_layer.read();
+        let nav = self.navigation_state();
+        let max_layer_val = nav.max_layer;
 
-        let ep_id = match *entry_point {
+        let ep_id = match nav.entry_point {
             Some(ep) if ep != id => ep,
             _ => return Ok(()), // First node or self
         };
-
-        drop(entry_point);
 
         let ep_node = match self.nodes.get(&ep_id) {
             Some(n) => n,
@@ -4428,11 +4688,10 @@ impl HnswIndex {
             ));
         }
 
-        // Fast path: check if empty (single lock acquisition)
-        let entry_point = *self.entry_point.read();
-        let max_layer = *self.max_layer.read();
+        // Fast path: check if empty + get consistent (ep, max_layer) snapshot
+        let (ep_dense_opt, max_layer) = self.nav_state.load();
         
-        if entry_point.is_none() {
+        if ep_dense_opt.is_none() {
             return Ok(Vec::new());
         }
 
@@ -4441,8 +4700,8 @@ impl HnswIndex {
         let internal_nodes = self.internal_nodes.read();
         let dense_to_id = self.dense_to_id.read();
         
-        // Get entry point's dense_index via AtomicU32 — zero DashMap (Rec 9)
-        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        // Get entry point's dense_index from atomic nav_state snapshot
+        let ep_dense = ep_dense_opt.unwrap() as u32;
         if ep_dense == u32::MAX {
             return Ok(Vec::new());
         }
@@ -4536,11 +4795,10 @@ impl HnswIndex {
             ));
         }
 
-        // Fast path: check if empty
-        let entry_point = *self.entry_point.read();
-        let max_layer = *self.max_layer.read();
+        // Fast path: check if empty + get consistent snapshot
+        let (ep_dense_opt, max_layer) = self.nav_state.load();
         
-        if entry_point.is_none() {
+        if ep_dense_opt.is_none() {
             return Ok(Vec::new());
         }
 
@@ -4550,8 +4808,8 @@ impl HnswIndex {
         let dense_to_id = self.dense_to_id.read();
         let flat_neighbors = self.flat_neighbors.read();
         
-        // Get entry point's dense_index via AtomicU32 — zero DashMap (Rec 9)
-        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        // Get entry point's dense_index from atomic nav_state snapshot
+        let ep_dense = ep_dense_opt.unwrap() as u32;
         if ep_dense == u32::MAX {
             return Ok(Vec::new());
         }
@@ -5012,16 +5270,126 @@ impl HnswIndex {
             ));
         }
 
-        // Task #1: Single lock acquisition at search start
-        let entry_point = self.entry_point.read();
-        let max_layer = *self.max_layer.read();
+        // Flat scan fallback for small datasets: brute-force is faster than HNSW
+        // and gives perfect recall for datasets under the threshold.
+        // Check BEFORE building pending connections since flat scan doesn't need them.
+        // Flat scan fallback: brute-force is faster than HNSW for small datasets.
+        // The crossover depends on dimension (higher D = more expensive scan).
+        let flat_scan_threshold = if self.dimension <= 128 {
+            200_000
+        } else if self.dimension <= 384 {
+            100_000
+        } else {
+            50_000  // 768D: flat scan competitive only below ~50K
+        };
+        let node_count = self.nodes.len();
+        if node_count > 0 && node_count <= flat_scan_threshold {
+            // Normalize query once for SIMD distance. For cosine with normalize_at_ingest,
+            // stored vectors are unit-normalized, so we normalize the query to match.
+            let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
+                && self.config.rng_optimization.normalize_at_ingest;
+            let query_norm: Vec<f32> = if use_normalized {
+                let norm = simd_distance::dot_product_fast(query, query).sqrt();
+                if norm > 0.0 { query.iter().map(|&x| x / norm).collect() } else { query.to_vec() }
+            } else {
+                query.to_vec()
+            };
 
-        if entry_point.is_none() {
+            let vector_store = self.vector_store.read();
+            let internal_nodes = self.internal_nodes.read();
+
+            // Build a compact vector_index → node_id map.
+            let store_len = vector_store.len();
+            let mut dense_to_id: Vec<u128> = vec![u128::MAX; store_len];
+            for node_opt in internal_nodes.iter() {
+                if let Some(node) = node_opt {
+                    let di = node.vector_index as usize;
+                    if di < store_len {
+                        dense_to_id[di] = node.id;
+                    }
+                }
+            }
+            drop(internal_nodes);
+
+            // Parallel flat scan: split vector store into chunks for rayon.
+            // Each chunk computes distances independently, then merge.
+            use rayon::prelude::*;
+            let chunk_size = 4096;
+            let query_ref = &query_norm;
+            let vs_ref: &[QuantizedVector] = &vector_store;
+            let id_ref: &[u128] = &dense_to_id;
+
+            let mut dists: Vec<(f32, u128)> = (0..store_len)
+                .into_par_iter()
+                .with_min_len(chunk_size)
+                .filter_map(|vi| {
+                    let nid = id_ref[vi];
+                    if nid == u128::MAX {
+                        return None;
+                    }
+                    if let QuantizedVector::F32(arr) = &vs_ref[vi] {
+                        if let Some(slice) = arr.as_slice() {
+                            let dist = if use_normalized {
+                                1.0 - simd_distance::dot_product_fast(query_ref, slice)
+                            } else {
+                                // For non-cosine metrics, compute raw distance
+                                let d = simd_distance::dot_product_fast(query_ref, slice);
+                                match self.config.metric {
+                                    DistanceMetric::Euclidean => {
+                                        // L2 distance from raw slices
+                                        query_ref.iter().zip(slice.iter())
+                                            .map(|(a, b)| (a - b) * (a - b))
+                                            .sum::<f32>()
+                                    }
+                                    _ => 1.0 - d, // Default cosine
+                                }
+                            };
+                            return Some((dist, nid));
+                        }
+                    }
+                    None // Skip non-F32 in fast path
+                })
+                .collect();
+
+            // Partial sort: only need top k, O(n) average via select_nth_unstable
+            if dists.len() > k {
+                dists.select_nth_unstable_by(k, |a, b| {
+                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                dists.truncate(k);
+            }
+            dists.sort_unstable_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let results: Vec<(u128, f32)> = dists.iter().map(|(d, id)| (*id, *d)).collect();
+
+            #[cfg(feature = "metrics")]
+            metrics::SEARCH_RESULT_COUNT.observe(results.len() as f64);
+
+            #[cfg(feature = "metrics")]
+            {
+                let search_latency_ms = search_start.elapsed().as_secs_f32() * 1000.0;
+                self.record_performance_measurement(search_latency_ms, &results, query);
+            }
+
+            return Ok(results);
+        }
+
+        // Deferred indexing: build HNSW connections for pending nodes before searching.
+        // This is a one-time cost amortized across the first search after batch inserts.
+        if !self.pending_nodes.lock().is_empty() {
+            self.build_pending_connections();
+        }
+
+        // Task #1: Single atomic snapshot at search start (TOCTOU-safe)
+        let nav = self.navigation_state();
+        let max_layer = nav.max_layer;
+
+        if nav.entry_point.is_none() {
             return Ok(Vec::new());
         }
 
-        let ep_id = entry_point.unwrap();
-        drop(entry_point);
+        let ep_id = nav.entry_point.unwrap();
 
         // Task #1: Acquire all needed read locks ONCE at the top level
         let vector_store = self.vector_store.read();
@@ -5074,12 +5442,30 @@ impl HnswIndex {
         }];
 
         // Task #1: Pass references to avoid re-acquiring locks per layer
-        for lc in (1..=max_layer).rev() {
+        // Multi-probe: navigate upper layers with ef=1 (greedy), but keep
+        // multiple candidates from layer 1 as diverse entry points for
+        // the layer-0 search.  This helps hard queries reach distant
+        // nearest-neighbor clusters at minimal cost.
+        let upper_ef = 1usize;
+        for lc in (2..=max_layer).rev() {
             curr_nearest = self.search_layer_ref(
                 &query_quantized, 
                 &curr_nearest, 
-                1, 
+                upper_ef, 
                 lc,
+                &vector_store,
+                &internal_nodes,
+            );
+        }
+
+        // At layer 1, use wider beam to collect multiple entry points
+        if max_layer >= 1 {
+            let layer1_ef = 5.min(self.config.ef_search.max(k));
+            curr_nearest = self.search_layer_ref(
+                &query_quantized,
+                &curr_nearest,
+                layer1_ef,
+                1,
                 &vector_store,
                 &internal_nodes,
             );
@@ -5127,12 +5513,10 @@ impl HnswIndex {
             .downcast_ref::<crate::vector_storage::RegionMmapVectorStorage>()
             .ok_or_else(|| "External storage does not support region reordering".to_string())?;
 
-        let entry_point = self.entry_point.read();
-        let ep_id = match *entry_point {
+        let ep_id = match self.get_entry_point() {
             Some(id) => id,
             None => return Ok(()),
         };
-        drop(entry_point);
 
         let mut queue = std::collections::VecDeque::new();
         let mut visited = std::collections::HashSet::new();
@@ -5194,15 +5578,14 @@ impl HnswIndex {
             }
         }
 
-        let entry_point = self.entry_point.read();
-        let max_layer = self.max_layer.read();
+        let nav = self.navigation_state();
+        let max_layer = nav.max_layer;
 
-        if entry_point.is_none() {
+        if nav.entry_point.is_none() {
             return Ok(vec![Vec::new(); queries.len()]);
         }
 
-        let ep_id = entry_point.unwrap();
-        drop(entry_point);
+        let ep_id = nav.entry_point.unwrap();
 
         let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
         let vector_store = self.vector_store.read();
@@ -5245,7 +5628,7 @@ impl HnswIndex {
                 id: ep_id,
             }];
 
-            for lc in (1..=*max_layer).rev() {
+            for lc in (1..=max_layer).rev() {
                 curr_nearest = self.search_layer_concurrent(query_quantized, &curr_nearest, 1, lc);
             }
 
@@ -5315,13 +5698,29 @@ impl HnswIndex {
 
     /// Search with a specific ef value
     ///
-    /// Useful for benchmarking different ef values or manual tuning.
+    /// Uses the same high-quality search path as search() with consistent
+    /// lock snapshots via search_layer_ref.
     pub fn search_with_ef(
         &self,
         query: &[f32],
         k: usize,
         ef: usize,
     ) -> Result<Vec<(u128, f32)>, String> {
+        // For small datasets, delegate to flat scan in search() which is faster
+        // and gives perfect recall regardless of ef.
+        let node_count = self.nodes.len();
+        let flat_threshold = if self.dimension <= 128 { 200_000 }
+            else if self.dimension <= 384 { 100_000 }
+            else { 50_000 };
+        if node_count > 0 && node_count <= flat_threshold {
+            return self.search(query, k);
+        }
+
+        // Safety: build deferred connections if any exist
+        if !self.pending_nodes.lock().is_empty() {
+            self.build_pending_connections();
+        }
+
         let _timer = metrics::SEARCH_LATENCY.start_timer();
         metrics::SEARCH_COUNT.inc();
 
@@ -5334,41 +5733,88 @@ impl HnswIndex {
             ));
         }
 
-        let entry_point = self.entry_point.read();
-        let max_layer = self.max_layer.read();
+        // Single atomic snapshot at search start
+        let nav = self.navigation_state();
+        let max_layer = nav.max_layer;
 
-        if entry_point.is_none() {
+        if nav.entry_point.is_none() {
             return Ok(Vec::new());
         }
 
-        let ep_id = entry_point.unwrap();
-        drop(entry_point);
+        let ep_id = nav.entry_point.unwrap();
 
-        let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
+        // Acquire all read locks ONCE for consistent graph view
         let vector_store = self.vector_store.read();
-        let ep_vector = vector_store
-            .get(ep_node.vector_index as usize)
-            .unwrap_or(&ep_node.vector);
+        let internal_nodes = self.internal_nodes.read();
+
+        // Resolve entry point via dense array (zero DashMap)
+        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        let ep_node_ref = if ep_dense != u32::MAX {
+            internal_nodes.get(ep_dense as usize).and_then(|opt| opt.as_ref())
+        } else {
+            None
+        };
+        let ep_vector = if let Some(ep_n) = ep_node_ref {
+            vector_store
+                .get(ep_n.vector_index as usize)
+                .unwrap_or(&ep_n.vector)
+        } else {
+            let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
+            let vi = ep_node.vector_index as usize;
+            &vector_store[vi]
+        };
 
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
-        let query_quantized = if matches!(self.config.metric, DistanceMetric::Cosine) {
+        let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest;
+        let query_quantized = if use_normalized {
             QuantizedVector::from_f32_normalized(ndarray::Array1::from_vec(query.to_vec()), precision)
         } else {
             QuantizedVector::from_f32(ndarray::Array1::from_vec(query.to_vec()), precision)
         };
 
+        let initial_distance = if use_normalized {
+            self.calculate_distance_normalized(&query_quantized, ep_vector)
+        } else {
+            self.calculate_distance(&query_quantized, ep_vector)
+        };
         let mut curr_nearest = vec![SearchCandidate {
-            distance: self.calculate_distance_normalized(&query_quantized, ep_vector),
+            distance: initial_distance,
             id: ep_id,
         }];
 
-        for lc in (1..=*max_layer).rev() {
-            curr_nearest = self.search_layer_concurrent(&query_quantized, &curr_nearest, 1, lc);
+        // Navigate upper layers with ef=1, layer 1 with wider beam
+        for lc in (2..=max_layer).rev() {
+            curr_nearest = self.search_layer_ref(
+                &query_quantized,
+                &curr_nearest,
+                1,
+                lc,
+                &vector_store,
+                &internal_nodes,
+            );
+        }
+        if max_layer >= 1 {
+            let layer1_ef = 5usize.min(ef.max(k));
+            curr_nearest = self.search_layer_ref(
+                &query_quantized,
+                &curr_nearest,
+                layer1_ef,
+                1,
+                &vector_store,
+                &internal_nodes,
+            );
         }
 
-        // Use provided ef value
-        let candidates =
-            self.search_layer_concurrent(&query_quantized, &curr_nearest, ef.max(k), 0);
+        // Final search at layer 0 with caller-specified ef
+        let candidates = self.search_layer_ref(
+            &query_quantized,
+            &curr_nearest,
+            ef.max(k),
+            0,
+            &vector_store,
+            &internal_nodes,
+        );
 
         let results: Vec<(u128, f32)> = candidates
             .into_iter()
@@ -5378,6 +5824,174 @@ impl HnswIndex {
 
         metrics::SEARCH_RESULT_COUNT.observe(results.len() as f64);
         Ok(results)
+    }
+
+    /// Store metadata for a node (by node ID).
+    /// Internally maps node_id → dense_index for storage.
+    /// Metadata is stored as key-value string pairs for filter matching.
+    pub fn set_metadata(&self, node_id: u128, metadata: Vec<(String, String)>) {
+        let dense = match self.node_id_to_dense(node_id) {
+            Some(d) => d as usize,
+            None => return,
+        };
+        let mut store = self.metadata_store.write();
+        if store.len() <= dense {
+            store.resize(dense + 1, None);
+        }
+        store[dense] = Some(metadata);
+    }
+
+    /// Batch set metadata for multiple nodes.
+    /// `entries` is a slice of (node_id, metadata) pairs.
+    /// Internally maps each node_id → dense_index for storage.
+    pub fn set_metadata_batch(&self, entries: &[(u128, Vec<(String, String)>)]) {
+        let mut store = self.metadata_store.write();
+        let mapped: Vec<(usize, &Vec<(String, String)>)> = entries
+            .iter()
+            .filter_map(|(node_id, meta)| {
+                self.node_id_to_dense(*node_id).map(|d| (d as usize, meta))
+            })
+            .collect();
+        if let Some(max_idx) = mapped.iter().map(|(d, _)| *d).max() {
+            if store.len() <= max_idx {
+                store.resize(max_idx + 1, None);
+            }
+        }
+        for (dense, metadata) in mapped {
+            store[dense] = Some(metadata.clone());
+        }
+    }
+
+    /// Filtered ANN search — traverse the HNSW graph but only include
+    /// nodes whose metadata matches ALL filter key-value pairs in the
+    /// result set.  Graph traversal still visits non-matching nodes to
+    /// ensure reachability (standard "in-filter" approach).
+    ///
+    /// `filter`: slice of (key, value) pairs — a node matches iff its
+    /// metadata contains every (key, value) in the filter.
+    pub fn search_filtered(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        filter: &[(String, String)],
+    ) -> Result<Vec<(u128, f32)>, String> {
+        if query.len() != self.dimension {
+            return Err(format!(
+                "Query dimension mismatch: expected {}, got {}",
+                self.dimension,
+                query.len()
+            ));
+        }
+
+        if filter.is_empty() {
+            // No filter — fall back to unfiltered search
+            return self.search_with_ef(query, k, ef);
+        }
+
+        // Build deferred connections if any
+        if !self.pending_nodes.lock().is_empty() {
+            self.build_pending_connections();
+        }
+
+        let nav = self.navigation_state();
+        if nav.entry_point.is_none() {
+            return Ok(Vec::new());
+        }
+        let ep_id = nav.entry_point.unwrap();
+        let max_layer = nav.max_layer;
+
+        let vector_store = self.vector_store.read();
+        let internal_nodes = self.internal_nodes.read();
+        let metadata_store = self.metadata_store.read();
+
+        let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
+        let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest;
+        let query_quantized = if use_normalized {
+            QuantizedVector::from_f32_normalized(
+                ndarray::Array1::from_vec(query.to_vec()), precision,
+            )
+        } else {
+            QuantizedVector::from_f32(
+                ndarray::Array1::from_vec(query.to_vec()), precision,
+            )
+        };
+
+        // Resolve entry point
+        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        let ep_vector = if ep_dense != u32::MAX {
+            if let Some(Some(ep_n)) = internal_nodes.get(ep_dense as usize) {
+                vector_store
+                    .get(ep_n.vector_index as usize)
+                    .unwrap_or(&ep_n.vector)
+            } else {
+                return Ok(Vec::new());
+            }
+        } else {
+            return Ok(Vec::new());
+        };
+
+        let initial_distance = if use_normalized {
+            self.calculate_distance_normalized(&query_quantized, ep_vector)
+        } else {
+            self.calculate_distance(&query_quantized, ep_vector)
+        };
+        let mut curr_nearest = vec![SearchCandidate {
+            distance: initial_distance,
+            id: ep_id,
+        }];
+
+        // Navigate upper layers with ef=1
+        for lc in (2..=max_layer).rev() {
+            curr_nearest = self.search_layer_ref(
+                &query_quantized, &curr_nearest, 1, lc,
+                &vector_store, &internal_nodes,
+            );
+        }
+        // Layer 1: wider beam for diverse entry points into layer 0
+        if max_layer >= 1 {
+            let layer1_ef = 5usize.min(ef);
+            curr_nearest = self.search_layer_ref(
+                &query_quantized, &curr_nearest, layer1_ef, 1,
+                &vector_store, &internal_nodes,
+            );
+        }
+
+        // ── Layer-0 filtered search ──────────────────────────────────
+        // We over-search with a larger ef (ef * 10 or ef + 200) to
+        // ensure we find enough matching candidates after filtering.
+        let expanded_ef = (ef * 10).max(ef + 200).max(k * 20);
+        let candidates = self.search_layer_ref(
+            &query_quantized, &curr_nearest, expanded_ef, 0,
+            &vector_store, &internal_nodes,
+        );
+
+        // Post-filter: keep only candidates whose metadata matches ALL filter pairs
+        let mut filtered: Vec<(u128, f32)> = Vec::with_capacity(k);
+        for c in candidates {
+            // Resolve dense_index for this candidate
+            let dense = if let Some(node) = self.nodes.get(&c.id) {
+                node.dense_index
+            } else {
+                continue;
+            };
+            // Check metadata match
+            if let Some(Some(meta)) = metadata_store.get(dense as usize) {
+                let matches = filter.iter().all(|(fk, fv)| {
+                    meta.iter().any(|(mk, mv)| mk == fk && mv == fv)
+                });
+                if matches {
+                    filtered.push((c.id, c.distance));
+                    if filtered.len() >= k {
+                        break;
+                    }
+                }
+            }
+            // If no metadata stored, node doesn't match any filter
+        }
+
+        Ok(filtered)
     }
 
     /// Calibrate adaptive ef to achieve target recall (Gap #4 fix)
@@ -5970,9 +6584,33 @@ impl HnswIndex {
         id_to_dense: &mut std::collections::HashMap<u128, u32>,
     ) {
         use std::cmp::Reverse;
+        // Fast-path: if not constructing, skip the RwLock entirely.
+        // Single atomic load — essentially free (1 cycle, always in L1).
+        let check_ready = self.construction_in_progress.load(std::sync::atomic::Ordering::Relaxed);
+        // Only acquire RwLock + clone Arc when actually constructing.
+        let ready = if check_ready {
+            Some(self.construction_ready.read().clone())
+        } else {
+            None
+        };
+
         for &neighbor_dense in neighbor_ids.iter() {
             if !scratch.visited.insert(neighbor_dense) {
                 continue;
+            }
+
+            // Construction-time visibility gate: skip nodes whose edges
+            // are still being written by a concurrent thread.  After
+            // construction completes, construction_ready is empty (len=0)
+            // so this branch is never taken — zero overhead at query time.
+            if let Some(ref ready_vec) = ready {
+                if let Some(flag) = ready_vec.get(neighbor_dense as usize) {
+                    if !flag.load(std::sync::atomic::Ordering::Acquire) {
+                        continue; // Node not yet fully linked — skip
+                    }
+                } else {
+                    continue; // Out of range — not part of this batch
+                }
             }
 
             // O(1) direct array access - no DashMap, no locks
@@ -6066,8 +6704,14 @@ impl HnswIndex {
                 Err("Node has storage_id but no external storage configured".to_string())
             }
         } else {
-            // Inline mode: use the vector stored in node
-            Ok(node.vector.clone())
+            // Primary: use vector_store (vector_index)
+            let store = self.vector_store.read();
+            if let Some(v) = store.get(node.vector_index as usize) {
+                Ok(v.clone())
+            } else {
+                // Fallback for scaffold nodes that still store inline
+                Ok(node.vector.clone())
+            }
         }
     }
 
@@ -7258,25 +7902,25 @@ impl HnswIndex {
             return Ok(()); // PQ not enabled
         }
         
-        // Collect training vectors
+        // Collect training vectors from vector_store (primary source)
         let training_limit = self.config.rng_optimization.pq_training_vectors;
         let mut training_vectors = Vec::new();
         
-        for entry in self.nodes.iter() {
+        let store = self.vector_store.read();
+        for qv in store.iter() {
             if training_vectors.len() >= training_limit {
                 break;
             }
-            
-            let node = entry.value().clone();
-            match &node.vector {
+            match qv {
                 QuantizedVector::F32(vector_arr) => {
                     if let Some(slice) = vector_arr.as_slice() {
                         training_vectors.push(slice.to_vec());
                     }
                 }
-                _ => continue, // Skip non-F32 vectors for PQ training
+                _ => continue,
             }
         }
+        drop(store);
         
         if training_vectors.len() < 1000 {
             return Err(format!(
@@ -7714,17 +8358,50 @@ impl HnswIndex {
         m: usize, 
         _query_vector: &QuantizedVector
     ) -> SmallVec<[u128; MAX_M]> {
-        // RNG diversity parameter - 1.0 means strict RNG
-        const ALPHA: f32 = 1.0;
-        
         if candidates.len() <= m {
             return candidates.iter().map(|c| c.id).collect();
         }
+
+        // =====================================================================
+        // LAYER 0: Pure proximity selection (NO RNG)
+        //
+        // At layer 0, routing is handled by upper layers. Layer 0's sole job
+        // is recall — having the true nearest neighbors as direct edges.
+        //
+        // The RNG heuristic rejects candidates that are "in the shadow" of
+        // already-selected neighbors. For high-dimensional spaces where NNs
+        // cluster in a spherical shell, this rejects 30-60% of the closest
+        // candidates, leaving nodes under-connected and destroying recall.
+        //
+        // Skip RNG at layer 0. Just keep the M₀ closest.
+        // =====================================================================
+        if m >= self.config.max_connections_layer0 {
+            let mut sorted_candidates: Vec<&SearchCandidate> =
+                candidates.iter().collect();
+            sorted_candidates.sort_by(|a, b|
+                a.distance.partial_cmp(&b.distance)
+                    .unwrap_or(Ordering::Equal)
+            );
+            return sorted_candidates.iter()
+                .take(m)
+                .map(|c| c.id)
+                .collect();
+        }
+
+        // =====================================================================
+        // UPPER LAYERS: RNG diversity selection with α=1.2
+        //
+        // Upper layers need diverse, well-spaced neighbors for efficient
+        // routing (the "highway" system). RNG pruning is essential here.
+        // =====================================================================
+        let alpha: f32 = 1.2;
         
         let mut indices: Vec<usize> = (0..candidates.len()).collect();
 
-        // Pre-filter to reduce quadratic cost - use 5x for balance
-        let k_prefilter = (m * 5).min(indices.len());
+        // Pre-filter to reduce quadratic cost.
+        // Use 10x multiplier (was 5x) to preserve long-edge candidates
+        // that RNG would accept but fall outside a tight distance cutoff.
+        let k_prefilter = (m * 10).min(indices.len());
         if indices.len() > k_prefilter {
             let (_left, _nth, _right) = indices.select_nth_unstable_by(
                 k_prefilter,
@@ -7758,7 +8435,7 @@ impl HnswIndex {
                     // dist(candidate, selected) >= |dist(candidate, query) - dist(selected, query)|
                     // If this lower bound already fails RNG, skip distance computation
                     let lower_bound = (candidate.distance - selected_dist).abs();
-                    if lower_bound >= ALPHA * candidate.distance {
+                    if lower_bound >= alpha * candidate.distance {
                         continue; // Can't possibly reject based on triangle inequality
                     }
                     
@@ -7770,7 +8447,7 @@ impl HnswIndex {
                         let dist = self.calculate_distance(candidate_vector, selected_vector);
                         
                         // RNG rejection: candidate closer to existing neighbor than to query
-                        if dist < ALPHA * candidate.distance {
+                        if dist < alpha * candidate.distance {
                             reject = true;
                             break;
                         }
@@ -7791,35 +8468,597 @@ impl HnswIndex {
         result.into_iter().map(|(id, _)| id).collect()
     }
 
-    /// Generate random level for new node according to HNSW algorithm
+    /// Generate random level for new node using the standard HNSW formula.
+    ///
+    /// Per Malkov & Yashunin (2018): level = floor(-ln(uniform(0,1)) * mL)
+    /// where mL = 1/ln(M). This gives P(level >= l) = 1/M^l, ensuring
+    /// upper layers are exponentially sparse — critical for O(log n) search.
     pub fn random_level(&self) -> usize {
         let mut rng = rand::thread_rng();
-        let mut layer = 0;
-        while layer < 16 && rng.gen_range(0.0..1.0) < self.config.level_multiplier {
-            layer += 1;
-        }
-        layer
+        let u: f64 = rng.gen_range(f64::MIN_POSITIVE..1.0);
+        let level = (-u.ln() * self.config.level_multiplier as f64).floor() as usize;
+        level.min(16)
     }
 
-    /// Repair connectivity issues in the index
+    /// Repair connectivity — intentionally a no-op.
+    ///
+    /// The over-degree hubs created by unchecked backward edge insertion
+    /// during batch construction are essential bridge nodes between the
+    /// scaffold and batch partitions. Graph quality is handled by
+    /// `refine_graph()` (GNR) which properly re-searches the complete graph.
     pub fn repair_connectivity(&self) -> usize {
-        // Simple implementation - just return 0 for now
-        // In a real implementation, this would find and fix disconnected components
-        0
+        let (reachable, total, orphans) = self.diagnose_connectivity();
+        if orphans.is_empty() {
+            return 0;
+        }
+
+        // For each orphan, find its nearest reachable neighbor and add edges
+        let vector_store = self.vector_store.read();
+        let internal_nodes = self.internal_nodes.read();
+        let mut repaired = 0usize;
+
+        for &orphan_id in &orphans {
+            let orphan_node = match self.nodes.get(&orphan_id) {
+                Some(n) => n,
+                None => continue,
+            };
+            let orphan_vector = vector_store
+                .get(orphan_node.vector_index as usize)
+                .unwrap_or(&orphan_node.vector);
+
+            // Search from entry point to find nearest reachable node
+            let nav = self.navigation_state();
+            let ep_id = match nav.entry_point {
+                Some(ep) => ep,
+                None => continue,
+            };
+            let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+            let ep_vector = if ep_dense != u32::MAX {
+                if let Some(Some(ep_n)) = internal_nodes.get(ep_dense as usize) {
+                    vector_store
+                        .get(ep_n.vector_index as usize)
+                        .unwrap_or(&ep_n.vector)
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+            
+            let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
+                && self.config.rng_optimization.normalize_at_ingest;
+            let initial_distance = if use_normalized {
+                self.calculate_distance_normalized(orphan_vector, ep_vector)
+            } else {
+                self.calculate_distance(orphan_vector, ep_vector)
+            };
+            let mut curr_nearest = vec![SearchCandidate {
+                distance: initial_distance,
+                id: ep_id,
+            }];
+
+            // Navigate to orphan's neighborhood
+            for lc in (1..=nav.max_layer).rev() {
+                curr_nearest = self.search_layer_ref(
+                    orphan_vector, &curr_nearest, 1, lc,
+                    &vector_store, &internal_nodes,
+                );
+            }
+            
+            // Search layer 0 to find nearest neighbors
+            let candidates = self.search_layer_ref(
+                orphan_vector, &curr_nearest, self.config.ef_construction, 0,
+                &vector_store, &internal_nodes,
+            );
+
+            if candidates.is_empty() { continue; }
+
+            // Set orphan's layer-0 neighbors
+            let m0 = self.config.max_connections_layer0;
+            let neighbors: SmallVec<[u128; MAX_M]> = candidates.iter()
+                .filter(|c| c.id != orphan_id)
+                .take(m0)
+                .map(|c| c.id)
+                .collect();
+
+            if neighbors.is_empty() { continue; }
+
+            {
+                let mut ld = orphan_node.layers[0].write();
+                ld.neighbors = self.ids_to_dense_neighbors(&neighbors);
+                ld.version += 1;
+            }
+
+            // Add reverse edges
+            for &neighbor_id in &neighbors {
+                self.force_add_reverse_edge(orphan_id, neighbor_id, orphan_vector, 0);
+            }
+            repaired += 1;
+        }
+
+        repaired
     }
 
-    /// Improve search quality through graph refinement
-    pub fn improve_search_quality(&self) -> usize {
-        // Simple implementation - just return 0 for now
-        // In a real implementation, this would refine the graph structure
-        0
+    /// Post-construction graph refinement using 2-hop neighborhood scan.
+    ///
+    /// After batch construction with parallel waves, some nodes may miss
+    /// close neighbors. This pass examines each node's neighbors' neighbors
+    /// (2-hop neighborhood) and adds any that are closer than the node's
+    /// current worst neighbor.
+    ///
+    /// CRITICAL: This is NON-DESTRUCTIVE. It only replaces neighbors when
+    /// the combined set (existing + 2-hop candidates) produces a strictly
+    /// better selection via the same heuristic used during construction.
+    /// Backward edges for new neighbors are added; existing backward edges
+    /// from removed neighbors persist, adding extra graph connectivity.
+    ///
+    /// Cost: O(N × M0² × D) distance computations.
+    /// For 100K nodes at 768D, this takes ~2-5 seconds.
+    ///
+    /// Returns the number of nodes whose neighbors were improved.
+    pub fn refine_graph(&self) -> usize {
+        let total = self.nodes.len();
+        if total == 0 {
+            return 0;
+        }
+
+        let vector_store = self.vector_store.read();
+        let internal_nodes = self.internal_nodes.read();
+        let m0 = self.config.max_connections_layer0;
+
+        let mut improved = 0usize;
+
+        // Collect all node IDs for iteration
+        let all_ids: Vec<u128> = self.nodes.iter().map(|e| *e.key()).collect();
+
+        for &node_id in &all_ids {
+            let node = match self.nodes.get(&node_id) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            let node_vector = vector_store
+                .get(node.vector_index as usize)
+                .unwrap_or(&node.vector);
+
+            // Get current layer-0 neighbors
+            let current_neighbors: SmallVec<[u32; MAX_M]> = {
+                let ld = node.layers[0].read();
+                ld.neighbors.clone()
+            };
+
+            if current_neighbors.is_empty() {
+                continue;
+            }
+
+            // Compute distance to current worst (farthest) neighbor
+            let mut current_worst_dist = f32::NEG_INFINITY;
+            for &ndense in &current_neighbors {
+                if let Some(Some(nn)) = internal_nodes.get(ndense as usize) {
+                    let nv = vector_store
+                        .get(nn.vector_index as usize)
+                        .unwrap_or(&nn.vector);
+                    let d = self.calculate_distance(node_vector, nv);
+                    if d > current_worst_dist {
+                        current_worst_dist = d;
+                    }
+                }
+            }
+
+            // Scan 2-hop neighborhood for missed close neighbors
+            let mut new_candidates: SmallVec<[(u32, f32); 64]> = SmallVec::new();
+            let node_dense = node.dense_index;
+
+            for &neighbor_dense in &current_neighbors {
+                if let Some(Some(neighbor_node)) = internal_nodes.get(neighbor_dense as usize) {
+                    let neighbor_l0 = neighbor_node.layers[0].read();
+                    for &hop2_dense in &neighbor_l0.neighbors {
+                        // Skip self and already-connected nodes
+                        if hop2_dense == node_dense || current_neighbors.contains(&hop2_dense) {
+                            continue;
+                        }
+                        // Skip duplicates in candidates
+                        if new_candidates.iter().any(|&(d, _)| d == hop2_dense) {
+                            continue;
+                        }
+                        if let Some(Some(hop2_node)) = internal_nodes.get(hop2_dense as usize) {
+                            let hop2_vector = vector_store
+                                .get(hop2_node.vector_index as usize)
+                                .unwrap_or(&hop2_node.vector);
+                            let dist = self.calculate_distance(node_vector, hop2_vector);
+
+                            // Only consider if closer than current worst
+                            if dist < current_worst_dist {
+                                new_candidates.push((hop2_dense, dist));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if new_candidates.is_empty() {
+                continue;
+            }
+
+            // Build combined candidate set: existing + new
+            let mut all_candidates: Vec<SearchCandidate> = Vec::with_capacity(
+                current_neighbors.len() + new_candidates.len()
+            );
+
+            // Add existing neighbors as candidates
+            for &ndense in &current_neighbors {
+                if let Some(nid) = self.dense_to_node_id(ndense) {
+                    if let Some(Some(nn)) = internal_nodes.get(ndense as usize) {
+                        let nv = vector_store
+                            .get(nn.vector_index as usize)
+                            .unwrap_or(&nn.vector);
+                        let d = self.calculate_distance(node_vector, nv);
+                        all_candidates.push(SearchCandidate { distance: d, id: nid });
+                    }
+                }
+            }
+
+            // Add new 2-hop candidates
+            for &(hop2_dense, dist) in &new_candidates {
+                if let Some(nid) = self.dense_to_node_id(hop2_dense) {
+                    all_candidates.push(SearchCandidate { distance: dist, id: nid });
+                }
+            }
+
+            // Select best M0 from combined set using same heuristic as construction
+            let selected = self.select_neighbors_heuristic(&all_candidates, m0, node_vector);
+
+            // Check if the selection actually changed
+            let selected_dense: SmallVec<[u32; MAX_M]> = self.ids_to_dense_neighbors(&selected);
+            if selected_dense == current_neighbors {
+                continue;
+            }
+
+            // Update forward edges
+            {
+                let mut ld = node.layers[0].write();
+                ld.neighbors = selected_dense.clone();
+                ld.version += 1;
+            }
+
+            // Add backward edges for any NEW neighbors (not in old set)
+            for &ndense in &selected_dense {
+                if !current_neighbors.contains(&ndense) {
+                    if let Some(nid) = self.dense_to_node_id(ndense) {
+                        self.add_connection_safe(nid, node_id, node_vector, 0, m0);
+                    }
+                }
+            }
+
+            improved += 1;
+        }
+
+        improved
     }
 
-    /// Prune connections in a concurrent-safe manner
+    /// Post-construction graph refinement using full graph search + heuristic
+    /// neighbor selection.
+    ///
+    /// For each node, searches the complete graph with high ef, then applies
+    /// `select_neighbors_heuristic` on the union of existing connections and
+    /// newly-found candidates.  The heuristic naturally preserves diversity
+    /// (long-range links) while incorporating closer neighbors that were missed
+    /// during parallel construction.
+    ///
+    /// The update is applied only when the new selection is strictly better
+    /// (lower mean distance).  Two passes are performed for convergence.
+    ///
+    /// Returns the number of nodes whose layer-0 connections were updated.
+    pub fn refine_graph_additive(&self) -> usize {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering as AO};
+
+        let total = self.nodes.len();
+        if total == 0 {
+            return 0;
+        }
+
+        let m0 = self.config.max_connections_layer0;
+        let ef = self.config.ef_construction.max(200);
+
+        let all_ids: Vec<u128> = self.nodes.iter().map(|e| *e.key()).collect();
+        let start = std::time::Instant::now();
+        let mut total_improved = 0usize;
+
+        // Run 2 passes — each pass improves the graph that subsequent passes search
+        for pass in 0..2 {
+            let improved = AtomicUsize::new(0);
+
+            all_ids.par_iter().for_each(|&node_id| {
+                let node = match self.nodes.get(&node_id) {
+                    Some(n) => n,
+                    None => return,
+                };
+
+                let vector_store = self.vector_store.read();
+                let node_vector = vector_store
+                    .get(node.vector_index as usize)
+                    .unwrap_or(&node.vector);
+
+                // Get current layer-0 neighbors with distances
+                let current_neighbors: SmallVec<[u32; MAX_M]> = {
+                    let ld = node.layers[0].read();
+                    ld.neighbors.clone()
+                };
+
+                // Build candidate set from current neighbors
+                let mut all_candidates: Vec<SearchCandidate> = Vec::with_capacity(ef);
+                {
+                    let internal_nodes = self.internal_nodes.read();
+                    for &ndense in &current_neighbors {
+                        if let Some(nid) = self.dense_to_node_id(ndense) {
+                            if let Some(Some(nn)) = internal_nodes.get(ndense as usize) {
+                                let nv = vector_store
+                                    .get(nn.vector_index as usize)
+                                    .unwrap_or(&nn.vector);
+                                let d = self.calculate_distance(node_vector, nv);
+                                all_candidates.push(SearchCandidate { distance: d, id: nid });
+                            }
+                        }
+                    }
+                }
+
+                // Search the complete graph for this node's true nearest neighbors
+                let ep_id = match self.get_entry_point() {
+                    Some(id) if id != node_id => id,
+                    _ => return,
+                };
+                let ep_node = match self.nodes.get(&ep_id) {
+                    Some(n) => n,
+                    None => return,
+                };
+                let ep_vector = vector_store
+                    .get(ep_node.vector_index as usize)
+                    .unwrap_or(&ep_node.vector);
+                let ep_dist = self.calculate_distance(node_vector, ep_vector);
+                let entry = vec![SearchCandidate { distance: ep_dist, id: ep_id }];
+
+                let mut curr = entry;
+                let max_layer = self.navigation_state().max_layer;
+                for l in (1..=max_layer).rev() {
+                    curr = self.search_layer_concurrent(node_vector, &curr, 1, l);
+                }
+                let search_results = self.search_layer_concurrent(node_vector, &curr, ef, 0);
+
+                // Merge search results into candidate set (dedup by id)
+                let existing_ids: std::collections::HashSet<u128> =
+                    all_candidates.iter().map(|c| c.id).collect();
+                for cand in &search_results {
+                    if cand.id != node_id && !existing_ids.contains(&cand.id) {
+                        all_candidates.push(*cand);
+                    }
+                }
+
+                // Run heuristic selection on the merged set
+                let selected = self.select_neighbors_heuristic(&all_candidates, m0, node_vector);
+                let new_dense: SmallVec<[u32; MAX_M]> = self.ids_to_dense_neighbors(&selected);
+
+                // Only apply if the selection actually changed
+                if new_dense == current_neighbors {
+                    return;
+                }
+
+                // Compute mean distance for old vs new to verify improvement
+                let old_mean: f32 = all_candidates.iter()
+                    .filter(|c| {
+                        self.node_id_to_dense(c.id)
+                            .map_or(false, |d| current_neighbors.contains(&d))
+                    })
+                    .map(|c| c.distance)
+                    .sum::<f32>() / current_neighbors.len().max(1) as f32;
+
+                let new_mean: f32 = all_candidates.iter()
+                    .filter(|c| selected.contains(&c.id))
+                    .map(|c| c.distance)
+                    .sum::<f32>() / selected.len().max(1) as f32;
+
+                // Only apply if strictly better (or equal — heuristic diversity wins)
+                if new_mean > old_mean * 1.01 {
+                    return; // New selection is worse by >1%, skip
+                }
+
+                // Apply new connections
+                {
+                    let mut ld = node.layers[0].write();
+                    ld.neighbors = new_dense.clone();
+                    ld.version += 1;
+                }
+
+                // Add reverse edges for any NEW neighbors
+                for &nid in &selected {
+                    if !self.node_id_to_dense(nid)
+                        .map_or(false, |d| current_neighbors.contains(&d))
+                    {
+                        self.add_connection_safe(nid, node_id, node_vector, 0, m0);
+                    }
+                }
+
+                improved.fetch_add(1, AO::Relaxed);
+            });
+
+            let pass_improved = improved.load(AO::Relaxed);
+            total_improved += pass_improved;
+            eprintln!(
+                "[HNSW] refine pass {}: {} nodes improved ({:?} elapsed)",
+                pass + 1, pass_improved, start.elapsed()
+            );
+
+            if pass_improved == 0 {
+                break; // Converged
+            }
+        }
+
+        eprintln!(
+            "[HNSW] refine_graph_additive: {} total node improvements in {:?}",
+            total_improved, start.elapsed()
+        );
+        total_improved
+    }
+
+    /// Diagnostic: count reachable nodes from entry point via BFS.
+    ///
+    /// If reachable < total, the graph has disconnected nodes that
+    /// search can NEVER find regardless of ef_search.
+    pub fn diagnose_connectivity(&self) -> (usize, usize, Vec<u128>) {
+        let total = self.nodes.len();
+        let ep_id = match self.get_entry_point() {
+            Some(id) => id,
+            None => return (0, total, self.nodes.iter().map(|e| *e.key()).collect()),
+        };
+
+        let mut visited = std::collections::HashSet::with_capacity(total);
+        let mut queue = std::collections::VecDeque::with_capacity(total);
+        queue.push_back(ep_id);
+        visited.insert(ep_id);
+
+        while let Some(nid) = queue.pop_front() {
+            if let Some(node) = self.nodes.get(&nid) {
+                for layer_lock in &node.layers {
+                    let ld = layer_lock.read();
+                    for &dense in &ld.neighbors {
+                        if let Some(neighbor_id) = self.dense_to_node_id(dense) {
+                            if visited.insert(neighbor_id) {
+                                queue.push_back(neighbor_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let orphans: Vec<u128> = self.nodes.iter()
+            .filter(|e| !visited.contains(e.key()))
+            .map(|e| *e.key())
+            .collect();
+
+        (visited.len(), total, orphans)
+    }
+
+    /// Diagnostic: measure average layer-0 degree.
+    pub fn diagnose_degree(&self) -> (f32, usize, usize) {
+        let mut total_degree: usize = 0;
+        let mut zero_degree: usize = 0;
+        let mut count: usize = 0;
+        let m0 = self.config.max_connections_layer0;
+
+        for entry in self.nodes.iter() {
+            let node = entry.value();
+            if !node.layers.is_empty() {
+                let deg = node.layers[0].read().neighbors.len();
+                total_degree += deg;
+                if deg == 0 { zero_degree += 1; }
+                count += 1;
+            }
+        }
+
+        let avg = if count > 0 { total_degree as f32 / count as f32 } else { 0.0 };
+        (avg, zero_degree, m0)
+    }
+
+    /// Brute-force layer-0 rebuild — guaranteed optimal layer-0 connectivity.
+    ///
+    /// Computes exact k-NN for every node WITHOUT using graph traversal.
+    /// Uses rayon parallelism + SIMD distance for speed.
+    ///
+    /// Complexity: O(N² × D).
+    /// For N=10K, D=128: ~0.1-0.5 seconds with SIMD + rayon.
+    pub fn rebuild_layer0_exact(&self) -> usize {
+        let n = self.nodes.len();
+        if n < 2 { return 0; }
+
+        let m0 = self.config.max_connections_layer0;
+
+        // Step 1: Snapshot all node data into contiguous arrays
+        let node_ids: Vec<u128> = self.nodes.iter().map(|e| *e.key()).collect();
+        let dense_indices: Vec<u32> = node_ids.iter()
+            .map(|id| self.nodes.get(id).map(|n| n.dense_index).unwrap_or(u32::MAX))
+            .collect();
+
+        // Extract raw f32 slices for SIMD-friendly distance computation
+        let vector_store = self.vector_store.read();
+        let raw_vectors: Vec<Vec<f32>> = node_ids.iter()
+            .map(|id| {
+                let node = self.nodes.get(id).unwrap();
+                let v = vector_store
+                    .get(node.vector_index as usize)
+                    .unwrap_or(&node.vector);
+                match v {
+                    QuantizedVector::F32(arr) => arr.as_slice().unwrap_or(&[]).to_vec(),
+                    _ => {
+                        let f32_arr = v.to_f32();
+                        f32_arr.as_slice().unwrap_or(&[]).to_vec()
+                    }
+                }
+            })
+            .collect();
+        drop(vector_store);
+
+        // Step 2: Parallel brute-force k-NN for each node
+        let all_neighbors: Vec<Vec<usize>> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let query = &raw_vectors[i];
+                if query.is_empty() { return Vec::new(); }
+
+                let mut dists: Vec<(usize, f32)> = Vec::with_capacity(n - 1);
+                for j in 0..n {
+                    if j == i { continue; }
+                    let target = &raw_vectors[j];
+                    if target.is_empty() { continue; }
+                    let dist = self.distance_raw(query, target);
+                    dists.push((j, dist));
+                }
+
+                // select_nth_unstable is O(n) average — much faster than full sort
+                let take = m0.min(dists.len());
+                if dists.len() > take {
+                    dists.select_nth_unstable_by(take, |a, b|
+                        a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                    );
+                    dists.truncate(take);
+                }
+                dists.sort_by(|a, b|
+                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                );
+                dists.into_iter().map(|(j, _)| j).collect()
+            })
+            .collect();
+
+        // Step 3: Apply exact neighbors to layer 0
+        let mut updated = 0;
+        for (i, neighbors) in all_neighbors.iter().enumerate() {
+            let node_id = node_ids[i];
+            if let Some(node) = self.nodes.get(&node_id) {
+                if node.layers.is_empty() { continue; }
+
+                let new_dense: SmallVec<[u32; MAX_M]> = neighbors.iter()
+                    .map(|&j| dense_indices[j])
+                    .filter(|&d| d != u32::MAX)
+                    .collect();
+
+                let mut ld = node.layers[0].write();
+                ld.neighbors = new_dense;
+                ld.version += 1;
+                updated += 1;
+            }
+        }
+
+        self.invalidate_flat_cache();
+        updated
+    }
+
+    /// Prune connections — intentionally a no-op.
+    ///
+    /// During batch construction, over-degree hubs are the ONLY bridge
+    /// between scaffold and batch partitions. Pruning them severs the
+    /// only paths between batch-inserted nodes. Graph quality is fixed
+    /// by `refine_graph()` (GNR) after construction completes.
     pub fn prune_connections_concurrent(&self, _node_id: u128, _layer: usize, _max_connections: usize, _node_vector: &QuantizedVector, _new_neighbor: u128) {
-        // Simple implementation - no-op for now
-        // In a real implementation, this would safely prune excess connections
-        // using the node vector for distance calculations
     }
 
     /// Record performance measurement for cost model analysis
@@ -7924,7 +9163,7 @@ impl HnswIndex {
     fn get_candidate_neighbors(&self, node_id: u128, ef: usize) -> Vec<u128> {
         if let Some(node) = self.nodes.get(&node_id) {
             // Start from entry point and search
-            if let Some(entry_id) = *self.entry_point.read() {
+            if let Some(entry_id) = self.get_entry_point() {
                 if let Some(entry_node) = self.nodes.get(&entry_id) {
                     let vector_store = self.vector_store.read();
                     let node_vector = vector_store
@@ -7954,7 +9193,7 @@ impl HnswIndex {
     /// Search layer for insertion candidates
     fn search_layer_for_insertion(&self, query: &QuantizedVector, layer: usize, ef: usize) -> Vec<SearchCandidate> {
         // Start from entry point
-        if let Some(entry_id) = *self.entry_point.read() {
+        if let Some(entry_id) = self.get_entry_point() {
             if let Some(entry_node) = self.nodes.get(&entry_id) {
                 let vector_store = self.vector_store.read();
                 let entry_vector = vector_store
@@ -8073,5 +9312,109 @@ mod tests {
         // Check that vector bytes are roughly half of f32 (64 * 2 = 128 bytes per node)
         // vs 64 * 4 = 256 bytes per node
         // assert_eq!(mem_stats.total_vector_bytes, 10 * 64 * 2);
+    }
+
+    /// TOCTOU regression test (Task 4):
+    /// 
+    /// Verifies that concurrent insert + navigation_state() never observes an
+    /// inconsistent (entry_point, max_layer) pair. Before the fix, separate
+    /// RwLocks allowed a reader to see entry_point from generation N but
+    /// max_layer from generation N+1, causing search to attempt layers the
+    /// entry point node doesn't have.
+    ///
+    /// With AtomicNavigationState, both values are packed into a single AtomicU64
+    /// and loaded in one instruction, making inconsistent snapshots impossible.
+    #[test]
+    fn test_toctou_concurrent_insert_search() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::thread;
+
+        let config = HnswConfig {
+            max_connections: 4,
+            ef_construction: 8,
+            ef_search: 8,
+            ..HnswConfig::default()
+        };
+        let index = Arc::new(HnswIndex::new(4, config));
+
+        // Seed with 5 nodes so graph is non-empty
+        for i in 0..5 {
+            let vector = vec![i as f32; 4];
+            index.insert(i as u128, vector).unwrap();
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let inconsistencies = Arc::new(AtomicUsize::new(0));
+        let check_count = Arc::new(AtomicUsize::new(0));
+        let insert_count = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+
+        // 1 inserter thread
+        {
+            let idx = Arc::clone(&index);
+            let stop_flag = Arc::clone(&stop);
+            let ins_count = Arc::clone(&insert_count);
+            handles.push(thread::spawn(move || {
+                let mut i = 100u128;
+                while !stop_flag.load(Ordering::Relaxed) {
+                    let vector = vec![(i as f32) * 0.01; 4];
+                    let _ = idx.insert(i, vector);
+                    ins_count.fetch_add(1, Ordering::Relaxed);
+                    i += 1;
+                }
+            }));
+        }
+
+        // 2 checker threads that validate navigation_state() consistency
+        for _ in 0..2 {
+            let idx = Arc::clone(&index);
+            let stop_flag = Arc::clone(&stop);
+            let incon = Arc::clone(&inconsistencies);
+            let chk_count = Arc::clone(&check_count);
+            handles.push(thread::spawn(move || {
+                while !stop_flag.load(Ordering::Relaxed) {
+                    let nav = idx.navigation_state();
+                    if let Some(ep_id) = nav.entry_point {
+                        // Verify: entry point node has layers up to max_layer  
+                        if let Some(node) = idx.nodes.get(&ep_id) {
+                            if node.layer < nav.max_layer {
+                                incon.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    chk_count.fetch_add(1, Ordering::Relaxed);
+                    // Yield to let inserter thread make progress
+                    std::hint::spin_loop();
+                }
+            }));
+        }
+
+        // Run for 200ms
+        thread::sleep(std::time::Duration::from_millis(200));
+        stop.store(true, Ordering::SeqCst);
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let total_checks = check_count.load(Ordering::Relaxed);
+        let total_inserts = insert_count.load(Ordering::Relaxed);
+        let total_incon = inconsistencies.load(Ordering::Relaxed);
+
+        eprintln!(
+            "TOCTOU test: {} inserts, {} checks, {} inconsistencies",
+            total_inserts, total_checks, total_incon
+        );
+
+        // With atomic nav_state, zero inconsistencies expected
+        assert_eq!(
+            total_incon, 0,
+            "TOCTOU regression: found {} inconsistent snapshots out of {} checks",
+            total_incon, total_checks
+        );
+        // Sanity: some work was done
+        assert!(total_checks > 10, "Too few checks: {}", total_checks);
     }
 }

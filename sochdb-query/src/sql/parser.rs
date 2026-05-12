@@ -64,14 +64,14 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// SQL Parser
-pub struct Parser {
-    tokens: Vec<Token>,
+pub struct Parser<'a> {
+    tokens: Vec<Token<'a>>,
     pos: usize,
 }
 
-impl Parser {
+impl<'a> Parser<'a> {
     /// Create a new parser from tokens
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(tokens: Vec<Token<'a>>) -> Self {
         Self { tokens, pos: 0 }
     }
 
@@ -120,34 +120,34 @@ impl Parser {
         matches!(self.peek().kind, TokenKind::Eof)
     }
 
-    fn peek(&self) -> &Token {
+    fn peek(&self) -> &Token<'a> {
         self.tokens
             .get(self.pos)
             .unwrap_or(&self.tokens[self.tokens.len() - 1])
     }
 
-    fn peek_nth(&self, n: usize) -> &Token {
+    fn peek_nth(&self, n: usize) -> &Token<'a> {
         self.tokens
             .get(self.pos + n)
             .unwrap_or(&self.tokens[self.tokens.len() - 1])
     }
 
-    fn advance(&mut self) -> Token {
+    fn advance(&mut self) -> Token<'a> {
         if !self.is_at_end() {
             self.pos += 1;
         }
         self.tokens.get(self.pos - 1).cloned().unwrap()
     }
 
-    fn check(&self, kind: &TokenKind) -> bool {
+    fn check(&self, kind: &TokenKind<'a>) -> bool {
         std::mem::discriminant(&self.peek().kind) == std::mem::discriminant(kind)
     }
 
-    fn check_keyword(&self, kw: &TokenKind) -> bool {
+    fn check_keyword(&self, kw: &TokenKind<'a>) -> bool {
         self.peek().kind == *kw
     }
 
-    fn match_token(&mut self, kind: &TokenKind) -> bool {
+    fn match_token(&mut self, kind: &TokenKind<'a>) -> bool {
         if self.check(kind) {
             self.advance();
             true
@@ -156,7 +156,7 @@ impl Parser {
         }
     }
 
-    fn expect(&mut self, kind: &TokenKind, message: &str) -> Result<Token, ParseError> {
+    fn expect(&mut self, kind: &TokenKind<'a>, message: &str) -> Result<Token<'a>, ParseError> {
         if self.check(kind) {
             Ok(self.advance())
         } else {
@@ -167,12 +167,12 @@ impl Parser {
     fn expect_identifier(&mut self, message: &str) -> Result<String, ParseError> {
         match &self.peek().kind {
             TokenKind::Identifier(name) => {
-                let name = name.clone();
+                let name = name.to_string();
                 self.advance();
                 Ok(name)
             }
             TokenKind::QuotedIdentifier(name) => {
-                let name = name.clone();
+                let name = name.to_string();
                 self.advance();
                 Ok(name)
             }
@@ -195,6 +195,8 @@ impl Parser {
             TokenKind::Create => self.parse_create(),
             TokenKind::Drop => self.parse_drop(),
             TokenKind::Alter => self.parse_alter(),
+            TokenKind::Define => self.parse_define(),
+            TokenKind::Remove => self.parse_remove(),
             TokenKind::Begin => self.parse_begin().map(Statement::Begin),
             TokenKind::Commit => {
                 self.advance();
@@ -203,6 +205,9 @@ impl Parser {
             TokenKind::Rollback => self.parse_rollback(),
             TokenKind::Savepoint => self.parse_savepoint(),
             TokenKind::Release => self.parse_release(),
+            // Graph & Real-Time
+            TokenKind::Relate => self.parse_relate().map(Statement::Relate),
+            TokenKind::Live => self.parse_live_select().map(Statement::LiveSelect),
             _ => Err(ParseError::new(
                 format!("Unexpected token: {:?}", self.peek().kind),
                 self.peek().span,
@@ -349,7 +354,7 @@ impl Parser {
             && self.peek_nth(1).kind == TokenKind::Dot
             && self.peek_nth(2).kind == TokenKind::Star
         {
-            let table = name.clone();
+            let table = name.to_string();
             self.advance(); // identifier
             self.advance(); // .
             self.advance(); // *
@@ -371,7 +376,7 @@ impl Parser {
                 && !self.check_keyword(&TokenKind::Limit)
                 && !self.is_at_end()
             {
-                let name = name.clone();
+                let name = name.to_string();
                 self.advance();
                 Some(name)
             } else {
@@ -472,7 +477,7 @@ impl Parser {
         } else if let TokenKind::Identifier(id) = &self.peek().kind {
             // Check it's not a keyword
             if !self.peek().kind.is_keyword() {
-                let alias = id.clone();
+                let alias = id.to_string();
                 self.advance();
                 Some(alias)
             } else {
@@ -988,7 +993,7 @@ impl Parser {
                 DataType::Embedding(dims)
             }
             TokenKind::Identifier(name) => {
-                let name = name.clone();
+                let name = name.to_string();
                 self.advance();
                 DataType::Custom(name)
             }
@@ -1074,11 +1079,347 @@ impl Parser {
     }
 
     fn parse_alter(&mut self) -> Result<Statement, ParseError> {
-        // TODO: Implement ALTER TABLE
-        Err(ParseError::new(
-            "ALTER not yet implemented",
-            self.current_span(),
-        ))
+        let start_span = self.current_span();
+        self.expect(&TokenKind::Alter, "Expected ALTER")?;
+        self.expect(&TokenKind::Table, "Expected TABLE after ALTER")?;
+
+        let name = self.parse_object_name()?;
+        let mut operations = Vec::new();
+
+        loop {
+            let op = self.parse_alter_table_op()?;
+            operations.push(op);
+
+            if !self.match_token(&TokenKind::Comma) {
+                break;
+            }
+        }
+
+        Ok(Statement::AlterTable(AlterTableStmt {
+            span: start_span.merge(self.current_span()),
+            name,
+            operations,
+        }))
+    }
+
+    fn parse_alter_table_op(&mut self) -> Result<AlterTableOp, ParseError> {
+        if self.match_token(&TokenKind::Add) {
+            // ADD [COLUMN] column_def
+            self.match_token(&TokenKind::Column); // optional COLUMN keyword
+            let col_def = self.parse_column_def()?;
+            Ok(AlterTableOp::AddColumn(col_def))
+        } else if self.match_token(&TokenKind::Drop) {
+            // DROP [COLUMN] name [CASCADE]
+            self.match_token(&TokenKind::Column); // optional COLUMN keyword
+            let col_name = self.expect_identifier("Expected column name after DROP")?;
+            let cascade = self.match_token(&TokenKind::Cascade);
+            Ok(AlterTableOp::DropColumn {
+                name: col_name,
+                cascade,
+            })
+        } else if self.match_token(&TokenKind::Rename) {
+            if self.match_token(&TokenKind::Column) {
+                // RENAME COLUMN old_name TO new_name
+                let old_name = self.expect_identifier("Expected old column name")?;
+                self.expect(&TokenKind::To, "Expected TO after column name")?;
+                let new_name = self.expect_identifier("Expected new column name")?;
+                Ok(AlterTableOp::RenameColumn { old_name, new_name })
+            } else if self.match_token(&TokenKind::To) {
+                // RENAME TO new_table_name
+                let new_name = self.parse_object_name()?;
+                Ok(AlterTableOp::RenameTable(new_name))
+            } else {
+                // RENAME old_name TO new_name (shorthand for RENAME COLUMN)
+                let old_name = self.expect_identifier("Expected column name or TO")?;
+                self.expect(&TokenKind::To, "Expected TO after column name")?;
+                let new_name = self.expect_identifier("Expected new column name")?;
+                Ok(AlterTableOp::RenameColumn { old_name, new_name })
+            }
+        } else if self.match_token(&TokenKind::Alter) {
+            // ALTER [COLUMN] name SET/DROP ...
+            self.match_token(&TokenKind::Column); // optional COLUMN keyword
+            let col_name = self.expect_identifier("Expected column name after ALTER COLUMN")?;
+
+            let operation = if self.match_token(&TokenKind::Set) {
+                if self.match_token(&TokenKind::Not) {
+                    self.expect(&TokenKind::Null, "Expected NULL after SET NOT")?;
+                    AlterColumnOp::SetNotNull
+                } else if self.match_token(&TokenKind::Default) {
+                    let expr = self.parse_expr()?;
+                    AlterColumnOp::SetDefault(expr)
+                } else {
+                    // SET DATA TYPE / TYPE
+                    // Accept optional DATA keyword
+                    if self.check_keyword(&TokenKind::Identifier("TYPE")) {
+                        self.advance(); // consume TYPE
+                    }
+                    let data_type = self.parse_data_type()?;
+                    AlterColumnOp::SetType(data_type)
+                }
+            } else if self.match_token(&TokenKind::Drop) {
+                if self.match_token(&TokenKind::Not) {
+                    self.expect(&TokenKind::Null, "Expected NULL after DROP NOT")?;
+                    AlterColumnOp::DropNotNull
+                } else if self.match_token(&TokenKind::Default) {
+                    AlterColumnOp::DropDefault
+                } else {
+                    return Err(ParseError::new(
+                        "Expected NOT NULL or DEFAULT after DROP",
+                        self.current_span(),
+                    ));
+                }
+            } else {
+                // Bare type change: ALTER COLUMN name TYPE
+                if self.check_keyword(&TokenKind::Identifier("TYPE")) {
+                    self.advance(); // consume TYPE
+                }
+                let data_type = self.parse_data_type()?;
+                AlterColumnOp::SetType(data_type)
+            };
+
+            Ok(AlterTableOp::AlterColumn {
+                name: col_name,
+                operation,
+            })
+        } else {
+            Err(ParseError::new(
+                "Expected ADD, DROP, RENAME, or ALTER after ALTER TABLE <name>",
+                self.current_span(),
+            ))
+        }
+    }
+
+    // ========== Graph & Real-Time Parsing (P1 — Multi-Model) ==========
+
+    /// Parse RELATE statement.
+    ///
+    /// ```sql
+    /// RELATE person:1 -> knows -> person:2 SET since = '2024-01-01';
+    /// RELATE person:1 -> knows -> person:2 CONTENT { "since": "2024-01-01" };
+    /// ```
+    fn parse_relate(&mut self) -> Result<RelateStmt, ParseError> {
+        let start_span = self.current_span();
+        self.expect(&TokenKind::Relate, "Expected RELATE")?;
+
+        // Parse source record expression (e.g., person:1)
+        // Use additive_expr so we don't consume -> as graph traversal
+        let from = self.parse_additive_expr()?;
+
+        // Expect -> edge -> to
+        self.expect(&TokenKind::Arrow, "Expected '->' after source record")?;
+        let edge = self.parse_object_name()?;
+        self.expect(&TokenKind::Arrow, "Expected '->' after edge table")?;
+
+        let to = self.parse_additive_expr()?;
+
+        // Parse optional SET or CONTENT
+        let mut set = Vec::new();
+        let mut content = None;
+        let mut returning = None;
+
+        if self.match_token(&TokenKind::Set) {
+            set = self.parse_assignments()?;
+        } else if self.match_token(&TokenKind::Content) {
+            content = Some(self.parse_expr()?);
+        }
+
+        // Optional RETURNING
+        if self.match_token(&TokenKind::Returning) {
+            returning = Some(self.parse_select_list()?);
+        }
+
+        Ok(RelateStmt {
+            span: start_span.merge(self.current_span()),
+            from,
+            edge,
+            to,
+            set,
+            content,
+            returning,
+        })
+    }
+
+    /// Parse LIVE SELECT statement.
+    ///
+    /// ```sql
+    /// LIVE SELECT * FROM person WHERE age > 18;
+    /// LIVE SELECT DIFF FROM person;
+    /// ```
+    fn parse_live_select(&mut self) -> Result<LiveSelectStmt, ParseError> {
+        let start_span = self.current_span();
+        self.expect(&TokenKind::Live, "Expected LIVE")?;
+
+        // Check for DIFF before SELECT
+        let diff = self.match_token(&TokenKind::Diff);
+
+        // Parse the underlying SELECT statement
+        let select = self.parse_select()?;
+
+        Ok(LiveSelectStmt {
+            span: start_span.merge(self.current_span()),
+            select,
+            diff,
+        })
+    }
+
+    // ========== Security DDL Parsing (P2 — Scope-Based Auth) ==========
+
+    /// Parse DEFINE statement.
+    ///
+    /// Supports:
+    /// - `DEFINE SCOPE <name> [SESSION <duration>] [SIGNIN (<expr>)] [SIGNUP (<expr>)]`
+    /// - `DEFINE TABLE <name> PERMISSIONS FOR <op> WHERE <expr> [, ...]`
+    fn parse_define(&mut self) -> Result<Statement, ParseError> {
+        self.expect(&TokenKind::Define, "Expected DEFINE")?;
+
+        if self.match_token(&TokenKind::Scope) {
+            self.parse_define_scope()
+        } else if self.match_token(&TokenKind::Table) {
+            self.parse_define_table_permissions()
+        } else if self.match_token(&TokenKind::Event) {
+            self.parse_define_event()
+        } else {
+            Err(ParseError::new(
+                "Expected SCOPE, TABLE, or EVENT after DEFINE",
+                self.current_span(),
+            ))
+        }
+    }
+
+    /// Parse DEFINE SCOPE <name> [SESSION <duration>] [SIGNIN (<expr>)] [SIGNUP (<expr>)]
+    fn parse_define_scope(&mut self) -> Result<Statement, ParseError> {
+        let name = self.expect_identifier("Expected scope name after DEFINE SCOPE")?;
+
+        let mut session_duration_secs = None;
+        let mut signin = None;
+        let mut signup = None;
+
+        // Parse optional clauses in any order
+        loop {
+            if self.match_token(&TokenKind::Session) {
+                // Parse duration: integer literal interpreted as seconds,
+                // or identifier like "24h", "7d"
+                match &self.peek().kind {
+                    TokenKind::Integer(n) => {
+                        session_duration_secs = Some(*n as u64);
+                        self.advance();
+                    }
+                    TokenKind::Identifier(s) => {
+                        session_duration_secs = Some(parse_duration_string(s));
+                        self.advance();
+                    }
+                    TokenKind::String(s) => {
+                        session_duration_secs = Some(parse_duration_string(s.as_ref()));
+                        self.advance();
+                    }
+                    _ => {
+                        return Err(ParseError::new(
+                            "Expected duration after SESSION",
+                            self.current_span(),
+                        ));
+                    }
+                }
+            } else if self.match_token(&TokenKind::Signin) {
+                self.expect(&TokenKind::LParen, "Expected '(' after SIGNIN")?;
+                let expr = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "Expected ')' after SIGNIN expression")?;
+                signin = Some(Box::new(expr));
+            } else if self.match_token(&TokenKind::Signup) {
+                self.expect(&TokenKind::LParen, "Expected '(' after SIGNUP")?;
+                let expr = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "Expected ')' after SIGNUP expression")?;
+                signup = Some(Box::new(expr));
+            } else {
+                break;
+            }
+        }
+
+        Ok(Statement::DefineScope(DefineScopeStmt {
+            name,
+            session_duration_secs,
+            signin,
+            signup,
+        }))
+    }
+
+    /// Parse DEFINE TABLE <name> PERMISSIONS FOR <op> WHERE <expr> [, ...]
+    fn parse_define_table_permissions(&mut self) -> Result<Statement, ParseError> {
+        let table = self.parse_object_name()?;
+        self.expect(&TokenKind::Permissions, "Expected PERMISSIONS after table name")?;
+
+        let mut permissions = Vec::new();
+        loop {
+            if !self.match_token(&TokenKind::For) {
+                break;
+            }
+
+            let operation = self.parse_permission_op()?;
+            self.expect(&TokenKind::Where, "Expected WHERE after FOR <operation>")?;
+            let condition = self.parse_expr()?;
+
+            permissions.push(TablePermission {
+                operation,
+                condition,
+            });
+        }
+
+        Ok(Statement::DefineTablePermissions(DefineTablePermissionsStmt {
+            table,
+            permissions,
+        }))
+    }
+
+    /// Parse permission operation: select | create | insert | update | delete
+    fn parse_permission_op(&mut self) -> Result<PermissionOp, ParseError> {
+        match &self.peek().kind {
+            TokenKind::Select => { self.advance(); Ok(PermissionOp::Select) }
+            TokenKind::Insert => { self.advance(); Ok(PermissionOp::Create) }
+            TokenKind::Update => { self.advance(); Ok(PermissionOp::Update) }
+            TokenKind::Delete => { self.advance(); Ok(PermissionOp::Delete) }
+            TokenKind::Create => { self.advance(); Ok(PermissionOp::Create) }
+            TokenKind::Identifier(s) if s.eq_ignore_ascii_case("CREATE") => {
+                self.advance(); Ok(PermissionOp::Create)
+            }
+            _ => Err(ParseError::new(
+                "Expected SELECT, CREATE, INSERT, UPDATE, or DELETE after FOR",
+                self.current_span(),
+            )),
+        }
+    }
+
+    /// Parse REMOVE SCOPE <name>
+    fn parse_remove(&mut self) -> Result<Statement, ParseError> {
+        self.expect(&TokenKind::Remove, "Expected REMOVE")?;
+        self.expect(&TokenKind::Scope, "Expected SCOPE after REMOVE")?;
+        let name = self.expect_identifier("Expected scope name after REMOVE SCOPE")?;
+        Ok(Statement::RemoveScope(name))
+    }
+
+    /// Parse DEFINE EVENT <name> ON TABLE <table> WHEN <condition> THEN (<action>)
+    fn parse_define_event(&mut self) -> Result<Statement, ParseError> {
+        let start_span = self.current_span();
+        let name = self.expect_identifier("Expected event name after DEFINE EVENT")?;
+
+        // ON [TABLE] <table>
+        self.expect(&TokenKind::On, "Expected ON after event name")?;
+        self.match_token(&TokenKind::Table); // optional TABLE keyword
+        let table = self.parse_object_name()?;
+
+        // WHEN <condition>
+        self.expect(&TokenKind::When, "Expected WHEN")?;
+        let condition = self.parse_expr()?;
+
+        // THEN (<action>)
+        self.expect(&TokenKind::Then, "Expected THEN")?;
+        let action = self.parse_expr()?;
+
+        Ok(Statement::DefineEvent(DefineEventStmt {
+            span: start_span.merge(self.current_span()),
+            name,
+            table,
+            condition,
+            action,
+        }))
     }
 
     // ========== Transaction Parsing ==========
@@ -1166,7 +1507,7 @@ impl Parser {
     }
 
     fn parse_comparison_expr(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.parse_additive_expr()?;
+        let mut left = self.parse_graph_expr()?;
 
         // IS NULL / IS NOT NULL
         if self.match_token(&TokenKind::Is) {
@@ -1204,9 +1545,9 @@ impl Parser {
 
         // BETWEEN
         if self.match_token(&TokenKind::Between) {
-            let low = self.parse_additive_expr()?;
+            let low = self.parse_graph_expr()?;
             self.expect(&TokenKind::And, "Expected AND in BETWEEN")?;
-            let high = self.parse_additive_expr()?;
+            let high = self.parse_graph_expr()?;
             return Ok(Expr::Between {
                 expr: Box::new(left),
                 low: Box::new(low),
@@ -1217,9 +1558,9 @@ impl Parser {
 
         // LIKE
         if self.match_token(&TokenKind::Like) {
-            let pattern = self.parse_additive_expr()?;
+            let pattern = self.parse_graph_expr()?;
             let escape = if self.match_token(&TokenKind::Escape) {
-                Some(Box::new(self.parse_additive_expr()?))
+                Some(Box::new(self.parse_graph_expr()?))
             } else {
                 None
             };
@@ -1252,6 +1593,38 @@ impl Parser {
 
         if let Some(op) = op {
             self.advance();
+            let right = self.parse_graph_expr()?;
+            left = Expr::BinaryOp {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            };
+        }
+
+        Ok(left)
+    }
+
+    /// Parse graph traversal expressions.
+    ///
+    /// Graph operators (`->`, `<-`, `<->`) sit between comparison and additive
+    /// in the precedence chain and left-recurse:
+    /// ```text
+    /// person:1 -> knows -> person:2       // outgoing traversal
+    /// person:1 <- knows <- person:2       // incoming traversal
+    /// person:1 <-> knows <-> person:2     // bidirectional
+    /// ```
+    fn parse_graph_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_additive_expr()?;
+
+        loop {
+            let op = match &self.peek().kind {
+                TokenKind::Arrow => BinaryOperator::GraphRight,
+                TokenKind::LeftArrow => BinaryOperator::GraphLeft,
+                TokenKind::BiArrow => BinaryOperator::GraphBi,
+                _ => break,
+            };
+            self.advance();
+
             let right = self.parse_additive_expr()?;
             left = Expr::BinaryOp {
                 left: Box::new(left),
@@ -1352,7 +1725,7 @@ impl Parser {
             }
             TokenKind::String(s) => {
                 self.advance();
-                Expr::Literal(Literal::String(s))
+                Expr::Literal(Literal::String(s.into_owned()))
             }
             TokenKind::Blob(b) => {
                 self.advance();
@@ -1490,14 +1863,6 @@ impl Parser {
                     expr: Box::new(expr),
                     index: Box::new(index),
                 };
-            } else if self.match_token(&TokenKind::Arrow) {
-                // JSON access: ->
-                let path = self.parse_primary_expr()?;
-                expr = Expr::JsonAccess {
-                    expr: Box::new(expr),
-                    path: Box::new(path),
-                    return_text: false,
-                };
             } else if self.match_token(&TokenKind::DoubleArrow) {
                 // JSON access returning text: ->>
                 let path = self.parse_primary_expr()?;
@@ -1513,6 +1878,23 @@ impl Parser {
                     expr: Box::new(expr),
                     data_type,
                 };
+            } else if self.match_token(&TokenKind::Colon) {
+                // RecordId: table:id (e.g., person:1, post:abc)
+                if let Expr::Column(ref col) = expr {
+                    if col.table.is_none() {
+                        let table = col.column.clone();
+                        let id = self.parse_primary_expr()?;
+                        expr = Expr::RecordId {
+                            table,
+                            id: Box::new(id),
+                        };
+                        continue;
+                    }
+                }
+                return Err(ParseError::new(
+                    "Unexpected ':' — record ID requires unqualified identifier on left",
+                    self.current_span(),
+                ));
             } else {
                 break;
             }
@@ -2099,5 +2481,283 @@ mod tests {
         } else {
             panic!("Expected INSERT statement");
         }
+    }
+
+    #[test]
+    fn test_define_scope() {
+        let stmt = Parser::parse(
+            "DEFINE SCOPE user_scope SESSION 86400 SIGNIN (1) SIGNUP (2)",
+        )
+        .unwrap();
+        if let Statement::DefineScope(scope) = stmt {
+            assert_eq!(scope.name, "user_scope");
+            assert_eq!(scope.session_duration_secs, Some(86400));
+            assert!(scope.signin.is_some());
+            assert!(scope.signup.is_some());
+        } else {
+            panic!("Expected DEFINE SCOPE statement, got {:?}", stmt);
+        }
+    }
+
+    #[test]
+    fn test_define_table_permissions() {
+        let stmt = Parser::parse(
+            "DEFINE TABLE post PERMISSIONS FOR select WHERE 1 FOR delete WHERE 0",
+        )
+        .unwrap();
+        if let Statement::DefineTablePermissions(def) = stmt {
+            assert_eq!(def.table.to_string(), "post");
+            assert_eq!(def.permissions.len(), 2);
+            assert_eq!(def.permissions[0].operation, PermissionOp::Select);
+            assert_eq!(def.permissions[1].operation, PermissionOp::Delete);
+        } else {
+            panic!("Expected DEFINE TABLE PERMISSIONS statement, got {:?}", stmt);
+        }
+    }
+
+    #[test]
+    fn test_remove_scope() {
+        let stmt = Parser::parse("REMOVE SCOPE user_scope").unwrap();
+        if let Statement::RemoveScope(name) = stmt {
+            assert_eq!(name, "user_scope");
+        } else {
+            panic!("Expected REMOVE SCOPE statement");
+        }
+    }
+
+    // ===== Graph & Real-Time tests =====
+
+    #[test]
+    fn test_graph_arrow_operator() {
+        // person -> knows should parse as BinaryOp { GraphRight }
+        let stmt = Parser::parse("SELECT person -> knows FROM graph").unwrap();
+        if let Statement::Select(select) = stmt {
+            if let SelectItem::Expr { expr, .. } = &select.columns[0] {
+                if let Expr::BinaryOp { op, .. } = expr {
+                    assert_eq!(*op, BinaryOperator::GraphRight);
+                } else {
+                    panic!("Expected BinaryOp with GraphRight, got {:?}", expr);
+                }
+            } else {
+                panic!("Expected Expr select item");
+            }
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn test_graph_left_arrow_operator() {
+        let stmt = Parser::parse("SELECT x <- y FROM graph").unwrap();
+        if let Statement::Select(select) = stmt {
+            if let SelectItem::Expr { expr, .. } = &select.columns[0] {
+                if let Expr::BinaryOp { op, .. } = expr {
+                    assert_eq!(*op, BinaryOperator::GraphLeft);
+                } else {
+                    panic!("Expected BinaryOp with GraphLeft, got {:?}", expr);
+                }
+            } else {
+                panic!("Expected Expr select item");
+            }
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn test_graph_biarrow_operator() {
+        let stmt = Parser::parse("SELECT x <-> y FROM graph").unwrap();
+        if let Statement::Select(select) = stmt {
+            if let SelectItem::Expr { expr, .. } = &select.columns[0] {
+                if let Expr::BinaryOp { op, .. } = expr {
+                    assert_eq!(*op, BinaryOperator::GraphBi);
+                } else {
+                    panic!("Expected BinaryOp with GraphBi, got {:?}", expr);
+                }
+            } else {
+                panic!("Expected Expr select item");
+            }
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn test_graph_traversal_chain() {
+        // person:1 -> knows -> person should left-associate
+        let stmt = Parser::parse("SELECT a -> b -> c FROM graph").unwrap();
+        if let Statement::Select(select) = stmt {
+            if let SelectItem::Expr { expr, .. } = &select.columns[0] {
+                // (a -> b) -> c
+                if let Expr::BinaryOp { left, op, .. } = expr {
+                    assert_eq!(*op, BinaryOperator::GraphRight);
+                    if let Expr::BinaryOp { op: inner_op, .. } = left.as_ref() {
+                        assert_eq!(*inner_op, BinaryOperator::GraphRight);
+                    } else {
+                        panic!("Expected chained -> operator");
+                    }
+                } else {
+                    panic!("Expected BinaryOp");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_record_id_literal() {
+        let stmt = Parser::parse("SELECT person:1 FROM people").unwrap();
+        if let Statement::Select(select) = stmt {
+            if let SelectItem::Expr { expr, .. } = &select.columns[0] {
+                if let Expr::RecordId { table, id } = expr {
+                    assert_eq!(table, "person");
+                    assert!(matches!(id.as_ref(), Expr::Literal(Literal::Integer(1))));
+                } else {
+                    panic!("Expected RecordId, got {:?}", expr);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_record_id_with_string() {
+        let stmt = Parser::parse("SELECT user:'abc' FROM users").unwrap();
+        if let Statement::Select(select) = stmt {
+            if let SelectItem::Expr { expr, .. } = &select.columns[0] {
+                if let Expr::RecordId { table, id } = expr {
+                    assert_eq!(table, "user");
+                    if let Expr::Literal(Literal::String(s)) = id.as_ref() {
+                        assert_eq!(s, "abc");
+                    } else {
+                        panic!("Expected string id");
+                    }
+                } else {
+                    panic!("Expected RecordId, got {:?}", expr);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_relate_statement() {
+        let stmt = Parser::parse(
+            "RELATE person:1 -> knows -> person:2 SET since = '2024-01-01'"
+        ).unwrap();
+        if let Statement::Relate(relate) = stmt {
+            assert_eq!(relate.edge.to_string(), "knows");
+            if let Expr::RecordId { table, .. } = &relate.from {
+                assert_eq!(table, "person");
+            } else {
+                panic!("Expected RecordId for from, got {:?}", relate.from);
+            }
+            if let Expr::RecordId { table, .. } = &relate.to {
+                assert_eq!(table, "person");
+            } else {
+                panic!("Expected RecordId for to, got {:?}", relate.to);
+            }
+            assert_eq!(relate.set.len(), 1);
+            assert_eq!(relate.set[0].column, "since");
+        } else {
+            panic!("Expected RELATE statement, got {:?}", stmt);
+        }
+    }
+
+    #[test]
+    fn test_relate_with_content() {
+        let stmt = Parser::parse(
+            "RELATE user:1 -> follows -> user:2 CONTENT 'data'"
+        ).unwrap();
+        if let Statement::Relate(relate) = stmt {
+            assert_eq!(relate.edge.to_string(), "follows");
+            assert!(relate.content.is_some());
+            assert!(relate.set.is_empty());
+        } else {
+            panic!("Expected RELATE statement");
+        }
+    }
+
+    #[test]
+    fn test_live_select() {
+        let stmt = Parser::parse("LIVE SELECT * FROM person WHERE age > 18").unwrap();
+        if let Statement::LiveSelect(live) = stmt {
+            assert!(!live.diff);
+            assert_eq!(live.select.columns.len(), 1);
+            assert!(matches!(live.select.columns[0], SelectItem::Wildcard));
+            assert!(live.select.where_clause.is_some());
+        } else {
+            panic!("Expected LIVE SELECT statement, got {:?}", stmt);
+        }
+    }
+
+    #[test]
+    fn test_live_select_diff() {
+        let stmt = Parser::parse("LIVE DIFF SELECT * FROM person").unwrap();
+        if let Statement::LiveSelect(live) = stmt {
+            assert!(live.diff);
+        } else {
+            panic!("Expected LIVE SELECT DIFF statement");
+        }
+    }
+
+    #[test]
+    fn test_define_event() {
+        let stmt = Parser::parse(
+            "DEFINE EVENT notify ON TABLE user WHEN 1 THEN 2"
+        ).unwrap();
+        if let Statement::DefineEvent(event) = stmt {
+            assert_eq!(event.name, "notify");
+            assert_eq!(event.table.to_string(), "user");
+        } else {
+            panic!("Expected DEFINE EVENT statement, got {:?}", stmt);
+        }
+    }
+
+    #[test]
+    fn test_graph_precedence_vs_comparison() {
+        // a -> b = c  should parse as  (a -> b) = c
+        let stmt = Parser::parse("SELECT a -> b = c FROM t").unwrap();
+        if let Statement::Select(select) = stmt {
+            if let SelectItem::Expr { expr, .. } = &select.columns[0] {
+                if let Expr::BinaryOp { op, left, .. } = expr {
+                    assert_eq!(*op, BinaryOperator::Eq);
+                    // Left side should be (a -> b)
+                    if let Expr::BinaryOp { op: inner_op, .. } = left.as_ref() {
+                        assert_eq!(*inner_op, BinaryOperator::GraphRight);
+                    } else {
+                        panic!("Expected -> in left operand of =");
+                    }
+                } else {
+                    panic!("Expected comparison at top level");
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Parse a duration string like "24h", "7d", "30m", "3600" into seconds.
+fn parse_duration_string(s: &str) -> u64 {
+    let s = s.trim();
+    if s.is_empty() {
+        return 0;
+    }
+
+    // Try pure numeric
+    if let Ok(n) = s.parse::<u64>() {
+        return n;
+    }
+
+    // Try suffix: s (seconds), m (minutes), h (hours), d (days)
+    let (num_part, suffix) = s.split_at(s.len() - 1);
+    let n: u64 = num_part.parse().unwrap_or(0);
+    match suffix {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        "d" => n * 86400,
+        "w" => n * 604800,
+        _ => 0,
     }
 }

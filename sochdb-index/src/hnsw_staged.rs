@@ -369,7 +369,7 @@ impl<'a> StagedBuilder<'a> {
         // =====================================================================
         if !self.config.skip_repair_passes {
             self.index.repair_connectivity();
-            self.index.improve_search_quality();
+            self.index.refine_graph_additive();
         }
         
         let total_inserted = self.stats.scaffold_count + self.stats.wave_count;
@@ -444,14 +444,12 @@ impl<'a> StagedBuilder<'a> {
         // Get navigation state snapshot
         let nav_state = self.index.navigation_state();
         
-        // If this is a potential new entry point, handle it
-        if layer > nav_state.max_layer {
-            // Update entry point atomically
-            let mut ep = self.index.entry_point.write();
-            let mut ml = self.index.max_layer.write();
-            if layer > *ml {
-                *ml = layer;
-                *ep = Some(id);
+        // If this is a potential new entry point, handle it (lock-free CAS)
+        if layer > nav_state.max_layer || nav_state.entry_point.is_none() {
+            if let Some(dense) = self.index.node_id_to_dense(id) {
+                if self.index.nav_state.update_if_higher(dense as u64, layer) {
+                    self.index.entry_point_dense.store(dense, std::sync::atomic::Ordering::Release);
+                }
             }
         }
         
@@ -814,17 +812,21 @@ impl<'a> StagedBuilder<'a> {
             }
             
             // Check if candidate is shadowed by any already-selected neighbor
+            let vector_store_guard = self.index.vector_store.read();
             let is_shadowed = result.iter().any(|selected: &SearchCandidate| {
                 if let (Some(c_node), Some(s_node)) = (
                     self.index.nodes.get(&candidate.id),
                     self.index.nodes.get(&selected.id)
                 ) {
-                    let dist_c_to_s = self.calculate_distance(&c_node.vector, &s_node.vector);
+                    let c_vec = vector_store_guard.get(c_node.vector_index as usize).unwrap_or(&c_node.vector);
+                    let s_vec = vector_store_guard.get(s_node.vector_index as usize).unwrap_or(&s_node.vector);
+                    let dist_c_to_s = self.calculate_distance(c_vec, s_vec);
                     candidate.distance > ALPHA * dist_c_to_s
                 } else {
                     false
                 }
             });
+            drop(vector_store_guard);
             
             if !is_shadowed {
                 result.push(candidate);

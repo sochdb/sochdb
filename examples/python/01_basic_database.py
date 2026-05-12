@@ -17,15 +17,22 @@ Expected Output:
     ✓ Database stats available
 
 Usage:
-    PYTHONPATH=sochdb-python-sdk/src SOCHDB_LIB_PATH=target/release python3 examples/python/01_basic_database.py
+    pip install sochdb
+    python3 examples/python/01_basic_database.py
+
+    # Or from this monorepo:
+    cd sochdb-python
+    maturin develop --release
+    cd ..
+    python3 examples/python/01_basic_database.py
 """
 
 import os
 import sys
 import tempfile
 
-# Setup path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python-sdk/src"))
+# Setup path for monorepo source usage
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../sochdb-python"))
 
 
 def main():

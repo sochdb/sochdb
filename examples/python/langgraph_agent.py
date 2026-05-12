@@ -9,7 +9,14 @@ Demonstrates a complete agentic workflow with:
 4. LangGraph for workflow orchestration
 
 Usage:
-    python3 examples/langgraph_agent.py
+    pip install sochdb python-dotenv requests numpy langgraph langchain-core
+    python3 examples/python/langgraph_agent.py
+
+    # Or from this monorepo:
+    cd sochdb-python
+    maturin develop --release
+    cd ..
+    python3 examples/python/langgraph_agent.py
 """
 
 # Copyright 2025 Sushanth (https://github.com/sushanthpy)
@@ -24,8 +31,8 @@ from typing import TypedDict, Sequence, Dict, List
 import numpy as np
 import requests
 
-# Add SochDB SDK to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../sochdb-python-sdk/src"))
+# Add SochDB package path for monorepo source usage
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "sochdb-python"))
 
 from dotenv import load_dotenv
 load_dotenv()

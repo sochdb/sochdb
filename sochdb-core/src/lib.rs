@@ -95,8 +95,10 @@ pub mod concurrency; // Hierarchical Lock Architecture (mm.md Task 2)
 pub mod epoch_gc;
 pub mod error;
 pub mod format_migration;
+pub mod edge_encoding; // Binary edge key encoding for graph overlay (Phase 1b)
 pub mod key;
 pub mod learned_index;
+pub mod record_id; // RecordId: universal table:id identifier with binary key encoding (Phase 1b)
 pub mod lockfree_interner; // Lock-free string interner (mm.md Task 6)
 pub mod memory_schema; // Canonical Episode/Entity/Event schema
 pub mod path_trie;
@@ -133,6 +135,7 @@ pub use columnar::{
 pub use error::{Result, SochDBError};
 pub use key::{CausalKey, TemporalKey};
 pub use learned_index::LearnedSparseIndex;
+pub use record_id::{IdValue, RecordId};
 pub use lockfree_interner::{InternerStats, LockFreeInterner, Symbol};
 pub use memory_schema::{
     Entity, EntityFacts, EntityKind, EntitySearchResult, Episode, EpisodeSearchResult, EpisodeType,

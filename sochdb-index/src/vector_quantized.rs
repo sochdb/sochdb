@@ -60,6 +60,14 @@ pub enum QuantizedVector {
 }
 
 impl QuantizedVector {
+    /// Zero-length sentinel — occupies no heap memory for vector data.
+    /// Used when the real vector lives in `vector_store` and the node
+    /// only needs `vector_index` to reference it.
+    #[inline]
+    pub fn empty() -> Self {
+        QuantizedVector::F32(Array1::zeros(0))
+    }
+
     /// Create quantized vector from f32 array
     pub fn from_f32(data: Array1<f32>, precision: Precision) -> Self {
         match precision {

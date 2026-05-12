@@ -85,12 +85,21 @@ const EPOCH_GRACE_PERIODS: u64 = 2;
 const RECLAIM_THRESHOLD: usize = 64;
 
 /// Hazard pointer slot
+///
+/// Padded to 64 bytes (one cache line) to prevent false sharing between
+/// threads that call `protect()` and `release()` concurrently. Without
+/// padding, 4 slots share a cache line (each is only 16 bytes), causing
+/// MESI invalidation storms under high-frequency protect/release cycles
+/// (e.g., HNSW search with ef_search=200 → ~3200 protect/release cycles
+/// per query). Matches the cache-line alignment used for `EpochSlot`.
 #[derive(Debug)]
+#[repr(C, align(64))]
 struct HazardSlot {
     /// The protected pointer (null if unused)
     ptr: AtomicPtr<()>,
     /// Thread ID that owns this slot
     owner: AtomicU64,
+    // Remaining 48 bytes are padding to fill the 64-byte cache line
 }
 
 impl HazardSlot {

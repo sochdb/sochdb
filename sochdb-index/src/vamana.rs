@@ -298,13 +298,71 @@ impl VamanaIndex {
 
         self.count.fetch_add(1, Ordering::Relaxed);
 
-        // 8. Periodically consolidate backedges
+        // 8. Periodically consolidate backedges and recompute medoid
         let counter = self.consolidation_counter.fetch_add(1, Ordering::Relaxed);
         if counter % 1000 == 999 {
             self.consolidate_backedges();
+            self.recompute_medoid();
         }
 
         Ok(())
+    }
+
+    /// Recompute the medoid (entry point) as the vector closest to the
+    /// dataset centroid.  The DiskANN paper requires the entry point to
+    /// be the most central node; using an arbitrary first-inserted vector
+    /// degrades search by increasing average hop count.
+    ///
+    /// Uses PQ-decoded approximate vectors — O(N × n_subspaces) work,
+    /// which is cheap relative to graph construction.
+    fn recompute_medoid(&self) {
+        let count = self.count.load(Ordering::Relaxed) as usize;
+        if count < 2 {
+            return;
+        }
+
+        let codebooks = self.codebooks.read();
+        let codebooks = match codebooks.as_ref() {
+            Some(cb) => cb,
+            None => return,
+        };
+
+        // Compute centroid of all PQ-decoded vectors
+        let mut centroid = vec![0.0f32; self.config.dimension];
+        let mut n = 0usize;
+        for entry in self.pq_codes.iter() {
+            let approx = codebooks.decode(entry.value());
+            for (i, val) in approx.iter().enumerate() {
+                if i < centroid.len() {
+                    centroid[i] += *val;
+                }
+            }
+            n += 1;
+        }
+        if n == 0 {
+            return;
+        }
+        for val in centroid.iter_mut() {
+            *val /= n as f32;
+        }
+
+        // Find vector closest to centroid using ADC
+        let centroid_arr = Array1::from_vec(centroid);
+        let table = codebooks.build_distance_table(&centroid_arr);
+
+        let mut best_id: Option<u128> = None;
+        let mut best_dist = f32::MAX;
+        for entry in self.pq_codes.iter() {
+            let d = table.distance(entry.value());
+            if d < best_dist {
+                best_dist = d;
+                best_id = Some(*entry.key());
+            }
+        }
+
+        if let Some(new_medoid) = best_id {
+            *self.medoid.write() = Some(new_medoid);
+        }
     }
 
     /// Greedy search using PQ distance table (beam search algorithm)
@@ -429,20 +487,34 @@ impl VamanaIndex {
         selected
     }
 
-    /// Approximate distance between two PQ codes
-    /// Uses simple hamming-like metric as approximation
+    /// Approximate L2 distance between two PQ-encoded vectors using
+    /// asymmetric distance computation (ADC).
+    ///
+    /// Decodes vector `a` from its PQ codes, builds a distance table,
+    /// then looks up the distance to `b`'s codes.  This is O(n_subspaces)
+    /// table lookups, which is both fast and metrically faithful — unlike
+    /// Hamming distance on PQ codes, which has no correlation with L2.
     fn approximate_pq_distance(&self, a: &PQCodes, b: &PQCodes) -> f32 {
-        // Simple approximation: count matching codes and scale
-        let matching: usize = a
-            .codes
-            .iter()
-            .zip(b.codes.iter())
-            .filter(|(x, y)| *x == *y)
-            .count();
+        let codebooks = self.codebooks.read();
+        let codebooks = match codebooks.as_ref() {
+            Some(cb) => cb,
+            None => {
+                // Fallback: if codebooks aren't trained yet, use raw code difference
+                // as a rough proxy (still better than Hamming).
+                let mut dist_sq = 0.0f32;
+                for (&ca, &cb) in a.codes.iter().zip(b.codes.iter()) {
+                    let d = (ca as f32) - (cb as f32);
+                    dist_sq += d * d;
+                }
+                return dist_sq;
+            }
+        };
 
-        let total = a.codes.len();
-        // Convert to distance-like metric: more matches = smaller distance
-        ((total - matching) as f32) / (total as f32) * 10.0
+        // Decode `a` into approximate float vector, build distance table
+        let a_approx = codebooks.decode(a);
+        let table = codebooks.build_distance_table(&a_approx);
+        // ADC lookup: O(n_subspaces) = O(48) for 384-dim
+        table.distance(b)
     }
 
     /// Consolidate backedge deltas into main graph

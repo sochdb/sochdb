@@ -256,7 +256,7 @@ cargo install --path sochdb-tools
 The Python package can bundle the native binary:
 
 ```bash
-cd sochdb-python-sdk
+cd sochdb-python
 
 # Build and install binary for current platform
 python build_native.py
@@ -304,7 +304,7 @@ searches in this order:
 
 1. **Bundled in wheel** (recommended):
    ```bash
-   pip install sochdb-client
+   pip install sochdb
    # Binary is at: site-packages/sochdb/_bin/<platform>/sochdb-bulk
    ```
 
@@ -395,4 +395,3 @@ subprocess approach wins decisively.
 
 See [Python SDK Guide](/guides/python-sdk) for full wheel
 packaging and distribution architecture.
-

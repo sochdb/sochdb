@@ -1255,9 +1255,9 @@ mod tests {
 
         // Float64
         let mut fcol = TypedColumn::new_float64();
-        fcol.push_f64(Some(3.14));
+        fcol.push_f64(Some(3.15));
         fcol.push_f64(None);
-        assert_eq!(fcol.value_at(0), SochValue::Float(3.14));
+        assert_eq!(fcol.value_at(0), SochValue::Float(3.15));
         assert_eq!(fcol.value_at(1), SochValue::Null);
 
         // Text

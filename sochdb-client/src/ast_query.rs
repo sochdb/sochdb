@@ -601,6 +601,60 @@ impl SochConnection {
             )),
         }
     }
+
+    // =========================================================================
+    // Unified SQL API (Step 0d) — returns the same ExecutionResult as
+    // EmbeddedConnection::execute_sql for API consistency across connections.
+    // =========================================================================
+
+    /// Execute SQL through the unified API, returning `ExecutionResult`.
+    ///
+    /// This allows `SochConnection` (testing path) and `EmbeddedConnection`
+    /// (production path) to share a common return type.
+    ///
+    /// **Note:** `SochConnection` is in-memory only; for persistent storage
+    /// use [`EmbeddedConnection::execute_sql`].
+    pub fn sql_execute(&self, sql: &str) -> Result<sochdb_query::sql::bridge::ExecutionResult> {
+        use sochdb_query::sql::bridge::ExecutionResult;
+
+        let qr = self.query_ast(sql)?;
+        Ok(Self::query_result_to_execution_result(qr))
+    }
+
+    /// Execute parameterized SQL through the unified API.
+    pub fn sql_execute_params(
+        &self,
+        sql: &str,
+        params: &[SochValue],
+    ) -> Result<sochdb_query::sql::bridge::ExecutionResult> {
+        let qr = self.query_ast_params(sql, params)?;
+        Ok(Self::query_result_to_execution_result(qr))
+    }
+
+    /// Convert the legacy `QueryResult` to the unified `ExecutionResult`.
+    fn query_result_to_execution_result(
+        qr: QueryResult,
+    ) -> sochdb_query::sql::bridge::ExecutionResult {
+        use sochdb_query::sql::bridge::ExecutionResult;
+
+        match qr {
+            QueryResult::Select(rows) => {
+                let columns = if let Some(first) = rows.first() {
+                    first.keys().cloned().collect()
+                } else {
+                    Vec::new()
+                };
+                ExecutionResult::Rows { columns, rows }
+            }
+            QueryResult::Insert(r) => ExecutionResult::RowsAffected(r.rows_inserted),
+            QueryResult::Update(r) => ExecutionResult::RowsAffected(r.rows_updated),
+            QueryResult::Delete(r) => ExecutionResult::RowsAffected(r.rows_deleted),
+            QueryResult::CreateTable(_)
+            | QueryResult::DropTable(_)
+            | QueryResult::CreateIndex(_)
+            | QueryResult::Empty => ExecutionResult::Ok,
+        }
+    }
 }
 
 #[cfg(test)]

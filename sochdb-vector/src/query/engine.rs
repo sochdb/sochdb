@@ -224,8 +224,15 @@ impl QueryEngine {
         let header = segment.header();
         let bps_data = segment.bps_data();
         
-        // Compute query sketch
-        let query_sketch = BpsBuilder::compute_query_sketch(&self.config.bps, rotated_query);
+        // Compute query sketch using stored qparams when available (correct
+        // asymmetric quantization).  Fall back to legacy symmetric quantization
+        // only for segments written before qparams were persisted.
+        #[allow(deprecated)]
+        let query_sketch = if let Some(qparams) = segment.bps_qparams() {
+            BpsBuilder::compute_query_sketch_with_params(&self.config.bps, rotated_query, qparams)
+        } else {
+            BpsBuilder::compute_query_sketch(&self.config.bps, rotated_query)
+        };
         
         let scanner = BpsScanner::new(
             bps_data,

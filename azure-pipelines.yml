@@ -130,14 +130,27 @@ stages:
             displayName: 'Install Rust'
 
           - script: |
+              set -e
               publish_crate() {
                 local crate=$1
-                echo "📦 Publishing $crate..."
+                local pkg_name=${2:-$1}
+                echo "📦 Publishing $crate (as $pkg_name)..."
                 cd $crate
                 if [ "${{ parameters.dryRun }}" = "True" ]; then
                   cargo publish --dry-run
                 else
-                  cargo publish --allow-dirty || echo "⚠️ $crate may already be published"
+                  OUTPUT=$(cargo publish --allow-dirty 2>&1) && RC=0 || RC=$?
+                  if [ $RC -ne 0 ]; then
+                    if echo "$OUTPUT" | grep -q "already uploaded"; then
+                      echo "⚠️ $pkg_name is already published, skipping"
+                    else
+                      echo "❌ Failed to publish $pkg_name (exit code $RC):"
+                      echo "$OUTPUT"
+                      cd ..
+                      return $RC
+                    fi
+                  fi
+                  echo "⏳ Waiting for $pkg_name to be indexed on crates.io..."
                   sleep 30
                 fi
                 cd ..
@@ -145,11 +158,25 @@ stages:
               
               export CARGO_REGISTRY_TOKEN=$(CRATES_IO_TOKEN)
               
+              # Layer 0: no internal deps
               publish_crate sochdb-core
-              publish_crate sochdb-storage
+              
+              # Layer 1: depends only on core
+              publish_crate sochdb-kernel
               publish_crate sochdb-index
+              
+              # Layer 2: depends on core + index
+              publish_crate sochdb-storage
+              
+              # Layer 3: depends on core + storage + index
               publish_crate sochdb-query
-              publish_crate sochdb-client  # Published as 'sochdb' on crates.io
+              
+              # Layer 4: depends on everything above
+              publish_crate sochdb-client sochdb  # Published as 'sochdb' on crates.io
+              publish_crate sochdb-grpc
+              
+              # Layer 5: depends on client
+              publish_crate sochdb-mcp
             displayName: 'Publish crates in dependency order'
             env:
               CRATES_IO_TOKEN: $(CRATES_IO_TOKEN)
