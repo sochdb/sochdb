@@ -786,12 +786,6 @@ mod tests {
     }
 
     impl TestExtension {
-        fn new() -> Self {
-            Self {
-                shutdown_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            }
-        }
-
         fn new_with_flag(flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
             Self {
                 shutdown_called: flag,
