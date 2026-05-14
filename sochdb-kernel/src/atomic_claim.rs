@@ -110,6 +110,8 @@ pub enum ClaimResult {
 /// It prevents workers from operating on tasks they don't own.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClaimToken {
+    /// Queue containing the task
+    pub queue_id: String,
     /// Task being claimed
     pub task_id: String,
     /// Owner identity
@@ -158,8 +160,9 @@ impl ClaimEntry {
         now_millis >= self.expires_at
     }
 
-    fn to_token(&self, task_id: &str) -> ClaimToken {
+    fn to_token(&self, queue_id: &str, task_id: &str) -> ClaimToken {
         ClaimToken {
+            queue_id: queue_id.to_string(),
             task_id: task_id.to_string(),
             owner: self.owner.clone(),
             instance: self.instance,
@@ -299,7 +302,7 @@ impl AtomicClaimManager {
                     expires_at: now + lease_duration_ms,
                     claim_count: existing.claim_count + 1,
                 };
-                let token = new_entry.to_token(task_id);
+                let token = new_entry.to_token(queue_id, task_id);
                 queue_claims.insert(task_id.to_string(), new_entry);
                 
                 self.stats.write().successes += 1;
@@ -325,7 +328,7 @@ impl AtomicClaimManager {
                 expires_at: now + lease_duration_ms,
                 claim_count: existing.claim_count + 1,
             };
-            let token = new_entry.to_token(task_id);
+            let token = new_entry.to_token(queue_id, task_id);
             queue_claims.insert(task_id.to_string(), new_entry);
             
             self.stats.write().takeovers += 1;
@@ -344,7 +347,7 @@ impl AtomicClaimManager {
             expires_at: now + lease_duration_ms,
             claim_count: 1,
         };
-        let token = entry.to_token(task_id);
+        let token = entry.to_token(queue_id, task_id);
         queue_claims.insert(task_id.to_string(), entry);
         
         self.stats.write().successes += 1;
@@ -357,12 +360,12 @@ impl AtomicClaimManager {
     pub fn release(&self, token: &ClaimToken) -> Result<(), String> {
         let _now = current_time_millis();
         
-        let lock = self.get_claim_lock(&token.owner, &token.task_id);
+        let lock = self.get_claim_lock(&token.queue_id, &token.task_id);
         let _guard = lock.lock();
         
         let mut claims = self.claims.write();
         
-        if let Some(queue_claims) = claims.get_mut(&token.owner) {
+        if let Some(queue_claims) = claims.get_mut(&token.queue_id) {
             if let Some(existing) = queue_claims.get(&token.task_id) {
                 // Verify ownership
                 if existing.instance != token.instance {
@@ -410,7 +413,7 @@ impl AtomicClaimManager {
                 // Extend the lease
                 existing.expires_at += additional_ms;
                 
-                return Ok(existing.to_token(&token.task_id));
+                return Ok(existing.to_token(queue_id, &token.task_id));
             }
         }
         
@@ -443,7 +446,7 @@ impl AtomicClaimManager {
         if let Some(queue_claims) = claims.get(queue_id) {
             if let Some(entry) = queue_claims.get(task_id) {
                 if !entry.is_expired(now) && entry.owner == owner {
-                    return Some(entry.to_token(task_id));
+                    return Some(entry.to_token(queue_id, task_id));
                 }
             }
         }
@@ -503,7 +506,7 @@ impl AtomicClaimManager {
             .map(|q| {
                 q.iter()
                     .filter(|(_, e)| !e.is_expired(now))
-                    .map(|(task_id, e)| e.to_token(task_id))
+                    .map(|(task_id, e)| e.to_token(queue_id, task_id))
                     .collect()
             })
             .unwrap_or_default()
@@ -622,25 +625,8 @@ impl LeaseManager {
             self.extension_counts.write().remove(&key);
         }
         
-        // Release in claim manager
-        // Note: The release method in AtomicClaimManager uses token.owner as queue_id,
-        // which is a bug. For now we work around it by calling the underlying claims.
-        let _now = current_time_millis();
-        
-        let mut claims = self.claim_manager.claims.write();
-        if let Some(queue_claims) = claims.get_mut(queue_id) {
-            if let Some(existing) = queue_claims.get(&token.task_id) {
-                if existing.instance == token.instance {
-                    queue_claims.remove(&token.task_id);
-                    self.claim_manager.stats.write().acks += 1;
-                    return Ok(());
-                } else {
-                    return Err("Stale claim token".to_string());
-                }
-            }
-        }
-        
-        Err("Claim not found".to_string())
+        // Delegate to claim manager (which now correctly uses token.queue_id)
+        self.claim_manager.release(token)
     }
 
     /// Extend a lease
@@ -810,24 +796,59 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_release() {
+    fn test_claim_release_wrong_queue() {
         let manager = AtomicClaimManager::new();
         
-        // Claim
+        // Claim task in queue1
         let token = match manager.claim("queue1", "task1", "worker1", 30_000) {
             ClaimResult::Success { claim_token } => claim_token,
             _ => panic!("Expected success"),
         };
         
+        // Token should have correct queue_id
+        assert_eq!(token.queue_id, "queue1");
+        
         // Verify claimed
         assert!(manager.is_claimed("queue1", "task1").is_some());
         
-        // Release
-        // Note: Due to the bug in release(), we use queue_id from token.owner
-        // which is wrong. We need to use cleanup_expired for now.
-        manager.cleanup_expired();
+        // Release using the correct token should work
+        manager.release(&token).unwrap();
         
-        // After cleanup (if expired) or direct removal, should not be claimed
+        // After release, task should not be claimed
+        assert!(manager.is_claimed("queue1", "task1").is_none());
+    }
+
+    #[test]
+    fn test_multiple_queue_isolation() {
+        let manager = AtomicClaimManager::new();
+        
+        // Claim same task_id in different queues
+        let token1 = match manager.claim("queue1", "task1", "worker1", 30_000) {
+            ClaimResult::Success { claim_token } => claim_token,
+            _ => panic!("Expected success"),
+        };
+        
+        let token2 = match manager.claim("queue2", "task1", "worker1", 30_000) {
+            ClaimResult::Success { claim_token } => claim_token,
+            _ => panic!("Expected success"),
+        };
+        
+        // Tokens should have distinct queue_ids
+        assert_eq!(token1.queue_id, "queue1");
+        assert_eq!(token2.queue_id, "queue2");
+        
+        // Both tasks should be claimed
+        assert!(manager.is_claimed("queue1", "task1").is_some());
+        assert!(manager.is_claimed("queue2", "task1").is_some());
+        
+        // Release from queue1 should not affect queue2
+        manager.release(&token1).unwrap();
+        assert!(manager.is_claimed("queue1", "task1").is_none());
+        assert!(manager.is_claimed("queue2", "task1").is_some());
+        
+        // Release from queue2
+        manager.release(&token2).unwrap();
+        assert!(manager.is_claimed("queue2", "task1").is_none());
     }
 
     #[test]
