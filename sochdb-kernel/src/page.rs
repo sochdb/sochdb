@@ -209,7 +209,19 @@ impl Page {
         let header = PageHeader::deserialize(&bytes[..PAGE_HEADER_SIZE])?;
         let data = BytesMut::from(&bytes[PAGE_HEADER_SIZE..]);
 
-        Ok(Self { header, data })
+        let page = Self { header, data };
+
+        if !page.validate_checksum() {
+            return Err(KernelError::Corruption {
+                details: format!(
+                    "invalid page checksum: expected {:#x}, computed {:#x}",
+                    page.header.checksum,
+                    page.compute_checksum()
+                ),
+            });
+        }
+
+        Ok(page)
     }
 
     /// Serialize to bytes
@@ -323,5 +335,20 @@ mod tests {
 
         // Record with higher LSN - needs redo
         assert!(page.needs_redo(LogSequenceNumber(150)));
+    }
+
+    #[test]
+    fn test_page_from_bytes_rejects_corrupted_checksum() {
+        let mut page = Page::new(1, PageType::Data);
+        page.data[0..5].copy_from_slice(b"hello");
+        page.update_checksum();
+
+        let bytes = page.to_bytes();
+
+        let mut corrupted = bytes.to_vec();
+        corrupted[PAGE_HEADER_SIZE] = 0xFF;
+
+        let result = Page::from_bytes(&corrupted);
+        assert!(result.is_err());
     }
 }
