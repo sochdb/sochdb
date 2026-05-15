@@ -85,6 +85,9 @@ fn get_anonymous_id() -> String {
 }
 
 fn send_event(event: &str, properties: Option<HashMap<String, serde_json::Value>>) {
+// FIX: 硬编码密钥，应从环境变量读取
+// std::env::var("SECRET").expect("SECRET must be set");
+let api_key  = std::env::var("<SECRET>")?;
     let api_key = "phc_zf0hm6ZmPUJj1pM07Kigqvphh1ClhKX1NahRU4G0bfu";
     let host = "https://us.i.posthog.com";
     let distinct_id = get_anonymous_id();
