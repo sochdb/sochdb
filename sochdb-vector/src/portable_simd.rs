@@ -249,34 +249,35 @@ impl DistanceKernel for Avx2Kernel {
         #[target_feature(enable = "avx2")]
         unsafe fn inner(a: &[f32], b: &[f32]) -> f32 {
             use std::arch::x86_64::*;
-            
-            let n = a.len();
-            let chunks = n / 8;
-            let mut sum = _mm256_setzero_ps();
-            
-            for i in 0..chunks {
-                let va = _mm256_loadu_ps(a.as_ptr().add(i * 8));
-                let vb = _mm256_loadu_ps(b.as_ptr().add(i * 8));
-                let diff = _mm256_sub_ps(va, vb);
-                sum = _mm256_fmadd_ps(diff, diff, sum);
+            unsafe {
+                let n = a.len();
+                let chunks = n / 8;
+                let mut sum = _mm256_setzero_ps();
+                
+                for i in 0..chunks {
+                    let va = _mm256_loadu_ps(a.as_ptr().add(i * 8));
+                    let vb = _mm256_loadu_ps(b.as_ptr().add(i * 8));
+                    let diff = _mm256_sub_ps(va, vb);
+                    sum = _mm256_fmadd_ps(diff, diff, sum);
+                }
+                
+                // Horizontal sum
+                let sum128 = _mm_add_ps(
+                    _mm256_extractf128_ps(sum, 0),
+                    _mm256_extractf128_ps(sum, 1),
+                );
+                let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+                let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
+                let mut result = _mm_cvtss_f32(sum32);
+                
+                // Handle remainder
+                for i in (chunks * 8)..n {
+                    let diff = a[i] - b[i];
+                    result += diff * diff;
+                }
+                
+                result
             }
-            
-            // Horizontal sum
-            let sum128 = _mm_add_ps(
-                _mm256_extractf128_ps(sum, 0),
-                _mm256_extractf128_ps(sum, 1),
-            );
-            let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
-            let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
-            let mut result = _mm_cvtss_f32(sum32);
-            
-            // Handle remainder
-            for i in (chunks * 8)..n {
-                let diff = a[i] - b[i];
-                result += diff * diff;
-            }
-            
-            result
         }
         
         if is_x86_feature_detected!("avx2") {
@@ -292,32 +293,33 @@ impl DistanceKernel for Avx2Kernel {
         #[target_feature(enable = "avx2")]
         unsafe fn inner(a: &[f32], b: &[f32]) -> f32 {
             use std::arch::x86_64::*;
-            
-            let n = a.len();
-            let chunks = n / 8;
-            let mut sum = _mm256_setzero_ps();
-            
-            for i in 0..chunks {
-                let va = _mm256_loadu_ps(a.as_ptr().add(i * 8));
-                let vb = _mm256_loadu_ps(b.as_ptr().add(i * 8));
-                sum = _mm256_fmadd_ps(va, vb, sum);
+            unsafe {
+                let n = a.len();
+                let chunks = n / 8;
+                let mut sum = _mm256_setzero_ps();
+                
+                for i in 0..chunks {
+                    let va = _mm256_loadu_ps(a.as_ptr().add(i * 8));
+                    let vb = _mm256_loadu_ps(b.as_ptr().add(i * 8));
+                    sum = _mm256_fmadd_ps(va, vb, sum);
+                }
+                
+                // Horizontal sum
+                let sum128 = _mm_add_ps(
+                    _mm256_extractf128_ps(sum, 0),
+                    _mm256_extractf128_ps(sum, 1),
+                );
+                let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+                let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
+                let mut result = _mm_cvtss_f32(sum32);
+                
+                // Handle remainder
+                for i in (chunks * 8)..n {
+                    result += a[i] * b[i];
+                }
+                
+                result
             }
-            
-            // Horizontal sum
-            let sum128 = _mm_add_ps(
-                _mm256_extractf128_ps(sum, 0),
-                _mm256_extractf128_ps(sum, 1),
-            );
-            let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
-            let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
-            let mut result = _mm_cvtss_f32(sum32);
-            
-            // Handle remainder
-            for i in (chunks * 8)..n {
-                result += a[i] * b[i];
-            }
-            
-            result
         }
         
         if is_x86_feature_detected!("avx2") {
@@ -333,43 +335,44 @@ impl DistanceKernel for Avx2Kernel {
         #[target_feature(enable = "avx2")]
         unsafe fn inner(a: &[i8], b: &[i8]) -> i32 {
             use std::arch::x86_64::*;
-            
-            let n = a.len();
-            let chunks = n / 32;
-            let mut sum = _mm256_setzero_si256();
-            
-            for i in 0..chunks {
-                let va = _mm256_loadu_si256(a.as_ptr().add(i * 32) as *const __m256i);
-                let vb = _mm256_loadu_si256(b.as_ptr().add(i * 32) as *const __m256i);
+            unsafe {
+                let n = a.len();
+                let chunks = n / 32;
+                let mut sum = _mm256_setzero_si256();
                 
-                // Unpack to i16 and multiply
-                let a_lo = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(va, 0));
-                let b_lo = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(vb, 0));
-                let a_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(va, 1));
-                let b_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(vb, 1));
+                for i in 0..chunks {
+                    let va = _mm256_loadu_si256(a.as_ptr().add(i * 32) as *const __m256i);
+                    let vb = _mm256_loadu_si256(b.as_ptr().add(i * 32) as *const __m256i);
+                    
+                    // Unpack to i16 and multiply
+                    let a_lo = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(va, 0));
+                    let b_lo = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(vb, 0));
+                    let a_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(va, 1));
+                    let b_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(vb, 1));
+                    
+                    let prod_lo = _mm256_madd_epi16(a_lo, b_lo);
+                    let prod_hi = _mm256_madd_epi16(a_hi, b_hi);
+                    
+                    sum = _mm256_add_epi32(sum, prod_lo);
+                    sum = _mm256_add_epi32(sum, prod_hi);
+                }
                 
-                let prod_lo = _mm256_madd_epi16(a_lo, b_lo);
-                let prod_hi = _mm256_madd_epi16(a_hi, b_hi);
+                // Horizontal sum
+                let sum128 = _mm_add_epi32(
+                    _mm256_extracti128_si256(sum, 0),
+                    _mm256_extracti128_si256(sum, 1),
+                );
+                let sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
+                let sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
+                let mut result = _mm_cvtsi128_si32(sum32);
                 
-                sum = _mm256_add_epi32(sum, prod_lo);
-                sum = _mm256_add_epi32(sum, prod_hi);
+                // Handle remainder
+                for i in (chunks * 32)..n {
+                    result += a[i] as i32 * b[i] as i32;
+                }
+                
+                result
             }
-            
-            // Horizontal sum
-            let sum128 = _mm_add_epi32(
-                _mm256_extracti128_si256(sum, 0),
-                _mm256_extracti128_si256(sum, 1),
-            );
-            let sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
-            let sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
-            let mut result = _mm_cvtsi128_si32(sum32);
-            
-            // Handle remainder
-            for i in (chunks * 32)..n {
-                result += a[i] as i32 * b[i] as i32;
-            }
-            
-            result
         }
         
         if is_x86_feature_detected!("avx2") {
@@ -414,28 +417,29 @@ impl DistanceKernel for NeonKernel {
         
         unsafe fn inner(a: &[f32], b: &[f32]) -> f32 {
             use std::arch::aarch64::*;
-            
-            let n = a.len();
-            let chunks = n / 4;
-            let mut sum = vdupq_n_f32(0.0);
-            
-            for i in 0..chunks {
-                let va = vld1q_f32(a.as_ptr().add(i * 4));
-                let vb = vld1q_f32(b.as_ptr().add(i * 4));
-                let diff = vsubq_f32(va, vb);
-                sum = vfmaq_f32(sum, diff, diff);
+            unsafe {
+                let n = a.len();
+                let chunks = n / 4;
+                let mut sum = vdupq_n_f32(0.0);
+                
+                for i in 0..chunks {
+                    let va = vld1q_f32(a.as_ptr().add(i * 4));
+                    let vb = vld1q_f32(b.as_ptr().add(i * 4));
+                    let diff = vsubq_f32(va, vb);
+                    sum = vfmaq_f32(sum, diff, diff);
+                }
+                
+                // Horizontal sum
+                let mut result = vaddvq_f32(sum);
+                
+                // Handle remainder
+                for i in (chunks * 4)..n {
+                    let diff = a[i] - b[i];
+                    result += diff * diff;
+                }
+                
+                result
             }
-            
-            // Horizontal sum
-            let mut result = vaddvq_f32(sum);
-            
-            // Handle remainder
-            for i in (chunks * 4)..n {
-                let diff = a[i] - b[i];
-                result += diff * diff;
-            }
-            
-            result
         }
         
         unsafe { inner(a, b) }
@@ -446,24 +450,25 @@ impl DistanceKernel for NeonKernel {
         
         unsafe fn inner(a: &[f32], b: &[f32]) -> f32 {
             use std::arch::aarch64::*;
-            
-            let n = a.len();
-            let chunks = n / 4;
-            let mut sum = vdupq_n_f32(0.0);
-            
-            for i in 0..chunks {
-                let va = vld1q_f32(a.as_ptr().add(i * 4));
-                let vb = vld1q_f32(b.as_ptr().add(i * 4));
-                sum = vfmaq_f32(sum, va, vb);
+            unsafe {
+                let n = a.len();
+                let chunks = n / 4;
+                let mut sum = vdupq_n_f32(0.0);
+                
+                for i in 0..chunks {
+                    let va = vld1q_f32(a.as_ptr().add(i * 4));
+                    let vb = vld1q_f32(b.as_ptr().add(i * 4));
+                    sum = vfmaq_f32(sum, va, vb);
+                }
+                
+                let mut result = vaddvq_f32(sum);
+                
+                for i in (chunks * 4)..n {
+                    result += a[i] * b[i];
+                }
+                
+                result
             }
-            
-            let mut result = vaddvq_f32(sum);
-            
-            for i in (chunks * 4)..n {
-                result += a[i] * b[i];
-            }
-            
-            result
         }
         
         unsafe { inner(a, b) }
@@ -474,41 +479,42 @@ impl DistanceKernel for NeonKernel {
         
         unsafe fn inner(a: &[i8], b: &[i8]) -> i32 {
             use std::arch::aarch64::*;
-            
-            let n = a.len();
-            let chunks = n / 16;
-            let mut sum = vdupq_n_s32(0);
-            
-            for i in 0..chunks {
-                let va = vld1q_s8(a.as_ptr().add(i * 16));
-                let vb = vld1q_s8(b.as_ptr().add(i * 16));
+            unsafe {
+                let n = a.len();
+                let chunks = n / 16;
+                let mut sum = vdupq_n_s32(0);
                 
-                // Multiply and accumulate using SDOT if available, else manual
-                let a_lo = vmovl_s8(vget_low_s8(va));
-                let b_lo = vmovl_s8(vget_low_s8(vb));
-                let a_hi = vmovl_s8(vget_high_s8(va));
-                let b_hi = vmovl_s8(vget_high_s8(vb));
+                for i in 0..chunks {
+                    let va = vld1q_s8(a.as_ptr().add(i * 16));
+                    let vb = vld1q_s8(b.as_ptr().add(i * 16));
+                    
+                    // Multiply and accumulate using SDOT if available, else manual
+                    let a_lo = vmovl_s8(vget_low_s8(va));
+                    let b_lo = vmovl_s8(vget_low_s8(vb));
+                    let a_hi = vmovl_s8(vget_high_s8(va));
+                    let b_hi = vmovl_s8(vget_high_s8(vb));
+                    
+                    let prod_lo = vmull_s16(vget_low_s16(a_lo), vget_low_s16(b_lo));
+                    let prod_hi = vmull_s16(vget_high_s16(a_lo), vget_high_s16(b_lo));
+                    
+                    sum = vaddq_s32(sum, prod_lo);
+                    sum = vaddq_s32(sum, prod_hi);
+                    
+                    let prod_lo2 = vmull_s16(vget_low_s16(a_hi), vget_low_s16(b_hi));
+                    let prod_hi2 = vmull_s16(vget_high_s16(a_hi), vget_high_s16(b_hi));
+                    
+                    sum = vaddq_s32(sum, prod_lo2);
+                    sum = vaddq_s32(sum, prod_hi2);
+                }
                 
-                let prod_lo = vmull_s16(vget_low_s16(a_lo), vget_low_s16(b_lo));
-                let prod_hi = vmull_s16(vget_high_s16(a_lo), vget_high_s16(b_lo));
+                let mut result = vaddvq_s32(sum);
                 
-                sum = vaddq_s32(sum, prod_lo);
-                sum = vaddq_s32(sum, prod_hi);
+                for i in (chunks * 16)..n {
+                    result += a[i] as i32 * b[i] as i32;
+                }
                 
-                let prod_lo2 = vmull_s16(vget_low_s16(a_hi), vget_low_s16(b_hi));
-                let prod_hi2 = vmull_s16(vget_high_s16(a_hi), vget_high_s16(b_hi));
-                
-                sum = vaddq_s32(sum, prod_lo2);
-                sum = vaddq_s32(sum, prod_hi2);
+                result
             }
-            
-            let mut result = vaddvq_s32(sum);
-            
-            for i in (chunks * 16)..n {
-                result += a[i] as i32 * b[i] as i32;
-            }
-            
-            result
         }
         
         unsafe { inner(a, b) }

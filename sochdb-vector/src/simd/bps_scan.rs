@@ -107,62 +107,63 @@ pub fn bps_scan_u32(bps: &[u8], n_vec: usize, n_blocks: usize, query: &[u8], out
 #[target_feature(enable = "avx2")]
 unsafe fn bps_scan_avx2(bps: &[u8], n_vec: usize, n_blocks: usize, query: &[u8], out: &mut [u16]) {
     use std::arch::x86_64::*;
-    
-    // Process 32 vectors at a time (256 bits / 8 bits = 32)
-    let vec_aligned = (n_vec / 32) * 32;
-    
-    // Zero output
-    out.iter_mut().take(n_vec).for_each(|d| *d = 0);
-    
-    // Main loop: process 32 vectors at a time
-    for chunk_start in (0..vec_aligned).step_by(32) {
-        // Accumulators for 32 vectors (split into 2x16 u16)
-        let mut acc_lo = _mm256_setzero_si256(); // Vectors 0-15
-        let mut acc_hi = _mm256_setzero_si256(); // Vectors 16-31
+    unsafe {
+        // Process 32 vectors at a time (256 bits / 8 bits = 32)
+        let vec_aligned = (n_vec / 32) * 32;
         
-        for slot in 0..n_blocks {
-            let base = slot * n_vec + chunk_start;
+        // Zero output
+        out.iter_mut().take(n_vec).for_each(|d| *d = 0);
+        
+        // Main loop: process 32 vectors at a time
+        for chunk_start in (0..vec_aligned).step_by(32) {
+            // Accumulators for 32 vectors (split into 2x16 u16)
+            let mut acc_lo = _mm256_setzero_si256(); // Vectors 0-15
+            let mut acc_hi = _mm256_setzero_si256(); // Vectors 16-31
             
-            // Load 32 vector values
-            let v = _mm256_loadu_si256(bps.as_ptr().add(base) as *const __m256i);
+            for slot in 0..n_blocks {
+                let base = slot * n_vec + chunk_start;
+                
+                // Load 32 vector values
+                let v = _mm256_loadu_si256(bps.as_ptr().add(base) as *const __m256i);
+                
+                // Broadcast query value
+                let qv = _mm256_set1_epi8(query[slot] as i8);
+                
+                // Compute absolute difference: |a - b| = (a ⊖ b) ∨ (b ⊖ a)
+                let d1 = _mm256_subs_epu8(v, qv);
+                let d2 = _mm256_subs_epu8(qv, v);
+                let diff = _mm256_or_si256(d1, d2);
+                
+                // Widen u8 → u16 and accumulate
+                // Extract low and high 128-bit lanes
+                let diff_lo128 = _mm256_castsi256_si128(diff);
+                let diff_hi128 = _mm256_extracti128_si256(diff, 1);
+                
+                // Zero-extend u8 to u16
+                let lo16 = _mm256_cvtepu8_epi16(diff_lo128);
+                let hi16 = _mm256_cvtepu8_epi16(diff_hi128);
+                
+                // Accumulate
+                acc_lo = _mm256_add_epi16(acc_lo, lo16);
+                acc_hi = _mm256_add_epi16(acc_hi, hi16);
+            }
             
-            // Broadcast query value
-            let qv = _mm256_set1_epi8(query[slot] as i8);
-            
-            // Compute absolute difference: |a - b| = (a ⊖ b) ∨ (b ⊖ a)
-            let d1 = _mm256_subs_epu8(v, qv);
-            let d2 = _mm256_subs_epu8(qv, v);
-            let diff = _mm256_or_si256(d1, d2);
-            
-            // Widen u8 → u16 and accumulate
-            // Extract low and high 128-bit lanes
-            let diff_lo128 = _mm256_castsi256_si128(diff);
-            let diff_hi128 = _mm256_extracti128_si256(diff, 1);
-            
-            // Zero-extend u8 to u16
-            let lo16 = _mm256_cvtepu8_epi16(diff_lo128);
-            let hi16 = _mm256_cvtepu8_epi16(diff_hi128);
-            
-            // Accumulate
-            acc_lo = _mm256_add_epi16(acc_lo, lo16);
-            acc_hi = _mm256_add_epi16(acc_hi, hi16);
+            // Store results
+            _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start) as *mut __m256i, acc_lo);
+            _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start + 16) as *mut __m256i, acc_hi);
         }
         
-        // Store results
-        _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start) as *mut __m256i, acc_lo);
-        _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start + 16) as *mut __m256i, acc_hi);
-    }
-    
-    // Handle remaining vectors with scalar code
-    for i in vec_aligned..n_vec {
-        let mut sum: u16 = 0;
-        for slot in 0..n_blocks {
-            let v = bps[slot * n_vec + i];
-            let qv = query[slot];
-            let diff = if v > qv { v - qv } else { qv - v };
-            sum = sum.saturating_add(diff as u16);
+        // Handle remaining vectors with scalar code
+        for i in vec_aligned..n_vec {
+            let mut sum: u16 = 0;
+            for slot in 0..n_blocks {
+                let v = bps[slot * n_vec + i];
+                let qv = query[slot];
+                let diff = if v > qv { v - qv } else { qv - v };
+                sum = sum.saturating_add(diff as u16);
+            }
+            out[i] = sum;
         }
-        out[i] = sum;
     }
 }
 
@@ -170,72 +171,73 @@ unsafe fn bps_scan_avx2(bps: &[u8], n_vec: usize, n_blocks: usize, query: &[u8],
 #[target_feature(enable = "avx2")]
 unsafe fn bps_scan_avx2_u32(bps: &[u8], n_vec: usize, n_blocks: usize, query: &[u8], out: &mut [u32]) {
     use std::arch::x86_64::*;
-    
-    // Process 32 vectors at a time
-    let vec_aligned = (n_vec / 32) * 32;
-    
-    // Zero output
-    out.iter_mut().take(n_vec).for_each(|d| *d = 0);
-    
-    // Main loop: process 32 vectors at a time
-    for chunk_start in (0..vec_aligned).step_by(32) {
-        // Accumulators - need 8 x 4 = 32 u32 values
-        // We'll use intermediate u16 accumulators and widen at the end
-        let mut acc_lo = _mm256_setzero_si256(); // Vectors 0-15 as u16
-        let mut acc_hi = _mm256_setzero_si256(); // Vectors 16-31 as u16
+    unsafe {
+        // Process 32 vectors at a time
+        let vec_aligned = (n_vec / 32) * 32;
         
-        for slot in 0..n_blocks {
-            let base = slot * n_vec + chunk_start;
-            let v = _mm256_loadu_si256(bps.as_ptr().add(base) as *const __m256i);
-            let qv = _mm256_set1_epi8(query[slot] as i8);
+        // Zero output
+        out.iter_mut().take(n_vec).for_each(|d| *d = 0);
+        
+        // Main loop: process 32 vectors at a time
+        for chunk_start in (0..vec_aligned).step_by(32) {
+            // Accumulators - need 8 x 4 = 32 u32 values
+            // We'll use intermediate u16 accumulators and widen at the end
+            let mut acc_lo = _mm256_setzero_si256(); // Vectors 0-15 as u16
+            let mut acc_hi = _mm256_setzero_si256(); // Vectors 16-31 as u16
             
-            let d1 = _mm256_subs_epu8(v, qv);
-            let d2 = _mm256_subs_epu8(qv, v);
-            let diff = _mm256_or_si256(d1, d2);
+            for slot in 0..n_blocks {
+                let base = slot * n_vec + chunk_start;
+                let v = _mm256_loadu_si256(bps.as_ptr().add(base) as *const __m256i);
+                let qv = _mm256_set1_epi8(query[slot] as i8);
+                
+                let d1 = _mm256_subs_epu8(v, qv);
+                let d2 = _mm256_subs_epu8(qv, v);
+                let diff = _mm256_or_si256(d1, d2);
+                
+                let diff_lo128 = _mm256_castsi256_si128(diff);
+                let diff_hi128 = _mm256_extracti128_si256(diff, 1);
+                
+                let lo16 = _mm256_cvtepu8_epi16(diff_lo128);
+                let hi16 = _mm256_cvtepu8_epi16(diff_hi128);
+                
+                acc_lo = _mm256_add_epi16(acc_lo, lo16);
+                acc_hi = _mm256_add_epi16(acc_hi, hi16);
+            }
             
-            let diff_lo128 = _mm256_castsi256_si128(diff);
-            let diff_hi128 = _mm256_extracti128_si256(diff, 1);
+            // Widen u16 to u32 and store
+            // acc_lo contains 16 u16 values for vectors 0-15
+            // acc_hi contains 16 u16 values for vectors 16-31
             
-            let lo16 = _mm256_cvtepu8_epi16(diff_lo128);
-            let hi16 = _mm256_cvtepu8_epi16(diff_hi128);
+            // Extract and widen acc_lo
+            let acc_lo_128_0 = _mm256_castsi256_si128(acc_lo);
+            let acc_lo_128_1 = _mm256_extracti128_si256(acc_lo, 1);
+            let out_0 = _mm256_cvtepu16_epi32(acc_lo_128_0); // 8 u32
+            let out_1 = _mm256_cvtepu16_epi32(acc_lo_128_1); // 8 u32
             
-            acc_lo = _mm256_add_epi16(acc_lo, lo16);
-            acc_hi = _mm256_add_epi16(acc_hi, hi16);
+            _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start) as *mut __m256i, out_0);
+            _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start + 8) as *mut __m256i, out_1);
+            
+            // Extract and widen acc_hi
+            let acc_hi_128_0 = _mm256_castsi256_si128(acc_hi);
+            let acc_hi_128_1 = _mm256_extracti128_si256(acc_hi, 1);
+            let out_2 = _mm256_cvtepu16_epi32(acc_hi_128_0);
+            let out_3 = _mm256_cvtepu16_epi32(acc_hi_128_1);
+            
+            _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start + 16) as *mut __m256i, out_2);
+            _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start + 24) as *mut __m256i, out_3);
         }
         
-        // Widen u16 to u32 and store
-        // acc_lo contains 16 u16 values for vectors 0-15
-        // acc_hi contains 16 u16 values for vectors 16-31
-        
-        // Extract and widen acc_lo
-        let acc_lo_128_0 = _mm256_castsi256_si128(acc_lo);
-        let acc_lo_128_1 = _mm256_extracti128_si256(acc_lo, 1);
-        let out_0 = _mm256_cvtepu16_epi32(acc_lo_128_0); // 8 u32
-        let out_1 = _mm256_cvtepu16_epi32(acc_lo_128_1); // 8 u32
-        
-        _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start) as *mut __m256i, out_0);
-        _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start + 8) as *mut __m256i, out_1);
-        
-        // Extract and widen acc_hi
-        let acc_hi_128_0 = _mm256_castsi256_si128(acc_hi);
-        let acc_hi_128_1 = _mm256_extracti128_si256(acc_hi, 1);
-        let out_2 = _mm256_cvtepu16_epi32(acc_hi_128_0);
-        let out_3 = _mm256_cvtepu16_epi32(acc_hi_128_1);
-        
-        _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start + 16) as *mut __m256i, out_2);
-        _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start + 24) as *mut __m256i, out_3);
-    }
-    
-    // Handle remaining vectors
-    for i in vec_aligned..n_vec {
-        let mut sum: u32 = 0;
-        for slot in 0..n_blocks {
-            let v = bps[slot * n_vec + i];
-            let qv = query[slot];
-            let diff = if v > qv { v - qv } else { qv - v };
-            sum += diff as u32;
+        // Handle remaining vectors
+        for i in vec_aligned..n_vec {
+            let mut sum: u32 = 0;
+            for slot in 0..n_blocks {
+                let v = bps[slot * n_vec + i];
+                let qv = query[slot];
+                let diff = if v > qv { v - qv } else { qv - v };
+                sum += diff as u32;
+            }
+            out[i] = sum;
         }
-        out[i] = sum;
     }
 }
 

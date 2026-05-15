@@ -226,86 +226,87 @@ pub fn hadamard_scalar(data: &mut [f32]) {
 #[target_feature(enable = "avx2")]
 unsafe fn hadamard_avx2(data: &mut [f32]) {
     use std::arch::x86_64::*;
-    
-    let n = data.len();
-    
-    // For small sizes, use scalar
-    if n < 8 {
-        hadamard_scalar(data);
-        return;
-    }
-    
-    // Process butterfly stages
-    let mut h = 1;
-    
-    // First few stages with scalar (h < 8)
-    while h < 8 && h < n {
-        for i in (0..n).step_by(h * 2) {
-            for j in i..(i + h) {
-                let x = *data.get_unchecked(j);
-                let y = *data.get_unchecked(j + h);
-                *data.get_unchecked_mut(j) = x + y;
-                *data.get_unchecked_mut(j + h) = x - y;
-            }
-        }
-        h *= 2;
-    }
-    
-    // SIMD stages (h >= 8)
-    while h < n {
-        let blocks = n / (h * 2);
+    unsafe {
+        let n = data.len();
         
-        for block in 0..blocks {
-            let base = block * h * 2;
-            
-            // Process 8 floats at a time
-            for j in (0..h).step_by(8) {
-                let idx_a = base + j;
-                let idx_b = base + h + j;
-                
-                let va = _mm256_loadu_ps(data.as_ptr().add(idx_a));
-                let vb = _mm256_loadu_ps(data.as_ptr().add(idx_b));
-                
-                let sum = _mm256_add_ps(va, vb);
-                let diff = _mm256_sub_ps(va, vb);
-                
-                _mm256_storeu_ps(data.as_mut_ptr().add(idx_a), sum);
-                _mm256_storeu_ps(data.as_mut_ptr().add(idx_b), diff);
-            }
-            
-            // Handle remainder
-            let remainder = h % 8;
-            if remainder > 0 {
-                let start = h - remainder;
-                for j in start..h {
-                    let idx_a = base + j;
-                    let idx_b = base + h + j;
-                    let x = *data.get_unchecked(idx_a);
-                    let y = *data.get_unchecked(idx_b);
-                    *data.get_unchecked_mut(idx_a) = x + y;
-                    *data.get_unchecked_mut(idx_b) = x - y;
+        // For small sizes, use scalar
+        if n < 8 {
+            hadamard_scalar(data);
+            return;
+        }
+        
+        // Process butterfly stages
+        let mut h = 1;
+        
+        // First few stages with scalar (h < 8)
+        while h < 8 && h < n {
+            for i in (0..n).step_by(h * 2) {
+                for j in i..(i + h) {
+                    let x = *data.get_unchecked(j);
+                    let y = *data.get_unchecked(j + h);
+                    *data.get_unchecked_mut(j) = x + y;
+                    *data.get_unchecked_mut(j + h) = x - y;
                 }
             }
+            h *= 2;
         }
         
-        h *= 2;
-    }
-    
-    // Normalize with SIMD
-    let scale = 1.0 / (n as f32).sqrt();
-    let vscale = _mm256_set1_ps(scale);
-    
-    let chunks = n / 8;
-    for i in 0..chunks {
-        let offset = i * 8;
-        let v = _mm256_loadu_ps(data.as_ptr().add(offset));
-        let scaled = _mm256_mul_ps(v, vscale);
-        _mm256_storeu_ps(data.as_mut_ptr().add(offset), scaled);
-    }
-    
-    // Remainder
-    for i in (chunks * 8)..n {
-        *data.get_unchecked_mut(i) *= scale;
+        // SIMD stages (h >= 8)
+        while h < n {
+            let blocks = n / (h * 2);
+            
+            for block in 0..blocks {
+                let base = block * h * 2;
+                
+                // Process 8 floats at a time
+                for j in (0..h).step_by(8) {
+                    let idx_a = base + j;
+                    let idx_b = base + h + j;
+                    
+                    let va = _mm256_loadu_ps(data.as_ptr().add(idx_a));
+                    let vb = _mm256_loadu_ps(data.as_ptr().add(idx_b));
+                    
+                    let sum = _mm256_add_ps(va, vb);
+                    let diff = _mm256_sub_ps(va, vb);
+                    
+                    _mm256_storeu_ps(data.as_mut_ptr().add(idx_a), sum);
+                    _mm256_storeu_ps(data.as_mut_ptr().add(idx_b), diff);
+                }
+                
+                // Handle remainder
+                let remainder = h % 8;
+                if remainder > 0 {
+                    let start = h - remainder;
+                    for j in start..h {
+                        let idx_a = base + j;
+                        let idx_b = base + h + j;
+                        let x = *data.get_unchecked(idx_a);
+                        let y = *data.get_unchecked(idx_b);
+                        *data.get_unchecked_mut(idx_a) = x + y;
+                        *data.get_unchecked_mut(idx_b) = x - y;
+                    }
+                }
+            }
+            
+            h *= 2;
+        }
+        
+        // Normalize with SIMD
+        let scale = 1.0 / (n as f32).sqrt();
+        let vscale = _mm256_set1_ps(scale);
+        
+        let chunks = n / 8;
+        for i in 0..chunks {
+            let offset = i * 8;
+            let v = _mm256_loadu_ps(data.as_ptr().add(offset));
+            let scaled = _mm256_mul_ps(v, vscale);
+            _mm256_storeu_ps(data.as_mut_ptr().add(offset), scaled);
+        }
+        
+        // Remainder
+        for i in (chunks * 8)..n {
+            *data.get_unchecked_mut(i) *= scale;
+        }
     }
 }
 
@@ -317,83 +318,84 @@ unsafe fn hadamard_avx2(data: &mut [f32]) {
 #[target_feature(enable = "sse4.1")]
 unsafe fn hadamard_sse41(data: &mut [f32]) {
     use std::arch::x86_64::*;
-    
-    let n = data.len();
-    
-    if n < 4 {
-        hadamard_scalar(data);
-        return;
-    }
-    
-    // Butterfly stages
-    let mut h = 1;
-    
-    // Scalar for h < 4
-    while h < 4 && h < n {
-        for i in (0..n).step_by(h * 2) {
-            for j in i..(i + h) {
-                let x = *data.get_unchecked(j);
-                let y = *data.get_unchecked(j + h);
-                *data.get_unchecked_mut(j) = x + y;
-                *data.get_unchecked_mut(j + h) = x - y;
-            }
-        }
-        h *= 2;
-    }
-    
-    // SIMD stages
-    while h < n {
-        let blocks = n / (h * 2);
+    unsafe {
+        let n = data.len();
         
-        for block in 0..blocks {
-            let base = block * h * 2;
-            
-            for j in (0..h).step_by(4) {
-                let idx_a = base + j;
-                let idx_b = base + h + j;
-                
-                let va = _mm_loadu_ps(data.as_ptr().add(idx_a));
-                let vb = _mm_loadu_ps(data.as_ptr().add(idx_b));
-                
-                let sum = _mm_add_ps(va, vb);
-                let diff = _mm_sub_ps(va, vb);
-                
-                _mm_storeu_ps(data.as_mut_ptr().add(idx_a), sum);
-                _mm_storeu_ps(data.as_mut_ptr().add(idx_b), diff);
-            }
-            
-            // Remainder
-            let remainder = h % 4;
-            if remainder > 0 {
-                let start = h - remainder;
-                for j in start..h {
-                    let idx_a = base + j;
-                    let idx_b = base + h + j;
-                    let x = *data.get_unchecked(idx_a);
-                    let y = *data.get_unchecked(idx_b);
-                    *data.get_unchecked_mut(idx_a) = x + y;
-                    *data.get_unchecked_mut(idx_b) = x - y;
+        if n < 4 {
+            hadamard_scalar(data);
+            return;
+        }
+        
+        // Butterfly stages
+        let mut h = 1;
+        
+        // Scalar for h < 4
+        while h < 4 && h < n {
+            for i in (0..n).step_by(h * 2) {
+                for j in i..(i + h) {
+                    let x = *data.get_unchecked(j);
+                    let y = *data.get_unchecked(j + h);
+                    *data.get_unchecked_mut(j) = x + y;
+                    *data.get_unchecked_mut(j + h) = x - y;
                 }
             }
+            h *= 2;
         }
         
-        h *= 2;
-    }
-    
-    // Normalize
-    let scale = 1.0 / (n as f32).sqrt();
-    let vscale = _mm_set1_ps(scale);
-    
-    let chunks = n / 4;
-    for i in 0..chunks {
-        let offset = i * 4;
-        let v = _mm_loadu_ps(data.as_ptr().add(offset));
-        let scaled = _mm_mul_ps(v, vscale);
-        _mm_storeu_ps(data.as_mut_ptr().add(offset), scaled);
-    }
-    
-    for i in (chunks * 4)..n {
-        *data.get_unchecked_mut(i) *= scale;
+        // SIMD stages
+        while h < n {
+            let blocks = n / (h * 2);
+            
+            for block in 0..blocks {
+                let base = block * h * 2;
+                
+                for j in (0..h).step_by(4) {
+                    let idx_a = base + j;
+                    let idx_b = base + h + j;
+                    
+                    let va = _mm_loadu_ps(data.as_ptr().add(idx_a));
+                    let vb = _mm_loadu_ps(data.as_ptr().add(idx_b));
+                    
+                    let sum = _mm_add_ps(va, vb);
+                    let diff = _mm_sub_ps(va, vb);
+                    
+                    _mm_storeu_ps(data.as_mut_ptr().add(idx_a), sum);
+                    _mm_storeu_ps(data.as_mut_ptr().add(idx_b), diff);
+                }
+                
+                // Remainder
+                let remainder = h % 4;
+                if remainder > 0 {
+                    let start = h - remainder;
+                    for j in start..h {
+                        let idx_a = base + j;
+                        let idx_b = base + h + j;
+                        let x = *data.get_unchecked(idx_a);
+                        let y = *data.get_unchecked(idx_b);
+                        *data.get_unchecked_mut(idx_a) = x + y;
+                        *data.get_unchecked_mut(idx_b) = x - y;
+                    }
+                }
+            }
+            
+            h *= 2;
+        }
+        
+        // Normalize
+        let scale = 1.0 / (n as f32).sqrt();
+        let vscale = _mm_set1_ps(scale);
+        
+        let chunks = n / 4;
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = _mm_loadu_ps(data.as_ptr().add(offset));
+            let scaled = _mm_mul_ps(v, vscale);
+            _mm_storeu_ps(data.as_mut_ptr().add(offset), scaled);
+        }
+        
+        for i in (chunks * 4)..n {
+            *data.get_unchecked_mut(i) *= scale;
+        }
     }
 }
 
@@ -405,83 +407,84 @@ unsafe fn hadamard_sse41(data: &mut [f32]) {
 #[target_feature(enable = "avx512f")]
 unsafe fn hadamard_avx512(data: &mut [f32]) {
     use std::arch::x86_64::*;
-    
-    let n = data.len();
-    
-    if n < 16 {
-        hadamard_avx2(data);
-        return;
-    }
-    
-    // Butterfly stages
-    let mut h = 1;
-    
-    // Scalar for h < 16
-    while h < 16 && h < n {
-        for i in (0..n).step_by(h * 2) {
-            for j in i..(i + h) {
-                let x = *data.get_unchecked(j);
-                let y = *data.get_unchecked(j + h);
-                *data.get_unchecked_mut(j) = x + y;
-                *data.get_unchecked_mut(j + h) = x - y;
-            }
-        }
-        h *= 2;
-    }
-    
-    // SIMD stages
-    while h < n {
-        let blocks = n / (h * 2);
+    unsafe {
+        let n = data.len();
         
-        for block in 0..blocks {
-            let base = block * h * 2;
-            
-            for j in (0..h).step_by(16) {
-                let idx_a = base + j;
-                let idx_b = base + h + j;
-                
-                let va = _mm512_loadu_ps(data.as_ptr().add(idx_a));
-                let vb = _mm512_loadu_ps(data.as_ptr().add(idx_b));
-                
-                let sum = _mm512_add_ps(va, vb);
-                let diff = _mm512_sub_ps(va, vb);
-                
-                _mm512_storeu_ps(data.as_mut_ptr().add(idx_a), sum);
-                _mm512_storeu_ps(data.as_mut_ptr().add(idx_b), diff);
-            }
-            
-            // Remainder
-            let remainder = h % 16;
-            if remainder > 0 {
-                let start = h - remainder;
-                for j in start..h {
-                    let idx_a = base + j;
-                    let idx_b = base + h + j;
-                    let x = *data.get_unchecked(idx_a);
-                    let y = *data.get_unchecked(idx_b);
-                    *data.get_unchecked_mut(idx_a) = x + y;
-                    *data.get_unchecked_mut(idx_b) = x - y;
+        if n < 16 {
+            hadamard_avx2(data);
+            return;
+        }
+        
+        // Butterfly stages
+        let mut h = 1;
+        
+        // Scalar for h < 16
+        while h < 16 && h < n {
+            for i in (0..n).step_by(h * 2) {
+                for j in i..(i + h) {
+                    let x = *data.get_unchecked(j);
+                    let y = *data.get_unchecked(j + h);
+                    *data.get_unchecked_mut(j) = x + y;
+                    *data.get_unchecked_mut(j + h) = x - y;
                 }
             }
+            h *= 2;
         }
         
-        h *= 2;
-    }
-    
-    // Normalize
-    let scale = 1.0 / (n as f32).sqrt();
-    let vscale = _mm512_set1_ps(scale);
-    
-    let chunks = n / 16;
-    for i in 0..chunks {
-        let offset = i * 16;
-        let v = _mm512_loadu_ps(data.as_ptr().add(offset));
-        let scaled = _mm512_mul_ps(v, vscale);
-        _mm512_storeu_ps(data.as_mut_ptr().add(offset), scaled);
-    }
-    
-    for i in (chunks * 16)..n {
-        *data.get_unchecked_mut(i) *= scale;
+        // SIMD stages
+        while h < n {
+            let blocks = n / (h * 2);
+            
+            for block in 0..blocks {
+                let base = block * h * 2;
+                
+                for j in (0..h).step_by(16) {
+                    let idx_a = base + j;
+                    let idx_b = base + h + j;
+                    
+                    let va = _mm512_loadu_ps(data.as_ptr().add(idx_a));
+                    let vb = _mm512_loadu_ps(data.as_ptr().add(idx_b));
+                    
+                    let sum = _mm512_add_ps(va, vb);
+                    let diff = _mm512_sub_ps(va, vb);
+                    
+                    _mm512_storeu_ps(data.as_mut_ptr().add(idx_a), sum);
+                    _mm512_storeu_ps(data.as_mut_ptr().add(idx_b), diff);
+                }
+                
+                // Remainder
+                let remainder = h % 16;
+                if remainder > 0 {
+                    let start = h - remainder;
+                    for j in start..h {
+                        let idx_a = base + j;
+                        let idx_b = base + h + j;
+                        let x = *data.get_unchecked(idx_a);
+                        let y = *data.get_unchecked(idx_b);
+                        *data.get_unchecked_mut(idx_a) = x + y;
+                        *data.get_unchecked_mut(idx_b) = x - y;
+                    }
+                }
+            }
+            
+            h *= 2;
+        }
+        
+        // Normalize
+        let scale = 1.0 / (n as f32).sqrt();
+        let vscale = _mm512_set1_ps(scale);
+        
+        let chunks = n / 16;
+        for i in 0..chunks {
+            let offset = i * 16;
+            let v = _mm512_loadu_ps(data.as_ptr().add(offset));
+            let scaled = _mm512_mul_ps(v, vscale);
+            _mm512_storeu_ps(data.as_mut_ptr().add(offset), scaled);
+        }
+        
+        for i in (chunks * 16)..n {
+            *data.get_unchecked_mut(i) *= scale;
+        }
     }
 }
 
@@ -493,83 +496,84 @@ unsafe fn hadamard_avx512(data: &mut [f32]) {
 #[inline]
 unsafe fn hadamard_neon(data: &mut [f32]) {
     use std::arch::aarch64::*;
-    
-    let n = data.len();
-    
-    if n < 4 {
-        hadamard_scalar(data);
-        return;
-    }
-    
-    // Butterfly stages
-    let mut h = 1;
-    
-    // Scalar for h < 4
-    while h < 4 && h < n {
-        for i in (0..n).step_by(h * 2) {
-            for j in i..(i + h) {
-                let x = *data.get_unchecked(j);
-                let y = *data.get_unchecked(j + h);
-                *data.get_unchecked_mut(j) = x + y;
-                *data.get_unchecked_mut(j + h) = x - y;
-            }
-        }
-        h *= 2;
-    }
-    
-    // SIMD stages
-    while h < n {
-        let blocks = n / (h * 2);
+    unsafe {
+        let n = data.len();
         
-        for block in 0..blocks {
-            let base = block * h * 2;
-            
-            for j in (0..h).step_by(4) {
-                let idx_a = base + j;
-                let idx_b = base + h + j;
-                
-                let va = vld1q_f32(data.as_ptr().add(idx_a));
-                let vb = vld1q_f32(data.as_ptr().add(idx_b));
-                
-                let sum = vaddq_f32(va, vb);
-                let diff = vsubq_f32(va, vb);
-                
-                vst1q_f32(data.as_mut_ptr().add(idx_a), sum);
-                vst1q_f32(data.as_mut_ptr().add(idx_b), diff);
-            }
-            
-            // Remainder
-            let remainder = h % 4;
-            if remainder > 0 {
-                let start = h - remainder;
-                for j in start..h {
-                    let idx_a = base + j;
-                    let idx_b = base + h + j;
-                    let x = *data.get_unchecked(idx_a);
-                    let y = *data.get_unchecked(idx_b);
-                    *data.get_unchecked_mut(idx_a) = x + y;
-                    *data.get_unchecked_mut(idx_b) = x - y;
+        if n < 4 {
+            hadamard_scalar(data);
+            return;
+        }
+        
+        // Butterfly stages
+        let mut h = 1;
+        
+        // Scalar for h < 4
+        while h < 4 && h < n {
+            for i in (0..n).step_by(h * 2) {
+                for j in i..(i + h) {
+                    let x = *data.get_unchecked(j);
+                    let y = *data.get_unchecked(j + h);
+                    *data.get_unchecked_mut(j) = x + y;
+                    *data.get_unchecked_mut(j + h) = x - y;
                 }
             }
+            h *= 2;
         }
         
-        h *= 2;
-    }
-    
-    // Normalize
-    let scale = 1.0 / (n as f32).sqrt();
-    let vscale = vdupq_n_f32(scale);
-    
-    let chunks = n / 4;
-    for i in 0..chunks {
-        let offset = i * 4;
-        let v = vld1q_f32(data.as_ptr().add(offset));
-        let scaled = vmulq_f32(v, vscale);
-        vst1q_f32(data.as_mut_ptr().add(offset), scaled);
-    }
-    
-    for i in (chunks * 4)..n {
-        *data.get_unchecked_mut(i) *= scale;
+        // SIMD stages
+        while h < n {
+            let blocks = n / (h * 2);
+            
+            for block in 0..blocks {
+                let base = block * h * 2;
+                
+                for j in (0..h).step_by(4) {
+                    let idx_a = base + j;
+                    let idx_b = base + h + j;
+                    
+                    let va = vld1q_f32(data.as_ptr().add(idx_a));
+                    let vb = vld1q_f32(data.as_ptr().add(idx_b));
+                    
+                    let sum = vaddq_f32(va, vb);
+                    let diff = vsubq_f32(va, vb);
+                    
+                    vst1q_f32(data.as_mut_ptr().add(idx_a), sum);
+                    vst1q_f32(data.as_mut_ptr().add(idx_b), diff);
+                }
+                
+                // Remainder
+                let remainder = h % 4;
+                if remainder > 0 {
+                    let start = h - remainder;
+                    for j in start..h {
+                        let idx_a = base + j;
+                        let idx_b = base + h + j;
+                        let x = *data.get_unchecked(idx_a);
+                        let y = *data.get_unchecked(idx_b);
+                        *data.get_unchecked_mut(idx_a) = x + y;
+                        *data.get_unchecked_mut(idx_b) = x - y;
+                    }
+                }
+            }
+            
+            h *= 2;
+        }
+        
+        // Normalize
+        let scale = 1.0 / (n as f32).sqrt();
+        let vscale = vdupq_n_f32(scale);
+        
+        let chunks = n / 4;
+        for i in 0..chunks {
+            let offset = i * 4;
+            let v = vld1q_f32(data.as_ptr().add(offset));
+            let scaled = vmulq_f32(v, vscale);
+            vst1q_f32(data.as_mut_ptr().add(offset), scaled);
+        }
+        
+        for i in (chunks * 4)..n {
+            *data.get_unchecked_mut(i) *= scale;
+        }
     }
 }
 
