@@ -54,7 +54,7 @@
 use crate::error::{KernelError, KernelResult};
 use crate::kernel_api::{HealthInfo, RowId, TableId};
 use crate::transaction::TransactionId;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -341,6 +341,14 @@ pub struct PluginManager {
     compression: RwLock<HashMap<String, Arc<dyn CompressionExtension>>>,
     /// Active storage backend name
     active_storage: RwLock<Option<String>>,
+    /// Shutdown handles for storage extensions (wraps extension in Mutex for interior mutability)
+    storage_shutdown: RwLock<HashMap<String, Mutex<Arc<dyn StorageExtension>>>>,
+    /// Shutdown handles for index extensions
+    index_shutdown: RwLock<HashMap<String, Arc<Mutex<Arc<RwLock<dyn IndexExtension>>>>>>,
+    /// Shutdown handles for observability
+    observability_shutdown: RwLock<Vec<Mutex<Arc<dyn ObservabilityExtension>>>>,
+    /// Shutdown handles for compression
+    compression_shutdown: RwLock<HashMap<String, Mutex<Arc<dyn CompressionExtension>>>>,
 }
 
 impl Default for PluginManager {
@@ -358,6 +366,10 @@ impl PluginManager {
             observability: RwLock::new(Vec::new()),
             compression: RwLock::new(HashMap::new()),
             active_storage: RwLock::new(None),
+            storage_shutdown: RwLock::new(HashMap::new()),
+            index_shutdown: RwLock::new(HashMap::new()),
+            observability_shutdown: RwLock::new(Vec::new()),
+            compression_shutdown: RwLock::new(HashMap::new()),
         }
     }
 
@@ -375,6 +387,10 @@ impl PluginManager {
                 message: format!("storage extension '{}' already registered", name),
             });
         }
+
+        // Also add to shutdown storage - need to wrap the Arc<dyn StorageExtension> in Mutex
+        let mut shutdown = self.storage_shutdown.write();
+        shutdown.insert(name.clone(), Mutex::new(Arc::clone(&ext)));
 
         storage.insert(name.clone(), ext);
 
@@ -402,9 +418,7 @@ impl PluginManager {
     /// Get the active storage backend
     pub fn storage(&self) -> Option<Arc<dyn StorageExtension>> {
         let active = self.active_storage.read();
-        active
-            .as_ref()
-            .and_then(|name| self.storage.read().get(name).cloned())
+        active.as_ref().and_then(|name| self.storage.read().get(name).cloned())
     }
 
     // -------------------------------------------------------------------------
@@ -422,7 +436,11 @@ impl PluginManager {
             });
         }
 
-        indices.insert(name, ext);
+        indices.insert(name.clone(), ext.clone());
+
+        // Also add to shutdown storage
+        let mut shutdown = self.index_shutdown.write();
+        shutdown.insert(name, Arc::new(Mutex::new(ext)));
         Ok(())
     }
 
@@ -444,7 +462,11 @@ impl PluginManager {
     ///
     /// Multiple observability extensions can be registered (fan-out to all)
     pub fn register_observability(&self, ext: Arc<dyn ObservabilityExtension>) -> KernelResult<()> {
-        self.observability.write().push(ext);
+        self.observability.write().push(ext.clone());
+        
+        // Also add to shutdown storage
+        let mut shutdown = self.observability_shutdown.write();
+        shutdown.push(Mutex::new(Arc::clone(&ext)));
         Ok(())
     }
 
@@ -496,7 +518,11 @@ impl PluginManager {
             });
         }
 
-        compression.insert(algo, ext);
+        compression.insert(algo.clone(), ext.clone());
+
+        // Also add to shutdown storage
+        let mut shutdown = self.compression_shutdown.write();
+        shutdown.insert(algo.clone(), Mutex::new(Arc::clone(&ext)));
         Ok(())
     }
 
@@ -515,11 +541,82 @@ impl PluginManager {
     // -------------------------------------------------------------------------
 
     /// Shutdown all extensions gracefully
+    ///
+    /// Calls `shutdown()` on each registered extension in reverse registration order.
+    /// This allows extensions to release resources, close connections, flush buffers, etc.
     pub fn shutdown_all(&self) -> KernelResult<()> {
-        // Extensions are immutable through Arc, so we can't call shutdown
-        // In a real implementation, we'd use Arc<RwLock<dyn Extension>>
-        // For now, this is a no-op placeholder
-        Ok(())
+        let mut errors = Vec::new();
+
+        // Shutdown storage extensions (in reverse order)
+        {
+            let storage = self.storage_shutdown.read();
+            let names: Vec<_> = storage.keys().cloned().collect();
+            for name in names.into_iter().rev() {
+                if let Some(ext) = storage.get(&name) {
+                    let mut ext_guard = ext.lock();
+                    if let Some(ext) = Arc::get_mut(&mut ext_guard) {
+                        if let Err(e) = ext.shutdown() {
+                            errors.push(format!("storage '{}': {}", name, e));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Shutdown index extensions (in reverse order)
+        {
+            let indices = self.index_shutdown.read();
+            let names: Vec<_> = indices.keys().cloned().collect();
+            for name in names.into_iter().rev() {
+                if let Some(ext) = indices.get(&name) {
+                    let ext_guard = ext.lock();
+                    let mut inner = ext_guard.write();
+                    if let Err(e) = inner.shutdown() {
+                        errors.push(format!("index '{}': {}", name, e));
+                    }
+                }
+            }
+        }
+
+        // Shutdown observability extensions (in reverse order)
+        {
+            let observability = self.observability_shutdown.read();
+            for ext in observability.iter().rev() {
+                let mut ext_guard = ext.lock();
+                if let Some(ext) = Arc::get_mut(&mut ext_guard) {
+                    if let Err(e) = ext.shutdown() {
+                        errors.push(format!("observability: {}", e));
+                    }
+                }
+            }
+        }
+
+        // Shutdown compression extensions (in reverse order)
+        {
+            let compression = self.compression_shutdown.read();
+            let names: Vec<_> = compression.keys().cloned().collect();
+            for name in names.into_iter().rev() {
+                if let Some(ext) = compression.get(&name) {
+                    let mut ext_guard = ext.lock();
+                    if let Some(ext) = Arc::get_mut(&mut ext_guard) {
+                        if let Err(e) = ext.shutdown() {
+                            errors.push(format!("compression '{}': {}", name, e));
+                        }
+                    }
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(KernelError::Plugin {
+                message: format!(
+                    "shutdown errors: {}",
+                    errors.join("; ")
+                ),
+            })
+        }
     }
 
     /// Get information about all registered extensions
@@ -719,5 +816,139 @@ mod tests {
         assert!(!pm.has_observability());
         pm.register_observability(null).unwrap();
         assert!(pm.has_observability());
+    }
+
+    struct TestExtension {
+        shutdown_called: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl TestExtension {
+        fn new_with_flag(flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+            Self {
+                shutdown_called: flag,
+            }
+        }
+    }
+
+    impl ObservabilityExtension for TestExtension {
+        fn counter_inc(&self, _name: &str, _value: u64, _labels: &[(&str, &str)]) {}
+        fn gauge_set(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+        fn histogram_observe(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+        fn span_start(&self, _name: &str, _parent: Option<u64>) -> u64 {
+            0
+        }
+        fn span_event(&self, _span_id: u64, _name: &str, _labels: &[(&str, &str)]) {}
+        fn span_end(&self, _span_id: u64) {}
+    }
+
+    impl Extension for TestExtension {
+        fn info(&self) -> ExtensionInfo {
+            ExtensionInfo {
+                name: "test-extension".into(),
+                version: "0.0.1".into(),
+                description: "Test extension".into(),
+                author: "test".into(),
+                capabilities: vec![],
+            }
+        }
+
+        fn shutdown(&mut self) -> KernelResult<()> {
+            self.shutdown_called
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn test_shutdown_all_calls_shutdown() {
+        let pm = PluginManager::new();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        {
+            let ext = TestExtension::new_with_flag(flag.clone());
+            let arc_ext: Arc<dyn ObservabilityExtension> = Arc::new(ext);
+
+            let mut shutdown = pm.observability_shutdown.write();
+            shutdown.push(Mutex::new(arc_ext));
+        }
+
+        pm.shutdown_all().unwrap();
+
+        assert!(
+            flag.load(std::sync::atomic::Ordering::SeqCst),
+            "shutdown() should have been called on the extension"
+        );
+    }
+
+    #[test]
+    fn test_shutdown_all_with_single_ref() {
+        use std::sync::atomic::Ordering;
+
+        struct SingleRefExtension {
+            flag: Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        impl SingleRefExtension {
+            fn new(flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+                Self { flag }
+            }
+        }
+
+        impl ObservabilityExtension for SingleRefExtension {
+            fn counter_inc(&self, _: &str, _: u64, _: &[(&str, &str)]) {}
+            fn gauge_set(&self, _: &str, _: f64, _: &[(&str, &str)]) {}
+            fn histogram_observe(&self, _: &str, _: f64, _: &[(&str, &str)]) {}
+            fn span_start(&self, _: &str, _: Option<u64>) -> u64 {
+                0
+            }
+            fn span_event(&self, _: u64, _: &str, _: &[(&str, &str)]) {}
+            fn span_end(&self, _: u64) {}
+        }
+
+        impl Extension for SingleRefExtension {
+            fn info(&self) -> ExtensionInfo {
+                ExtensionInfo {
+                    name: "single-ref".into(),
+                    version: "0.0.1".into(),
+                    description: "Test".into(),
+                    author: "test".into(),
+                    capabilities: vec![],
+                }
+            }
+            fn shutdown(&mut self) -> KernelResult<()> {
+                self.flag.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn Any {
+                self
+            }
+        }
+
+        let pm = PluginManager::new();
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        {
+            let ext = SingleRefExtension::new(flag.clone());
+            let boxed: Box<dyn ObservabilityExtension> = Box::new(ext);
+            let arc_ext: Arc<dyn ObservabilityExtension> = Arc::from(boxed);
+
+            let mut shutdown = pm.observability_shutdown.write();
+            shutdown.push(Mutex::new(arc_ext));
+        }
+
+        pm.shutdown_all().unwrap();
+
+        assert!(flag.load(Ordering::SeqCst), "shutdown should have been called");
     }
 }
