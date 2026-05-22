@@ -48,7 +48,7 @@ Treat the examples above as product maturity signals rather than all being equal
 | Example | Description | Frameworks |
 |---------|-------------|------------|
 | [langgraph_agent.py](python/langgraph_agent.py) | Multi-turn agent with memory | LangGraph, LangChain |
-| [crewai_research_crew.py](python/crewai_research_crew.py) | Multi-agent research workflow | CrewAI |
+| [crewai_research_crew.py](python/crewai_research_crew.py) | Multi-agent research workflow backed by the Python SDK CrewAI tools | CrewAI |
 | [llamaindex_rag.py](python/llamaindex_rag.py) | RAG with custom vector store | LlamaIndex |
 | [simple_rag_chatbot.py](python/simple_rag_chatbot.py) | Minimal chatbot with memory | Pure Python |
 | [semantic_search_api.py](python/semantic_search_api.py) | Search API with filtering | REST-style |
@@ -111,8 +111,12 @@ pip install sochdb python-dotenv requests numpy
 pip install langgraph langchain-core
 
 # For CrewAI (optional)
-pip install crewai crewai-tools
+pip install "sochdb[crewai]"
 ```
+
+The CrewAI example uses the Python SDK's maintained integration helpers plus a
+small local demo embedder, so it does not need Azure embedding credentials.
+You only need an LLM provider configured for CrewAI itself.
 
 If you're developing from the monorepo instead of using the published package:
 
@@ -124,6 +128,10 @@ cd ..
 ```
 
 ### 2. Configure Azure OpenAI
+
+This is only required for the Azure-backed examples such as `real_llm_test.py`,
+`langgraph_agent.py`, and other cloud-provider demos. It is not required for
+`python/crewai_research_crew.py`.
 
 Create a `.env` file in the repository root:
 
@@ -144,6 +152,9 @@ AZURE_EMEBEDDING_API_VERSION="2024-12-01-preview"
 ```bash
 # Recommended first run: local-only, no API keys
 python3 examples/python/07_local_knowledge_search.py
+
+# Maintained CrewAI integration example
+python3 examples/python/crewai_research_crew.py
 
 # Then move to advanced examples with extra dependencies
 python3 examples/python/langgraph_agent.py

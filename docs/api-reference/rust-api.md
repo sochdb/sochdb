@@ -315,75 +315,41 @@ result = agent.invoke({
 
 ```python
 from crewai import Agent, Task, Crew
-from crewai_tools import BaseTool
-import subprocess
-import json
-
-class SochDBContextTool(BaseTool):
-    name: str = "sochdb_context"
-    description: str = "Retrieve relevant context from the knowledge base with automatic token budgeting"
-    
-    def __init__(self, db_path: str):
-        super().__init__()
-        self.db_path = db_path
-        self._start_server()
-    
-    def _start_server(self):
-        self.proc = subprocess.Popen(
-            ["sochdb-mcp", "--db", self.db_path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True
-        )
-        # Initialize MCP...
-    
-    def _run(self, query: str, token_budget: int = 2000) -> str:
-        """Execute context retrieval"""
-        sections = [
-            {"name": "knowledge", "kind": "search", "query": query, "top_k": 5},
-            {"name": "recent", "kind": "last", "table": "interactions", "top_k": 3}
-        ]
-        # MCP call to sochdb_context_query
-        return self._call_mcp("sochdb_context_query", {
-            "sections": sections,
-            "token_budget": token_budget
-        })
+from sochdb import Database, Namespace, SochDBKnowledgeStore, create_crewai_tools
 
 
-class SochDBMemoryTool(BaseTool):
-    name: str = "sochdb_memory"
-    description: str = "Store and retrieve agent memories"
-    
-    def _run(self, action: str, **kwargs) -> str:
-        if action == "store":
-            return self._store_memory(kwargs["key"], kwargs["value"])
-        elif action == "recall":
-            return self._recall_memory(kwargs["key"])
+def embed(texts: list[str]) -> list[list[float]]:
+    # Plug in your preferred embedder here.
+    ...
 
 
-# Create agents with SochDB tools
+db = Database.open("/tmp/sochdb-crewai-demo")
+namespace = Namespace(db, "agents")
+collection = namespace.create_collection("knowledge", dimension=768)
+store = SochDBKnowledgeStore.from_collection(collection, embedder=embed)
+
+store.add_texts(
+    ["Reset password instructions are in the account settings page."],
+    metadatas=[{"topic": "support"}],
+    ids=["doc-1"],
+)
+
+search_tool, remember_tool = create_crewai_tools(store, top_k=3)
+
 researcher = Agent(
-    role="Research Analyst",
-    goal="Find relevant information from the knowledge base",
-    tools=[SochDBContextTool("./research_db")],
-    verbose=True
+    role="Support Researcher",
+    goal="Ground responses in the SochDB knowledge store",
+    tools=[search_tool, remember_tool],
 )
 
-writer = Agent(
-    role="Content Writer", 
-    goal="Write reports based on research",
-    tools=[SochDBMemoryTool("./research_db")],
-    verbose=True
+task = Task(
+    description="Find the password reset steps and summarize them clearly.",
+    agent=researcher,
 )
 
-# Create crew
-crew = Crew(
-    agents=[researcher, writer],
-    tasks=[
-        Task(description="Research the topic: {topic}", agent=researcher),
-        Task(description="Write a summary report", agent=writer)
-    ]
-)
+crew = Crew(agents=[researcher], tasks=[task])
+result = crew.kickoff()
+print(result)
 ```
 
 ### OpenAI Function Calling Bridge
