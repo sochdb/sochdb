@@ -768,7 +768,7 @@ unsafe fn l2_squared_threshold_avx2(a: &[f32], b: &[f32], threshold_squared: f32
         }
         
         // Check if we've exceeded threshold
-        let sum_scalar = unsafe {
+        let mut sum_scalar = unsafe {
             let sum_high = _mm256_extractf128_ps(sum, 1);
             let sum_low = _mm256_castps256_ps128(sum);
             let sum128 = _mm_add_ps(sum_low, sum_high);
@@ -781,7 +781,7 @@ unsafe fn l2_squared_threshold_avx2(a: &[f32], b: &[f32], threshold_squared: f32
             // Add remainder and return (we know we've exceeded threshold)
             for i in (end_chunk * 8)..n {
                 let diff = a[i] - b[i];
-                sum_scalar + diff * diff;
+                sum_scalar += diff * diff;
             }
             return sum_scalar;
         }
