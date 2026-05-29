@@ -214,11 +214,11 @@ pub struct ScratchBuffers {
     /// Candidate priority queue for FastCandidate-based zero-lock paths
     /// (search_layer_zero_flat, search_layer_zero_lock)
     /// Reused instead of per-call BinaryHeap allocation.
-    pub fast_candidates: BinaryHeap<FastCandidate>,
+    pub(crate) fast_candidates: BinaryHeap<FastCandidate>,
 
     /// Results min-heap for FastCandidate-based zero-lock paths
     /// Reused instead of per-call BinaryHeap allocation.
-    pub fast_results_heap: BinaryHeap<Reverse<FastCandidate>>,
+    pub(crate) fast_results_heap: BinaryHeap<Reverse<FastCandidate>>,
 }
 
 impl ScratchBuffers {
