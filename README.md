@@ -1,7 +1,6 @@
 <h1 align="center">
-    <img src="https://github.com/sochdb/sochdb/raw/main/sochdbicon.png" alt="SochDB icon" width="72" height="72" />
+    <img src="https://github.com/sochdb/sochdb/raw/main/sochdbicon.png" alt="SochDB icon" width="150" height="150" />
     <br>
-    SochDB
 </h1>
 
 ## What is SochDB?
