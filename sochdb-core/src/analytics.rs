@@ -18,11 +18,15 @@
 //! SochDB Analytics - Anonymous usage tracking with PostHog
 //!
 //! This module provides anonymous, privacy-respecting analytics to help
-//! improve SochDB. All tracking can be disabled by setting the environment variable:
+//! improve SochDB. Telemetry is **opt-in and disabled by default**. To enable
+//! it, set the environment variable:
 //!
 //! ```bash
-//! export SOCHDB_DISABLE_ANALYTICS=true
+//! export SOCHDB_ENABLE_ANALYTICS=true
 //! ```
+//!
+//! An explicit `SOCHDB_DISABLE_ANALYTICS=true` always takes precedence and
+//! keeps tracking off even if it was opted in elsewhere.
 //!
 //! No personally identifiable information (PII) is collected. Only aggregate
 //! usage patterns are tracked to understand:
@@ -34,9 +38,35 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::OnceLock;
 
-/// PostHog configuration
-const POSTHOG_API_KEY: &str = "phc_zf0hm6ZmPUJj1pM07Kigqvphh1ClhKX1NahRU4G0bfu";
+/// PostHog ingestion host (overridable via `SOCHDB_POSTHOG_HOST`).
 const POSTHOG_HOST: &str = "https://us.i.posthog.com";
+
+/// Resolve the PostHog project (write-only ingestion) key without embedding a
+/// secret in the source tree.
+///
+/// Resolution order:
+/// 1. `SOCHDB_POSTHOG_API_KEY` at runtime — lets operators point telemetry at
+///    their own project (or unset it entirely).
+/// 2. `SOCHDB_POSTHOG_API_KEY` injected at *compile* time via `option_env!` —
+///    how official release builds bake in the project key.
+///
+/// When neither is present the key is empty and analytics is force-disabled,
+/// so a plain `cargo build` never carries a hardcoded ingestion key.
+fn resolve_posthog_key() -> String {
+    if let Ok(key) = env::var("SOCHDB_POSTHOG_API_KEY") {
+        if !key.is_empty() {
+            return key;
+        }
+    }
+    option_env!("SOCHDB_POSTHOG_API_KEY")
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Resolve the PostHog host (runtime override, else the default endpoint).
+fn resolve_posthog_host() -> String {
+    env::var("SOCHDB_POSTHOG_HOST").unwrap_or_else(|_| POSTHOG_HOST.to_string())
+}
 
 /// Cached analytics disabled state
 static ANALYTICS_DISABLED: OnceLock<bool> = OnceLock::new();
@@ -44,15 +74,34 @@ static ANALYTICS_DISABLED: OnceLock<bool> = OnceLock::new();
 /// Cached anonymous ID
 static ANONYMOUS_ID: OnceLock<String> = OnceLock::new();
 
-/// Check if analytics is disabled via environment variable.
+/// Parse an environment variable as an affirmative boolean flag.
+fn env_is_truthy(name: &str) -> bool {
+    env::var(name)
+        .map(|v| {
+            let v = v.to_lowercase();
+            v == "true" || v == "1" || v == "yes" || v == "on"
+        })
+        .unwrap_or(false)
+}
+
+/// Check if analytics is disabled.
+///
+/// Telemetry is **opt-in** (Task 7): it is disabled by default and only
+/// enabled when the user explicitly sets `SOCHDB_ENABLE_ANALYTICS` to a
+/// truthy value. An explicit `SOCHDB_DISABLE_ANALYTICS` always wins, so a
+/// user who opted in can still opt back out.
+///
+/// This respects consent by default — important because SochDB is embedded
+/// into third-party (and possibly regulated or air-gapped) applications,
+/// where default-on phone-home is a compliance and adoption blocker.
 pub fn is_analytics_disabled() -> bool {
     *ANALYTICS_DISABLED.get_or_init(|| {
-        env::var("SOCHDB_DISABLE_ANALYTICS")
-            .map(|v| {
-                let v = v.to_lowercase();
-                v == "true" || v == "1" || v == "yes" || v == "on"
-            })
-            .unwrap_or(false)
+        // Explicit opt-out always wins.
+        if env_is_truthy("SOCHDB_DISABLE_ANALYTICS") {
+            return true;
+        }
+        // Otherwise, disabled unless the user explicitly opts in.
+        !env_is_truthy("SOCHDB_ENABLE_ANALYTICS")
     })
 }
 
@@ -64,24 +113,24 @@ pub fn is_analytics_disabled() -> bool {
 pub fn get_anonymous_id() -> &'static str {
     ANONYMOUS_ID.get_or_init(|| {
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        
+
         // Hash machine-specific info
         if let Ok(hostname) = hostname::get() {
             hostname.to_string_lossy().hash(&mut hasher);
         }
-        
+
         std::env::consts::OS.hash(&mut hasher);
         std::env::consts::ARCH.hash(&mut hasher);
-        
+
         #[cfg(unix)]
         {
             unsafe {
                 libc::getuid().hash(&mut hasher);
             }
         }
-        
+
         format!("{:016x}", hasher.finish())
     })
 }
@@ -106,10 +155,14 @@ impl Default for Analytics {
 impl Analytics {
     /// Create a new Analytics client with default configuration.
     pub fn new() -> Self {
+        let api_key = resolve_posthog_key();
+        // No key resolved ⇒ nothing to send to; force-disable regardless of
+        // the opt-in flag so we never attempt an unauthenticated capture.
+        let disabled = is_analytics_disabled() || api_key.is_empty();
         Self {
-            api_key: POSTHOG_API_KEY.to_string(),
-            host: POSTHOG_HOST.to_string(),
-            disabled: is_analytics_disabled(),
+            api_key,
+            host: resolve_posthog_host(),
+            disabled,
         }
     }
 
@@ -202,7 +255,7 @@ fn send_event(
     // Merge all properties including SDK context
     let mut event_properties = properties;
     event_properties.insert("$lib".to_string(), serde_json::json!("sochdb-rust"));
-    
+
     // PostHog capture endpoint expects this format
     let payload = serde_json::json!({
         "api_key": api_key,
@@ -258,7 +311,7 @@ mod tests {
                 v == "true" || v == "1" || v == "yes" || v == "on"
             })
             .unwrap_or(false);
-        
+
         // Just verify it doesn't panic
         assert!(result == true || result == false);
     }
@@ -279,7 +332,7 @@ mod tests {
             host: "http://localhost".to_string(),
             disabled: true,
         };
-        
+
         // This should not panic or make any network calls
         analytics.capture("test_event", None);
     }

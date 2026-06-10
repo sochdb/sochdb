@@ -92,27 +92,27 @@ pub mod buddy_allocator;
 pub mod catalog;
 pub mod columnar; // True Columnar Storage with Arrow-compatible layout (mm.md Task 1)
 pub mod concurrency; // Hierarchical Lock Architecture (mm.md Task 2)
+pub mod edge_encoding; // Binary edge key encoding for graph overlay (Phase 1b)
 pub mod epoch_gc;
 pub mod error;
 pub mod format_migration;
-pub mod edge_encoding; // Binary edge key encoding for graph overlay (Phase 1b)
 pub mod key;
+pub mod knowledge_object; // Knowledge Fabric: Object-centric data model (content-addressed, bitemporal, multi-space)
 pub mod learned_index;
-pub mod record_id; // RecordId: universal table:id identifier with binary key encoding (Phase 1b)
 pub mod lockfree_interner; // Lock-free string interner (mm.md Task 6)
 pub mod memory_schema; // Canonical Episode/Entity/Event schema
 pub mod path_trie;
 pub mod predefined_views;
 pub mod reclamation;
+pub mod record_id; // RecordId: universal table:id identifier with binary key encoding (Phase 1b)
 pub mod schema_bridge;
 pub mod schema_evolution;
 pub mod sharded_block_store;
-pub mod string_interner; // String interning for path segments
-pub mod tbp; // TOON Binary Protocol for zero-copy wire format (mm.md Task 3.1)
-pub mod knowledge_object; // Knowledge Fabric: Object-centric data model (content-addressed, bitemporal, multi-space)
 pub mod soch;
 pub mod soch_codec;
 pub mod sochfs_metadata;
+pub mod string_interner; // String interning for path segments
+pub mod tbp; // TOON Binary Protocol for zero-copy wire format (mm.md Task 3.1)
 pub mod transaction_typestate; // Type-State Transaction API (compile-time safe transaction lifecycle)
 pub mod txn;
 pub mod version_chain; // Unified MVCC version chain trait
@@ -134,8 +134,11 @@ pub use columnar::{
 };
 pub use error::{Result, SochDBError};
 pub use key::{CausalKey, TemporalKey};
+pub use knowledge_object::{
+    BitemporalCoord, CompressionMode, Edge, EdgeKind, EmbeddingSpace, KnowledgeObject,
+    KnowledgeObjectBuilder, KnowledgeObjectError, ObjectId, ObjectIdError, ObjectKind, Provenance,
+};
 pub use learned_index::LearnedSparseIndex;
-pub use record_id::{IdValue, RecordId};
 pub use lockfree_interner::{InternerStats, LockFreeInterner, Symbol};
 pub use memory_schema::{
     Entity, EntityFacts, EntityKind, EntitySearchResult, Episode, EpisodeSearchResult, EpisodeType,
@@ -145,31 +148,26 @@ pub use path_trie::{ColumnGroupAffinity, ColumnType as PathTrieColumnType, PathT
 pub use predefined_views::{
     ViewDefinition, build_view_map, get_predefined_views, get_view, naming,
 };
-pub use knowledge_object::{
-    BitemporalCoord, CompressionMode, Edge, EdgeKind, EmbeddingSpace, KnowledgeObject,
-    KnowledgeObjectBuilder, KnowledgeObjectError, ObjectId, ObjectIdError,
-    ObjectKind, Provenance,
-};
+pub use record_id::{IdValue, RecordId};
 pub use soch::{SochField, SochIndex, SochRow, SochSchema, SochTable, SochType, SochValue};
 pub use soch_codec::{
     SochDbBinaryCodec, SochDocument, SochParseError, SochTextEncoder, SochTextParser,
     SochTokenCounter,
 };
 pub use sochfs_metadata::{DirEntryRow, FsMetadataStore, FsWalOp, InodeRow, SochFS};
+pub use transaction_typestate::{
+    Aborted, Active, Committed, ReadOnly, ReadWrite, Transaction as TypestateTransaction,
+    TransactionMode, TransactionStorage, WriteOnly,
+};
 pub use txn::{
     AriesCheckpointData, AriesDirtyPageEntry, AriesTransactionEntry, IsolationLevel, Lsn, PageId,
     Transaction, TransactionManager, TxnId, TxnState, TxnStats, TxnWalEntry, TxnWrite,
     WalRecordType,
 };
-pub use transaction_typestate::{
-    Transaction as TypestateTransaction, Active, Committed, Aborted,
-    ReadOnly, ReadWrite, WriteOnly, TransactionStorage, TransactionMode,
-};
 pub use version_chain::{
-    BinarySearchChain, ChainEntry,
-    ConcurrencyPolicy, ExternalLock, InternalRwLock, LockFreeAtomic,
-    MvccGcStats, MvccStore, MvccStoreError,
-    MvccVersionChain, MvccVersionChainMut, VersionMeta, VisibilityContext, WriteConflictDetection,
+    BinarySearchChain, ChainEntry, ConcurrencyPolicy, ExternalLock, InternalRwLock, LockFreeAtomic,
+    MvccGcStats, MvccStore, MvccStoreError, MvccVersionChain, MvccVersionChainMut, VersionMeta,
+    VisibilityContext, WriteConflictDetection,
 };
 pub use vfs::{
     BlockId, DirEntry, Directory, FileStat, FileType, Inode, InodeId, Permissions, Superblock,

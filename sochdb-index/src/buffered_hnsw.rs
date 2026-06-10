@@ -49,8 +49,8 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::hnsw::{HnswIndex, HnswConfig};
-use crate::vector_quantized::{QuantizedVector, Precision};
+use crate::hnsw::{HnswConfig, HnswIndex};
+use crate::vector_quantized::{Precision, QuantizedVector};
 
 /// Configuration for buffered HNSW
 #[derive(Debug, Clone)]
@@ -135,7 +135,7 @@ impl BufferedHnsw {
     /// Create a new buffered HNSW index
     pub fn new(dimension: usize, config: BufferedHnswConfig) -> Self {
         let hnsw = Arc::new(HnswIndex::new(dimension, config.hnsw_config.clone()));
-        
+
         Self {
             hnsw,
             buffer: RwLock::new(Vec::with_capacity(config.buffer_capacity)),
@@ -153,7 +153,8 @@ impl BufferedHnsw {
         if vector.len() != self.dimension {
             return Err(format!(
                 "Dimension mismatch: expected {}, got {}",
-                self.dimension, vector.len()
+                self.dimension,
+                vector.len()
             ));
         }
 
@@ -222,10 +223,7 @@ impl BufferedHnsw {
         let count = vectors.len();
 
         // Batch insert into HNSW
-        let batch: Vec<(u128, Vec<f32>)> = vectors
-            .into_iter()
-            .map(|v| (v.id, v.vector))
-            .collect();
+        let batch: Vec<(u128, Vec<f32>)> = vectors.into_iter().map(|v| (v.id, v.vector)).collect();
 
         self.hnsw.insert_batch(&batch)?;
 
@@ -241,7 +239,8 @@ impl BufferedHnsw {
         if query.len() != self.dimension {
             return Err(format!(
                 "Query dimension mismatch: expected {}, got {}",
-                self.dimension, query.len()
+                self.dimension,
+                query.len()
             ));
         }
 
@@ -264,7 +263,7 @@ impl BufferedHnsw {
                     (v.id, dist)
                 })
                 .collect();
-            
+
             // Sort by distance
             results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             results.truncate(k);
@@ -272,10 +271,7 @@ impl BufferedHnsw {
         };
 
         // Merge results (take top-k from combined set)
-        let mut merged: Vec<(u128, f32)> = hnsw_results
-            .into_iter()
-            .chain(buffer_results)
-            .collect();
+        let mut merged: Vec<(u128, f32)> = hnsw_results.into_iter().chain(buffer_results).collect();
 
         merged.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         merged.truncate(k);
@@ -370,8 +366,7 @@ mod tests {
 
     #[test]
     fn test_buffered_insert() {
-        let config = BufferedHnswConfig::default()
-            .with_buffer_capacity(100);
+        let config = BufferedHnswConfig::default().with_buffer_capacity(100);
         let index = BufferedHnsw::new(128, config);
 
         // Insert vectors
@@ -388,8 +383,7 @@ mod tests {
 
     #[test]
     fn test_buffered_auto_flush() {
-        let config = BufferedHnswConfig::default()
-            .with_buffer_capacity(10);
+        let config = BufferedHnswConfig::default().with_buffer_capacity(10);
         let index = BufferedHnsw::new(64, config);
 
         // Insert enough to trigger auto-flush
@@ -405,8 +399,7 @@ mod tests {
 
     #[test]
     fn test_buffered_search() {
-        let config = BufferedHnswConfig::default()
-            .with_buffer_capacity(100);
+        let config = BufferedHnswConfig::default().with_buffer_capacity(100);
         let index = BufferedHnsw::new(32, config);
 
         // Insert vectors
@@ -417,21 +410,22 @@ mod tests {
         }
 
         // Search should find vectors in buffer
-        let query = vec![5.0f32; 32].iter().enumerate()
+        let query = vec![5.0f32; 32]
+            .iter()
+            .enumerate()
             .map(|(i, _)| if i == 0 { 5.0 } else { 0.0 })
             .collect::<Vec<f32>>();
-        
+
         let results = index.search(&query, 5).unwrap();
         assert_eq!(results.len(), 5);
-        
+
         // The closest should be id=5
         assert_eq!(results[0].0, 5);
     }
 
     #[test]
     fn test_buffered_flush() {
-        let config = BufferedHnswConfig::default()
-            .with_buffer_capacity(100);
+        let config = BufferedHnswConfig::default().with_buffer_capacity(100);
         let index = BufferedHnsw::new(64, config);
 
         // Insert vectors
@@ -453,8 +447,7 @@ mod tests {
 
     #[test]
     fn test_buffered_contains() {
-        let config = BufferedHnswConfig::default()
-            .with_buffer_capacity(100);
+        let config = BufferedHnswConfig::default().with_buffer_capacity(100);
         let index = BufferedHnsw::new(32, config);
 
         // Insert to buffer
@@ -469,12 +462,11 @@ mod tests {
 
     #[test]
     fn test_duplicate_detection() {
-        let config = BufferedHnswConfig::default()
-            .with_buffer_capacity(100);
+        let config = BufferedHnswConfig::default().with_buffer_capacity(100);
         let index = BufferedHnsw::new(32, config);
 
         index.insert(1, random_vector(32)).unwrap();
-        
+
         // Duplicate should fail
         let result = index.insert(1, random_vector(32));
         assert!(result.is_err());

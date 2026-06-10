@@ -53,6 +53,7 @@
 //! # "mcpServers": { "sochdb": { "command": "sochdb-mcp", "args": ["--db", "./data"] } }
 //! ```
 
+mod agentic_search;
 mod framing;
 mod jsonrpc;
 mod mcp;
@@ -67,7 +68,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use sochdb::connection::EmbeddedConnection;
 
-use crate::framing::{read_message, write_message_format, WireFormat};
+use crate::framing::{WireFormat, read_message, write_message_format};
 use crate::jsonrpc::{RpcRequest, RpcResponse};
 use crate::mcp::McpServer;
 

@@ -34,9 +34,9 @@
 //! - Recovery completes in bounded time
 
 use proptest::prelude::*;
+use sochdb_storage::TxnWal;
 use std::io::Write;
 use tempfile::tempdir;
-use sochdb_storage::TxnWal;
 
 /// Simulate truncation at a specific byte offset (torn write)
 fn truncate_file(path: &std::path::Path, len: u64) -> std::io::Result<()> {

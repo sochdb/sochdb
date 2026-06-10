@@ -13,11 +13,22 @@ rust-version.workspace = true
 description = "SochDB gRPC services for cross-language clients (Thick Server / Thin Client architecture)"
 readme = "README.md"
 
+[features]
+# Opt-in async bridge module (blocking_pool::async_bridge). tokio is always a
+# hard dependency of this crate; this feature gates the not-yet-wired ergonomic
+# future-returning wrappers so the cfg is recognized rather than a phantom gate.
+default = []
+async = []
+
 [dependencies]
-sochdb-index = { version = "2.0.0", path = "../sochdb-index" }
-sochdb-core = { version = "2.0.0", path = "../sochdb-core", features = ["analytics"] }
-sochdb-kernel = { version = "2.0.0", path = "../sochdb-kernel" }
-sochdb-storage = { version = "2.0.0", path = "../sochdb-storage" }
+sochdb-index = { version = "2.0.3", path = "../sochdb-index" }
+sochdb-core = { version = "2.0.3", path = "../sochdb-core", features = ["analytics"] }
+sochdb-kernel = { version = "2.0.3", path = "../sochdb-kernel" }
+sochdb-storage = { version = "2.0.3", path = "../sochdb-storage" }
+# Real SQL engine for the PostgreSQL wire protocol (DatabasePgExecutor).
+sochdb-query = { version = "2.0.3", path = "../sochdb-query" }
+sochdb-memory = { version = "2.0.3", path = "../sochdb-memory" }
+sochdb-vector = { version = "2.0.3", path = "../sochdb-vector" }
 
 # gRPC / Protocol Buffers
 tonic = { version = "0.13", features = ["tls-ring", "transport"] }
@@ -40,6 +51,7 @@ thiserror = { workspace = true }
 clap = { version = "4.5", features = ["derive", "env"] }
 crossbeam-channel = { workspace = true }
 num_cpus = { workspace = true }
+rayon = "1.10"
 
 # Additional dependencies for services
 serde = { workspace = true }
@@ -53,6 +65,7 @@ ring = { workspace = true }
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 

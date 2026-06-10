@@ -35,9 +35,6 @@
 //! recency+frequency without LRU's pathological scan sensitivity.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
-
-use parking_lot::RwLock;
 
 /// I/O workload type for classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,22 +55,22 @@ impl IoWorkloadType {
     /// Should this workload use Direct I/O?
     pub fn prefers_direct_io(&self) -> bool {
         match self {
-            IoWorkloadType::Query => false,        // Benefit from cache
-            IoWorkloadType::Compaction => true,    // One-time sequential
-            IoWorkloadType::Backup => true,        // One-time sequential
-            IoWorkloadType::Wal => false,          // Small writes, buffered
-            IoWorkloadType::Warmup => false,       // Explicitly filling cache
+            IoWorkloadType::Query => false,     // Benefit from cache
+            IoWorkloadType::Compaction => true, // One-time sequential
+            IoWorkloadType::Backup => true,     // One-time sequential
+            IoWorkloadType::Wal => false,       // Small writes, buffered
+            IoWorkloadType::Warmup => false,    // Explicitly filling cache
         }
     }
 
     /// Cache partition weight (higher = more cache share)
     pub fn cache_weight(&self) -> u32 {
         match self {
-            IoWorkloadType::Query => 80,       // Most cache to queries
-            IoWorkloadType::Compaction => 10,  // Minimal cache
-            IoWorkloadType::Backup => 0,       // No cache
-            IoWorkloadType::Wal => 5,          // Small buffer
-            IoWorkloadType::Warmup => 5,       // Uses query partition
+            IoWorkloadType::Query => 80,      // Most cache to queries
+            IoWorkloadType::Compaction => 10, // Minimal cache
+            IoWorkloadType::Backup => 0,      // No cache
+            IoWorkloadType::Wal => 5,         // Small buffer
+            IoWorkloadType::Warmup => 5,      // Uses query partition
         }
     }
 }
@@ -97,10 +94,10 @@ impl AccessPattern {
     /// Estimate if this access will benefit from page cache
     pub fn cache_benefit_probability(&self) -> f64 {
         match self {
-            AccessPattern::RandomRead => 0.8,     // Likely reused
-            AccessPattern::SequentialScan => 0.2, // Low reuse probability
-            AccessPattern::RandomWrite => 0.5,    // May be read back
-            AccessPattern::SequentialWrite => 0.1,// Rarely re-read immediately
+            AccessPattern::RandomRead => 0.8,      // Likely reused
+            AccessPattern::SequentialScan => 0.2,  // Low reuse probability
+            AccessPattern::RandomWrite => 0.5,     // May be read back
+            AccessPattern::SequentialWrite => 0.1, // Rarely re-read immediately
             AccessPattern::Mixed => 0.5,
         }
     }
@@ -142,7 +139,8 @@ impl CachePartition {
             if current + bytes > self.max_bytes {
                 return false;
             }
-            if self.current_bytes
+            if self
+                .current_bytes
                 .compare_exchange_weak(
                     current,
                     current + bytes,
@@ -333,15 +331,19 @@ impl IoIsolationManager {
     /// Record I/O operation
     pub fn record_io(&self, bytes: usize, is_write: bool, is_direct: bool) {
         if is_write {
-            self.total_write_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+            self.total_write_bytes
+                .fetch_add(bytes as u64, Ordering::Relaxed);
         } else {
-            self.total_read_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+            self.total_read_bytes
+                .fetch_add(bytes as u64, Ordering::Relaxed);
         }
 
         if is_direct {
-            self.direct_io_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+            self.direct_io_bytes
+                .fetch_add(bytes as u64, Ordering::Relaxed);
         } else {
-            self.buffered_io_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+            self.buffered_io_bytes
+                .fetch_add(bytes as u64, Ordering::Relaxed);
         }
     }
 
@@ -389,7 +391,11 @@ impl IoIsolationManager {
                 let direct = self.direct_io_bytes.load(Ordering::Relaxed);
                 let buffered = self.buffered_io_bytes.load(Ordering::Relaxed);
                 let total = direct + buffered;
-                if total == 0 { 0.0 } else { direct as f64 / total as f64 }
+                if total == 0 {
+                    0.0
+                } else {
+                    direct as f64 / total as f64
+                }
             },
         }
     }
@@ -505,18 +511,10 @@ impl std::fmt::Display for AlignmentError {
                 )
             }
             AlignmentError::OffsetMisaligned { actual, required } => {
-                write!(
-                    f,
-                    "Offset {} not aligned to {} bytes",
-                    actual, required
-                )
+                write!(f, "Offset {} not aligned to {} bytes", actual, required)
             }
             AlignmentError::SizeMisaligned { actual, required } => {
-                write!(
-                    f,
-                    "Size {} not aligned to {} bytes",
-                    actual, required
-                )
+                write!(f, "Size {} not aligned to {} bytes", actual, required)
             }
         }
     }
@@ -549,7 +547,7 @@ mod tests {
     #[test]
     fn test_partition_stats() {
         let partition = CachePartition::new("test", 1000);
-        
+
         partition.try_allocate(500);
         partition.record_hit();
         partition.record_hit();

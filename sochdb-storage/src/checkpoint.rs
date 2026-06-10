@@ -50,8 +50,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
@@ -143,8 +143,16 @@ impl CheckpointData {
         dirty_pages: Vec<DirtyPageEntry>,
     ) -> Self {
         // Calculate oldest required LSN
-        let oldest_txn_lsn = active_txns.iter().map(|t| t.first_lsn).min().unwrap_or(Lsn::MAX);
-        let oldest_page_lsn = dirty_pages.iter().map(|p| p.recovery_lsn).min().unwrap_or(Lsn::MAX);
+        let oldest_txn_lsn = active_txns
+            .iter()
+            .map(|t| t.first_lsn)
+            .min()
+            .unwrap_or(Lsn::MAX);
+        let oldest_page_lsn = dirty_pages
+            .iter()
+            .map(|p| p.recovery_lsn)
+            .min()
+            .unwrap_or(Lsn::MAX);
         let oldest_required_lsn = oldest_txn_lsn.min(oldest_page_lsn).min(begin_lsn);
 
         Self {
@@ -212,7 +220,10 @@ impl DirtyPageTracker {
         self.dirty_pages
             .read()
             .iter()
-            .map(|(&page_id, &recovery_lsn)| DirtyPageEntry { page_id, recovery_lsn })
+            .map(|(&page_id, &recovery_lsn)| DirtyPageEntry {
+                page_id,
+                recovery_lsn,
+            })
             .collect()
     }
 
@@ -269,12 +280,14 @@ impl ActiveTransactionTracker {
             .read()
             .iter()
             .filter(|(_, (first_lsn, _, _))| *first_lsn != Lsn::MAX)
-            .map(|(&txn_id, &(first_lsn, last_lsn, start_ts))| ActiveTransactionEntry {
-                txn_id,
-                first_lsn,
-                last_lsn,
-                start_ts,
-            })
+            .map(
+                |(&txn_id, &(first_lsn, last_lsn, start_ts))| ActiveTransactionEntry {
+                    txn_id,
+                    first_lsn,
+                    last_lsn,
+                    start_ts,
+                },
+            )
             .collect()
     }
 
@@ -345,8 +358,16 @@ impl CheckpointManager {
             CheckpointMeta::default()
         };
 
-        let next_id = meta.last_checkpoint.as_ref().map(|c| c.checkpoint_id + 1).unwrap_or(1);
-        let last_lsn = meta.last_checkpoint.as_ref().map(|c| c.end_checkpoint_lsn).unwrap_or(0);
+        let next_id = meta
+            .last_checkpoint
+            .as_ref()
+            .map(|c| c.checkpoint_id + 1)
+            .unwrap_or(1);
+        let last_lsn = meta
+            .last_checkpoint
+            .as_ref()
+            .map(|c| c.end_checkpoint_lsn)
+            .unwrap_or(0);
 
         Ok(Self {
             config,
@@ -373,8 +394,10 @@ impl CheckpointManager {
 
     /// Record a WAL write for checkpoint tracking
     pub fn record_wal_write(&self, bytes: u64) {
-        self.records_since_checkpoint.fetch_add(1, Ordering::Relaxed);
-        self.wal_bytes_since_checkpoint.fetch_add(bytes, Ordering::Relaxed);
+        self.records_since_checkpoint
+            .fetch_add(1, Ordering::Relaxed);
+        self.wal_bytes_since_checkpoint
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Check if checkpoint is needed
@@ -414,7 +437,9 @@ impl CheckpointManager {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
         {
-            return Err(SochDBError::Internal("Checkpoint already in progress".into()));
+            return Err(SochDBError::Internal(
+                "Checkpoint already in progress".into(),
+            ));
         }
 
         // Guard to reset flag on exit (manual scope guard)
@@ -434,7 +459,8 @@ impl CheckpointManager {
         let dirty_pages = self.dirty_pages.get_dirty_pages();
 
         // Create checkpoint data
-        let mut checkpoint = CheckpointData::new(checkpoint_id, begin_lsn, active_txns, dirty_pages.clone());
+        let mut checkpoint =
+            CheckpointData::new(checkpoint_id, begin_lsn, active_txns, dirty_pages.clone());
 
         // Flush all dirty pages to stable storage
         flush_dirty_pages(&dirty_pages)?;
@@ -455,7 +481,8 @@ impl CheckpointManager {
             meta.total_checkpoints += 1;
 
             // Persist metadata
-            let data = bincode::serialize(&*meta).map_err(|e| SochDBError::Serialization(e.to_string()))?;
+            let data = bincode::serialize(&*meta)
+                .map_err(|e| SochDBError::Serialization(e.to_string()))?;
             fs::write(&self.meta_path, data)?;
         }
 
@@ -551,8 +578,14 @@ mod tests {
         ];
 
         let dirty_pages = vec![
-            DirtyPageEntry { page_id: 10, recovery_lsn: 90 },
-            DirtyPageEntry { page_id: 20, recovery_lsn: 110 },
+            DirtyPageEntry {
+                page_id: 10,
+                recovery_lsn: 90,
+            },
+            DirtyPageEntry {
+                page_id: 20,
+                recovery_lsn: 110,
+            },
         ];
 
         let checkpoint = CheckpointData::new(1, 200, active_txns, dirty_pages);

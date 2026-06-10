@@ -104,10 +104,10 @@ impl TimestampPool {
 pub struct HierarchicalTimestampOracle {
     /// Global epoch counter (incremented rarely)
     global_epoch: AtomicU64,
-    
+
     /// Per-thread timestamp pools
     thread_pools: ThreadLocal<UnsafeCell<TimestampPool>>,
-    
+
     /// Timestamps per pool
     pool_size: u64,
 }
@@ -117,7 +117,7 @@ impl HierarchicalTimestampOracle {
     pub fn new() -> Self {
         Self::with_pool_size(DEFAULT_POOL_SIZE)
     }
-    
+
     /// Create with custom pool size
     pub fn with_pool_size(pool_size: u64) -> Self {
         Self {
@@ -126,7 +126,7 @@ impl HierarchicalTimestampOracle {
             pool_size,
         }
     }
-    
+
     /// Allocate a new timestamp
     ///
     /// Fast path: thread-local allocation (no atomics)
@@ -138,53 +138,53 @@ impl HierarchicalTimestampOracle {
             let epoch = self.global_epoch.fetch_add(1, Ordering::SeqCst);
             UnsafeCell::new(TimestampPool::new(epoch, self.pool_size))
         });
-        
+
         // SAFETY: We have exclusive access to our thread-local pool
         let pool = unsafe { &mut *pool_cell.get() };
-        
+
         // Fast path: allocate from pool
         if pool.sequence < pool.limit {
             let ts = (pool.epoch << SEQUENCE_BITS) | pool.sequence;
             pool.sequence += 1;
             return ts;
         }
-        
+
         // Slow path: reserve new pool
         self.reserve_new_pool(pool)
     }
-    
+
     /// Reserve a new pool (slow path, called once per pool_size allocations)
     #[cold]
     fn reserve_new_pool(&self, pool: &mut TimestampPool) -> u64 {
         // Single global atomic per pool_size allocations
         let new_epoch = self.global_epoch.fetch_add(1, Ordering::SeqCst);
-        
+
         pool.epoch = new_epoch;
         pool.sequence = 1; // First timestamp of new pool
         pool.limit = self.pool_size;
-        
+
         // Return first timestamp of new pool
         (pool.epoch << SEQUENCE_BITS) | 0
     }
-    
+
     /// Get current global epoch (for monitoring)
     #[inline]
     pub fn current_epoch(&self) -> u64 {
         self.global_epoch.load(Ordering::Relaxed)
     }
-    
+
     /// Extract epoch from timestamp
     #[inline]
     pub fn extract_epoch(ts: u64) -> u64 {
         ts >> SEQUENCE_BITS
     }
-    
+
     /// Extract sequence from timestamp
     #[inline]
     pub fn extract_sequence(ts: u64) -> u64 {
         ts & ((1 << SEQUENCE_BITS) - 1)
     }
-    
+
     /// Compare timestamps for ordering
     ///
     /// Returns true if ts1 < ts2 (ts1 happened before ts2)
@@ -211,10 +211,10 @@ impl Default for HierarchicalTimestampOracle {
 pub struct HybridHierarchicalOracle {
     /// Hierarchical oracle for fast local allocation
     hierarchical: HierarchicalTimestampOracle,
-    
+
     /// Wall clock offset (for HLC-style coordination)
     wall_clock_offset: AtomicU64,
-    
+
     /// Last observed physical time
     last_physical: AtomicU64,
 }
@@ -228,13 +228,13 @@ impl HybridHierarchicalOracle {
             last_physical: AtomicU64::new(0),
         }
     }
-    
+
     /// Allocate a timestamp (fast path)
     #[inline]
     pub fn allocate(&self) -> u64 {
         self.hierarchical.allocate()
     }
-    
+
     /// Get a timestamp with physical time component
     ///
     /// Returns (logical_ts, physical_ts) tuple for cross-node ordering
@@ -243,7 +243,7 @@ impl HybridHierarchicalOracle {
         let physical = self.current_physical_time();
         (logical, physical)
     }
-    
+
     /// Update with external timestamp (for distributed coordination)
     pub fn update_from_external(&self, external_physical: u64) {
         // CAS loop to update max physical time
@@ -252,32 +252,39 @@ impl HybridHierarchicalOracle {
             if external_physical <= current {
                 break;
             }
-            if self.last_physical
-                .compare_exchange_weak(current, external_physical, Ordering::AcqRel, Ordering::Relaxed)
+            if self
+                .last_physical
+                .compare_exchange_weak(
+                    current,
+                    external_physical,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 break;
             }
         }
     }
-    
+
     /// Get current physical time (wall clock + offset)
     fn current_physical_time(&self) -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
-        
+
         let wall_clock = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_micros() as u64;
-        
+
         let offset = self.wall_clock_offset.load(Ordering::Relaxed);
         let physical = wall_clock + offset;
-        
+
         // Ensure monotonicity
         loop {
             let last = self.last_physical.load(Ordering::Acquire);
             let next = physical.max(last + 1);
-            if self.last_physical
+            if self
+                .last_physical
                 .compare_exchange_weak(last, next, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
@@ -304,10 +311,10 @@ impl Default for HybridHierarchicalOracle {
 pub struct BatchedTimestampAllocator {
     /// Next timestamp to allocate globally
     next_global: AtomicU64,
-    
+
     /// Batch size for local allocation
     batch_size: u64,
-    
+
     /// Thread-local batches
     thread_batches: ThreadLocal<UnsafeCell<LocalBatch>>,
 }
@@ -323,7 +330,7 @@ impl BatchedTimestampAllocator {
     pub fn new() -> Self {
         Self::with_batch_size(1000)
     }
-    
+
     /// Create with custom batch size
     pub fn with_batch_size(batch_size: u64) -> Self {
         Self {
@@ -332,7 +339,7 @@ impl BatchedTimestampAllocator {
             thread_batches: ThreadLocal::new(),
         }
     }
-    
+
     /// Allocate next timestamp
     #[inline]
     pub fn allocate(&self) -> u64 {
@@ -343,29 +350,31 @@ impl BatchedTimestampAllocator {
                 end: 0,
             })
         });
-        
+
         // SAFETY: Thread-local access
         let batch = unsafe { &mut *batch_cell.get() };
-        
+
         if batch.current < batch.end {
             let ts = batch.current;
             batch.current += 1;
             return ts;
         }
-        
+
         // Reserve new batch
         self.reserve_batch(batch)
     }
-    
+
     #[cold]
     fn reserve_batch(&self, batch: &mut LocalBatch) -> u64 {
-        let start = self.next_global.fetch_add(self.batch_size, Ordering::SeqCst);
+        let start = self
+            .next_global
+            .fetch_add(self.batch_size, Ordering::SeqCst);
         batch.start = start;
         batch.current = start + 1;
         batch.end = start + self.batch_size;
         start
     }
-    
+
     /// Get current watermark (all timestamps below this are allocated)
     pub fn watermark(&self) -> u64 {
         self.next_global.load(Ordering::Acquire)
@@ -384,42 +393,42 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::thread;
-    
+
     #[test]
     fn test_hierarchical_oracle_basic() {
         let oracle = HierarchicalTimestampOracle::new();
-        
+
         // Allocate some timestamps
         let ts1 = oracle.allocate();
         let ts2 = oracle.allocate();
         let ts3 = oracle.allocate();
-        
+
         // Should be monotonically increasing within thread
         assert!(ts1 < ts2);
         assert!(ts2 < ts3);
-        
+
         // Check epoch/sequence extraction
         let epoch = HierarchicalTimestampOracle::extract_epoch(ts1);
         let seq = HierarchicalTimestampOracle::extract_sequence(ts1);
         assert_eq!(epoch, 0);
         assert_eq!(seq, 0);
     }
-    
+
     #[test]
     fn test_hierarchical_oracle_pool_exhaustion() {
         // Small pool size to trigger re-allocation
         let oracle = HierarchicalTimestampOracle::with_pool_size(10);
-        
+
         // Allocate more than pool size
         let mut timestamps = Vec::new();
         for _ in 0..25 {
             timestamps.push(oracle.allocate());
         }
-        
+
         // All should be unique
         let unique: HashSet<_> = timestamps.iter().collect();
         assert_eq!(unique.len(), 25);
-        
+
         // Should have used multiple epochs
         let epochs: HashSet<_> = timestamps
             .iter()
@@ -427,13 +436,13 @@ mod tests {
             .collect();
         assert!(epochs.len() >= 2);
     }
-    
+
     #[test]
     fn test_hierarchical_oracle_concurrent() {
         let oracle = Arc::new(HierarchicalTimestampOracle::new());
         let num_threads = 8;
         let ops_per_thread = 10000;
-        
+
         let handles: Vec<_> = (0..num_threads)
             .map(|_| {
                 let oracle = Arc::clone(&oracle);
@@ -446,43 +455,43 @@ mod tests {
                 })
             })
             .collect();
-        
+
         let all_timestamps: Vec<u64> = handles
             .into_iter()
             .flat_map(|h| h.join().unwrap())
             .collect();
-        
+
         // All timestamps should be unique
         let unique: HashSet<_> = all_timestamps.iter().collect();
         assert_eq!(unique.len(), num_threads * ops_per_thread);
     }
-    
+
     #[test]
     fn test_batched_allocator() {
         let allocator = BatchedTimestampAllocator::with_batch_size(100);
-        
+
         // Allocate timestamps
         let mut timestamps = Vec::new();
         for _ in 0..250 {
             timestamps.push(allocator.allocate());
         }
-        
+
         // All unique
         let unique: HashSet<_> = timestamps.iter().collect();
         assert_eq!(unique.len(), 250);
-        
+
         // Monotonically increasing within thread
         for window in timestamps.windows(2) {
             assert!(window[0] < window[1]);
         }
     }
-    
+
     #[test]
     fn test_batched_allocator_concurrent() {
         let allocator = Arc::new(BatchedTimestampAllocator::with_batch_size(100));
         let num_threads = 4;
         let ops_per_thread = 1000;
-        
+
         let handles: Vec<_> = (0..num_threads)
             .map(|_| {
                 let allocator = Arc::clone(&allocator);
@@ -495,38 +504,38 @@ mod tests {
                 })
             })
             .collect();
-        
+
         let all_timestamps: Vec<u64> = handles
             .into_iter()
             .flat_map(|h| h.join().unwrap())
             .collect();
-        
+
         // All unique
         let unique: HashSet<_> = all_timestamps.iter().collect();
         assert_eq!(unique.len(), num_threads * ops_per_thread);
     }
-    
+
     #[test]
     fn test_hybrid_oracle() {
         let oracle = HybridHierarchicalOracle::new();
-        
+
         let (logical1, physical1) = oracle.allocate_with_physical();
         let (logical2, physical2) = oracle.allocate_with_physical();
-        
+
         // Logical timestamps should increase
         assert!(logical1 < logical2);
-        
+
         // Physical timestamps should be monotonic
         assert!(physical1 <= physical2);
     }
-    
+
     #[test]
     fn test_happens_before() {
         let oracle = HierarchicalTimestampOracle::new();
-        
+
         let ts1 = oracle.allocate();
         let ts2 = oracle.allocate();
-        
+
         assert!(HierarchicalTimestampOracle::happens_before(ts1, ts2));
         assert!(!HierarchicalTimestampOracle::happens_before(ts2, ts1));
         assert!(!HierarchicalTimestampOracle::happens_before(ts1, ts1));

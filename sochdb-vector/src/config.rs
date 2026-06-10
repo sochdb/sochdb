@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct EngineConfig {
     /// Vector dimension
     pub dim: u32,
-    
+
     /// Similarity metric
     pub metric: Metric,
 
@@ -100,7 +100,7 @@ impl BpsConfig {
     /// Maximum safe value for num_blocks × num_projections to prevent u16 overflow.
     /// With max L1 diff of 255 per slot: 65535 / 255 = 257
     pub const MAX_SAFE_SLOTS: u32 = 257;
-    
+
     /// Validate configuration to ensure BPS distance won't overflow u16.
     /// Returns error if num_blocks × num_projections × 255 > u16::MAX.
     pub fn validate(&self) -> Result<(), String> {
@@ -108,12 +108,15 @@ impl BpsConfig {
         if total_slots > Self::MAX_SAFE_SLOTS {
             return Err(format!(
                 "BPS configuration would overflow u16: {} blocks × {} projections = {} slots (max {})",
-                self.num_blocks, self.num_projections, total_slots, Self::MAX_SAFE_SLOTS
+                self.num_blocks,
+                self.num_projections,
+                total_slots,
+                Self::MAX_SAFE_SLOTS
             ));
         }
         Ok(())
     }
-    
+
     /// Theoretical maximum L1 distance for this configuration
     pub fn max_distance(&self) -> u32 {
         self.num_blocks as u32 * self.num_projections as u32 * 255
@@ -122,7 +125,8 @@ impl BpsConfig {
 
 impl Default for BpsConfig {
     fn default() -> Self {
-        let num_blocks = (DEFAULT_DIM + DEFAULT_BPS_BLOCK_SIZE as u32 - 1) / DEFAULT_BPS_BLOCK_SIZE as u32;
+        let num_blocks =
+            (DEFAULT_DIM + DEFAULT_BPS_BLOCK_SIZE as u32 - 1) / DEFAULT_BPS_BLOCK_SIZE as u32;
         Self {
             block_size: DEFAULT_BPS_BLOCK_SIZE,
             num_blocks: num_blocks as u16,

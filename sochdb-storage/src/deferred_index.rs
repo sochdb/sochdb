@@ -165,7 +165,7 @@ impl DeferredSortedIndex {
 
         // Merge with existing sorted vec
         let mut sorted = self.sorted_vec.write();
-        
+
         if sorted.is_empty() {
             // Fast path: just replace
             *sorted = new_entries;
@@ -221,9 +221,7 @@ impl DeferredSortedIndex {
     /// Ensure index is compacted before scan operations
     #[inline]
     fn ensure_compacted(&self) {
-        if self.needs_compaction.load(Ordering::Acquire)
-            || !self.hot_buffer.read().is_empty()
-        {
+        if self.needs_compaction.load(Ordering::Acquire) || !self.hot_buffer.read().is_empty() {
             self.compact();
         }
     }
@@ -231,16 +229,13 @@ impl DeferredSortedIndex {
     /// Iterate over all keys starting from `start`
     ///
     /// Uses binary search + sequential iteration for cache-friendly access.
-    pub fn range_from<'a>(
-        &'a self,
-        start: &[u8],
-    ) -> impl Iterator<Item = Vec<u8>> + 'a {
+    pub fn range_from<'a>(&'a self, start: &[u8]) -> impl Iterator<Item = Vec<u8>> + 'a {
         self.ensure_compacted();
-        
+
         let sorted = self.sorted_vec.read();
         // Binary search for start position
         let start_idx = sorted.partition_point(|k| k.as_slice() < start);
-        
+
         // Return iterator over the range
         // Note: We need to clone because we can't return references to RwLockReadGuard
         let result: Vec<Vec<u8>> = sorted[start_idx..].to_vec();
@@ -250,18 +245,14 @@ impl DeferredSortedIndex {
     /// Iterate over keys in range [start, end)
     ///
     /// Binary search for bounds, then sequential iteration.
-    pub fn range<'a>(
-        &'a self,
-        start: &[u8],
-        end: &[u8],
-    ) -> impl Iterator<Item = Vec<u8>> + 'a {
+    pub fn range<'a>(&'a self, start: &[u8], end: &[u8]) -> impl Iterator<Item = Vec<u8>> + 'a {
         self.ensure_compacted();
 
         let sorted = self.sorted_vec.read();
         // Binary search for start and end positions
         let start_idx = sorted.partition_point(|k| k.as_slice() < start);
         let end_idx = sorted.partition_point(|k| k.as_slice() < end);
-        
+
         // Return cloned slice (necessary due to lifetime constraints)
         let result: Vec<Vec<u8>> = sorted[start_idx..end_idx].to_vec();
         result.into_iter()
@@ -358,7 +349,10 @@ mod tests {
 
         // Scan should return sorted order
         let keys: Vec<_> = index.range_from(b"").collect();
-        assert_eq!(keys, vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()]);
+        assert_eq!(
+            keys,
+            vec![b"key1".to_vec(), b"key2".to_vec(), b"key3".to_vec()]
+        );
     }
 
     #[test]

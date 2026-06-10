@@ -53,16 +53,16 @@ pub const DEFAULT_FPR: FPR = 0.01;
 pub trait FilterPolicy: Send + Sync + std::fmt::Debug {
     /// Name of the filter policy
     fn name(&self) -> &str;
-    
+
     /// Create a filter builder
     fn create_builder(&self, num_keys: usize) -> Box<dyn FilterBuilder>;
-    
+
     /// Create a filter from raw bytes
     fn create_filter(&self, data: Vec<u8>) -> Box<dyn Filter>;
-    
+
     /// Bits per key for this filter (approximate)
     fn bits_per_key(&self) -> f64;
-    
+
     /// Target false positive rate
     fn target_fpr(&self) -> FPR;
 }
@@ -71,10 +71,10 @@ pub trait FilterPolicy: Send + Sync + std::fmt::Debug {
 pub trait FilterBuilder: Send {
     /// Add a key to the filter
     fn add_key(&mut self, key: &[u8]);
-    
+
     /// Finish building and return filter bytes
     fn finish(&mut self) -> Vec<u8>;
-    
+
     /// Get number of keys added
     fn num_keys(&self) -> usize;
 }
@@ -87,7 +87,7 @@ pub trait Filter: Send + Sync {
     /// - `false`: Key is definitely NOT present
     /// - `true`: Key MIGHT be present (with FPR probability of false positive)
     fn may_contain(&self, key: &[u8]) -> bool;
-    
+
     /// Get filter size in bytes
     fn size_bytes(&self) -> usize;
 }
@@ -123,25 +123,28 @@ impl FilterReader {
         if self.data.len() < 2 {
             return true; // Degenerate case
         }
-        
+
         let bits_len = (self.data.len() - 1) * 8;
         if bits_len == 0 {
             return true;
         }
-        
+
         // Use xxHash-style double hashing
         let mut h1 = 0u64;
         let mut h2 = 0u64;
         for (i, &b) in key.iter().enumerate() {
             h1 = h1.wrapping_mul(31).wrapping_add(b as u64);
-            h2 = h2.wrapping_mul(37).wrapping_add(b as u64).wrapping_add(i as u64);
+            h2 = h2
+                .wrapping_mul(37)
+                .wrapping_add(b as u64)
+                .wrapping_add(i as u64);
         }
-        
+
         for i in 0..self.num_hashes {
             let bit_pos = h1.wrapping_add(h2.wrapping_mul(i as u64)) % (bits_len as u64);
             let byte_idx = (bit_pos / 8) as usize;
             let bit_idx = (bit_pos % 8) as u8;
-            
+
             if byte_idx < self.data.len() - 1 {
                 if self.data[byte_idx] & (1 << bit_idx) == 0 {
                     return false;
@@ -179,7 +182,7 @@ impl BloomFilterPolicy {
         let bits_per_key = -fpr.log2() / 2.0_f64.ln();
         // Optimal number of hash functions: bits_per_key × ln(2) ≈ 0.693 × bits_per_key
         let num_hashes = (bits_per_key * 2.0_f64.ln()).round() as usize;
-        
+
         Self {
             fpr,
             bits_per_key,
@@ -192,7 +195,7 @@ impl BloomFilterPolicy {
         let num_hashes = (bits_per_key * 2.0_f64.ln()).round() as usize;
         // FPR ≈ (1 - e^(-k×n/m))^k ≈ (0.6185)^bits_per_key for optimal k
         let fpr = 0.6185_f64.powf(bits_per_key);
-        
+
         Self {
             fpr,
             bits_per_key,
@@ -239,7 +242,7 @@ impl BloomFilterBuilder {
     fn new(expected_keys: usize, bits_per_key: f64, num_hashes: usize) -> Self {
         let num_bits = ((expected_keys as f64 * bits_per_key).ceil() as usize).max(64);
         let num_words = num_bits.div_ceil(64);
-        
+
         Self {
             bits: vec![0; num_words],
             num_bits,
@@ -253,7 +256,7 @@ impl FilterBuilder for BloomFilterBuilder {
     fn add_key(&mut self, key: &[u8]) {
         let h1 = hash1(key);
         let h2 = hash2(key);
-        
+
         for i in 0..self.num_hashes {
             let h = h1.wrapping_add((i as u64).wrapping_mul(h2));
             let bit_idx = (h as usize) % self.num_bits;
@@ -261,24 +264,28 @@ impl FilterBuilder for BloomFilterBuilder {
             let bit_pos = bit_idx % 64;
             self.bits[word_idx] |= 1u64 << bit_pos;
         }
-        
+
         self.num_keys += 1;
     }
 
     fn finish(&mut self) -> Vec<u8> {
         use byteorder::{LittleEndian, WriteBytesExt};
-        
+
         let mut result = Vec::with_capacity(self.bits.len() * 8 + 8);
-        
+
         // Write bits
         for &word in &self.bits {
             result.write_u64::<LittleEndian>(word).unwrap();
         }
-        
+
         // Write metadata
-        result.write_u32::<LittleEndian>(self.num_hashes as u32).unwrap();
-        result.write_u32::<LittleEndian>(self.num_bits as u32).unwrap();
-        
+        result
+            .write_u32::<LittleEndian>(self.num_hashes as u32)
+            .unwrap();
+        result
+            .write_u32::<LittleEndian>(self.num_bits as u32)
+            .unwrap();
+
         result
     }
 
@@ -298,7 +305,7 @@ impl BloomFilter {
     fn new(data: Vec<u8>, default_num_hashes: usize) -> Self {
         use byteorder::{LittleEndian, ReadBytesExt};
         use std::io::Cursor;
-        
+
         if data.len() < 8 {
             return Self {
                 bits: Vec::new(),
@@ -306,12 +313,14 @@ impl BloomFilter {
                 num_hashes: default_num_hashes,
             };
         }
-        
+
         // Read metadata from end
         let mut cursor = Cursor::new(&data[data.len() - 8..]);
-        let num_hashes = cursor.read_u32::<LittleEndian>().unwrap_or(default_num_hashes as u32) as usize;
+        let num_hashes = cursor
+            .read_u32::<LittleEndian>()
+            .unwrap_or(default_num_hashes as u32) as usize;
         let num_bits = cursor.read_u32::<LittleEndian>().unwrap_or(0) as usize;
-        
+
         // Read bits
         let bits_data = &data[..data.len() - 8];
         let mut bits = Vec::with_capacity(bits_data.len() / 8);
@@ -319,7 +328,7 @@ impl BloomFilter {
         while let Ok(word) = cursor.read_u64::<LittleEndian>() {
             bits.push(word);
         }
-        
+
         Self {
             bits,
             num_bits,
@@ -333,21 +342,21 @@ impl Filter for BloomFilter {
         if self.bits.is_empty() || self.num_bits == 0 {
             return true; // Empty filter = must check data
         }
-        
+
         let h1 = hash1(key);
         let h2 = hash2(key);
-        
+
         for i in 0..self.num_hashes {
             let h = h1.wrapping_add((i as u64).wrapping_mul(h2));
             let bit_idx = (h as usize) % self.num_bits;
             let word_idx = bit_idx / 64;
             let bit_pos = bit_idx % 64;
-            
+
             if word_idx >= self.bits.len() || self.bits[word_idx] & (1u64 << bit_pos) == 0 {
                 return false;
             }
         }
-        
+
         true
     }
 
@@ -378,7 +387,7 @@ impl RibbonFilterPolicy {
     pub fn new(fpr: FPR) -> Self {
         // Ribbon achieves ~log₂(1/p) bits per key
         let bits_per_key = -fpr.log2();
-        
+
         Self { fpr, bits_per_key }
     }
 }
@@ -423,7 +432,7 @@ impl RibbonFilterBuilder {
         let fingerprint_bits = bits_per_key.ceil() as usize;
         // Add some overhead for the ribbon construction
         let num_slots = ((expected_keys as f64) * 1.05).ceil() as usize;
-        
+
         Self {
             fingerprints: Vec::with_capacity(expected_keys),
             fingerprint_bits,
@@ -442,21 +451,25 @@ impl FilterBuilder for RibbonFilterBuilder {
 
     fn finish(&mut self) -> Vec<u8> {
         use byteorder::{LittleEndian, WriteBytesExt};
-        
+
         // Simplified: store fingerprints directly
         // A full ribbon would solve a banded matrix
-        
+
         let mut result = Vec::new();
-        
+
         // Write metadata
-        result.write_u32::<LittleEndian>(self.fingerprints.len() as u32).unwrap();
-        result.write_u32::<LittleEndian>(self.fingerprint_bits as u32).unwrap();
-        
+        result
+            .write_u32::<LittleEndian>(self.fingerprints.len() as u32)
+            .unwrap();
+        result
+            .write_u32::<LittleEndian>(self.fingerprint_bits as u32)
+            .unwrap();
+
         // Write fingerprints (simplified - could pack more efficiently)
         for &fp in &self.fingerprints {
             result.write_u64::<LittleEndian>(fp).unwrap();
         }
-        
+
         result
     }
 
@@ -475,24 +488,24 @@ impl RibbonFilter {
     fn new(data: Vec<u8>) -> Self {
         use byteorder::{LittleEndian, ReadBytesExt};
         use std::io::Cursor;
-        
+
         if data.len() < 8 {
             return Self {
                 fingerprints: Vec::new(),
                 fingerprint_bits: 0,
             };
         }
-        
+
         let mut cursor = Cursor::new(&data[..8]);
         let num_keys = cursor.read_u32::<LittleEndian>().unwrap_or(0) as usize;
         let fingerprint_bits = cursor.read_u32::<LittleEndian>().unwrap_or(0) as usize;
-        
+
         let mut fingerprints = Vec::with_capacity(num_keys);
         let mut cursor = Cursor::new(&data[8..]);
         while let Ok(fp) = cursor.read_u64::<LittleEndian>() {
             fingerprints.push(fp);
         }
-        
+
         Self {
             fingerprints,
             fingerprint_bits,
@@ -505,10 +518,10 @@ impl Filter for RibbonFilter {
         if self.fingerprints.is_empty() {
             return true;
         }
-        
+
         let h = hash1(key);
         let fingerprint = h & ((1u64 << self.fingerprint_bits) - 1);
-        
+
         // Simplified: linear search (full ribbon would use hash to index)
         // This is placeholder - real ribbon uses banded matrix lookup
         self.fingerprints.iter().any(|&fp| fp == fingerprint)
@@ -540,7 +553,7 @@ impl XorFilterPolicy {
     pub fn new(fpr: FPR) -> Self {
         // Xor filters achieve ~1.23 × log₂(1/p) bits per key
         let bits_per_key = -fpr.log2() * 1.23;
-        
+
         Self { fpr, bits_per_key }
     }
 }
@@ -589,21 +602,25 @@ impl FilterBuilder for XorFilterBuilder {
 
     fn finish(&mut self) -> Vec<u8> {
         use byteorder::{LittleEndian, WriteBytesExt};
-        
+
         // Simplified: store all key hashes
         // A real xor filter would use the 3-wise xor construction
-        
+
         let mut result = Vec::new();
-        
-        result.write_u32::<LittleEndian>(self.keys.len() as u32).unwrap();
-        result.write_u32::<LittleEndian>(self.fingerprint_bits as u32).unwrap();
-        
+
+        result
+            .write_u32::<LittleEndian>(self.keys.len() as u32)
+            .unwrap();
+        result
+            .write_u32::<LittleEndian>(self.fingerprint_bits as u32)
+            .unwrap();
+
         for key in &self.keys {
             let h = hash1(key);
             let fp = h & ((1u64 << self.fingerprint_bits) - 1);
             result.write_u64::<LittleEndian>(fp).unwrap();
         }
-        
+
         result
     }
 
@@ -622,24 +639,24 @@ impl XorFilter {
     fn new(data: Vec<u8>) -> Self {
         use byteorder::{LittleEndian, ReadBytesExt};
         use std::io::Cursor;
-        
+
         if data.len() < 8 {
             return Self {
                 fingerprints: Vec::new(),
                 fingerprint_bits: 0,
             };
         }
-        
+
         let mut cursor = Cursor::new(&data[..8]);
         let num_keys = cursor.read_u32::<LittleEndian>().unwrap_or(0) as usize;
         let fingerprint_bits = cursor.read_u32::<LittleEndian>().unwrap_or(0) as usize;
-        
+
         let mut fingerprints = Vec::with_capacity(num_keys);
         let mut cursor = Cursor::new(&data[8..]);
         while let Ok(fp) = cursor.read_u64::<LittleEndian>() {
             fingerprints.push(fp);
         }
-        
+
         Self {
             fingerprints,
             fingerprint_bits,
@@ -652,10 +669,10 @@ impl Filter for XorFilter {
         if self.fingerprints.is_empty() {
             return true;
         }
-        
+
         let h = hash1(key);
         let fingerprint = h & ((1u64 << self.fingerprint_bits) - 1);
-        
+
         // Simplified: linear search
         self.fingerprints.iter().any(|&fp| fp == fingerprint)
     }
@@ -748,21 +765,21 @@ mod tests {
     fn test_bloom_filter_basic() {
         let policy = BloomFilterPolicy::new(0.01);
         let mut builder = policy.create_builder(1000);
-        
+
         for i in 0..1000 {
             let key = format!("key{}", i);
             builder.add_key(key.as_bytes());
         }
-        
+
         let data = builder.finish();
         let filter = policy.create_filter(data);
-        
+
         // All inserted keys should return true
         for i in 0..1000 {
             let key = format!("key{}", i);
             assert!(filter.may_contain(key.as_bytes()));
         }
-        
+
         // Some non-inserted keys may return true (false positives)
         // but rate should be approximately 1%
         let mut false_positives = 0;
@@ -772,9 +789,13 @@ mod tests {
                 false_positives += 1;
             }
         }
-        
+
         // Allow up to 5% (due to statistical variation on small sample)
-        assert!(false_positives < 50, "Too many false positives: {}", false_positives);
+        assert!(
+            false_positives < 50,
+            "Too many false positives: {}",
+            false_positives
+        );
     }
 
     #[test]
@@ -787,27 +808,27 @@ mod tests {
     fn test_filter_cascade() {
         let policy1 = BloomFilterPolicy::new(0.1);
         let policy2 = BloomFilterPolicy::new(0.1);
-        
+
         // Build filters
         let mut builder1 = policy1.create_builder(100);
         let mut builder2 = policy2.create_builder(100);
-        
+
         for i in 0..100 {
             let key = format!("key{}", i);
             builder1.add_key(key.as_bytes());
             builder2.add_key(key.as_bytes());
         }
-        
+
         let filter1 = policy1.create_filter(builder1.finish());
         let filter2 = policy2.create_filter(builder2.finish());
-        
+
         let mut cascade = FilterCascade::new();
         cascade.add_level(filter1, 0.1);
         cascade.add_level(filter2, 0.1);
-        
+
         // Combined FPR should be ~0.01
         assert!((cascade.combined_fpr() - 0.01).abs() < 0.001);
-        
+
         // All inserted keys should pass
         for i in 0..100 {
             let key = format!("key{}", i);
@@ -819,7 +840,7 @@ mod tests {
     fn test_empty_filter() {
         let policy = BloomFilterPolicy::new(0.01);
         let filter = policy.create_filter(Vec::new());
-        
+
         // Empty filter should return true (conservative)
         assert!(filter.may_contain(b"any_key"));
     }

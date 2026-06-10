@@ -149,7 +149,7 @@ impl AdaptiveMemtableSizer {
     /// Create with custom configuration
     pub fn with_config(config: AdaptiveMemtableConfig) -> Self {
         let initial_rate = config.base_size as f64 / config.target_buffer_seconds;
-        
+
         Self {
             current_size: AtomicU64::new(config.base_size as u64),
             write_rate_ema: AtomicU64::new((initial_rate * 1000.0) as u64),
@@ -163,7 +163,8 @@ impl AdaptiveMemtableSizer {
     /// Record bytes written (call on every write)
     #[inline]
     pub fn record_write(&self, bytes: usize) {
-        self.bytes_since_update.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.bytes_since_update
+            .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
     /// Get current recommended memtable size
@@ -203,8 +204,10 @@ impl AdaptiveMemtableSizer {
 
         // Update EMA of write rate
         let old_rate = self.write_rate_ema.load(Ordering::Relaxed) as f64 / 1000.0;
-        let new_rate = old_rate * (1.0 - self.config.ema_alpha) + instant_rate * self.config.ema_alpha;
-        self.write_rate_ema.store((new_rate * 1000.0) as u64, Ordering::Relaxed);
+        let new_rate =
+            old_rate * (1.0 - self.config.ema_alpha) + instant_rate * self.config.ema_alpha;
+        self.write_rate_ema
+            .store((new_rate * 1000.0) as u64, Ordering::Relaxed);
 
         // Update memory pressure if enabled
         let pressure = if self.config.enable_memory_pressure {
@@ -212,7 +215,8 @@ impl AdaptiveMemtableSizer {
         } else {
             0.0
         };
-        self.memory_pressure_scaled.store((pressure * 1000.0) as u64, Ordering::Relaxed);
+        self.memory_pressure_scaled
+            .store((pressure * 1000.0) as u64, Ordering::Relaxed);
 
         // Calculate target size based on write rate
         // Target = write_rate × buffer_duration
@@ -234,7 +238,8 @@ impl AdaptiveMemtableSizer {
             .max(self.config.min_size as f64)
             .min(self.config.max_size as f64) as usize;
 
-        self.current_size.store(final_size as u64, Ordering::Relaxed);
+        self.current_size
+            .store(final_size as u64, Ordering::Relaxed);
         final_size
     }
 
@@ -421,10 +426,10 @@ mod tests {
     #[test]
     fn test_record_write() {
         let sizer = AdaptiveMemtableSizer::new();
-        
+
         sizer.record_write(1000);
         sizer.record_write(2000);
-        
+
         // Bytes accumulate until update
         assert_eq!(sizer.bytes_since_update.load(Ordering::Relaxed), 3000);
     }
@@ -432,22 +437,22 @@ mod tests {
     #[test]
     fn test_should_flush() {
         let sizer = AdaptiveMemtableSizer::new();
-        
+
         // Initially at base size (4MB)
         assert!(!sizer.should_flush(1_000_000)); // 1MB < 4MB
-        assert!(sizer.should_flush(5_000_000));  // 5MB >= 4MB
+        assert!(sizer.should_flush(5_000_000)); // 5MB >= 4MB
     }
 
     #[test]
     fn test_write_rate_update() {
         let sizer = AdaptiveMemtableSizer::new();
-        
+
         // Simulate writing 1MB over ~1 second
         sizer.record_write(1_000_000);
         std::thread::sleep(std::time::Duration::from_millis(100));
-        
+
         let new_size = sizer.update();
-        
+
         // Size should adjust based on write rate
         assert!(new_size >= MIN_MEMTABLE_SIZE);
         assert!(new_size <= MAX_MEMTABLE_SIZE);
@@ -480,7 +485,7 @@ mod tests {
     fn test_stats() {
         let sizer = AdaptiveMemtableSizer::new();
         let stats = sizer.stats();
-        
+
         assert_eq!(stats.current_size, DEFAULT_BASE_SIZE);
         assert!(stats.write_rate_bytes_per_sec > 0.0);
         assert!(stats.memory_pressure >= 0.0);

@@ -53,15 +53,19 @@ pub enum MemAdvice {
 ///
 /// This is acceptable overhead compared to the alternative of
 /// ~10,000+ major faults at ~100μs each = 1s+ of stall time.
+///
+/// # Safety
+/// `ptr` must be valid for reads over the range `ptr..ptr + len`, and that
+/// region must remain mapped for the duration of the call.
 #[inline(never)]
-pub fn prefault_region(ptr: *const u8, len: usize) -> usize {
+pub unsafe fn prefault_region(ptr: *const u8, len: usize) -> usize {
     if len == 0 {
         return 0;
     }
-    
+
     const PAGE_SIZE: usize = 4096;
     let mut pages_touched = 0usize;
-    
+
     // Touch every page to force it into RAM
     // Using volatile read to prevent optimization away
     for offset in (0..len).step_by(PAGE_SIZE) {
@@ -70,54 +74,54 @@ pub fn prefault_region(ptr: *const u8, len: usize) -> usize {
         }
         pages_touched += 1;
     }
-    
+
     // Also touch the last byte to ensure final partial page is loaded
     if len > 0 && len % PAGE_SIZE != 0 {
         unsafe {
             let _byte: u8 = std::ptr::read_volatile(ptr.add(len - 1));
         }
     }
-    
+
     pages_touched
 }
 
 /// Prefault with progress callback for large regions
-pub fn prefault_region_with_progress<F>(
-    ptr: *const u8,
-    len: usize,
-    mut progress: F,
-) -> usize 
+///
+/// # Safety
+/// `ptr` must be valid for reads over the range `ptr..ptr + len`, and that
+/// region must remain mapped for the duration of the call.
+pub unsafe fn prefault_region_with_progress<F>(ptr: *const u8, len: usize, mut progress: F) -> usize
 where
-    F: FnMut(usize, usize),  // (bytes_done, total_bytes)
+    F: FnMut(usize, usize), // (bytes_done, total_bytes)
 {
     if len == 0 {
         return 0;
     }
-    
+
     const PAGE_SIZE: usize = 4096;
     const PROGRESS_INTERVAL: usize = 1024 * 1024; // Report every 1MB
-    
+
     let mut pages_touched = 0usize;
     let mut last_report = 0usize;
-    
+
     for offset in (0..len).step_by(PAGE_SIZE) {
         unsafe {
             let _byte: u8 = std::ptr::read_volatile(ptr.add(offset));
         }
         pages_touched += 1;
-        
+
         if offset - last_report >= PROGRESS_INTERVAL {
             progress(offset, len);
             last_report = offset;
         }
     }
-    
+
     if len > 0 && len % PAGE_SIZE != 0 {
         unsafe {
             let _byte: u8 = std::ptr::read_volatile(ptr.add(len - 1));
         }
     }
-    
+
     progress(len, len);
     pages_touched
 }
@@ -125,19 +129,19 @@ where
 /// Apply madvise hint to a memory region (Unix only)
 #[cfg(target_os = "linux")]
 pub fn madvise(ptr: *mut u8, len: usize, advice: MemAdvice) -> io::Result<()> {
-    use libc::{madvise as libc_madvise, MADV_WILLNEED, MADV_RANDOM, MADV_SEQUENTIAL, MADV_DONTNEED};
-    
+    use libc::{
+        MADV_DONTNEED, MADV_RANDOM, MADV_SEQUENTIAL, MADV_WILLNEED, madvise as libc_madvise,
+    };
+
     let advice_int = match advice {
         MemAdvice::Sequential => MADV_SEQUENTIAL,
         MemAdvice::Random => MADV_RANDOM,
         MemAdvice::WillNeed => MADV_WILLNEED,
         MemAdvice::DontNeed => MADV_DONTNEED,
     };
-    
-    let result = unsafe {
-        libc_madvise(ptr as *mut libc::c_void, len, advice_int)
-    };
-    
+
+    let result = unsafe { libc_madvise(ptr as *mut libc::c_void, len, advice_int) };
+
     if result == 0 {
         Ok(())
     } else {
@@ -148,19 +152,17 @@ pub fn madvise(ptr: *mut u8, len: usize, advice: MemAdvice) -> io::Result<()> {
 /// Apply madvise hint to a memory region (macOS)
 #[cfg(target_os = "macos")]
 pub fn madvise(ptr: *mut u8, len: usize, advice: MemAdvice) -> io::Result<()> {
-    use libc::{madvise as libc_madvise, MADV_WILLNEED, MADV_RANDOM, MADV_SEQUENTIAL, MADV_FREE};
-    
+    use libc::{MADV_FREE, MADV_RANDOM, MADV_SEQUENTIAL, MADV_WILLNEED, madvise as libc_madvise};
+
     let advice_int = match advice {
         MemAdvice::Sequential => MADV_SEQUENTIAL,
         MemAdvice::Random => MADV_RANDOM,
         MemAdvice::WillNeed => MADV_WILLNEED,
         MemAdvice::DontNeed => MADV_FREE,
     };
-    
-    let result = unsafe {
-        libc_madvise(ptr as *mut libc::c_void, len, advice_int)
-    };
-    
+
+    let result = unsafe { libc_madvise(ptr as *mut libc::c_void, len, advice_int) };
+
     if result == 0 {
         Ok(())
     } else {
@@ -197,7 +199,7 @@ impl ResidencyStats {
         } else {
             0.0
         };
-        
+
         Self {
             region_bytes,
             total_pages,
@@ -205,10 +207,11 @@ impl ResidencyStats {
             prefault_mb_per_sec,
         }
     }
-    
+
     /// Print human-readable summary
     pub fn print_summary(&self, label: &str) {
-        eprintln!("[residency] {}: {:.1} MB, {} pages, {:.2}s ({:.0} MB/s)",
+        eprintln!(
+            "[residency] {}: {:.1} MB, {} pages, {:.2}s ({:.0} MB/s)",
             label,
             self.region_bytes as f64 / 1024.0 / 1024.0,
             self.total_pages,
@@ -228,73 +231,84 @@ impl ResidencyStats {
 /// 1. `madvise(MADV_WILLNEED)` - Hint to kernel to prefetch asynchronously
 /// 2. `madvise(MADV_RANDOM)` - Disable readahead (harmful for random access)
 /// 3. Explicit prefault loop - Guarantee residency before build starts
-pub fn ensure_resident_for_hnsw(
-    ptr: *mut u8,
-    len: usize,
-    verbose: bool,
-) -> ResidencyStats {
+pub fn ensure_resident_for_hnsw(ptr: *mut u8, len: usize, verbose: bool) -> ResidencyStats {
     use std::time::Instant;
-    
+
     if len == 0 {
         return ResidencyStats::default();
     }
-    
+
     let start = Instant::now();
-    
+
     // Step 1: Hint for async prefetch
     if let Err(e) = madvise(ptr, len, MemAdvice::WillNeed) {
         if verbose {
-            eprintln!("[residency] madvise(WILLNEED) failed: {} (falling back to explicit prefault)", e);
+            eprintln!(
+                "[residency] madvise(WILLNEED) failed: {} (falling back to explicit prefault)",
+                e
+            );
         }
     }
-    
+
     // Step 2: Disable readahead (harmful for HNSW's random access pattern)
     if let Err(e) = madvise(ptr, len, MemAdvice::Random) {
         if verbose {
             eprintln!("[residency] madvise(RANDOM) failed: {}", e);
         }
     }
-    
+
     // Step 3: Explicit prefault to guarantee residency
+    // SAFETY: `ptr`/`len` describe the caller-provided resident region (the same
+    // contract this function documents); forwarded unchanged to the prefaulters.
     let pages_touched = if verbose {
-        prefault_region_with_progress(ptr as *const u8, len, |done, total| {
-            if done == total {
-                eprintln!("[residency] Prefaulted {:.1} MB", total as f64 / 1024.0 / 1024.0);
-            } else {
-                eprint!("\r[residency] Prefaulting... {:.0}%", 100.0 * done as f64 / total as f64);
-            }
-        })
+        unsafe {
+            prefault_region_with_progress(ptr as *const u8, len, |done, total| {
+                if done == total {
+                    eprintln!(
+                        "[residency] Prefaulted {:.1} MB",
+                        total as f64 / 1024.0 / 1024.0
+                    );
+                } else {
+                    eprint!(
+                        "\r[residency] Prefaulting... {:.0}%",
+                        100.0 * done as f64 / total as f64
+                    );
+                }
+            })
+        }
     } else {
-        prefault_region(ptr as *const u8, len)
+        unsafe { prefault_region(ptr as *const u8, len) }
     };
-    
+
     let elapsed = start.elapsed();
     let stats = ResidencyStats::from_prefault(len, elapsed.as_nanos() as u64);
-    
+
     if verbose {
-        eprintln!("[residency] {} pages resident in {:.2}s ({:.0} MB/s)",
+        eprintln!(
+            "[residency] {} pages resident in {:.2}s ({:.0} MB/s)",
             pages_touched,
             elapsed.as_secs_f64(),
             stats.prefault_mb_per_sec,
         );
     }
-    
+
     stats
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_prefault() {
         // Allocate some memory and prefault it
         let size = 64 * 4096; // 64 pages
         let mut data = vec![0u8; size];
-        
-        let pages = prefault_region(data.as_ptr(), size);
+
+        // SAFETY: `data` is a live allocation of `size` bytes.
+        let pages = unsafe { prefault_region(data.as_ptr(), size) };
         assert_eq!(pages, 64);
-        
+
         // Verify data is still accessible
         data[0] = 42;
         assert_eq!(data[0], 42);

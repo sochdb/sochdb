@@ -300,7 +300,9 @@ impl CdcLog {
                 return Err(CdcError::Shutdown);
             }
 
-            let remaining = timeout.checked_sub(start.elapsed()).unwrap_or(Duration::ZERO);
+            let remaining = timeout
+                .checked_sub(start.elapsed())
+                .unwrap_or(Duration::ZERO);
             if remaining.is_zero() {
                 return Err(CdcError::Timeout);
             }
@@ -513,11 +515,7 @@ impl CdcSubscriber {
     }
 
     /// Wait for new events (blocking with timeout).
-    pub fn next_batch(
-        &mut self,
-        max_events: usize,
-        timeout: Duration,
-    ) -> CdcResult<Vec<CdcEvent>> {
+    pub fn next_batch(&mut self, max_events: usize, timeout: Duration) -> CdcResult<Vec<CdcEvent>> {
         let events = self
             .log
             .wait_for_events(self.last_seq, max_events, timeout)?;
@@ -644,10 +642,7 @@ mod tests {
 
         let events = sub.poll(10).unwrap();
         assert_eq!(events.len(), 1);
-        assert!(matches!(
-            events[0].operation,
-            CdcOperation::Update { .. }
-        ));
+        assert!(matches!(events[0].operation, CdcOperation::Update { .. }));
     }
 
     #[test]
@@ -660,8 +655,7 @@ mod tests {
         emitter.insert("users", b"u2".to_vec(), b"v3".to_vec());
         emitter.flush();
 
-        let mut sub =
-            CdcSubscriber::new(log.clone(), 0).with_tables(vec!["users".to_string()]);
+        let mut sub = CdcSubscriber::new(log.clone(), 0).with_tables(vec!["users".to_string()]);
         let events = sub.poll(10).unwrap();
         assert_eq!(events.len(), 2);
         assert!(events.iter().all(|e| e.table == "users"));
@@ -736,9 +730,8 @@ mod tests {
         let log = make_log(100);
         let log_clone = log.clone();
 
-        let handle = thread::spawn(move || {
-            log_clone.wait_for_events(0, 10, Duration::from_secs(5))
-        });
+        let handle =
+            thread::spawn(move || log_clone.wait_for_events(0, 10, Duration::from_secs(5)));
 
         thread::sleep(Duration::from_millis(50));
         log.shutdown();

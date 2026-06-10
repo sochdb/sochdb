@@ -51,8 +51,8 @@
 //! - `SEARCH BY SIMILARITY`: Vector similarity search
 //! - `SELECT`: Standard SQL subquery
 
-use crate::token_budget::{BudgetSection, TokenBudgetConfig, TokenBudgetEnforcer, TokenEstimator};
 use crate::soch_ql::{ComparisonOp, Condition, LogicalOp, SochValue, WhereClause};
+use crate::token_budget::{BudgetSection, TokenBudgetConfig, TokenBudgetEnforcer, TokenEstimator};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -441,9 +441,7 @@ impl ContextRecipeStore {
             .values()
             .filter(|r| match &r.session_binding {
                 Some(SessionBinding::Session(sid)) => sid == session_id,
-                Some(SessionBinding::Pattern(pattern)) => {
-                    glob_match(pattern, session_id)
-                }
+                Some(SessionBinding::Pattern(pattern)) => glob_match(pattern, session_id),
                 _ => false,
             })
             .cloned()
@@ -694,7 +692,7 @@ impl VectorIndex for SimpleVectorIndex {
 // ============================================================================
 
 /// Production-ready vector index backed by HNSW from sochdb-index.
-/// 
+///
 /// This provides O(log N) search performance vs O(N) for brute-force.
 /// Each collection maps to a separate HNSW index.
 pub struct HnswVectorIndex {
@@ -769,7 +767,7 @@ impl HnswVectorIndex {
 
         // Convert to ndarray embedding
         let embedding = ndarray::Array1::from_vec(vector);
-        
+
         // Add to HNSW index
         coll.index.add(edge_id, embedding)?;
 
@@ -814,7 +812,7 @@ impl VectorIndex for HnswVectorIndex {
         for (edge_id, distance) in results {
             // Cosine similarity = 1 - cosine distance (for normalized vectors)
             let score = 1.0 - distance;
-            
+
             // Apply min_score filter
             if let Some(min) = min_score {
                 if score < min {
@@ -2166,11 +2164,10 @@ impl<'a> AgentContextIntegration<'a> {
                             SimilarityQuery::Variable(var_name) => {
                                 // Try to resolve variable as embedding or text
                                 match self.context.peek_var(var_name) {
-                                    Some(ContextValue::String(text)) => {
-                                        self.search_by_text_with_embedding(
+                                    Some(ContextValue::String(text)) => self
+                                        .search_by_text_with_embedding(
                                             index, collection, text, *top_k, *min_score,
-                                        )
-                                    }
+                                        ),
                                     Some(ContextValue::List(list)) => {
                                         // Try to convert to f32 vector
                                         let embedding: Result<Vec<f32>, _> = list
@@ -2245,7 +2242,12 @@ impl<'a> AgentContextIntegration<'a> {
                 include_outputs,
             } => {
                 // Format tool call history as context section
-                self.format_tool_calls(*count, tool_filter.as_deref(), status_filter.as_deref(), *include_outputs)
+                self.format_tool_calls(
+                    *count,
+                    tool_filter.as_deref(),
+                    status_filter.as_deref(),
+                    *include_outputs,
+                )
             }
         }
     }
@@ -2311,13 +2313,11 @@ impl<'a> AgentContextIntegration<'a> {
             .filter(|call| {
                 tool_filter.map(|f| call.tool_name == f).unwrap_or(true)
                     && status_filter
-                        .map(|s| {
-                            match s {
-                                "success" => call.result.is_some() && call.error.is_none(),
-                                "error" => call.error.is_some(),
-                                "pending" => call.result.is_none() && call.error.is_none(),
-                                _ => true,
-                            }
+                        .map(|s| match s {
+                            "success" => call.result.is_some() && call.error.is_none(),
+                            "error" => call.error.is_some(),
+                            "pending" => call.result.is_none() && call.error.is_none(),
+                            _ => true,
                         })
                         .unwrap_or(true)
             })

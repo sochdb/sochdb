@@ -20,12 +20,14 @@ impl ProgressReporter {
         let bar = ProgressBar::new(total);
         bar.set_style(
             ProgressStyle::default_bar()
-                .template("{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {per_sec}")
+                .template(
+                    "{msg} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {per_sec}",
+                )
                 .unwrap()
                 .progress_chars("█▓▒░"),
         );
         bar.set_message(message.to_string());
-        
+
         let now = Instant::now();
         Self {
             bar,
@@ -34,7 +36,7 @@ impl ProgressReporter {
             vectors_processed: 0,
         }
     }
-    
+
     /// Create a spinner for indeterminate progress
     pub fn spinner(message: &str) -> Self {
         let bar = ProgressBar::new_spinner();
@@ -45,7 +47,7 @@ impl ProgressReporter {
         );
         bar.set_message(message.to_string());
         bar.enable_steady_tick(Duration::from_millis(100));
-        
+
         let now = Instant::now();
         Self {
             bar,
@@ -54,12 +56,12 @@ impl ProgressReporter {
             vectors_processed: 0,
         }
     }
-    
+
     /// Update progress
     pub fn update(&mut self, count: u64) {
         self.vectors_processed += count;
         self.bar.set_position(self.vectors_processed);
-        
+
         // Update rate every 100ms
         if self.last_update.elapsed() > Duration::from_millis(100) {
             let elapsed = self.start.elapsed().as_secs_f64();
@@ -70,23 +72,23 @@ impl ProgressReporter {
             self.last_update = Instant::now();
         }
     }
-    
+
     /// Set absolute progress
     pub fn set(&mut self, count: u64) {
         self.vectors_processed = count;
         self.bar.set_position(count);
     }
-    
+
     /// Finish with a message
     pub fn finish(&self, message: &str) {
         self.bar.finish_with_message(message.to_string());
     }
-    
+
     /// Get elapsed time
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
-    
+
     /// Get vectors per second
     pub fn rate(&self) -> f64 {
         let elapsed = self.start.elapsed().as_secs_f64();
@@ -96,7 +98,7 @@ impl ProgressReporter {
             0.0
         }
     }
-    
+
     /// Get total vectors processed
     pub fn total(&self) -> u64 {
         self.vectors_processed
@@ -137,22 +139,37 @@ impl BulkStats {
             output_bytes: None,
         }
     }
-    
+
     /// Print formatted summary
     pub fn print_summary(&self) {
         eprintln!();
         eprintln!("╔══════════════════════════════════════════════════════════════╗");
         eprintln!("║                    BULK OPERATION SUMMARY                    ║");
         eprintln!("╠══════════════════════════════════════════════════════════════╣");
-        eprintln!("║  Vectors:     {:>12}                                   ║", self.vectors);
-        eprintln!("║  Time:        {:>12.2}s                                  ║", self.elapsed.as_secs_f64());
-        eprintln!("║  Throughput:  {:>12.0} vec/s                             ║", self.rate);
+        eprintln!(
+            "║  Vectors:     {:>12}                                   ║",
+            self.vectors
+        );
+        eprintln!(
+            "║  Time:        {:>12.2}s                                  ║",
+            self.elapsed.as_secs_f64()
+        );
+        eprintln!(
+            "║  Throughput:  {:>12.0} vec/s                             ║",
+            self.rate
+        );
         if let Some(mem) = self.peak_memory_mb {
-            eprintln!("║  Peak Memory: {:>12.1} MB                                ║", mem);
+            eprintln!(
+                "║  Peak Memory: {:>12.1} MB                                ║",
+                mem
+            );
         }
         if let Some(size) = self.output_bytes {
             let mb = size as f64 / 1024.0 / 1024.0;
-            eprintln!("║  Output Size: {:>12.1} MB                                ║", mb);
+            eprintln!(
+                "║  Output Size: {:>12.1} MB                                ║",
+                mb
+            );
         }
         eprintln!("╚══════════════════════════════════════════════════════════════╝");
     }

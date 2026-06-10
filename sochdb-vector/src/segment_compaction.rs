@@ -41,7 +41,6 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 // ============================================================================
@@ -137,7 +136,7 @@ impl SegmentStats {
             error_samples: Vec::new(),
         }
     }
-    
+
     /// Get deletion ratio
     pub fn deletion_ratio(&self) -> f32 {
         if self.n_vectors == 0 {
@@ -146,12 +145,12 @@ impl SegmentStats {
             self.n_deleted as f32 / self.n_vectors as f32
         }
     }
-    
+
     /// Get live vector count
     pub fn live_vectors(&self) -> usize {
         self.n_vectors.saturating_sub(self.n_deleted)
     }
-    
+
     /// Record quantizer error sample
     pub fn record_error(&mut self, error: f32) {
         self.error_samples.push(error);
@@ -160,7 +159,7 @@ impl SegmentStats {
             self.error_samples.remove(0);
         }
     }
-    
+
     /// Get current estimated quantizer error
     pub fn estimated_error(&self) -> f32 {
         if self.error_samples.is_empty() {
@@ -170,12 +169,12 @@ impl SegmentStats {
             sum / self.error_samples.len() as f32
         }
     }
-    
+
     /// Check if quantizer needs retraining
     pub fn needs_retraining(&self, threshold: f32) -> bool {
         let current = self.estimated_error();
         let original = self.quantizer_meta.training_error;
-        
+
         if original == 0.0 {
             false
         } else {
@@ -220,17 +219,17 @@ impl Segment {
             generation: 1,
         }
     }
-    
+
     /// Mark segment as active
     pub fn activate(&mut self) {
         self.state = SegmentState::Active;
     }
-    
+
     /// Mark vector as deleted
     pub fn mark_deleted(&mut self, count: usize) {
         self.stats.n_deleted += count;
     }
-    
+
     /// Record access
     pub fn record_access(&mut self) {
         self.stats.access_count += 1;
@@ -247,25 +246,25 @@ impl Segment {
 pub struct CompactionPolicy {
     /// Minimum deletion ratio to trigger compaction
     pub deletion_ratio_threshold: f32,
-    
+
     /// Maximum segment size before split
     pub max_segment_size: u64,
-    
+
     /// Minimum segment size (below this, merge with others)
     pub min_segment_size: u64,
-    
+
     /// Target segment size for new segments
     pub target_segment_size: u64,
-    
+
     /// Maximum segments before forced compaction
     pub max_segments: usize,
-    
+
     /// Quantizer error drift threshold for retraining
     pub quantizer_drift_threshold: f32,
-    
+
     /// Minimum time between compactions
     pub compaction_cooldown: Duration,
-    
+
     /// Maximum concurrent compaction threads
     pub max_compaction_threads: usize,
 }
@@ -274,8 +273,8 @@ impl Default for CompactionPolicy {
     fn default() -> Self {
         Self {
             deletion_ratio_threshold: 0.3,
-            max_segment_size: 1024 * 1024 * 1024, // 1 GB
-            min_segment_size: 64 * 1024 * 1024,   // 64 MB
+            max_segment_size: 1024 * 1024 * 1024,   // 1 GB
+            min_segment_size: 64 * 1024 * 1024,     // 64 MB
             target_segment_size: 256 * 1024 * 1024, // 256 MB
             max_segments: 100,
             quantizer_drift_threshold: 0.2, // 20% error increase triggers retraining
@@ -289,18 +288,18 @@ impl CompactionPolicy {
     /// Create policy optimized for SSD
     pub fn ssd_optimized() -> Self {
         Self {
-            deletion_ratio_threshold: 0.25, // More aggressive reclamation
+            deletion_ratio_threshold: 0.25,         // More aggressive reclamation
             target_segment_size: 512 * 1024 * 1024, // Larger segments
             ..Default::default()
         }
     }
-    
+
     /// Create policy optimized for RAM
     pub fn ram_optimized() -> Self {
         Self {
-            deletion_ratio_threshold: 0.4, // Less aggressive
+            deletion_ratio_threshold: 0.4,         // Less aggressive
             target_segment_size: 64 * 1024 * 1024, // Smaller segments
-            max_segments: 50, // Fewer segments for faster search
+            max_segments: 50,                      // Fewer segments for faster search
             ..Default::default()
         }
     }
@@ -354,31 +353,33 @@ impl CompactionPlanner {
     pub fn new(policy: CompactionPolicy) -> Self {
         Self { policy }
     }
-    
+
     /// Analyze segments and decide on compaction
     pub fn plan(&self, segments: &[&Segment]) -> Vec<CompactionDecision> {
         let mut decisions = Vec::new();
-        
+
         // Check for high deletion ratio segments
-        let high_deletion: Vec<_> = segments.iter()
+        let high_deletion: Vec<_> = segments
+            .iter()
             .filter(|s| s.stats.deletion_ratio() > self.policy.deletion_ratio_threshold)
             .map(|s| s.id)
             .collect();
-        
+
         if !high_deletion.is_empty() {
             decisions.push(CompactionDecision::Merge(high_deletion));
         }
-        
+
         // Check for small segments to merge
-        let small_segments: Vec<_> = segments.iter()
+        let small_segments: Vec<_> = segments
+            .iter()
             .filter(|s| s.stats.size_bytes < self.policy.min_segment_size)
             .collect();
-        
+
         if small_segments.len() >= 2 {
             // Group small segments for merging
             let mut current_group: Vec<SegmentId> = Vec::new();
             let mut current_size = 0u64;
-            
+
             for seg in small_segments {
                 if current_size + seg.stats.size_bytes <= self.policy.target_segment_size {
                     current_group.push(seg.id);
@@ -392,48 +393,53 @@ impl CompactionPlanner {
                     current_size = seg.stats.size_bytes;
                 }
             }
-            
+
             if current_group.len() >= 2 {
                 decisions.push(CompactionDecision::Merge(current_group));
             }
         }
-        
+
         // Check for oversized segments
         for seg in segments {
             if seg.stats.size_bytes > self.policy.max_segment_size {
                 decisions.push(CompactionDecision::Split(seg.id));
             }
         }
-        
+
         // Check for quantizer drift
-        let drifted: Vec<_> = segments.iter()
-            .filter(|s| s.stats.needs_retraining(self.policy.quantizer_drift_threshold))
+        let drifted: Vec<_> = segments
+            .iter()
+            .filter(|s| {
+                s.stats
+                    .needs_retraining(self.policy.quantizer_drift_threshold)
+            })
             .map(|s| s.id)
             .collect();
-        
+
         if !drifted.is_empty() {
             decisions.push(CompactionDecision::Retrain(drifted));
         }
-        
+
         // Check if too many segments
         if segments.len() > self.policy.max_segments {
             // Aggressive merge of oldest/smallest segments
             let mut sorted: Vec<_> = segments.iter().collect();
             sorted.sort_by_key(|s| s.stats.live_vectors());
-            
-            let to_merge: Vec<_> = sorted.iter()
+
+            let to_merge: Vec<_> = sorted
+                .iter()
                 .take(segments.len() / 2)
                 .map(|s| s.id)
                 .collect();
-            
+
             if to_merge.len() >= 2 {
                 decisions.push(CompactionDecision::FullRecompact(to_merge));
             }
         }
-        
+
         decisions
     }
-    
+
     /// Get policy
     pub fn policy(&self) -> &CompactionPolicy {
         &self.policy
@@ -460,19 +466,19 @@ impl VersionManager {
             versions: parking_lot::RwLock::new(HashMap::new()),
         }
     }
-    
+
     /// Get current version
     pub fn current(&self) -> u64 {
         self.current_version.load(Ordering::SeqCst)
     }
-    
+
     /// Create new version with segments
     pub fn create_version(&self, segments: Vec<SegmentId>) -> u64 {
         let version = self.current_version.fetch_add(1, Ordering::SeqCst) + 1;
         self.versions.write().insert(version, segments);
         version
     }
-    
+
     /// Switch to new version atomically
     pub fn switch_to(&self, version: u64) -> bool {
         let versions = self.versions.read();
@@ -483,12 +489,12 @@ impl VersionManager {
             false
         }
     }
-    
+
     /// Get segments for version
     pub fn get_segments(&self, version: u64) -> Option<Vec<SegmentId>> {
         self.versions.read().get(&version).cloned()
     }
-    
+
     /// Rollback to previous version
     pub fn rollback(&self) -> bool {
         let current = self.current_version.load(Ordering::SeqCst);
@@ -499,17 +505,18 @@ impl VersionManager {
             false
         }
     }
-    
+
     /// Clean old versions
     pub fn clean_old_versions(&self, keep_n: usize) {
         let current = self.current();
         let mut versions = self.versions.write();
-        
-        let to_remove: Vec<_> = versions.keys()
+
+        let to_remove: Vec<_> = versions
+            .keys()
             .filter(|&&v| v + keep_n as u64 <= current)
             .cloned()
             .collect();
-        
+
         for v in to_remove {
             versions.remove(&v);
         }
@@ -551,41 +558,43 @@ impl SegmentManager {
             job_counter: AtomicU64::new(0),
         }
     }
-    
+
     /// Add segment
     pub fn add_segment(&self, segment: Segment) {
         let id = segment.id;
         self.segments.write().insert(id, segment);
-        
+
         // Update version
-        let current_segments: Vec<_> = self.segments.read()
+        let current_segments: Vec<_> = self
+            .segments
+            .read()
             .iter()
             .filter(|(_, s)| s.state == SegmentState::Active)
             .map(|(id, _)| *id)
             .collect();
-        
+
         self.versions.create_version(current_segments);
     }
-    
+
     /// Get segment
     pub fn get_segment(&self, id: SegmentId) -> Option<Segment> {
         self.segments.read().get(&id).cloned()
     }
-    
+
     /// Mark vectors as deleted in segment
     pub fn mark_deleted(&self, id: SegmentId, count: usize) {
         if let Some(segment) = self.segments.write().get_mut(&id) {
             segment.mark_deleted(count);
         }
     }
-    
+
     /// Record quantizer error for segment
     pub fn record_quantizer_error(&self, id: SegmentId, error: f32) {
         if let Some(segment) = self.segments.write().get_mut(&id) {
             segment.stats.record_error(error);
         }
     }
-    
+
     /// Check if compaction is needed and return jobs
     pub fn maybe_compact(&self) -> Vec<CompactionJob> {
         // Check cooldown
@@ -595,43 +604,50 @@ impl SegmentManager {
                 return Vec::new();
             }
         }
-        
+
         // Get active segments
         let segments = self.segments.read();
-        let active: Vec<_> = segments.values()
+        let active: Vec<_> = segments
+            .values()
             .filter(|s| s.state == SegmentState::Active)
             .collect();
-        
+
         let decisions = self.planner.plan(&active);
-        
+
         if !decisions.is_empty() {
             *last = Some(Instant::now());
         }
-        
-        decisions.into_iter().map(|d| {
-            let source_segments = match &d {
-                CompactionDecision::None => Vec::new(),
-                CompactionDecision::Merge(ids) => ids.clone(),
-                CompactionDecision::Split(id) => vec![*id],
-                CompactionDecision::Retrain(ids) => ids.clone(),
-                CompactionDecision::FullRecompact(ids) => ids.clone(),
-            };
-            
-            CompactionJob {
-                id: self.job_counter.fetch_add(1, Ordering::SeqCst),
-                decision: d,
-                source_segments,
-                created_at: Instant::now(),
-                priority: 0,
-            }
-        }).collect()
+
+        decisions
+            .into_iter()
+            .map(|d| {
+                let source_segments = match &d {
+                    CompactionDecision::None => Vec::new(),
+                    CompactionDecision::Merge(ids) => ids.clone(),
+                    CompactionDecision::Split(id) => vec![*id],
+                    CompactionDecision::Retrain(ids) => ids.clone(),
+                    CompactionDecision::FullRecompact(ids) => ids.clone(),
+                };
+
+                CompactionJob {
+                    id: self.job_counter.fetch_add(1, Ordering::SeqCst),
+                    decision: d,
+                    source_segments,
+                    created_at: Instant::now(),
+                    priority: 0,
+                }
+            })
+            .collect()
     }
-    
+
     /// Execute compaction job
-    pub fn execute_compaction(&self, job: &CompactionJob) -> Result<Option<Segment>, CompactionError> {
+    pub fn execute_compaction(
+        &self,
+        job: &CompactionJob,
+    ) -> Result<Option<Segment>, CompactionError> {
         match &job.decision {
             CompactionDecision::None => Ok(None),
-            
+
             CompactionDecision::Merge(ids) => {
                 // Mark source segments as compacting
                 {
@@ -642,29 +658,32 @@ impl SegmentManager {
                         }
                     }
                 }
-                
+
                 // Create merged segment (placeholder implementation)
                 let merged_id = SegmentId::next();
                 let segments = self.segments.read();
-                
-                let total_size: u64 = ids.iter()
+
+                let total_size: u64 = ids
+                    .iter()
                     .filter_map(|id| segments.get(id))
                     .map(|s| s.stats.size_bytes)
                     .sum();
-                
-                let total_live: usize = ids.iter()
+
+                let total_live: usize = ids
+                    .iter()
                     .filter_map(|id| segments.get(id))
                     .map(|s| s.stats.live_vectors())
                     .sum();
-                
-                let max_gen = ids.iter()
+
+                let max_gen = ids
+                    .iter()
                     .filter_map(|id| segments.get(id))
                     .map(|s| s.generation)
                     .max()
                     .unwrap_or(0);
-                
+
                 drop(segments);
-                
+
                 let mut merged = Segment::new(
                     merged_id,
                     total_live,
@@ -673,7 +692,7 @@ impl SegmentManager {
                 );
                 merged.generation = max_gen + 1;
                 merged.state = SegmentState::Active;
-                
+
                 // Mark source segments as tombstoned
                 {
                     let mut segments = self.segments.write();
@@ -683,22 +702,23 @@ impl SegmentManager {
                         }
                     }
                 }
-                
+
                 self.add_segment(merged.clone());
                 Ok(Some(merged))
             }
-            
+
             CompactionDecision::Split(id) => {
                 // Split implementation
-                let segment = self.get_segment(*id)
+                let segment = self
+                    .get_segment(*id)
                     .ok_or(CompactionError::SegmentNotFound(*id))?;
-                
+
                 let half_size = segment.stats.size_bytes / 2;
                 let half_vectors = segment.stats.n_vectors / 2;
-                
+
                 let seg1_id = SegmentId::next();
                 let seg2_id = SegmentId::next();
-                
+
                 let mut seg1 = Segment::new(
                     seg1_id,
                     half_vectors,
@@ -707,7 +727,7 @@ impl SegmentManager {
                 );
                 seg1.generation = segment.generation + 1;
                 seg1.state = SegmentState::Active;
-                
+
                 let mut seg2 = Segment::new(
                     seg2_id,
                     segment.stats.n_vectors - half_vectors,
@@ -716,18 +736,18 @@ impl SegmentManager {
                 );
                 seg2.generation = segment.generation + 1;
                 seg2.state = SegmentState::Active;
-                
+
                 // Mark original as tombstoned
                 if let Some(seg) = self.segments.write().get_mut(id) {
                     seg.state = SegmentState::Tombstoned;
                 }
-                
+
                 self.add_segment(seg1);
                 self.add_segment(seg2.clone());
-                
+
                 Ok(Some(seg2))
             }
-            
+
             CompactionDecision::Retrain(_ids) => {
                 // Retraining would involve:
                 // 1. Sample vectors from segments
@@ -737,7 +757,7 @@ impl SegmentManager {
                 // Placeholder for now
                 Ok(None)
             }
-            
+
             CompactionDecision::FullRecompact(ids) => {
                 // Full recompaction with new quantizer
                 self.execute_compaction(&CompactionJob {
@@ -750,57 +770,64 @@ impl SegmentManager {
             }
         }
     }
-    
+
     /// Clean tombstoned segments
     pub fn clean_tombstones(&self) -> Vec<SegmentId> {
         let mut segments = self.segments.write();
-        let tombstoned: Vec<_> = segments.iter()
+        let tombstoned: Vec<_> = segments
+            .iter()
             .filter(|(_, s)| s.state == SegmentState::Tombstoned)
             .map(|(id, _)| *id)
             .collect();
-        
+
         for id in &tombstoned {
             if let Some(seg) = segments.get_mut(id) {
                 seg.state = SegmentState::Deleted;
             }
         }
-        
+
         tombstoned
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> ManagerStats {
         let segments = self.segments.read();
-        
+
         let total_segments = segments.len();
-        let active_segments = segments.values()
+        let active_segments = segments
+            .values()
             .filter(|s| s.state == SegmentState::Active)
             .count();
-        
-        let total_vectors: usize = segments.values()
+
+        let total_vectors: usize = segments
+            .values()
             .filter(|s| s.state == SegmentState::Active)
             .map(|s| s.stats.n_vectors)
             .sum();
-        
-        let total_deleted: usize = segments.values()
+
+        let total_deleted: usize = segments
+            .values()
             .filter(|s| s.state == SegmentState::Active)
             .map(|s| s.stats.n_deleted)
             .sum();
-        
-        let total_size: u64 = segments.values()
+
+        let total_size: u64 = segments
+            .values()
             .filter(|s| s.state == SegmentState::Active)
             .map(|s| s.stats.size_bytes)
             .sum();
-        
+
         let avg_deletion_ratio = if active_segments > 0 {
-            segments.values()
+            segments
+                .values()
                 .filter(|s| s.state == SegmentState::Active)
                 .map(|s| s.stats.deletion_ratio())
-                .sum::<f32>() / active_segments as f32
+                .sum::<f32>()
+                / active_segments as f32
         } else {
             0.0
         };
-        
+
         ManagerStats {
             total_segments,
             active_segments,
@@ -812,7 +839,7 @@ impl SegmentManager {
             current_version: self.versions.current(),
         }
     }
-    
+
     /// Get version manager
     pub fn versions(&self) -> &VersionManager {
         &self.versions
@@ -855,7 +882,7 @@ impl std::error::Error for CompactionError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_segment_lifecycle() {
         let mut segment = Segment::new(
@@ -864,20 +891,20 @@ mod tests {
             1024 * 1024,
             "/data/segment1".to_string(),
         );
-        
+
         assert_eq!(segment.state, SegmentState::Building);
-        
+
         segment.activate();
         assert_eq!(segment.state, SegmentState::Active);
-        
+
         segment.mark_deleted(100);
         assert_eq!(segment.stats.n_deleted, 100);
         assert_eq!(segment.stats.live_vectors(), 900);
-        
+
         let ratio = segment.stats.deletion_ratio();
         assert!((ratio - 0.1).abs() < 0.001);
     }
-    
+
     #[test]
     fn test_compaction_planner() {
         let policy = CompactionPolicy {
@@ -886,79 +913,79 @@ mod tests {
             max_segment_size: 1024 * 1024,
             ..Default::default()
         };
-        
+
         let planner = CompactionPlanner::new(policy);
-        
+
         // Create segment with high deletion
         let mut seg1 = Segment::new(SegmentId(1), 1000, 2048, "/seg1".to_string());
         seg1.state = SegmentState::Active;
         seg1.stats.n_deleted = 400; // 40% deleted
-        
+
         // Create small segments
         let mut seg2 = Segment::new(SegmentId(2), 100, 512, "/seg2".to_string());
         seg2.state = SegmentState::Active;
-        
+
         let mut seg3 = Segment::new(SegmentId(3), 100, 512, "/seg3".to_string());
         seg3.state = SegmentState::Active;
-        
+
         let segments: Vec<&Segment> = vec![&seg1, &seg2, &seg3];
         let decisions = planner.plan(&segments);
-        
+
         // Should recommend merging high-deletion and small segments
         assert!(!decisions.is_empty());
     }
-    
+
     #[test]
     fn test_version_manager() {
         let vm = VersionManager::new();
-        
+
         let v1 = vm.create_version(vec![SegmentId(1), SegmentId(2)]);
         let v2 = vm.create_version(vec![SegmentId(1), SegmentId(2), SegmentId(3)]);
-        
+
         assert!(v2 > v1);
-        
+
         vm.switch_to(v2);
         assert_eq!(vm.current(), v2);
-        
+
         vm.rollback();
         assert_eq!(vm.current(), v2 - 1);
-        
+
         let segments = vm.get_segments(v1).unwrap();
         assert_eq!(segments.len(), 2);
     }
-    
+
     #[test]
     fn test_segment_manager() {
         let policy = CompactionPolicy::default();
         let manager = SegmentManager::new(policy);
-        
+
         // Add segments
         let mut seg1 = Segment::new(SegmentId::next(), 1000, 1024 * 1024, "/seg1".to_string());
         seg1.state = SegmentState::Active;
         manager.add_segment(seg1);
-        
+
         let mut seg2 = Segment::new(SegmentId::next(), 500, 512 * 1024, "/seg2".to_string());
         seg2.state = SegmentState::Active;
         manager.add_segment(seg2);
-        
+
         let stats = manager.stats();
         assert_eq!(stats.active_segments, 2);
         assert_eq!(stats.total_vectors, 1500);
     }
-    
+
     #[test]
     fn test_quantizer_drift() {
         let mut stats = SegmentStats::new(1000, 1024);
         stats.quantizer_meta.training_error = 0.1;
-        
+
         // No drift yet
         assert!(!stats.needs_retraining(0.2));
-        
+
         // Add error samples showing drift
         for _ in 0..100 {
             stats.record_error(0.15); // 50% higher than training
         }
-        
+
         assert!(stats.needs_retraining(0.2));
     }
 }

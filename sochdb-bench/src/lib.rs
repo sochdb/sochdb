@@ -1,6 +1,7 @@
 //! Shared types, traits, data generators and latency recording for sochdb-bench.
 
 pub mod adapters;
+pub mod memory_bench;
 pub mod report;
 pub mod workloads;
 

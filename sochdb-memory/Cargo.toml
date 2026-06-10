@@ -1,0 +1,22 @@
+[package]
+name = "sochdb-memory"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bi-temporal agent memory layer with write-time lexical recall"
+
+[dependencies]
+sochdb-core = { version = "2.0.3", path = "../sochdb-core" }
+sochdb-storage = { version = "2.0.3", path = "../sochdb-storage", features = ["embedded-sync"] }
+sochdb-query = { version = "2.0.3", path = "../sochdb-query" }
+sochdb-vector = { version = "2.0.3", path = "../sochdb-vector" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -48,34 +48,34 @@
 //! | Values         | Inline VALUES (...) rows                   |
 //! | Empty          | Returns no rows                            |
 
-pub mod types;
-pub mod node;
-pub mod eval;
-pub mod scan;
-pub mod filter;
-pub mod project;
-pub mod sort;
-pub mod limit;
-pub mod join;
 pub mod aggregate;
+pub mod eval;
 pub mod explain;
-pub mod planner;
+pub mod filter;
+pub mod join;
+pub mod limit;
+pub mod node;
 pub mod pipeline;
+pub mod planner;
+pub mod project;
+pub mod scan;
+pub mod sort;
+pub mod types;
 
 #[cfg(test)]
 mod tests;
 
 // Re-exports
-pub use types::{Row, Schema, ColumnMeta};
-pub use node::PlanNode;
-pub use eval::{eval_expr, eval_predicate};
-pub use scan::{SeqScanNode, IndexSeekNode};
-pub use filter::FilterNode;
-pub use project::ProjectNode;
-pub use sort::SortNode;
-pub use limit::LimitNode;
-pub use join::{HashJoinNode, NestedLoopJoinNode, MergeJoinNode};
 pub use aggregate::HashAggregateNode;
+pub use eval::{eval_expr, eval_predicate};
 pub use explain::ExplainNode;
+pub use filter::FilterNode;
+pub use join::{HashJoinNode, MergeJoinNode, NestedLoopJoinNode};
+pub use limit::LimitNode;
+pub use node::PlanNode;
+pub use pipeline::{ExecutorConfig, execute_sql, execute_statement};
 pub use planner::QueryPlanner;
-pub use pipeline::{execute_sql, execute_statement, ExecutorConfig};
+pub use project::ProjectNode;
+pub use scan::{IndexSeekNode, SeqScanNode};
+pub use sort::SortNode;
+pub use types::{ColumnMeta, Row, Schema};

@@ -49,11 +49,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let results = conn.scan_path("users/")?;
     println!("\n✓ Prefix scan results:");
     for (key, value) in results {
-        println!(
-            "  {} = {}",
-            key,
-            String::from_utf8_lossy(&value)
-        );
+        println!("  {} = {}", key, String::from_utf8_lossy(&value));
     }
 
     Ok(())

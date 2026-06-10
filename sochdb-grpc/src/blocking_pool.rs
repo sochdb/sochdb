@@ -45,14 +45,12 @@
 //! Pool sizing: `blocking_threads ≈ 2×cores` for mixed I/O+CPU, capped to
 //! prevent memory blowups (each thread has stack + allocator footprint).
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use parking_lot::{Condvar, Mutex};
 
 /// Pool type for workload isolation
@@ -274,9 +272,7 @@ impl BlockingPool {
                 self.metrics.tasks_rejected.fetch_add(1, Ordering::Relaxed);
                 Err(BlockingPoolError::QueueFull)
             }
-            Err(TrySendError::Disconnected(_)) => {
-                Err(BlockingPoolError::PoolShutdown)
-            }
+            Err(TrySendError::Disconnected(_)) => Err(BlockingPoolError::PoolShutdown),
         }
     }
 
@@ -424,7 +420,7 @@ impl Default for BlockingPoolManager {
 }
 
 /// Async wrapper for blocking pool operations
-/// 
+///
 /// Bridges the async gRPC layer with the sync storage layer by spawning
 /// blocking work on dedicated pools and returning futures.
 #[cfg(feature = "async")]

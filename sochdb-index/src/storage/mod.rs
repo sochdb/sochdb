@@ -19,4 +19,4 @@
 
 pub mod node_storage;
 
-pub use node_storage::{ContiguousNodeStorage, CompactHnswNode, LayerData, StorageStats};
+pub use node_storage::{CompactHnswNode, ContiguousNodeStorage, LayerData, StorageStats};

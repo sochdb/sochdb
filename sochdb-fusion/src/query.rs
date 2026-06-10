@@ -22,8 +22,8 @@
 //! Each stage narrows the candidate set via BitSet composition, operating
 //! entirely in-process without serialization boundaries.
 
-use sochdb_core::knowledge_object::{EdgeKind, ObjectId, ObjectKind};
 use serde::{Deserialize, Serialize};
+use sochdb_core::knowledge_object::{EdgeKind, ObjectId, ObjectKind};
 use std::fmt;
 
 /// A predicate for attribute filtering (evaluated against ART index).
@@ -156,20 +156,13 @@ pub enum QueryStage {
     },
 
     /// Namespace filter: restrict to a specific namespace.
-    NamespaceFilter {
-        namespace: String,
-    },
+    NamespaceFilter { namespace: String },
 
     /// Tag filter: restrict to objects with a specific tag.
-    TagFilter {
-        tag: String,
-    },
+    TagFilter { tag: String },
 
     /// Proximity to a specific object (graph distance or embedding distance).
-    ProximityTo {
-        target: ObjectId,
-        max_distance: f32,
-    },
+    ProximityTo { target: ObjectId, max_distance: f32 },
 }
 
 /// How graph expansion composes with existing candidates.
@@ -212,7 +205,7 @@ impl FusionQuery {
         let mut sel = 1.0;
         for stage in &self.stages {
             sel *= match stage {
-                QueryStage::AttributeFilter { .. } => 0.05,   // ~5% pass typical attribute filter
+                QueryStage::AttributeFilter { .. } => 0.05, // ~5% pass typical attribute filter
                 QueryStage::VectorSearch { candidates, .. } => {
                     // Vector search returns a fixed number of candidates
                     0.01_f64.max(*candidates as f64 / 1_000_000.0)
@@ -222,10 +215,10 @@ impl FusionQuery {
                     let expansion = 10.0_f64.powi(*max_hops as i32);
                     (expansion / 1_000_000.0).min(1.0)
                 }
-                QueryStage::TemporalFilter { .. } => 0.5,     // ~50% pass temporal filter
-                QueryStage::NamespaceFilter { .. } => 0.1,    // ~10% per namespace
-                QueryStage::TagFilter { .. } => 0.1,          // ~10% per tag
-                QueryStage::ProximityTo { .. } => 0.01,       // ~1% proximity match
+                QueryStage::TemporalFilter { .. } => 0.5, // ~50% pass temporal filter
+                QueryStage::NamespaceFilter { .. } => 0.1, // ~10% per namespace
+                QueryStage::TagFilter { .. } => 0.1,      // ~10% per tag
+                QueryStage::ProximityTo { .. } => 0.01,   // ~1% proximity match
             };
         }
         sel
@@ -234,7 +227,12 @@ impl FusionQuery {
 
 impl fmt::Display for FusionQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "FusionQuery(stages={}, top_k={})", self.stages.len(), self.top_k)
+        write!(
+            f,
+            "FusionQuery(stages={}, top_k={})",
+            self.stages.len(),
+            self.top_k
+        )
     }
 }
 
@@ -368,9 +366,7 @@ impl FusionQueryBuilder {
 
     /// Add a tag filter.
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
-        self.stages.push(QueryStage::TagFilter {
-            tag: tag.into(),
-        });
+        self.stages.push(QueryStage::TagFilter { tag: tag.into() });
         self
     }
 
@@ -415,9 +411,12 @@ impl FusionQueryBuilder {
 
         // Prepend namespace filter if set
         if let Some(ns) = &self.namespace {
-            stages.insert(0, QueryStage::NamespaceFilter {
-                namespace: ns.clone(),
-            });
+            stages.insert(
+                0,
+                QueryStage::NamespaceFilter {
+                    namespace: ns.clone(),
+                },
+            );
         }
 
         FusionQuery {
@@ -464,20 +463,23 @@ mod tests {
 
         assert_eq!(query.stages.len(), 2);
         // Namespace should be first
-        assert!(matches!(&query.stages[0], QueryStage::NamespaceFilter { .. }));
+        assert!(matches!(
+            &query.stages[0],
+            QueryStage::NamespaceFilter { .. }
+        ));
     }
 
     #[test]
     fn test_selectivity_estimation() {
         let query = FusionQueryBuilder::new()
-            .filter_eq("status", "active")  // ~5%
+            .filter_eq("status", "active") // ~5%
             .vector_search("semantic", vec![0.1], 100) // ~0.01%
-            .valid_at(1700000000)            // ~50%
+            .valid_at(1700000000) // ~50%
             .build();
 
         let sel = query.estimated_selectivity();
         assert!(sel < 0.01); // Very selective
-        assert!(sel > 0.0);  // But not zero
+        assert!(sel > 0.0); // But not zero
     }
 
     #[test]
@@ -488,7 +490,10 @@ mod tests {
 
         assert_eq!(query.stages.len(), 1);
         match &query.stages[0] {
-            QueryStage::TemporalFilter { valid_time, system_time } => {
+            QueryStage::TemporalFilter {
+                valid_time,
+                system_time,
+            } => {
                 assert_eq!(*valid_time, Some(1700000000));
                 assert_eq!(*system_time, Some(1699999000));
             }

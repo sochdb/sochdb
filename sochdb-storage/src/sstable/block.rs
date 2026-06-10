@@ -61,7 +61,7 @@
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::cmp::Ordering;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 
 /// Default restart interval (entries between restart points)
 pub const DEFAULT_RESTART_INTERVAL: usize = 16;
@@ -290,7 +290,7 @@ impl BlockBuilder {
         for (key_idx, key) in self.keys_for_hash.iter().enumerate() {
             let restart_idx = key_idx / self.restart_interval;
             let bucket = Self::hash_key(key) as usize % num_buckets;
-            
+
             // Simple linear probing for collisions
             let mut probe = bucket;
             for _ in 0..num_buckets {
@@ -387,7 +387,8 @@ impl Block {
         // Detection: read candidate num_buckets from 4 bytes before restart offsets.
         // Verify that (a) it fits, and (b) all bucket bytes are 0xFF (empty) or
         // valid restart indices (< num_restarts).
-        let (num_hash_buckets, hash_index_offset) = Self::detect_hash_index(&data, restarts_offset, num_restarts);
+        let (num_hash_buckets, hash_index_offset) =
+            Self::detect_hash_index(&data, restarts_offset, num_restarts);
 
         Some(Self {
             data,
@@ -402,7 +403,11 @@ impl Block {
     ///
     /// Returns `(num_buckets, entries_end_offset)`. If no hash index is
     /// detected, returns `(0, restarts_offset)`.
-    fn detect_hash_index(data: &[u8], restarts_offset: usize, num_restarts: usize) -> (usize, usize) {
+    fn detect_hash_index(
+        data: &[u8],
+        restarts_offset: usize,
+        num_restarts: usize,
+    ) -> (usize, usize) {
         // Need at least 4 bytes before restarts for the num_buckets field
         if restarts_offset < 4 {
             return (0, restarts_offset);
@@ -458,10 +463,10 @@ impl Block {
         while left < right {
             let mid = left + (right - left) / 2;
             let offset = self.restart_offset(mid) as usize;
-            
+
             // Read key at restart point (shared = 0)
             let key = self.read_key_at(offset);
-            
+
             match key.as_slice().cmp(target) {
                 Ordering::Less => left = mid + 1,
                 Ordering::Greater => right = mid,
@@ -475,7 +480,7 @@ impl Block {
         // Start from the previous restart point and scan
         let start_restart = if left > 0 { left - 1 } else { 0 };
         let start_offset = self.restart_offset(start_restart) as usize;
-        
+
         let mut iter = BlockIterator::new(self, start_offset);
         while iter.valid() {
             if iter.key() >= target {
@@ -491,9 +496,9 @@ impl Block {
     /// Uses hash index if available for O(1) expected time.
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         // TODO: Use hash index if available
-        
+
         // Fall back to binary search
-        let mut iter = self.seek(key);
+        let iter = self.seek(key);
         if iter.valid() && iter.key() == key {
             Some(iter.value().to_vec())
         } else {
@@ -504,13 +509,13 @@ impl Block {
     /// Read the full key at a given offset (must be at a restart point)
     fn read_key_at(&self, offset: usize) -> Vec<u8> {
         let mut cursor = Cursor::new(&self.data[offset..self.hash_index_offset]);
-        
+
         let shared = decode_varint(&mut cursor).unwrap_or(0) as usize;
         let non_shared = decode_varint(&mut cursor).unwrap_or(0) as usize;
         let _value_len = decode_varint(&mut cursor);
-        
+
         debug_assert_eq!(shared, 0, "Expected restart point (shared = 0)");
-        
+
         let pos = cursor.position() as usize;
         self.data[offset + pos..offset + pos + non_shared].to_vec()
     }
@@ -705,10 +710,10 @@ mod tests {
     fn test_block_builder_single_entry() {
         let mut builder = BlockBuilder::new(16);
         builder.add(b"key1", b"value1");
-        
+
         let data = builder.finish();
         let block = Block::new(data).unwrap();
-        
+
         assert_eq!(block.get(b"key1"), Some(b"value1".to_vec()));
         assert_eq!(block.get(b"key2"), None);
     }
@@ -716,16 +721,16 @@ mod tests {
     #[test]
     fn test_block_builder_multiple_entries() {
         let mut builder = BlockBuilder::new(4);
-        
+
         for i in 0..20 {
             let key = format!("key{:02}", i);
             let value = format!("value{:02}", i);
             builder.add(key.as_bytes(), value.as_bytes());
         }
-        
+
         let data = builder.finish();
         let block = Block::new(data).unwrap();
-        
+
         // Test all keys
         for i in 0..20 {
             let key = format!("key{:02}", i);
@@ -737,15 +742,15 @@ mod tests {
     #[test]
     fn test_block_iterator() {
         let mut builder = BlockBuilder::new(4);
-        
+
         builder.add(b"apple", b"1");
         builder.add(b"banana", b"2");
         builder.add(b"cherry", b"3");
         builder.add(b"date", b"4");
-        
+
         let data = builder.finish();
         let block = Block::new(data).unwrap();
-        
+
         let mut iter = block.iter();
         let mut count = 0;
         while iter.valid() {
@@ -758,25 +763,25 @@ mod tests {
     #[test]
     fn test_block_seek() {
         let mut builder = BlockBuilder::new(2);
-        
+
         builder.add(b"a", b"1");
         builder.add(b"c", b"2");
         builder.add(b"e", b"3");
         builder.add(b"g", b"4");
-        
+
         let data = builder.finish();
         let block = Block::new(data).unwrap();
-        
+
         // Seek to existing key
         let iter = block.seek(b"c");
         assert!(iter.valid());
         assert_eq!(iter.key(), b"c");
-        
+
         // Seek to non-existing key (should find next)
         let iter = block.seek(b"d");
         assert!(iter.valid());
         assert_eq!(iter.key(), b"e");
-        
+
         // Seek past all keys
         let iter = block.seek(b"z");
         assert!(!iter.valid());
@@ -785,30 +790,36 @@ mod tests {
     #[test]
     fn test_prefix_compression() {
         let mut builder = BlockBuilder::new(16);
-        
+
         // Keys with common prefix (MUST be in sorted order!)
         builder.add(b"user:1000:age", b"30");
         builder.add(b"user:1000:email", b"alice@example.com");
         builder.add(b"user:1000:name", b"Alice");
         builder.add(b"user:1001:name", b"Bob");
-        
+
         let data = builder.finish();
-        
+
         // Verify compression happened (data should be smaller than uncompressed)
-        let uncompressed_size = 
-            b"user:1000:age".len() + b"30".len() +
-            b"user:1000:email".len() + b"alice@example.com".len() +
-            b"user:1000:name".len() + b"Alice".len() +
-            b"user:1001:name".len() + b"Bob".len();
-        
+        let uncompressed_size = b"user:1000:age".len()
+            + b"30".len()
+            + b"user:1000:email".len()
+            + b"alice@example.com".len()
+            + b"user:1000:name".len()
+            + b"Alice".len()
+            + b"user:1001:name".len()
+            + b"Bob".len();
+
         // Block should be smaller due to prefix compression
         // (accounting for some overhead)
         assert!(data.len() < uncompressed_size + 50);
-        
+
         // Verify all keys are retrievable
         let block = Block::new(data).unwrap();
         assert_eq!(block.get(b"user:1000:age"), Some(b"30".to_vec()));
-        assert_eq!(block.get(b"user:1000:email"), Some(b"alice@example.com".to_vec()));
+        assert_eq!(
+            block.get(b"user:1000:email"),
+            Some(b"alice@example.com".to_vec())
+        );
         assert_eq!(block.get(b"user:1000:name"), Some(b"Alice".to_vec()));
         assert_eq!(block.get(b"user:1001:name"), Some(b"Bob".to_vec()));
     }
@@ -816,14 +827,14 @@ mod tests {
     #[test]
     fn test_varint_encoding() {
         let test_values = [0, 1, 127, 128, 255, 256, 16383, 16384, u64::MAX];
-        
+
         for &value in &test_values {
             let mut buf = Vec::new();
             encode_varint(&mut buf, value);
-            
+
             let mut cursor = Cursor::new(&buf);
             let decoded = decode_varint(&mut cursor).unwrap();
-            
+
             assert_eq!(value, decoded, "Failed for value {}", value);
         }
     }
@@ -832,7 +843,7 @@ mod tests {
     fn test_block_handle() {
         let handle = BlockHandle::new(12345, 67890);
         let encoded = handle.encode();
-        
+
         let (decoded, len) = BlockHandle::decode(&encoded).unwrap();
         assert_eq!(handle, decoded);
         assert_eq!(len, encoded.len());

@@ -209,7 +209,7 @@ impl Snapshot {
 }
 
 /// Transaction manager for MVCC (snapshot-only, no WAL durability)
-/// 
+///
 /// # Deprecation Notice
 ///
 /// **This implementation is deprecated for production use.** It provides snapshot
@@ -234,7 +234,7 @@ impl Snapshot {
 ///
 /// - [`crate::wal_integration::MvccTransactionManager`] - Production transaction manager
 /// - [`crate::transaction::TransactionCoordinator`] - Unified transaction trait
-/// 
+///
 /// [`MvccTransactionManager`]: crate::MvccTransactionManager
 #[deprecated(
     since = "0.1.0",

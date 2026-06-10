@@ -6,18 +6,20 @@
 //! This module provides memory-mapped readers for various vector formats,
 //! enabling bulk ingestion without per-vector allocations.
 
+pub mod direct;
 pub mod npy;
 pub mod raw;
 pub mod residency;
 pub mod telemetry;
-pub mod direct;
 
+pub use direct::{OwnedVectors, load_bulk, load_npy_bulk, load_vectors_bulk};
 pub use npy::NpyReader;
 pub use raw::RawF32Reader;
 pub use raw::write_raw_f32;
-pub use residency::{prefault_region, ensure_resident_for_hnsw, ResidencyStats, MemAdvice, madvise};
-pub use telemetry::{FaultTelemetry, FaultStats, FaultGate, with_telemetry};
-pub use direct::{load_vectors_bulk, load_npy_bulk, load_bulk, OwnedVectors};
+pub use residency::{
+    MemAdvice, ResidencyStats, ensure_resident_for_hnsw, madvise, prefault_region,
+};
+pub use telemetry::{FaultGate, FaultStats, FaultTelemetry, with_telemetry};
 
 use crate::error::ToolsError;
 use memmap2::Mmap;
@@ -45,7 +47,7 @@ impl VectorFormat {
             _ => None,
         }
     }
-    
+
     /// Parse format from string
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -71,7 +73,7 @@ pub struct VectorMeta {
 }
 
 /// Unified vector reader that wraps different format readers
-/// 
+///
 /// Using an enum instead of trait objects for:
 /// - Better performance (no dynamic dispatch)
 /// - Simpler API (no boxing)
@@ -89,7 +91,7 @@ impl VectorReader {
             Self::RawF32(r) => r.num_vectors(),
         }
     }
-    
+
     /// Get the vector dimension
     pub fn dimension(&self) -> usize {
         match self {
@@ -97,7 +99,7 @@ impl VectorReader {
             Self::RawF32(r) => r.dimension(),
         }
     }
-    
+
     /// Get a slice of all vectors (zero-copy)
     pub fn vectors(&self) -> &[f32] {
         match self {
@@ -105,7 +107,7 @@ impl VectorReader {
             Self::RawF32(r) => r.vectors(),
         }
     }
-    
+
     /// Get metadata
     pub fn meta(&self) -> VectorMeta {
         match self {
@@ -113,7 +115,7 @@ impl VectorReader {
             Self::RawF32(r) => r.meta(),
         }
     }
-    
+
     /// Iterate over vectors by chunk
     pub fn chunks(&self, chunk_size: usize) -> impl Iterator<Item = &[f32]> {
         self.vectors().chunks(chunk_size * self.dimension())
@@ -128,10 +130,12 @@ pub fn open_vectors(
 ) -> Result<VectorReader, ToolsError> {
     let format = format
         .or_else(|| VectorFormat::from_extension(path))
-        .ok_or_else(|| ToolsError::InvalidFormat(
-            "Could not detect format from extension. Use --format".to_string()
-        ))?;
-    
+        .ok_or_else(|| {
+            ToolsError::InvalidFormat(
+                "Could not detect format from extension. Use --format".to_string(),
+            )
+        })?;
+
     match format {
         VectorFormat::Npy => {
             let reader = NpyReader::open(path)?;
@@ -147,17 +151,15 @@ pub fn open_vectors(
             Ok(VectorReader::Npy(reader))
         }
         VectorFormat::RawF32 => {
-            let dim = dimension.ok_or_else(|| ToolsError::InvalidArgument(
-                "Dimension required for raw_f32 format".to_string()
-            ))?;
+            let dim = dimension.ok_or_else(|| {
+                ToolsError::InvalidArgument("Dimension required for raw_f32 format".to_string())
+            })?;
             let reader = RawF32Reader::open(path, dim)?;
             Ok(VectorReader::RawF32(reader))
         }
-        VectorFormat::SochNative => {
-            Err(ToolsError::InvalidFormat(
-                "SochNative format not yet implemented".to_string()
-            ))
-        }
+        VectorFormat::SochNative => Err(ToolsError::InvalidFormat(
+            "SochNative format not yet implemented".to_string(),
+        )),
     }
 }
 
@@ -171,10 +173,5 @@ pub fn open_ids(path: &Path) -> Result<(Mmap, usize), ToolsError> {
 
 /// Get u64 IDs from memory-mapped file
 pub fn ids_from_mmap(mmap: &Mmap) -> &[u64] {
-    unsafe {
-        std::slice::from_raw_parts(
-            mmap.as_ptr() as *const u64,
-            mmap.len() / 8,
-        )
-    }
+    unsafe { std::slice::from_raw_parts(mmap.as_ptr() as *const u64, mmap.len() / 8) }
 }

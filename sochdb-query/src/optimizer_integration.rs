@@ -75,10 +75,10 @@ use crate::query_optimizer::{
 use crate::soch_ql::{ComparisonOp, WhereClause};
 use crate::soch_ql::{SelectQuery, SochResult, SochValue};
 use parking_lot::RwLock;
-use std::collections::HashMap;
-use std::sync::Arc;
 use sochdb_core::{Catalog, Result};
 use sochdb_storage::sketches::HyperLogLog;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 // ============================================================================
 // Storage Backend Trait - Allows wiring optimizer to actual storage
@@ -920,7 +920,7 @@ impl OptimizedExecutor {
     /// Returns the query text to be embedded for similarity search.
     fn extract_vector_query_text(&self, select: &SelectQuery) -> Option<String> {
         use crate::soch_ql::ComparisonOp;
-        
+
         if let Some(where_clause) = &select.where_clause {
             for condition in &where_clause.conditions {
                 if matches!(condition.operator, ComparisonOp::SimilarTo) {

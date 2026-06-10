@@ -27,16 +27,15 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use memmap2::{Mmap, MmapOptions};
 use parking_lot::RwLock;
 
-use super::block::{Block, BlockHandle, BlockIterator, BlockType};
+use super::block::{Block, BlockHandle, BlockType};
 use super::filter::FilterReader;
-use super::format::{Footer, Header, Section, SectionType, SSTableFormat, HEADER_SIZE};
+use super::format::{Footer, HEADER_SIZE, Header, SectionType};
 
 /// Block cache entry
 pub struct CachedBlock {
@@ -74,12 +73,12 @@ impl BlockCache {
     pub fn insert(&self, file_id: u64, offset: u64, block: CachedBlock) -> Arc<CachedBlock> {
         let block = Arc::new(block);
         let mut entries = self.entries.write();
-        
+
         // Simple eviction: clear when full
         if entries.len() >= self.capacity {
             entries.clear();
         }
-        
+
         entries.insert((file_id, offset), block.clone());
         block
     }
@@ -199,9 +198,10 @@ impl SSTable {
             ));
         }
 
-        let footer = Footer::decode(&mmap[footer_offset..], header.num_sections).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid SSTable footer")
-        })?;
+        let footer =
+            Footer::decode(&mmap[footer_offset..], header.num_sections).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid SSTable footer")
+            })?;
 
         // Load index section
         let index_section = footer
@@ -325,11 +325,7 @@ impl SSTable {
     }
 
     /// Read a block from file
-    fn read_block(
-        &self,
-        handle: &BlockHandle,
-        options: &ReadOptions,
-    ) -> std::io::Result<Vec<u8>> {
+    fn read_block(&self, handle: &BlockHandle, options: &ReadOptions) -> std::io::Result<Vec<u8>> {
         let offset = handle.offset();
         let size = handle.size();
 
@@ -378,13 +374,16 @@ impl SSTable {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, format!("LZ4 error: {}", e))
             })?,
             BlockType::Zstd => zstd::decode_all(block_data).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Zstd error: {}", e))
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Zstd error: {}", e),
+                )
             })?,
             BlockType::Snappy => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "Snappy not supported",
-                ))
+                ));
             }
         };
 
@@ -407,16 +406,12 @@ impl SSTable {
     }
 
     /// Create an iterator over all entries
-    pub fn iter(&self) -> SSTableIterator {
+    pub fn iter(&self) -> SSTableIterator<'_> {
         SSTableIterator::new(self)
     }
 
     /// Create a range iterator
-    pub fn range(
-        &self,
-        start: Option<&[u8]>,
-        end: Option<&[u8]>,
-    ) -> RangeIterator {
+    pub fn range(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> RangeIterator<'_> {
         RangeIterator::new(self, start, end)
     }
 
@@ -447,8 +442,8 @@ impl SSTable {
 /// Iterator over all entries in an SSTable
 ///
 /// Iterates through all data blocks sequentially, yielding every key-value
-/// entry. Loads each block, uses the proven `BlockIterator` to collect entries, 
-/// then advances through them. This avoids self-referential borrows while 
+/// entry. Loads each block, uses the proven `BlockIterator` to collect entries,
+/// then advances through them. This avoids self-referential borrows while
 /// reusing the correct prefix-decompression logic in `BlockIterator`.
 pub struct SSTableIterator<'a> {
     table: &'a SSTable,
@@ -494,10 +489,7 @@ impl<'a> SSTableIterator<'a> {
                         // Use BlockIterator to collect all entries
                         let mut bi = block.iter();
                         while bi.valid() {
-                            self.entries.push((
-                                bi.key().to_vec(),
-                                bi.value().to_vec(),
-                            ));
+                            self.entries.push((bi.key().to_vec(), bi.value().to_vec()));
                             bi.next();
                         }
                         if !self.entries.is_empty() {
@@ -635,12 +627,20 @@ impl<'a> RangeIterator<'a> {
 
     /// Get current key
     pub fn key(&self) -> Option<&[u8]> {
-        if self.exhausted { None } else { self.inner.key() }
+        if self.exhausted {
+            None
+        } else {
+            self.inner.key()
+        }
     }
 
     /// Get current value
     pub fn value(&self) -> Option<&[u8]> {
-        if self.exhausted { None } else { self.inner.value() }
+        if self.exhausted {
+            None
+        } else {
+            self.inner.value()
+        }
     }
 
     /// Advance to next entry within the range

@@ -34,8 +34,8 @@ mod measurement_harness;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use measurement_harness::{
-    BenchConfig, Distribution, DurableStorageHarness, YcsbWorkload, ZipfianGenerator,
-    generate_key, generate_value, next_key_index,
+    BenchConfig, Distribution, DurableStorageHarness, YcsbWorkload, ZipfianGenerator, generate_key,
+    generate_value, next_key_index,
 };
 use rand::prelude::*;
 use sochdb_storage::TransactionMode;
@@ -150,9 +150,7 @@ fn bench_ycsb_a(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements(100));
     group.bench_function("workload_a", |b| {
-        b.iter(|| {
-            black_box(run_ycsb_workload(&harness, &config, YcsbWorkload::A, 100))
-        });
+        b.iter(|| black_box(run_ycsb_workload(&harness, &config, YcsbWorkload::A, 100)));
     });
 
     group.finish();
@@ -176,9 +174,7 @@ fn bench_ycsb_b(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements(100));
     group.bench_function("workload_b", |b| {
-        b.iter(|| {
-            black_box(run_ycsb_workload(&harness, &config, YcsbWorkload::B, 100))
-        });
+        b.iter(|| black_box(run_ycsb_workload(&harness, &config, YcsbWorkload::B, 100)));
     });
 
     group.finish();
@@ -202,9 +198,7 @@ fn bench_ycsb_c(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements(100));
     group.bench_function("workload_c", |b| {
-        b.iter(|| {
-            black_box(run_ycsb_workload(&harness, &config, YcsbWorkload::C, 100))
-        });
+        b.iter(|| black_box(run_ycsb_workload(&harness, &config, YcsbWorkload::C, 100)));
     });
 
     group.finish();
@@ -216,8 +210,8 @@ fn bench_ycsb_e(c: &mut Criterion) {
     group.sample_size(20);
 
     let dataset_size = 100_000;
-    let harness = DurableStorageHarness::with_config(true, false)
-        .expect("Failed to create harness");
+    let harness =
+        DurableStorageHarness::with_config(true, false).expect("Failed to create harness");
 
     let config = BenchConfig {
         dataset_size,
@@ -229,9 +223,7 @@ fn bench_ycsb_e(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements(100));
     group.bench_function("workload_e", |b| {
-        b.iter(|| {
-            black_box(run_ycsb_workload(&harness, &config, YcsbWorkload::E, 100))
-        });
+        b.iter(|| black_box(run_ycsb_workload(&harness, &config, YcsbWorkload::E, 100)));
     });
 
     group.finish();
@@ -252,8 +244,8 @@ fn bench_ycsb_all(c: &mut Criterion) {
         YcsbWorkload::E,
         YcsbWorkload::F,
     ] {
-        let harness = DurableStorageHarness::with_config(true, false)
-            .expect("Failed to create harness");
+        let harness =
+            DurableStorageHarness::with_config(true, false).expect("Failed to create harness");
 
         let config = BenchConfig {
             dataset_size,
@@ -269,9 +261,7 @@ fn bench_ycsb_all(c: &mut Criterion) {
             BenchmarkId::from_parameter(&workload_name),
             &workload,
             |b, &workload| {
-                b.iter(|| {
-                    black_box(run_ycsb_workload(&harness, &config, workload, 50))
-                });
+                b.iter(|| black_box(run_ycsb_workload(&harness, &config, workload, 50)));
             },
         );
     }

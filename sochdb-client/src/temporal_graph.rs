@@ -50,8 +50,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ClientError, Result};
 use crate::ConnectionTrait;
+use crate::error::{ClientError, Result};
 
 // ============================================================================
 // Temporal Types
@@ -61,7 +61,7 @@ use crate::ConnectionTrait;
 pub type Timestamp = u64;
 
 /// A time interval [start, end)
-/// 
+///
 /// - If `end` is None, the interval extends to infinity (still valid)
 /// - Both bounds are inclusive on start, exclusive on end
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,35 +77,38 @@ impl TimeInterval {
     pub fn from(start: Timestamp) -> Self {
         Self { start, end: None }
     }
-    
+
     /// Create a closed interval [start, end)
     pub fn between(start: Timestamp, end: Timestamp) -> Self {
-        Self { start, end: Some(end) }
+        Self {
+            start,
+            end: Some(end),
+        }
     }
-    
+
     /// Create an interval starting now
     pub fn now() -> Self {
         Self::from(Self::current_time())
     }
-    
+
     /// Check if a timestamp falls within this interval
     pub fn contains(&self, t: Timestamp) -> bool {
         t >= self.start && self.end.map_or(true, |end| t < end)
     }
-    
+
     /// Check if this interval overlaps with another
     pub fn overlaps(&self, other: &TimeInterval) -> bool {
         let self_end = self.end.unwrap_or(Timestamp::MAX);
         let other_end = other.end.unwrap_or(Timestamp::MAX);
-        
+
         self.start < other_end && other.start < self_end
     }
-    
+
     /// Check if this interval is still active (no end)
     pub fn is_active(&self) -> bool {
         self.end.is_none()
     }
-    
+
     /// Get current timestamp
     pub fn current_time() -> Timestamp {
         SystemTime::now()
@@ -113,12 +116,12 @@ impl TimeInterval {
             .unwrap()
             .as_millis() as Timestamp
     }
-    
+
     /// Close this interval at the given time
     pub fn close_at(&mut self, t: Timestamp) {
         self.end = Some(t);
     }
-    
+
     /// Duration in milliseconds (None if open-ended)
     pub fn duration_ms(&self) -> Option<u64> {
         self.end.map(|e| e.saturating_sub(self.start))
@@ -155,7 +158,7 @@ impl TemporalEdge {
     pub fn is_valid_at(&self, t: Timestamp) -> bool {
         self.validity.contains(t)
     }
-    
+
     /// Check if this edge is currently valid
     pub fn is_active(&self) -> bool {
         self.validity.is_active() || self.validity.contains(TimeInterval::current_time())
@@ -192,7 +195,7 @@ impl TemporalQuery {
             include_history: false,
         }
     }
-    
+
     /// Query within a time window
     pub fn window(start: Timestamp, end: Timestamp) -> Self {
         Self {
@@ -201,12 +204,12 @@ impl TemporalQuery {
             include_history: true,
         }
     }
-    
+
     /// Query current state (default)
     pub fn now() -> Self {
         Self::default()
     }
-    
+
     /// Include historical (invalidated) edges
     pub fn with_history(mut self) -> Self {
         self.include_history = true;
@@ -260,22 +263,34 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
             bucket_granularity: TimeBucket::Hour,
         }
     }
-    
+
     /// Set the time bucket granularity
     pub fn with_bucket_granularity(mut self, granularity: TimeBucket) -> Self {
         self.bucket_granularity = granularity;
         self
     }
-    
+
     // Key helpers
-    fn temporal_edge_key(&self, from_id: &str, edge_type: &str, to_id: &str, valid_from: Timestamp) -> Vec<u8> {
+    fn temporal_edge_key(
+        &self,
+        from_id: &str,
+        edge_type: &str,
+        to_id: &str,
+        valid_from: Timestamp,
+    ) -> Vec<u8> {
         format!(
             "{}/temporal/{}/{}/{}/{:016x}",
             self.prefix, from_id, edge_type, to_id, valid_from
-        ).into_bytes()
+        )
+        .into_bytes()
     }
-    
-    fn temporal_edge_prefix(&self, from_id: &str, edge_type: Option<&str>, to_id: Option<&str>) -> Vec<u8> {
+
+    fn temporal_edge_prefix(
+        &self,
+        from_id: &str,
+        edge_type: Option<&str>,
+        to_id: Option<&str>,
+    ) -> Vec<u8> {
         match (edge_type, to_id) {
             (Some(et), Some(tid)) => {
                 format!("{}/temporal/{}/{}/{}/", self.prefix, from_id, et, tid).into_bytes()
@@ -283,27 +298,26 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
             (Some(et), None) => {
                 format!("{}/temporal/{}/{}/", self.prefix, from_id, et).into_bytes()
             }
-            (None, _) => {
-                format!("{}/temporal/{}/", self.prefix, from_id).into_bytes()
-            }
+            (None, _) => format!("{}/temporal/{}/", self.prefix, from_id).into_bytes(),
         }
     }
-    
+
     fn time_index_key(&self, bucket: u64, valid_from: Timestamp, edge_key: &str) -> Vec<u8> {
         format!(
             "{}/time_index/{:016x}/{:016x}_{}",
             self.prefix, bucket, valid_from, edge_key
-        ).into_bytes()
+        )
+        .into_bytes()
     }
-    
+
     fn time_index_prefix(&self, bucket: u64) -> Vec<u8> {
         format!("{}/time_index/{:016x}/", self.prefix, bucket).into_bytes()
     }
-    
+
     // ========================================================================
     // Edge Operations
     // ========================================================================
-    
+
     /// Add a temporal edge (valid from now)
     pub fn add_edge(
         &self,
@@ -314,7 +328,7 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
     ) -> Result<TemporalEdge> {
         self.add_edge_at(from_id, edge_type, to_id, TimeInterval::now(), properties)
     }
-    
+
     /// Add a temporal edge with explicit validity
     pub fn add_edge_at(
         &self,
@@ -332,32 +346,27 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
             properties: properties.unwrap_or_default(),
             version: validity.start, // Use start time as version
         };
-        
+
         // Store edge
         let key = self.temporal_edge_key(from_id, edge_type, to_id, validity.start);
-        let value = serde_json::to_vec(&edge)
-            .map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let value =
+            serde_json::to_vec(&edge).map_err(|e| ClientError::Serialization(e.to_string()))?;
         self.conn.put(&key, &value)?;
-        
+
         // Update time index
         let bucket = self.bucket_granularity.bucket_key(validity.start);
         let edge_key_str = format!("{}:{}:{}", from_id, edge_type, to_id);
         let index_key = self.time_index_key(bucket, validity.start, &edge_key_str);
         self.conn.put(&index_key, &key)?;
-        
+
         Ok(edge)
     }
-    
+
     /// Invalidate an edge at the current time
-    pub fn invalidate_edge(
-        &self,
-        from_id: &str,
-        edge_type: &str,
-        to_id: &str,
-    ) -> Result<bool> {
+    pub fn invalidate_edge(&self, from_id: &str, edge_type: &str, to_id: &str) -> Result<bool> {
         self.invalidate_edge_at(from_id, edge_type, to_id, TimeInterval::current_time())
     }
-    
+
     /// Invalidate an edge at a specific time
     pub fn invalidate_edge_at(
         &self,
@@ -369,11 +378,11 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
         // Find the currently active edge
         let prefix = self.temporal_edge_prefix(from_id, Some(edge_type), Some(to_id));
         let results = self.conn.scan(&prefix)?;
-        
+
         for (key, value) in results {
             let mut edge: TemporalEdge = serde_json::from_slice(&value)
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
-            
+
             if edge.is_active() {
                 edge.validity.close_at(at_time);
                 let new_value = serde_json::to_vec(&edge)
@@ -382,10 +391,10 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
                 return Ok(true);
             }
         }
-        
+
         Ok(false)
     }
-    
+
     /// Get edges valid at a specific point in time
     pub fn get_edges_at(
         &self,
@@ -395,20 +404,20 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
     ) -> Result<Vec<TemporalEdge>> {
         let prefix = self.temporal_edge_prefix(from_id, edge_type, None);
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut edges = Vec::new();
         for (_, value) in results {
             let edge: TemporalEdge = serde_json::from_slice(&value)
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
-            
+
             if edge.is_valid_at(at_time) {
                 edges.push(edge);
             }
         }
-        
+
         Ok(edges)
     }
-    
+
     /// Get edges valid within a time window
     pub fn get_edges_in_window(
         &self,
@@ -418,20 +427,20 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
     ) -> Result<Vec<TemporalEdge>> {
         let prefix = self.temporal_edge_prefix(from_id, edge_type, None);
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut edges = Vec::new();
         for (_, value) in results {
             let edge: TemporalEdge = serde_json::from_slice(&value)
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
-            
+
             if edge.validity.overlaps(&window) {
                 edges.push(edge);
             }
         }
-        
+
         Ok(edges)
     }
-    
+
     /// Get neighbors at a specific point in time
     pub fn neighbors_at(
         &self,
@@ -441,7 +450,7 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
     ) -> Result<Vec<TemporalEdge>> {
         self.get_edges_at(node_id, edge_type, at_time)
     }
-    
+
     /// Get subgraph at a specific point in time
     pub fn subgraph_at(
         &self,
@@ -452,13 +461,13 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
         let mut visited = std::collections::HashSet::new();
         let mut edges = Vec::new();
         let mut frontier = vec![(start_id.to_string(), 0)];
-        
+
         while let Some((node_id, depth)) = frontier.pop() {
             if depth >= max_depth || visited.contains(&node_id) {
                 continue;
             }
             visited.insert(node_id.clone());
-            
+
             let node_edges = self.get_edges_at(&node_id, None, at_time)?;
             for edge in node_edges {
                 if !visited.contains(&edge.to_id) {
@@ -467,14 +476,14 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
                 edges.push(edge);
             }
         }
-        
+
         Ok(TemporalSubgraph {
             node_ids: visited.into_iter().collect(),
             edges,
             at_time,
         })
     }
-    
+
     /// Get the history of an edge (all versions)
     pub fn edge_history(
         &self,
@@ -484,15 +493,15 @@ impl<C: ConnectionTrait> TemporalGraphOverlay<C> {
     ) -> Result<Vec<TemporalEdge>> {
         let prefix = self.temporal_edge_prefix(from_id, Some(edge_type), Some(to_id));
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut edges: Vec<TemporalEdge> = results
             .into_iter()
             .filter_map(|(_, value)| serde_json::from_slice(&value).ok())
             .collect();
-        
+
         // Sort by validity start (oldest first)
         edges.sort_by_key(|e| e.validity.start);
-        
+
         Ok(edges)
     }
 }
@@ -511,33 +520,33 @@ pub struct TemporalSubgraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_time_interval_contains() {
         let now = TimeInterval::current_time();
         let interval = TimeInterval::between(now - 1000, now + 1000);
-        
+
         assert!(interval.contains(now));
         assert!(!interval.contains(now - 2000));
         assert!(!interval.contains(now + 2000));
     }
-    
+
     #[test]
     fn test_time_interval_overlaps() {
         let a = TimeInterval::between(100, 200);
         let b = TimeInterval::between(150, 250);
         let c = TimeInterval::between(200, 300);
         let d = TimeInterval::between(50, 100);
-        
+
         assert!(a.overlaps(&b)); // Overlap at 150-200
         assert!(!a.overlaps(&c)); // c starts where a ends (exclusive)
         assert!(!a.overlaps(&d)); // d ends where a starts
     }
-    
+
     #[test]
     fn test_open_ended_interval() {
         let interval = TimeInterval::from(100);
-        
+
         assert!(interval.is_active());
         assert!(interval.contains(100));
         assert!(interval.contains(1000000));

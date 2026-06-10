@@ -60,23 +60,25 @@
 use dashmap::DashMap;
 use ordered_float::OrderedFloat;
 use parking_lot::RwLock;
+use rand::prelude::*;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc;
 use std::thread;
-use rand::prelude::*;
 
 // Removed: use crate::vector_simd;
 use crate::atomic_entry_point::AtomicNavigationState;
 use crate::metrics;
-use crate::parallel_waves::{compute_independent_waves, process_wave_parallel, WaveResult, WaveStats};
-use crate::simd_distance;
+use crate::parallel_waves::{
+    WaveResult, WaveStats, compute_independent_waves, process_wave_parallel,
+};
 use crate::scratch_buffers::with_scratch_buffers;
+use crate::simd_distance;
 use crate::vector_quantized::{
     Precision, QuantizedVector, cosine_distance_quantized, dot_product_quantized,
     euclidean_distance_quantized,
@@ -89,10 +91,10 @@ const MAX_M: usize = 32;
 // ==================== Task #11: Performance Cost Model Types ====================
 
 /// Adaptive performance monitor for automatic parameter optimization
-/// 
+///
 /// This system continuously measures runtime performance and automatically
 /// adjusts configuration parameters to achieve optimal throughput and latency.
-/// 
+///
 /// Target improvement: 1.1-1.2x through intelligent parameter tuning:
 /// - Dynamic ef_search adjustment based on accuracy/latency trade-offs
 /// - Adaptive quantization precision based on memory pressure
@@ -254,10 +256,11 @@ impl PerformanceCostModel {
 
         // Copy measurements to avoid borrowing issues
         let window_start = self.measurements.len().saturating_sub(self.window_size);
-        let window_measurements: Vec<PerformanceMeasurement> = self.measurements[window_start..].to_vec();
-        
+        let window_measurements: Vec<PerformanceMeasurement> =
+            self.measurements[window_start..].to_vec();
+
         self.analyze_latency_trends(&window_measurements);
-        self.analyze_accuracy_trends(&window_measurements); 
+        self.analyze_accuracy_trends(&window_measurements);
         self.analyze_memory_trends(&window_measurements);
         self.analyze_throughput_trends(&window_measurements);
     }
@@ -270,21 +273,26 @@ impl PerformanceCostModel {
 
     /// Analyze search latency trends (simplified version)
     fn analyze_latency_trends(&mut self, measurements: &[PerformanceMeasurement]) {
-        let avg_latency: f32 = measurements.iter()
+        let avg_latency: f32 = measurements
+            .iter()
             .map(|m| m.search_latency_ms)
-            .sum::<f32>() / measurements.len() as f32;
+            .sum::<f32>()
+            / measurements.len() as f32;
 
         if avg_latency > self.targets.max_search_latency_ms * 1.2 {
             // Latency too high - recommend reducing ef_search
             let current_ef = measurements.last().unwrap().config_snapshot.ef_search;
-            
+
             if current_ef > 50 {
                 self.recommendations.push(ConfigRecommendation {
                     parameter: ConfigParameter::EfSearch,
                     new_value: ConfigValue::Integer(current_ef * 80 / 100), // Reduce by 20%
                     expected_improvement: 0.15,
                     confidence: 0.8,
-                    reasoning: format!("Latency {}ms exceeds target {}ms", avg_latency, self.targets.max_search_latency_ms),
+                    reasoning: format!(
+                        "Latency {}ms exceeds target {}ms",
+                        avg_latency, self.targets.max_search_latency_ms
+                    ),
                 });
             }
         }
@@ -311,7 +319,11 @@ impl PerformanceCostModel {
     }
 
     /// Apply a configuration recommendation
-    pub fn apply_recommendation(&mut self, index: usize, config: &mut HnswConfig) -> Result<(), String> {
+    pub fn apply_recommendation(
+        &mut self,
+        index: usize,
+        config: &mut HnswConfig,
+    ) -> Result<(), String> {
         if index >= self.recommendations.len() {
             return Err("Invalid recommendation index".to_string());
         }
@@ -343,10 +355,13 @@ impl PerformanceCostModel {
             return None;
         }
 
-        let avg_latency = recent.iter().map(|m| m.search_latency_ms).sum::<f32>() / recent.len() as f32;
-        let avg_accuracy = recent.iter().map(|m| m.search_accuracy).sum::<f32>() / recent.len() as f32;
+        let avg_latency =
+            recent.iter().map(|m| m.search_latency_ms).sum::<f32>() / recent.len() as f32;
+        let avg_accuracy =
+            recent.iter().map(|m| m.search_accuracy).sum::<f32>() / recent.len() as f32;
         let avg_memory = recent.iter().map(|m| m.memory_usage).sum::<usize>() / recent.len();
-        let avg_throughput = recent.iter().map(|m| m.insert_throughput).sum::<f32>() / recent.len() as f32;
+        let avg_throughput =
+            recent.iter().map(|m| m.insert_throughput).sum::<f32>() / recent.len() as f32;
 
         Some(PerformanceSummary {
             avg_search_latency_ms: avg_latency,
@@ -384,30 +399,30 @@ pub struct RngOptimizationConfig {
     /// Enable IVF routing for high-dimensional vectors
     pub enable_ivf_routing: bool,
     /// Enable lock-free atomic neighbor lists (Task #4)
-    /// 
+    ///
     /// **Performance Impact**: 1.3-1.5x improvement in high-concurrency scenarios
-    /// 
+    ///
     /// When enabled, replaces `RwLock<VersionedNeighbors>` with `AtomicNeighborList`
     /// for wait-free concurrent neighbor updates. Trade-offs:
-    /// 
+    ///
     /// Pros:
     /// - Eliminates lock convoy effects under heavy concurrent access
     /// - Provides wait-free neighbor addition/removal operations
     /// - No deadlock possibility
     /// - Better NUMA scalability
-    /// 
+    ///
     /// Cons:
     /// - Higher memory usage (~33% more per node)
     /// - Slightly slower single-threaded performance due to atomic overhead
     /// - More complex ABA protection mechanisms
-    /// 
+    ///
     /// Recommended for: Multi-writer workloads with >4 concurrent insertion threads
     /// Not recommended for: Single-threaded or read-heavy workloads
     pub lock_free_neighbors: bool,
 
     /// Enable Product Quantization (PQ) compression for distance computation (Task #7)
-    /// 
-    /// Product Quantization reduces memory bandwidth by compressing high-dimensional 
+    ///
+    /// Product Quantization reduces memory bandwidth by compressing high-dimensional
     /// vectors into compact codes. Distance computation is performed in the compressed
     /// space using lookup tables, providing 1.5-2x improvement through:
     /// - Reduced memory footprint (e.g., 768D → 96 bytes with PQ8x8)
@@ -419,7 +434,7 @@ pub struct RngOptimizationConfig {
     /// - pq_segments: Number of PQ segments (default: 8 for good compression/accuracy trade-off)
     /// - pq_bits: Bits per segment (default: 8 for 256 centroids per segment)
     /// - pq_training_vectors: Number of vectors for codebook training (default: 50000)
-    /// 
+    ///
     /// Recommended for: Large datasets (>100k vectors) with high dimensions (>128D)
     /// Not recommended for: Small datasets or low dimensions where overhead dominates
     pub enable_product_quantization: bool,
@@ -446,12 +461,12 @@ impl Default for RngOptimizationConfig {
             early_abort_distance: true,
             batch_oriented_rng: true,
             normalize_at_ingest: true,
-            enable_ivf_routing: false, // Conservative default
+            enable_ivf_routing: false,          // Conservative default
             lock_free_neighbors: false, // Conservative default - enable explicitly for high-concurrency
             enable_product_quantization: false, // Disabled by default - enable for large high-dim datasets
-            pq_segments: 8, // Good compression/accuracy trade-off
-            pq_bits: 8, // 256 centroids per segment
-            pq_training_vectors: 50000, // Sufficient for stable codebooks
+            pq_segments: 8,                     // Good compression/accuracy trade-off
+            pq_bits: 8,                         // 256 centroids per segment
+            pq_training_vectors: 50000,         // Sufficient for stable codebooks
         }
     }
 }
@@ -482,15 +497,15 @@ impl VersionedNeighbors {
 }
 
 /// Lock-free atomic neighbor list for wait-free concurrent updates
-/// 
+///
 /// **Task #4 Implementation**: Lock-free concurrent graph updates for 1.3-1.5x improvement
-/// 
+///
 /// Replaces `RwLock<VersionedNeighbors>` with atomic CAS operations:
 /// - Uses fixed-size atomic array for O(1) neighbor access
 /// - CAS-based updates eliminate lock contention and deadlocks
 /// - ABA protection through generation counters
 /// - Cache-line aligned for optimal NUMA performance
-/// 
+///
 /// Memory layout (cache-aligned to 64 bytes):
 /// ```
 /// AtomicNeighborList:
@@ -501,16 +516,16 @@ impl VersionedNeighbors {
 /// │ padding                                     │  to 64-byte boundary
 /// └─────────────────────────────────────────────┘
 /// ```
-/// 
+///
 /// Performance characteristics:
 /// - Add neighbor: O(m) CAS attempts vs O(1) RwLock (but lock-free)
 /// - Remove neighbor: O(m) atomic swap vs O(1) RwLock (but lock-free)  
 /// - Read neighbors: O(m) atomic loads vs O(1) RwLock read (but lock-free)
 /// - Concurrent updates: Wait-free vs blocking on RwLock
-/// 
+///
 /// The performance trade-off is worth it for high-contention scenarios
 /// where lock convoy effects dominate over the O(m) atomic overhead.
-#[repr(C, align(64))]  // Cache line aligned
+#[repr(C, align(64))] // Cache line aligned
 #[derive(Debug)]
 pub struct AtomicNeighborList {
     /// Neighbor IDs stored as atomic usize values (truncated from u128)
@@ -548,16 +563,16 @@ impl AtomicNeighborList {
     }
 
     /// Add a neighbor using wait-free CAS operation
-    /// 
+    ///
     /// Returns true if added successfully, false if list is full or ID already exists.
     /// This operation is wait-free - no thread can block another indefinitely.
-    /// 
+    ///
     /// Algorithm:
     /// 1. Check if neighbor already exists (early abort)
     /// 2. Find first empty slot (neighbor_id == 0)
     /// 3. CAS the slot from 0 to neighbor_id
     /// 4. If successful, increment count atomically
-    /// 
+    ///
     /// ABA Protection: Uses generation counter to detect concurrent modifications
     pub fn add_neighbor(&self, neighbor_id: u128) -> bool {
         if neighbor_id == 0 {
@@ -599,18 +614,21 @@ impl AtomicNeighborList {
     }
 
     /// Remove a neighbor using wait-free atomic operation
-    /// 
+    ///
     /// Returns true if removed successfully, false if not found.
     /// Uses atomic swap to ensure wait-free operation.
     pub fn remove_neighbor(&self, neighbor_id: u128) -> bool {
         let neighbor_usize = Self::u128_to_usize(neighbor_id);
         for slot in &self.neighbors {
-            if slot.compare_exchange(
-                neighbor_usize,
-                0, // Set to empty
-                AtomicOrdering::Release,
-                AtomicOrdering::Relaxed,
-            ).is_ok() {
+            if slot
+                .compare_exchange(
+                    neighbor_usize,
+                    0, // Set to empty
+                    AtomicOrdering::Release,
+                    AtomicOrdering::Relaxed,
+                )
+                .is_ok()
+            {
                 // Successfully removed - update count and generation
                 self.count.fetch_sub(1, AtomicOrdering::Relaxed);
                 // Increment by 2 to maintain even generation invariant (seqlock)
@@ -622,16 +640,16 @@ impl AtomicNeighborList {
     }
 
     /// Replace entire neighbor list using seqlock protocol
-    /// 
+    ///
     /// This is used for bulk updates like pruning operations.
     /// Uses odd generation values to signal write-in-progress, enabling
     /// readers to detect torn writes and retry (seqlock pattern).
-    /// 
+    ///
     /// Protocol:
     /// 1. generation becomes odd (write in progress)
     /// 2. Clear and rewrite slots
     /// 3. generation becomes even (write complete)
-    /// 
+    ///
     /// Returns true if replacement was successful
     pub fn replace_neighbors(&self, new_neighbors: &[u128]) -> bool {
         if new_neighbors.len() > MAX_M {
@@ -641,31 +659,32 @@ impl AtomicNeighborList {
         // Increment generation to odd value — signals write in progress
         // Readers seeing an odd generation will spin-wait and retry
         self.generation.fetch_add(1, AtomicOrdering::Acquire);
-        
+
         // Clear all slots first
         for slot in &self.neighbors {
             slot.store(0, AtomicOrdering::Relaxed);
         }
-        
+
         // Set new neighbors
         for (i, &neighbor_id) in new_neighbors.iter().enumerate() {
             if neighbor_id != 0 {
                 self.neighbors[i].store(Self::u128_to_usize(neighbor_id), AtomicOrdering::Relaxed);
             }
         }
-        
+
         // Update count
-        self.count.store(new_neighbors.len(), AtomicOrdering::Relaxed);
+        self.count
+            .store(new_neighbors.len(), AtomicOrdering::Relaxed);
 
         // Increment generation to even value — signals write complete
         // Release pairs with Acquire loads in get_neighbors
         self.generation.fetch_add(1, AtomicOrdering::Release);
-        
+
         true
     }
 
     /// Get current neighbor list as a consistent snapshot (seqlock read)
-    /// 
+    ///
     /// Uses seqlock-style reads: checks generation counter before and after
     /// reading the neighbor slots. If generation changed (or is odd, indicating
     /// a write in progress), the read is retried. This guarantees that
@@ -678,13 +697,13 @@ impl AtomicNeighborList {
     pub fn get_neighbors(&self) -> SmallVec<[u128; MAX_M]> {
         loop {
             let gen_before = self.generation.load(AtomicOrdering::Acquire);
-            
+
             // Odd generation means a write is in progress — spin and retry
             if gen_before % 2 != 0 {
                 std::hint::spin_loop();
                 continue;
             }
-            
+
             // Read all neighbor slots
             let mut result = SmallVec::new();
             for slot in &self.neighbors {
@@ -693,7 +712,7 @@ impl AtomicNeighborList {
                     result.push(Self::usize_to_u128(neighbor_id));
                 }
             }
-            
+
             // Verify generation hasn't changed — if it has, we saw a torn read
             let gen_after = self.generation.load(AtomicOrdering::Acquire);
             if gen_before == gen_after {
@@ -704,7 +723,7 @@ impl AtomicNeighborList {
     }
 
     /// Get neighbor count (approximate)
-    /// 
+    ///
     /// Due to concurrent modifications, the count may be slightly
     /// inaccurate compared to actual number of non-zero slots.
     /// Use get_neighbors().len() for exact count if needed.
@@ -718,7 +737,7 @@ impl AtomicNeighborList {
     }
 
     /// Get current generation counter
-    /// 
+    ///
     /// Useful for detecting concurrent modifications:
     /// 1. Read generation before operation
     /// 2. Perform read-only operations
@@ -751,7 +770,7 @@ pub struct HnswNode {
     pub layer: usize,
 }
 /// - Lock-free: ~800 bytes (fixed size atomic arrays aligned to cache lines)
-/// 
+///
 /// The trade-off is worthwhile for workloads with high concurrent write throughput.
 #[derive(Debug)]
 pub struct LockFreeHnswNode {
@@ -775,7 +794,7 @@ impl LockFreeHnswNode {
         for _ in 0..=layer {
             layers.push(AtomicNeighborList::new());
         }
-        
+
         Self {
             id,
             vector,
@@ -786,9 +805,9 @@ impl LockFreeHnswNode {
     }
 
     /// Add neighbor to specific layer using lock-free operation
-    /// 
+    ///
     /// **Task #4 Implementation**: Wait-free neighbor addition
-    /// 
+    ///
     /// This method demonstrates the performance benefit of lock-free operations:
     /// - No lock acquisition delays
     /// - No priority inversion issues  
@@ -798,7 +817,7 @@ impl LockFreeHnswNode {
         if layer >= self.layers.len() {
             return false;
         }
-        
+
         self.layers[layer].add_neighbor(neighbor_id)
     }
 
@@ -807,12 +826,12 @@ impl LockFreeHnswNode {
         if layer >= self.layers.len() {
             return false;
         }
-        
+
         self.layers[layer].remove_neighbor(neighbor_id)
     }
 
     /// Get neighbors at specific layer (lock-free snapshot)
-    /// 
+    ///
     /// Returns a consistent snapshot of neighbors at the time of call.
     /// May observe partial updates during concurrent modifications, but
     /// will never return corrupted data due to atomic loads.
@@ -820,50 +839,47 @@ impl LockFreeHnswNode {
         if layer >= self.layers.len() {
             return SmallVec::new();
         }
-        
+
         self.layers[layer].get_neighbors()
     }
 
     /// Replace all neighbors at a layer atomically (lock-free bulk update)
-    /// 
+    ///
     /// Used for pruning operations where we need to replace the entire
     /// neighbor set. More efficient than individual remove/add operations.
     pub fn replace_neighbors_lockfree(&self, layer: usize, new_neighbors: &[u128]) -> bool {
         if layer >= self.layers.len() {
             return false;
         }
-        
+
         self.layers[layer].replace_neighbors(new_neighbors)
     }
 
     /// Convert from locked HnswNode to lock-free version
-    /// 
+    ///
     /// **Migration Utility**: Allows upgrading existing indexes to lock-free mode
-    /// 
+    ///
     /// This would be used when transitioning an existing index to lock-free operations:
     /// 1. Read all neighbor data from RwLock-protected node
     /// 2. Create new LockFreeHnswNode with same data
     /// 3. Atomically replace in the index map
-    /// 
+    ///
     /// The migration can be done online without stopping the index.
     pub fn from_locked_node(locked_node: &HnswNode) -> Self {
         let mut layers = Vec::with_capacity(locked_node.layer + 1);
-        
+
         for layer_lock in &locked_node.layers {
             let neighbor_data = layer_lock.read();
             let atomic_list = AtomicNeighborList::new();
-            
+
             // Convert SmallVec to slice and bulk-load into atomic list
-            let dense_as_ids: SmallVec<[u128; MAX_M]> = neighbor_data
-                .neighbors
-                .iter()
-                .map(|v| *v as u128)
-                .collect();
+            let dense_as_ids: SmallVec<[u128; MAX_M]> =
+                neighbor_data.neighbors.iter().map(|v| *v as u128).collect();
             atomic_list.replace_neighbors(&dense_as_ids);
-            
+
             layers.push(atomic_list);
         }
-        
+
         Self {
             id: locked_node.id,
             vector: locked_node.vector.clone(),
@@ -911,17 +927,17 @@ impl Ord for SearchCandidate {
 // ============================================================================
 
 /// Internal candidate for zero-lock search path.
-/// 
+///
 /// Key insight: DashMap lookup costs ~100-200ns per call. With ef_search=200
 /// and average 16 neighbors per node, that's up to 3,200 DashMap lookups
 /// adding 320-640µs overhead per search.
-/// 
+///
 /// By storing `dense_index: u32` instead of `id: u128`, we can use O(1) array
 /// indexing into `internal_nodes[dense_index]` instead of DashMap.
-/// 
+///
 /// Memory layout: 16 bytes (cache-line friendly)
 /// - distance: 4 bytes (f32)
-/// - dense_index: 4 bytes (u32) 
+/// - dense_index: 4 bytes (u32)
 /// - id: 8 bytes (u128 truncated to u64 for comparison tie-breaking)
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FastCandidate {
@@ -954,13 +970,12 @@ impl Ord for FastCandidate {
     }
 }
 
-
 // ============================================================================
 // Product Quantization Support (Task #7)
 // ============================================================================
 
 /// Product Quantization codebook for vector compression
-/// 
+///
 /// PQ divides vectors into segments and quantizes each segment independently
 /// using k-means clustering. Distance computation uses precomputed lookup tables
 /// for cache-efficient processing.
@@ -968,7 +983,7 @@ impl Ord for FastCandidate {
 pub struct ProductQuantizationCodebook {
     /// Number of segments (subspaces)
     pub segments: usize,
-    /// Bits per segment (log2 of centroids per segment) 
+    /// Bits per segment (log2 of centroids per segment)
     pub bits: usize,
     /// Dimension per segment
     pub segment_dim: usize,
@@ -978,15 +993,11 @@ pub struct ProductQuantizationCodebook {
 
 impl ProductQuantizationCodebook {
     /// Create new codebook by training on sample vectors
-    pub fn train(
-        vectors: &[&[f32]],
-        segments: usize,
-        bits: usize,
-    ) -> Result<Self, String> {
+    pub fn train(vectors: &[&[f32]], segments: usize, bits: usize) -> Result<Self, String> {
         if vectors.is_empty() {
             return Err("No training vectors provided".to_string());
         }
-        
+
         let dimension = vectors[0].len();
         if dimension % segments != 0 {
             return Err(format!(
@@ -994,27 +1005,28 @@ impl ProductQuantizationCodebook {
                 dimension, segments
             ));
         }
-        
+
         let segment_dim = dimension / segments;
         let num_centroids = 1 << bits;
         let mut centroids = Vec::with_capacity(segments);
-        
+
         // Train each segment independently using k-means
         for seg_idx in 0..segments {
             let start_dim = seg_idx * segment_dim;
             let end_dim = start_dim + segment_dim;
-            
+
             // Extract segment data from all training vectors
             let segment_data: Vec<Vec<f32>> = vectors
                 .iter()
                 .map(|v| v[start_dim..end_dim].to_vec())
                 .collect();
-            
+
             // Run k-means clustering
-            let segment_centroids = Self::kmeans_segment(&segment_data, num_centroids, segment_dim)?;
+            let segment_centroids =
+                Self::kmeans_segment(&segment_data, num_centroids, segment_dim)?;
             centroids.push(segment_centroids);
         }
-        
+
         Ok(ProductQuantizationCodebook {
             segments,
             bits,
@@ -1022,65 +1034,61 @@ impl ProductQuantizationCodebook {
             centroids,
         })
     }
-    
+
     /// Quantize a vector into PQ codes
     pub fn quantize(&self, vector: &[f32]) -> Vec<u8> {
         let mut codes = Vec::with_capacity(self.segments);
-        
+
         for seg_idx in 0..self.segments {
             let start_dim = seg_idx * self.segment_dim;
             let end_dim = start_dim + self.segment_dim;
             let segment = &vector[start_dim..end_dim];
-            
+
             // Find nearest centroid in this segment
             let mut best_centroid = 0;
             let mut best_distance = f32::INFINITY;
-            
+
             for (centroid_idx, centroid) in self.centroids[seg_idx].iter().enumerate() {
                 let mut distance = 0.0;
                 for i in 0..self.segment_dim {
                     let diff = segment[i] - centroid[i];
                     distance += diff * diff;
                 }
-                
+
                 if distance < best_distance {
                     best_distance = distance;
                     best_centroid = centroid_idx;
                 }
             }
-            
+
             codes.push(best_centroid as u8);
         }
-        
+
         codes
     }
-    
+
     /// Compute distance between query and PQ-encoded vector using lookup table
-    pub fn distance_with_table(
-        &self, 
-        query_table: &[Vec<f32>], 
-        pq_codes: &[u8]
-    ) -> f32 {
+    pub fn distance_with_table(&self, query_table: &[Vec<f32>], pq_codes: &[u8]) -> f32 {
         let mut distance = 0.0;
-        
+
         for (seg_idx, &code) in pq_codes.iter().enumerate() {
             distance += query_table[seg_idx][code as usize];
         }
-        
+
         distance
     }
-    
+
     /// Build distance lookup table for a query vector
     pub fn build_query_table(&self, query: &[f32]) -> Vec<Vec<f32>> {
         let mut table = Vec::with_capacity(self.segments);
-        
+
         for seg_idx in 0..self.segments {
             let start_dim = seg_idx * self.segment_dim;
             let end_dim = start_dim + self.segment_dim;
             let query_segment = &query[start_dim..end_dim];
-            
+
             let mut segment_distances = Vec::with_capacity(1 << self.bits);
-            
+
             for centroid in &self.centroids[seg_idx] {
                 let mut distance = 0.0;
                 for i in 0..self.segment_dim {
@@ -1089,70 +1097,71 @@ impl ProductQuantizationCodebook {
                 }
                 segment_distances.push(distance);
             }
-            
+
             table.push(segment_distances);
         }
-        
+
         table
     }
-    
+
     /// K-means clustering for a single segment
-    fn kmeans_segment(
-        data: &[Vec<f32>], 
-        k: usize, 
-        dim: usize
-    ) -> Result<Vec<Vec<f32>>, String> {
+    fn kmeans_segment(data: &[Vec<f32>], k: usize, dim: usize) -> Result<Vec<Vec<f32>>, String> {
         if data.len() < k {
-            return Err(format!("Not enough data points ({}) for {} clusters", data.len(), k));
+            return Err(format!(
+                "Not enough data points ({}) for {} clusters",
+                data.len(),
+                k
+            ));
         }
-        
+
         let mut centroids = Vec::with_capacity(k);
-        
+
         // Initialize centroids with random data points
         for i in 0..k {
             let idx = (i * data.len()) / k; // Spread initial centroids
             centroids.push(data[idx].clone());
         }
-        
+
         // Iterate k-means
-        for _iteration in 0..50 { // Max 50 iterations
+        for _iteration in 0..50 {
+            // Max 50 iterations
             let mut assignments = vec![0; data.len()];
             let mut changed = false;
-            
+
             // Assign points to nearest centroid
             for (point_idx, point) in data.iter().enumerate() {
                 let mut best_centroid = 0;
                 let mut best_distance = f32::INFINITY;
-                
+
                 for (centroid_idx, centroid) in centroids.iter().enumerate() {
                     let mut distance = 0.0;
                     for i in 0..dim {
                         let diff = point[i] - centroid[i];
                         distance += diff * diff;
                     }
-                    
+
                     if distance < best_distance {
                         best_distance = distance;
                         best_centroid = centroid_idx;
                     }
                 }
-                
+
                 if assignments[point_idx] != best_centroid {
                     assignments[point_idx] = best_centroid;
                     changed = true;
                 }
             }
-            
+
             if !changed {
                 break; // Converged
             }
-            
+
             // Update centroids
             let mut counts = vec![0; k];
             for centroid in centroids.iter_mut() {
                 centroid.fill(0.0);
             }
-            
+
             for (point_idx, point) in data.iter().enumerate() {
                 let cluster = assignments[point_idx];
                 counts[cluster] += 1;
@@ -1160,7 +1169,7 @@ impl ProductQuantizationCodebook {
                     centroids[cluster][i] += point[i];
                 }
             }
-            
+
             for (centroid_idx, centroid) in centroids.iter_mut().enumerate() {
                 if counts[centroid_idx] > 0 {
                     let count = counts[centroid_idx] as f32;
@@ -1170,7 +1179,7 @@ impl ProductQuantizationCodebook {
                 }
             }
         }
-        
+
         Ok(centroids)
     }
 }
@@ -1224,15 +1233,15 @@ pub enum RngTaskType {
 // ==================== Task #9: IVF Coarse Routing Implementation ====================
 
 /// IVF (Inverted File) Index for coarse-grained routing
-/// 
+///
 /// This enables 2-3x performance improvement for high-dimensional vectors (dims > 512)
 /// by partitioning the space into clusters and only searching relevant clusters.
-/// 
+///
 /// Performance characteristics:
 /// - Training overhead: O(n*k*d*iterations) where k=cluster_count, d=dimension
 /// - Query routing: O(k*d) to find nearest clusters
 /// - Search speedup: ~k/search_clusters_count (e.g., 100 clusters, search 5 = 20x reduction)
-/// 
+///
 /// Memory overhead:
 /// - Centroids: k * d * 4 bytes (e.g., 100 * 768 * 4 = ~300KB)
 /// - Cluster assignments: n * 4 bytes (e.g., 1M vectors = 4MB)
@@ -1262,53 +1271,58 @@ impl IVFIndex {
             cluster_count,
         }
     }
-    
+
     /// Train IVF index using k-means clustering on sample data
     pub fn train(&mut self, training_data: &[(u128, Vec<f32>)]) -> Result<(), String> {
         if training_data.len() < self.cluster_count {
-            return Err(format!("Training data size ({}) must be >= cluster count ({})", 
-                              training_data.len(), self.cluster_count));
+            return Err(format!(
+                "Training data size ({}) must be >= cluster count ({})",
+                training_data.len(),
+                self.cluster_count
+            ));
         }
-        
-        let vectors: Vec<&[f32]> = training_data.iter()
+
+        let vectors: Vec<&[f32]> = training_data
+            .iter()
             .map(|(_, vec)| vec.as_slice())
             .collect();
-            
+
         // Initialize centroids using k-means++
         self.centroids = self.kmeans_plus_plus_init(&vectors)?;
-        
+
         // Run k-means iterations
-        for _iteration in 0..20 { // Max 20 iterations for IVF (faster than PQ)
+        for _iteration in 0..20 {
+            // Max 20 iterations for IVF (faster than PQ)
             let mut cluster_assignments = vec![0; training_data.len()];
             let mut changed = false;
-            
+
             // Assign points to nearest centroids
             for (point_idx, (_, vector)) in training_data.iter().enumerate() {
                 let best_cluster = self.find_nearest_centroid(vector)?;
-                
+
                 if cluster_assignments[point_idx] != best_cluster {
                     cluster_assignments[point_idx] = best_cluster;
                     changed = true;
                 }
             }
-            
+
             if !changed {
                 break; // Converged
             }
-            
+
             // Update centroids
             let mut cluster_sums = vec![vec![0.0; self.dimension]; self.cluster_count];
             let mut cluster_counts = vec![0; self.cluster_count];
-            
+
             for (point_idx, (_, vector)) in training_data.iter().enumerate() {
                 let cluster = cluster_assignments[point_idx];
                 cluster_counts[cluster] += 1;
-                
+
                 for (i, &val) in vector.iter().enumerate() {
                     cluster_sums[cluster][i] += val;
                 }
             }
-            
+
             // Compute new centroids
             for cluster_id in 0..self.cluster_count {
                 if cluster_counts[cluster_id] > 0 {
@@ -1319,74 +1333,76 @@ impl IVFIndex {
                 }
             }
         }
-        
+
         // Assign training data to clusters and populate inverted lists
         self.inverted_lists.iter_mut().for_each(|list| list.clear());
         self.assignments.clear();
-        
+
         for (node_id, vector) in training_data.iter() {
             let cluster_id = self.find_nearest_centroid(vector)?;
             self.assignments.insert(*node_id, cluster_id);
             self.inverted_lists[cluster_id].push(*node_id);
         }
-        
+
         Ok(())
     }
-    
+
     /// Assign a new node to the appropriate cluster
     pub fn assign_node(&mut self, node_id: u128, vector: &[f32]) -> Result<(), String> {
         let cluster_id = self.find_nearest_centroid(vector)?;
-        
+
         // Remove from old cluster if it exists
         if let Some(old_cluster) = self.assignments.get(&node_id) {
             let old_cluster_id = *old_cluster;
             self.inverted_lists[old_cluster_id].retain(|&id| id != node_id);
         }
-        
+
         // Add to new cluster
         self.assignments.insert(node_id, cluster_id);
         self.inverted_lists[cluster_id].push(node_id);
-        
+
         Ok(())
     }
-    
+
     /// Find nearest cluster centroids for query routing
     pub fn search_clusters(&self, query: &[f32], target_clusters: usize) -> Vec<usize> {
         if self.centroids.is_empty() {
             return Vec::new();
         }
-        
+
         let mut cluster_distances: Vec<(usize, f32)> = Vec::with_capacity(self.cluster_count);
-        
+
         for (cluster_id, centroid) in self.centroids.iter().enumerate() {
             let distance = self.compute_l2_distance(query, centroid);
             cluster_distances.push((cluster_id, distance));
         }
-        
+
         // Sort by distance and take closest clusters
-        cluster_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        
-        cluster_distances.into_iter()
+        cluster_distances
+            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        cluster_distances
+            .into_iter()
             .take(target_clusters)
             .map(|(cluster_id, _)| cluster_id)
             .collect()
     }
-    
+
     /// Get node IDs in a specific cluster
     pub fn get_cluster_nodes(&self, cluster_id: usize) -> Option<&Vec<u128>> {
         self.inverted_lists.get(cluster_id)
     }
-    
+
     /// Get cluster assignment for a node
     pub fn get_node_cluster(&self, node_id: u128) -> Option<usize> {
         self.assignments.get(&node_id).map(|entry| *entry)
     }
-    
+
     /// Get number of clusters
     pub fn cluster_count(&self) -> usize {
         self.cluster_count
     }
-    
+
     /// Get IVF statistics
     pub fn get_stats(&self) -> (usize, usize, f32) {
         let total_nodes: usize = self.inverted_lists.iter().map(|list| list.len()).sum();
@@ -1395,34 +1411,35 @@ impl IVFIndex {
         } else {
             0.0
         };
-        
+
         (self.cluster_count, total_nodes, avg_cluster_size)
     }
-    
+
     /// Initialize centroids using k-means++ algorithm
     fn kmeans_plus_plus_init(&self, data: &[&[f32]]) -> Result<Vec<Vec<f32>>, String> {
         if data.is_empty() {
             return Err("Cannot initialize centroids with empty data".to_string());
         }
-        
+
         let mut centroids = Vec::with_capacity(self.cluster_count);
         let mut rng = rand::thread_rng();
-        
+
         // Choose first centroid randomly
         let first_idx = rng.gen_range(0..data.len());
         centroids.push(data[first_idx].to_vec());
-        
+
         // Choose remaining centroids using k-means++ probability distribution
         for _ in 1..self.cluster_count {
             let mut distances_squared = Vec::with_capacity(data.len());
-            
+
             for point in data.iter() {
-                let min_dist_sq = centroids.iter()
+                let min_dist_sq = centroids
+                    .iter()
                     .map(|centroid| self.compute_l2_distance_squared(point, centroid))
                     .fold(f32::INFINITY, f32::min);
                 distances_squared.push(min_dist_sq);
             }
-            
+
             let total_weight: f32 = distances_squared.iter().sum();
             if total_weight <= 0.0 {
                 // All points are identical, just pick remaining points arbitrarily
@@ -1431,10 +1448,10 @@ impl IVFIndex {
                 }
                 continue;
             }
-            
+
             let target = rng.gen_range(0.0..1.0) * total_weight;
             let mut cumulative_weight = 0.0;
-            
+
             for (i, &weight) in distances_squared.iter().enumerate() {
                 cumulative_weight += weight;
                 if cumulative_weight >= target {
@@ -1443,19 +1460,19 @@ impl IVFIndex {
                 }
             }
         }
-        
+
         Ok(centroids)
     }
-    
+
     /// Find the nearest centroid for a vector
     fn find_nearest_centroid(&self, vector: &[f32]) -> Result<usize, String> {
         if self.centroids.is_empty() {
             return Err("No centroids available".to_string());
         }
-        
+
         let mut best_cluster = 0;
         let mut best_distance = f32::INFINITY;
-        
+
         for (cluster_id, centroid) in self.centroids.iter().enumerate() {
             let distance = self.compute_l2_distance(vector, centroid);
             if distance < best_distance {
@@ -1463,15 +1480,15 @@ impl IVFIndex {
                 best_cluster = cluster_id;
             }
         }
-        
+
         Ok(best_cluster)
     }
-    
+
     /// Compute L2 distance between two vectors
     fn compute_l2_distance(&self, a: &[f32], b: &[f32]) -> f32 {
         self.compute_l2_distance_squared(a, b).sqrt()
     }
-    
+
     /// Compute squared L2 distance between two vectors
     fn compute_l2_distance_squared(&self, a: &[f32], b: &[f32]) -> f32 {
         a.iter()
@@ -1483,7 +1500,6 @@ impl IVFIndex {
             .sum()
     }
 }
-
 
 /// Work-stealing queue for background RNG optimization
 #[allow(dead_code)]
@@ -1517,7 +1533,7 @@ impl RngOptimizationScheduler {
         let _workers: Vec<AsyncRngWorker> = Vec::with_capacity(worker_count);
         let active_tasks = Arc::new(AtomicUsize::new(0));
         let enabled = Arc::new(AtomicBool::new(true));
-        
+
         // Initialize IVF index for high-dimensional vectors
         let ivf_index = if dimension > 512 {
             let cluster_count = (dimension / 100).max(10).min(100); // 10-100 clusters based on dimension
@@ -1525,10 +1541,10 @@ impl RngOptimizationScheduler {
         } else {
             None
         };
-        
+
         // Note: Workers will be created separately after the scheduler is fully initialized
         // since they need a reference to an HnswIndex which contains this scheduler
-        
+
         Self {
             task_sender,
             workers: Vec::new(), // Will be populated later
@@ -1537,21 +1553,21 @@ impl RngOptimizationScheduler {
             ivf_index,
         }
     }
-    
+
     /// Schedule a background RNG optimization task
     pub fn schedule_task(&self, task: RngOptimizationTask) -> Result<(), String> {
         if !self.enabled.load(AtomicOrdering::Acquire) {
             return Err("Scheduler is disabled".to_string());
         }
-        
-        self.task_sender.send(task).map_err(|e| {
-            format!("Failed to send task: {}", e)
-        })?;
-        
+
+        self.task_sender
+            .send(task)
+            .map_err(|e| format!("Failed to send task: {}", e))?;
+
         self.active_tasks.fetch_add(1, AtomicOrdering::Release);
         Ok(())
     }
-    
+
     /// Schedule neighbor refinement for a node
     pub fn schedule_neighbor_refinement(&self, node_id: u128, layer: usize, current_quality: f32) {
         let task = RngOptimizationTask {
@@ -1563,10 +1579,10 @@ impl RngOptimizationScheduler {
                 target_quality: current_quality * 1.1, // 10% improvement target
             },
         };
-        
+
         let _ = self.schedule_task(task);
     }
-    
+
     /// Schedule connectivity repair
     pub fn schedule_connectivity_repair(&self, node_id: u128, layer: usize, component_size: usize) {
         let task = RngOptimizationTask {
@@ -1575,10 +1591,10 @@ impl RngOptimizationScheduler {
             priority: (1000000 / component_size.max(1)) as u64, // Smaller components = higher priority
             task_type: RngTaskType::ConnectivityRepair { component_size },
         };
-        
+
         let _ = self.schedule_task(task);
     }
-    
+
     /// Get number of active optimization tasks
     pub fn active_task_count(&self) -> usize {
         self.active_tasks.load(AtomicOrdering::Acquire)
@@ -1590,7 +1606,13 @@ impl RngOptimizationScheduler {
     }
 
     /// Schedule degree balancing for a node
-    pub fn schedule_degree_balance(&self, node_id: u128, layer: usize, current_degree: usize, target_range: (usize, usize)) {
+    pub fn schedule_degree_balance(
+        &self,
+        node_id: u128,
+        layer: usize,
+        current_degree: usize,
+        target_range: (usize, usize),
+    ) {
         let task = RngOptimizationTask {
             node_id,
             layer,
@@ -1600,19 +1622,19 @@ impl RngOptimizationScheduler {
                 target_range,
             },
         };
-        
+
         let _ = self.schedule_task(task);
     }
-    
+
     /// Enable/disable the scheduler
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, AtomicOrdering::Release);
     }
-    
+
     /// Shutdown the scheduler and all workers
     pub fn shutdown(&mut self) {
         self.enabled.store(false, AtomicOrdering::Release);
-        
+
         for worker in &mut self.workers {
             worker.shutdown();
         }
@@ -1623,14 +1645,14 @@ impl RngOptimizationScheduler {
         if dimension <= 512 {
             return; // IVF only beneficial for high-dimensional vectors
         }
-        
+
         let task = RngOptimizationTask {
             node_id,
-            layer: 0, // IVF works on full vector space
+            layer: 0,      // IVF works on full vector space
             priority: 500, // Medium priority
             task_type: RngTaskType::IVFAssignment { dimension },
         };
-        
+
         let _ = self.schedule_task(task);
     }
 
@@ -1673,18 +1695,24 @@ impl AsyncRngWorker {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
         let index_clone = index.clone();
-        
+
         let worker_handle = Some(thread::spawn(move || {
-            Self::worker_loop(task_receiver, index_clone, active_tasks, enabled, shutdown_clone);
+            Self::worker_loop(
+                task_receiver,
+                index_clone,
+                active_tasks,
+                enabled,
+                shutdown_clone,
+            );
         }));
-        
+
         Self {
             index,
             worker_handle,
             shutdown,
         }
     }
-    
+
     /// Main worker loop
     fn worker_loop(
         task_receiver: mpsc::Receiver<RngOptimizationTask>,
@@ -1711,18 +1739,36 @@ impl AsyncRngWorker {
             }
         }
     }
-    
+
     /// Process a single optimization task
     fn process_task(index: &HnswIndex, task: RngOptimizationTask) {
         match task.task_type {
-            RngTaskType::NeighborRefine { current_quality, target_quality } => {
-                Self::refine_neighbors(index, task.node_id, task.layer, current_quality, target_quality);
+            RngTaskType::NeighborRefine {
+                current_quality,
+                target_quality,
+            } => {
+                Self::refine_neighbors(
+                    index,
+                    task.node_id,
+                    task.layer,
+                    current_quality,
+                    target_quality,
+                );
             }
             RngTaskType::ConnectivityRepair { component_size } => {
                 Self::repair_connectivity(index, task.node_id, task.layer, component_size);
             }
-            RngTaskType::DegreeBalance { current_degree, target_range } => {
-                Self::balance_degree(index, task.node_id, task.layer, current_degree, target_range);
+            RngTaskType::DegreeBalance {
+                current_degree,
+                target_range,
+            } => {
+                Self::balance_degree(
+                    index,
+                    task.node_id,
+                    task.layer,
+                    current_degree,
+                    target_range,
+                );
             }
             RngTaskType::IVFAssignment { dimension } => {
                 // Handle IVF assignment for high-dimensional vectors
@@ -1730,14 +1776,14 @@ impl AsyncRngWorker {
             }
         }
     }
-    
+
     /// Refine neighbor quality for a node
     fn refine_neighbors(
-        index: &HnswIndex, 
-        node_id: u128, 
-        layer: usize, 
-        _current_quality: f32, 
-        _target_quality: f32
+        index: &HnswIndex,
+        node_id: u128,
+        layer: usize,
+        _current_quality: f32,
+        _target_quality: f32,
     ) {
         if let Some(node_ref) = index.nodes.get(&node_id) {
             let node = node_ref.clone();
@@ -1745,78 +1791,74 @@ impl AsyncRngWorker {
             let node_vector = vector_store
                 .get(node.vector_index as usize)
                 .unwrap_or(&node.vector);
-            
+
             // Get current neighbors at this layer
             if let Some(layer_neighbors) = node.layers.get(layer) {
-                let current_neighbors = index.dense_neighbors_to_ids(&layer_neighbors.read().neighbors);
-                
+                let current_neighbors =
+                    index.dense_neighbors_to_ids(&layer_neighbors.read().neighbors);
+
                 if current_neighbors.is_empty() {
                     return; // Nothing to refine
                 }
-                
+
                 // Expand search to find better neighbor candidates
                 let expanded_candidates = index.search_layer_concurrent(
                     node_vector,
-                    &[SearchCandidate { id: node_id, distance: 0.0 }],
+                    &[SearchCandidate {
+                        id: node_id,
+                        distance: 0.0,
+                    }],
                     current_neighbors.len() * 3, // 3x expansion for better candidates
                     layer,
                 );
-                
+
                 // Apply RNG heuristic to select better neighbors
                 let m = if layer == 0 {
                     index.config.max_connections_layer0
                 } else {
                     index.config.max_connections
                 };
-                
-                let optimized_neighbors = index.select_neighbors_optimized(
-                    &expanded_candidates,
-                    m,
-                    node_vector,
-                );
-                
+
+                let optimized_neighbors =
+                    index.select_neighbors_optimized(&expanded_candidates, m, node_vector);
+
                 // Update neighbors if improvement achieved
                 if optimized_neighbors.len() >= current_neighbors.len() {
                     if let Some(layer_lock) = node.layers.get(layer) {
                         let mut neighbors_guard = layer_lock.write();
-                        neighbors_guard.neighbors = index.ids_to_dense_neighbors(&optimized_neighbors);
+                        neighbors_guard.neighbors =
+                            index.ids_to_dense_neighbors(&optimized_neighbors);
                         neighbors_guard.version += 1;
                     }
                 }
             }
         }
     }
-    
+
     /// Repair connectivity issues
-    fn repair_connectivity(
-        index: &HnswIndex, 
-        node_id: u128, 
-        layer: usize, 
-        _component_size: usize
-    ) {
+    fn repair_connectivity(index: &HnswIndex, node_id: u128, layer: usize, _component_size: usize) {
         if let Some(node_ref) = index.nodes.get(&node_id) {
             let node = node_ref.clone();
             let vector_store = index.vector_store.read();
             let node_vector = vector_store
                 .get(node.vector_index as usize)
                 .unwrap_or(&node.vector);
-            
+
             // Find nearest connected components
             let candidates = index.search_layer_concurrent(
                 node_vector,
-                &[SearchCandidate { id: node_id, distance: 0.0 }],
+                &[SearchCandidate {
+                    id: node_id,
+                    distance: 0.0,
+                }],
                 20, // Search for 20 nearest neighbors
                 layer,
             );
-            
+
             // Connect to a few of the best candidates
             let m = if layer == 0 { 2 } else { 1 }; // Conservative repair
-            let repair_neighbors = index.select_neighbors_optimized(
-                &candidates,
-                m,
-                node_vector,
-            );
-            
+            let repair_neighbors = index.select_neighbors_optimized(&candidates, m, node_vector);
+
             // Add repair connections
             if let Some(layer_lock) = node.layers.get(layer) {
                 let mut neighbors_guard = layer_lock.write();
@@ -1831,14 +1873,14 @@ impl AsyncRngWorker {
             }
         }
     }
-    
+
     /// Balance node degree
     fn balance_degree(
-        index: &HnswIndex, 
-        node_id: u128, 
-        layer: usize, 
-        _current_degree: usize, 
-        target_range: (usize, usize)
+        index: &HnswIndex,
+        node_id: u128,
+        layer: usize,
+        _current_degree: usize,
+        target_range: (usize, usize),
     ) {
         if let Some(node_ref) = index.nodes.get(&node_id) {
             let node = node_ref.clone();
@@ -1846,60 +1888,65 @@ impl AsyncRngWorker {
             let node_vector = vector_store
                 .get(node.vector_index as usize)
                 .unwrap_or(&node.vector);
-            
+
             if let Some(layer_lock) = node.layers.get(layer) {
                 let neighbors_guard = layer_lock.write();
                 let neighbor_count = neighbors_guard.neighbors.len();
-                
+
                 if neighbor_count < target_range.0 {
                     // Too few neighbors - add more
                     drop(neighbors_guard); // Release lock before search
-                    
+
                     let candidates = index.search_layer_concurrent(
                         node_vector,
-                        &[SearchCandidate { id: node_id, distance: 0.0 }],
+                        &[SearchCandidate {
+                            id: node_id,
+                            distance: 0.0,
+                        }],
                         target_range.1,
                         layer,
                     );
-                    
-                    let new_neighbors = index.select_neighbors_optimized(
-                        &candidates,
-                        target_range.1,
-                        node_vector,
-                    );
-                    
+
+                    let new_neighbors =
+                        index.select_neighbors_optimized(&candidates, target_range.1, node_vector);
+
                     // Re-acquire lock and update
                     let mut neighbors_guard = layer_lock.write();
                     neighbors_guard.neighbors = index.ids_to_dense_neighbors(&new_neighbors);
                     neighbors_guard.version += 1;
-                    
                 } else if neighbor_count > target_range.1 {
                     // Too many neighbors - prune
-                    let current_neighbors: Vec<SearchCandidate> = neighbors_guard.neighbors
+                    let current_neighbors: Vec<SearchCandidate> = neighbors_guard
+                        .neighbors
                         .iter()
                         .filter_map(|&neighbor_dense| {
-                            index.dense_to_node_id(neighbor_dense).and_then(|neighbor_id| {
-                                index.nodes.get(&neighbor_id).map(|neighbor_node| {
-                                    let neighbor_vector = vector_store
-                                        .get(neighbor_node.vector_index as usize)
-                                        .unwrap_or(&neighbor_node.vector);
-                                    SearchCandidate {
-                                        id: neighbor_id,
-                                        distance: index.calculate_distance_pq(node_vector, neighbor_vector),
-                                    }
+                            index
+                                .dense_to_node_id(neighbor_dense)
+                                .and_then(|neighbor_id| {
+                                    index.nodes.get(&neighbor_id).map(|neighbor_node| {
+                                        let neighbor_vector = vector_store
+                                            .get(neighbor_node.vector_index as usize)
+                                            .unwrap_or(&neighbor_node.vector);
+                                        SearchCandidate {
+                                            id: neighbor_id,
+                                            distance: index.calculate_distance_pq(
+                                                node_vector,
+                                                neighbor_vector,
+                                            ),
+                                        }
+                                    })
                                 })
-                            })
                         })
                         .collect();
-                    
+
                     drop(neighbors_guard); // Release lock
-                    
+
                     let pruned_neighbors = index.select_neighbors_optimized(
                         &current_neighbors,
                         target_range.1,
                         node_vector,
                     );
-                    
+
                     // Re-acquire lock and update
                     let mut neighbors_guard = layer_lock.write();
                     neighbors_guard.neighbors = index.ids_to_dense_neighbors(&pruned_neighbors);
@@ -1908,17 +1955,17 @@ impl AsyncRngWorker {
             }
         }
     }
-    
+
     /// Assign node to IVF cluster for high-dimensional routing
     fn assign_ivf_cluster(_index: &HnswIndex, _node_id: u128, _dimension: usize) {
         // Implementation would assign the node to an appropriate IVF cluster
         // for efficient routing in high-dimensional spaces
     }
-    
+
     /// Signal worker to shutdown
     fn shutdown(&mut self) {
         self.shutdown.store(true, AtomicOrdering::Release);
-        
+
         if let Some(handle) = self.worker_handle.take() {
             let _ = handle.join();
         }
@@ -2021,9 +2068,9 @@ pub struct ConnectivityReport {
 }
 
 /// Atomic snapshot of navigation state for linearizable reads/writes
-/// 
+///
 /// This bundles (entry_point, max_layer) into a single consistent snapshot.
-/// Readers always see a state where the entry point is a connected node at 
+/// Readers always see a state where the entry point is a connected node at
 /// the correct max layer. Writers update both atomically.
 #[derive(Debug, Clone, Copy)]
 pub struct NavigationState {
@@ -2045,10 +2092,19 @@ impl Default for NavigationState {
 // =============================================================================
 // ShardedVectorStore — future replacement for global RwLock<Vec<QuantizedVector>> (TODO T7)
 //
-// Ready to use but not yet wired into HnswIndex.  The 64-shard design means
-// concurrent searches and inserts will only contend on 1/64 of the shard locks
-// instead of the single global lock.  Wire-up requires updating ~35 callsites
-// from `.read()/.write()` guard API to per-vector `.get(u32)/.push()` calls.
+// Validated and unit-tested (see `sharded_vector_store_tests`): push assigns
+// unique sequential indices under concurrency, get/set/with/len/clear all round
+// trip. The 64-shard design means concurrent searches and inserts contend on
+// only 1/64 of the shard locks instead of the single global lock.
+//
+// NOT yet wired into HnswIndex: doing so is a benchmark-gated change. The hot
+// path currently reads `let g = vector_store.read(); g.get(i).unwrap_or(&node.vector)`
+// and holds those borrows across distance loops; the sharded API returns owned
+// values (`get`) or a closure borrow (`with`), so each of the ~20 callsites must
+// be restructured, and the contiguous-slab sequential-scan cache locality that
+// distance computation relies on is traded for insert concurrency. That tradeoff
+// must be measured (mixed search+insert) before flipping the storage, so wiring
+// is deferred to a benchmarking pass rather than done blind.
 // =============================================================================
 #[allow(dead_code)]
 const SVS_SHARDS: usize = 64;
@@ -2136,7 +2192,101 @@ impl ShardedVectorStore {
 // Manually implement Debug.
 impl std::fmt::Debug for ShardedVectorStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ShardedVectorStore(shards={}, len={})", SVS_SHARDS, self.len())
+        write!(
+            f,
+            "ShardedVectorStore(shards={}, len={})",
+            SVS_SHARDS,
+            self.len()
+        )
+    }
+}
+
+#[cfg(test)]
+mod sharded_vector_store_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn qv(x: f32) -> QuantizedVector {
+        QuantizedVector::from_f32(ndarray::Array1::from_vec(vec![x]), Precision::F32)
+    }
+
+    fn val(v: &QuantizedVector) -> f32 {
+        v.to_f32()[0]
+    }
+
+    #[test]
+    fn test_push_assigns_sequential_indices_and_reads_back() {
+        let store = ShardedVectorStore::new();
+        // Push more than SVS_SHARDS so multiple entries land in the same shard.
+        let n = SVS_SHARDS * 3 + 7;
+        for i in 0..n {
+            let idx = store.push(qv(i as f32));
+            assert_eq!(idx as usize, i, "push must return sequential indices");
+        }
+        assert_eq!(store.len(), n);
+        for i in 0..n {
+            let got = store.get(i as u32).expect("index must be present");
+            assert_eq!(val(&got), i as f32, "value must round-trip at its index");
+        }
+    }
+
+    #[test]
+    fn test_with_borrows_without_cloning() {
+        let store = ShardedVectorStore::new();
+        let idx = store.push(qv(42.0));
+        let seen = store.with(idx, |v| val(v));
+        assert_eq!(seen, Some(42.0));
+        assert_eq!(store.with(99999, |v| val(v)), None);
+    }
+
+    #[test]
+    fn test_set_overwrites_at_index() {
+        let store = ShardedVectorStore::new();
+        let idx = store.push(qv(1.0));
+        store.set(idx, qv(2.0));
+        assert_eq!(val(&store.get(idx).unwrap()), 2.0);
+    }
+
+    #[test]
+    fn test_clear_resets_length() {
+        let store = ShardedVectorStore::new();
+        for i in 0..10 {
+            store.push(qv(i as f32));
+        }
+        store.clear();
+        assert_eq!(store.len(), 0);
+        assert!(store.get(0).is_none());
+    }
+
+    #[test]
+    fn test_concurrent_pushes_claim_unique_indices() {
+        use std::sync::Arc;
+        let store = Arc::new(ShardedVectorStore::new());
+        let threads = 8;
+        let per_thread = 1000;
+        let mut handles = Vec::new();
+        for t in 0..threads {
+            let s = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                let mut indices = Vec::with_capacity(per_thread);
+                for i in 0..per_thread {
+                    indices.push(s.push(qv((t * per_thread + i) as f32)));
+                }
+                indices
+            }));
+        }
+        let mut all = HashSet::new();
+        for h in handles {
+            for idx in h.join().unwrap() {
+                assert!(all.insert(idx), "index {idx} was handed out twice");
+            }
+        }
+        assert_eq!(all.len(), threads * per_thread);
+        assert_eq!(store.len(), threads * per_thread);
+        // Every claimed index must be readable.
+        for idx in &all {
+            assert!(store.get(*idx).is_some(), "missing index {idx}");
+        }
     }
 }
 
@@ -2160,6 +2310,14 @@ pub struct HnswIndex {
     pub(crate) external_storage: Option<Arc<dyn VectorStorage>>,
     /// Product Quantization codebook for compressed distance computation (Task #7)
     pub(crate) pq_codebook: Arc<RwLock<Option<Arc<ProductQuantizationCodebook>>>>,
+    /// Fast lock-free flag mirroring `pq_codebook.is_some()`.
+    ///
+    /// The distance kernel is the innermost hot loop (called once per visited
+    /// neighbor — thousands of times per query). Reading `pq_codebook` there
+    /// took a `RwLock` on every call even though PQ is statically off in the
+    /// default/common configuration. This atomic lets the hot path skip the
+    /// lock entirely with a single relaxed load when PQ is not installed.
+    pub(crate) pq_active: AtomicBool,
     /// Asynchronous RNG optimization scheduler (Task #8)
     pub(crate) rng_scheduler: Option<Arc<RwLock<RngOptimizationScheduler>>>,
     /// Performance cost model for adaptive configuration (Task #11)
@@ -2232,7 +2390,7 @@ impl HnswIndex {
     pub fn new(dimension: usize, config: HnswConfig) -> Self {
         let default_ef = config.ef_search;
         let ef_construction = config.ef_construction;
-        let max_neighbors = config.max_connections * 2;  // Layer 0 has 2*M neighbors
+        let max_neighbors = config.max_connections * 2; // Layer 0 has 2*M neighbors
         Self {
             config,
             nodes: Arc::new(DashMap::new()),
@@ -2241,7 +2399,11 @@ impl HnswIndex {
             adaptive_ef: AtomicUsize::new(default_ef),
             external_storage: None,
             pq_codebook: Arc::new(RwLock::new(None)),
-            rng_scheduler: Some(Arc::new(RwLock::new(RngOptimizationScheduler::new(4, ef_construction)))),
+            pq_active: AtomicBool::new(false),
+            rng_scheduler: Some(Arc::new(RwLock::new(RngOptimizationScheduler::new(
+                4,
+                ef_construction,
+            )))),
             performance_cost_model: Arc::new(RwLock::new(PerformanceCostModel::new())),
             next_dense_index: AtomicUsize::new(0),
             dense_to_id: Arc::new(RwLock::new(Vec::new())),
@@ -2283,7 +2445,11 @@ impl HnswIndex {
             adaptive_ef: AtomicUsize::new(default_ef),
             external_storage: Some(storage),
             pq_codebook: Arc::new(RwLock::new(None)),
-            rng_scheduler: Some(Arc::new(RwLock::new(RngOptimizationScheduler::new(4, ef_construction)))),
+            pq_active: AtomicBool::new(false),
+            rng_scheduler: Some(Arc::new(RwLock::new(RngOptimizationScheduler::new(
+                4,
+                ef_construction,
+            )))),
             performance_cost_model: Arc::new(RwLock::new(PerformanceCostModel::new())),
             next_dense_index: AtomicUsize::new(0),
             dense_to_id: Arc::new(RwLock::new(Vec::new())),
@@ -2349,7 +2515,9 @@ impl HnswIndex {
     /// Convert external IDs to dense neighbor list
     #[inline]
     pub(crate) fn ids_to_dense_neighbors(&self, ids: &[u128]) -> SmallVec<[u32; MAX_M]> {
-        ids.iter().filter_map(|id| self.node_id_to_dense(*id)).collect()
+        ids.iter()
+            .filter_map(|id| self.node_id_to_dense(*id))
+            .collect()
     }
 
     /// Convert dense neighbor list to external IDs
@@ -2360,41 +2528,41 @@ impl HnswIndex {
             .filter_map(|dense| self.dense_to_node_id(*dense))
             .collect()
     }
-    
+
     /// Build flat neighbor cache for truly lock-free search (layer 0 only)
-    /// 
+    ///
     /// This creates a contiguous array of all layer-0 neighbors:
     /// - Format: [node0_neighbors..., node1_neighbors..., ...]
     /// - Each node has exactly max_neighbors_per_node slots
     /// - Unused slots are filled with u32::MAX
-    /// 
+    ///
     /// **Architecture Note (2026-01-22):**
     /// After extensive profiling, we found that the flat neighbor cache does NOT
     /// improve performance over `search_layer_zero_lock` because:
-    /// 
+    ///
     /// 1. SmallVec inline storage: Neighbors are stored inline with node metadata,
     ///    meaning one cache miss fetches both. The flat array requires a separate
     ///    memory access.
-    /// 
+    ///
     /// 2. parking_lot RwLock efficiency: Read locks under no contention are nearly
     ///    free (atomic load + memory barrier). The "lock" overhead is minimal.
-    /// 
+    ///
     /// 3. Multiplication overhead: Computing `dense_index * slots_per_node` for
     ///    every candidate adds latency.
-    /// 
+    ///
     /// The `search_fast()` path remains the fastest. This cache is kept for:
     /// - Future optimization opportunities (e.g., truly lock-free concurrent search)
     /// - Scenarios with high lock contention (many concurrent writers)
-    /// 
+    ///
     /// Call this after bulk inserts if you need lock-free search.
     pub fn build_flat_neighbor_cache(&self) {
         let internal_nodes = self.internal_nodes.read();
         let n_nodes = internal_nodes.len();
         let slots_per_node = self.max_neighbors_per_node;
-        
+
         // Pre-allocate flat array
         let mut flat = vec![u32::MAX; n_nodes * slots_per_node];
-        
+
         // Copy layer-0 neighbors from each node
         for (dense_idx, node_opt) in internal_nodes.iter().enumerate() {
             if let Some(node) = node_opt {
@@ -2410,20 +2578,22 @@ impl HnswIndex {
                 }
             }
         }
-        
+
         // Store the flat array
         *self.flat_neighbors.write() = flat;
-        self.flat_neighbors_valid.store(true, AtomicOrdering::Release);
+        self.flat_neighbors_valid
+            .store(true, AtomicOrdering::Release);
     }
-    
+
     /// Invalidate flat neighbor cache (called after insert/update)
     #[inline]
     pub(crate) fn invalidate_flat_cache(&self) {
-        self.flat_neighbors_valid.store(false, AtomicOrdering::Release);
+        self.flat_neighbors_valid
+            .store(false, AtomicOrdering::Release);
     }
-    
+
     /// Get an atomic snapshot of the navigation state (entry_point, max_layer)
-    /// 
+    ///
     /// Returns a consistent (entry_point, max_layer) pair via a single atomic
     /// u64 load, eliminating the TOCTOU race of separate RwLock reads.
     #[inline]
@@ -2435,38 +2605,39 @@ impl HnswIndex {
             max_layer,
         }
     }
-    
+
     /// Get the current entry point ID
-    /// 
+    ///
     /// Returns None if the graph is empty.
     #[inline]
     pub fn get_entry_point(&self) -> Option<u128> {
-        self.nav_state.load_entry_point()
+        self.nav_state
+            .load_entry_point()
             .and_then(|d| self.dense_to_node_id(d as u32))
     }
-    
+
     /// Get the number of layer-0 neighbors for a given node
-    /// 
+    ///
     /// Returns None if the node doesn't exist.
     /// This is useful for testing graph invariants.
     pub fn get_layer0_neighbor_count(&self, node_id: u128) -> Option<usize> {
-        self.nodes.get(&node_id).map(|node| {
-            node.layers[0].read().neighbors.len()
-        })
+        self.nodes
+            .get(&node_id)
+            .map(|node| node.layers[0].read().neighbors.len())
     }
-    
+
     /// Iterate over all node IDs
-    /// 
+    ///
     /// This is useful for testing invariants across all nodes.
     pub fn iter_node_ids(&self) -> impl Iterator<Item = u128> + '_ {
         self.nodes.iter().map(|entry| *entry.key())
     }
-    
+
     /// Atomically update the navigation state (entry_point, max_layer)
-    /// 
+    ///
     /// Uses a single atomic store to publish both values together, so readers
     /// never see a state where max_layer refers to a different entry point's layer.
-    /// 
+    ///
     /// IMPORTANT: Only call this after the new entry point is fully connected!
     #[inline]
     #[allow(dead_code)]
@@ -2509,17 +2680,32 @@ impl HnswIndex {
     /// graph quality, causing recall to plateau at 0.9985 instead of 1.0.
     /// Full ef_construction from the start produces a better backbone.
     #[inline]
-    pub(crate) fn adaptive_ef_construction_with_mode(&self, _is_batch_insert: bool) -> usize {
-        self.config.ef_construction
+    pub(crate) fn adaptive_ef_construction_with_mode(&self, is_batch_insert: bool) -> usize {
+        if !is_batch_insert {
+            return self.config.ef_construction;
+        }
+        // During batch inserts, use reduced ef_construction for speed.
+        // The per-node-ready parallel construction already provides good graph
+        // quality through natural interleaving. A lower ef during batch mode
+        // trades ~1-2% recall for 2-3x faster insert throughput.
+        let n = self.nodes.len();
+        let base_ef = self.config.ef_construction;
+        if n < 1_000 {
+            (base_ef / 4).max(32)
+        } else if n < 10_000 {
+            (base_ef / 3).max(48)
+        } else {
+            (base_ef / 2).max(64)
+        }
     }
 
     /// Atomically add a reverse connection, handling capacity limits safely
-    /// 
+    ///
     /// Optimized version with reduced lock contention for batch operations:
     /// - Fewer retries (3 instead of 10)
     /// - Early exit on capacity without distance calculation
     /// - Batched distance calculations when needed
-    /// 
+    ///
     /// Returns true if the connection was added.
     fn add_connection_safe(
         &self,
@@ -2533,30 +2719,30 @@ impl HnswIndex {
             Some(dense) => dense,
             None => return false,
         };
-        
+
         let neighbor_node = match self.nodes.get(&neighbor_id) {
             Some(n) => n,
             None => return false,
         };
-        
+
         if layer > neighbor_node.layer {
             return false;
         }
-        
+
         // Fast path: try to acquire write lock immediately (non-blocking)
         if let Some(mut layer_data) = neighbor_node.layers[layer].try_write() {
             // Check if already connected
             if layer_data.neighbors.contains(&new_node_dense) {
                 return true;
             }
-            
+
             // If there's room, just add (most common case)
             if layer_data.neighbors.len() < max_connections {
                 layer_data.neighbors.push(new_node_dense);
                 layer_data.version += 1;
                 return true;
             }
-            
+
             // List is full — replace worst neighbor
             return self.try_replace_worst_neighbor(
                 &mut layer_data,
@@ -2565,7 +2751,7 @@ impl HnswIndex {
                 new_node_vector,
             );
         }
-        
+
         // Blocking path: guaranteed lock acquisition.
         //
         // SAFETY: No deadlock risk because each thread holds at most ONE
@@ -2573,17 +2759,17 @@ impl HnswIndex {
         // the caller is a read lock which doesn't conflict.
         {
             let mut layer_data = neighbor_node.layers[layer].write();
-            
+
             if layer_data.neighbors.contains(&new_node_dense) {
                 return true;
             }
-            
+
             if layer_data.neighbors.len() < max_connections {
                 layer_data.neighbors.push(new_node_dense);
                 layer_data.version += 1;
                 return true;
             }
-            
+
             return self.try_replace_worst_neighbor(
                 &mut layer_data,
                 &*neighbor_node,
@@ -2592,7 +2778,7 @@ impl HnswIndex {
             );
         }
     }
-    
+
     /// Helper method to replace worst neighbor with new node
     /// Extracted to reduce code duplication and improve readability
     #[inline]
@@ -2609,11 +2795,11 @@ impl HnswIndex {
             .unwrap_or(&neighbor_node.vector);
         // Calculate distance from neighbor to new node
         let new_dist = self.calculate_distance_pq(neighbor_vector, new_node_vector);
-        
+
         // Find the worst (farthest) existing neighbor
         let mut worst_idx = 0;
         let mut worst_dist = f32::NEG_INFINITY;
-        
+
         for (idx, &existing_neighbor_id) in layer_data.neighbors.iter().enumerate() {
             if let Some(existing_id) = self.dense_to_node_id(existing_neighbor_id) {
                 if let Some(existing_node) = self.nodes.get(&existing_id) {
@@ -2628,25 +2814,25 @@ impl HnswIndex {
                 }
             }
         }
-        
+
         // Only replace if new node is closer than worst existing neighbor
         if new_dist < worst_dist {
             layer_data.neighbors[worst_idx] = new_node_dense;
             layer_data.version += 1;
             return true;
         }
-        
+
         false
     }
-    
+
     /// Ensure a node has at least one neighbor at layer 0 AND is reachable
-    /// 
+    ///
     /// This enforces the minimum-degree invariant that prevents orphan nodes.
-    /// 
+    ///
     /// CRITICAL INSIGHT: Having outgoing edges is not enough - the node must also
     /// have incoming edges (i.e., appear in some other node's neighbor list) to be
     /// reachable during graph traversal from the entry point.
-    /// 
+    ///
     /// This function ensures:
     /// 1. The node has at least one outgoing edge at layer 0
     /// 2. At least one of the node's neighbors has a reverse edge back to this node
@@ -2655,26 +2841,33 @@ impl HnswIndex {
             Some(n) => n,
             None => return,
         };
-        
+
         // Look up the node's vector from vector_store (node.vector may be empty
         // for batch-inserted nodes where we use QuantizedVector::empty() to save memory).
         let vector_store = self.vector_store.read();
         let node_vector = vector_store
             .get(node.vector_index as usize)
             .unwrap_or(&node.vector);
-        
+
         // Get the node's current layer-0 neighbors
         let layer0_neighbors: Vec<u128> = {
             let layer_data = node.layers[0].read();
-            self.dense_neighbors_to_ids(&layer_data.neighbors).into_vec()
+            self.dense_neighbors_to_ids(&layer_data.neighbors)
+                .into_vec()
         };
-        
+
         // If the node has no outgoing edges, we need to add one
         if layer0_neighbors.is_empty() {
             // Try to connect to best candidate
-            if let Some(best) = fallback_candidates.iter().filter(|c| c.id != node_id).min_by(|a, b| {
-                a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
-            }) {
+            if let Some(best) = fallback_candidates
+                .iter()
+                .filter(|c| c.id != node_id)
+                .min_by(|a, b| {
+                    a.distance
+                        .partial_cmp(&b.distance)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            {
                 // Add forward edge
                 {
                     let mut layer_data = node.layers[0].write();
@@ -2685,7 +2878,7 @@ impl HnswIndex {
                         layer_data.version += 1;
                     }
                 }
-                
+
                 // Force-add reverse edge (even if at capacity, replace worst)
                 self.force_add_reverse_edge(node_id, best.id, node_vector, 0);
                 return;
@@ -2708,7 +2901,7 @@ impl HnswIndex {
                 }
             }
         }
-        
+
         // Node has outgoing edges - check if it has any incoming edges
         // (i.e., at least one of its neighbors has it in their neighbor list)
         let has_incoming_edge = layer0_neighbors.iter().any(|&neighbor_id| {
@@ -2723,35 +2916,41 @@ impl HnswIndex {
                 false
             }
         });
-        
+
         if !has_incoming_edge && !layer0_neighbors.is_empty() {
             // Node has outgoing edges but no incoming edges - force-add reverse edge to first neighbor
             let first_neighbor = layer0_neighbors[0];
             self.force_add_reverse_edge(node_id, first_neighbor, node_vector, 0);
         }
     }
-    
+
     /// Force-add a reverse edge from target to source, even if target is at capacity
-    /// 
+    ///
     /// This is used for connectivity repair where we must ensure the edge exists.
-    fn force_add_reverse_edge(&self, source_id: u128, target_id: u128, source_vector: &QuantizedVector, layer: usize) {
+    fn force_add_reverse_edge(
+        &self,
+        source_id: u128,
+        target_id: u128,
+        source_vector: &QuantizedVector,
+        layer: usize,
+    ) {
         let target_node = match self.nodes.get(&target_id) {
             Some(n) => n,
             None => return,
         };
-        
+
         if layer >= target_node.layers.len() {
             return;
         }
-        
+
         let m = if layer == 0 {
             self.config.max_connections_layer0
         } else {
             self.config.max_connections
         };
-        
+
         let mut layer_data = target_node.layers[layer].write();
-        
+
         // Already connected
         let source_dense = match self.node_id_to_dense(source_id) {
             Some(dense) => dense,
@@ -2761,14 +2960,14 @@ impl HnswIndex {
         if layer_data.neighbors.contains(&source_dense) {
             return;
         }
-        
+
         // Space available - just add
         if layer_data.neighbors.len() < m {
             layer_data.neighbors.push(source_dense);
             layer_data.version += 1;
             return;
         }
-        
+
         // At capacity - replace worst neighbor with source
         // Calculate distance to source
         let vector_store = self.vector_store.read();
@@ -2776,11 +2975,11 @@ impl HnswIndex {
             .get(target_node.vector_index as usize)
             .unwrap_or(&target_node.vector);
         let source_dist = self.calculate_distance(target_vector, source_vector);
-        
+
         // Find worst neighbor
         let mut worst_idx = 0;
         let mut worst_dist = f32::NEG_INFINITY;
-        
+
         for (idx, &neighbor_id) in layer_data.neighbors.iter().enumerate() {
             if let Some(neighbor_id) = self.dense_to_node_id(neighbor_id) {
                 if let Some(neighbor_node) = self.nodes.get(&neighbor_id) {
@@ -2795,7 +2994,7 @@ impl HnswIndex {
                 }
             }
         }
-        
+
         // Replace worst if source is closer, OR force-replace anyway for connectivity
         // (connectivity is more important than quality in this repair path)
         if source_dist < worst_dist {
@@ -2806,7 +3005,7 @@ impl HnswIndex {
             // Append and immediately prune to ensure at least some connection
             layer_data.neighbors.push(source_dense);
             layer_data.version += 1;
-            
+
             // Note: This temporarily exceeds capacity, but the prune step below will fix it
             // We're trading a bit of quality for guaranteed connectivity
         }
@@ -2833,10 +3032,14 @@ impl HnswIndex {
 
         // Quantize and normalize vector for distance calculations during insertion
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
-        let quantized_vector = if matches!(self.config.metric, DistanceMetric::Cosine) 
-            && self.config.rng_optimization.normalize_at_ingest {
+        let quantized_vector = if matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest
+        {
             // For cosine similarity, normalize during ingestion to enable L2 distance on unit sphere
-            QuantizedVector::from_f32_normalized(ndarray::Array1::from_vec(vector.clone()), precision)
+            QuantizedVector::from_f32_normalized(
+                ndarray::Array1::from_vec(vector.clone()),
+                precision,
+            )
         } else {
             // For other metrics, use original vector
             QuantizedVector::from_f32(ndarray::Array1::from_vec(vector.clone()), precision)
@@ -2886,10 +3089,11 @@ impl HnswIndex {
         // We need this for connection building even if this node becomes the new entry point
         let (old_ep_dense, old_max_layer) = self.nav_state.load();
         let old_ep_id = old_ep_dense.and_then(|d| self.dense_to_node_id(d as u32));
-        
+
         // Update entry point if this is the first node or higher layer (lock-free CAS)
         if self.nav_state.update_if_higher(dense_index as u64, layer) {
-            self.entry_point_dense.store(dense_index, AtomicOrdering::Release);
+            self.entry_point_dense
+                .store(dense_index, AtomicOrdering::Release);
         }
 
         // CRITICAL: Insert node into map BEFORE adding reverse connections
@@ -2925,12 +3129,7 @@ impl HnswIndex {
 
             // Insert at all layers from layer down to 0
             for lc in (0..=layer).rev() {
-                let candidates = self.search_layer_concurrent(
-                    &node.vector,
-                    &curr_nearest,
-                    ef,
-                    lc,
-                );
+                let candidates = self.search_layer_concurrent(&node.vector, &curr_nearest, ef, lc);
 
                 // Use heuristic to select M diverse neighbors
                 let m = if lc == 0 {
@@ -2939,9 +3138,10 @@ impl HnswIndex {
                     self.config.max_connections
                 };
 
-                let neighbors = if matches!(self.config.metric, DistanceMetric::Cosine) 
+                let neighbors = if matches!(self.config.metric, DistanceMetric::Cosine)
                     && self.config.rng_optimization.triangle_inequality_gating
-                    && self.config.rng_optimization.normalize_at_ingest {
+                    && self.config.rng_optimization.normalize_at_ingest
+                {
                     self.select_neighbors_optimized(&candidates, m, &node.vector)
                 } else {
                     self.select_neighbors_heuristic(&candidates, m, &node.vector)
@@ -2962,7 +3162,7 @@ impl HnswIndex {
                         reverse_edge_added = true;
                     }
                 }
-                
+
                 // If no reverse edge was added at layer 0, force-add one
                 // This is critical for search reachability
                 if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
@@ -2971,7 +3171,7 @@ impl HnswIndex {
 
                 curr_nearest = candidates;
             }
-            
+
             // CRITICAL: Enforce minimum degree invariant at layer 0
             // This prevents orphan nodes that can't be reached from the entry point
             self.ensure_minimum_degree_layer0(id, &curr_nearest);
@@ -2983,9 +3183,9 @@ impl HnswIndex {
         }
 
         // Auto-trigger PQ training if enabled and enough vectors collected
-        if self.config.rng_optimization.enable_product_quantization 
-            && self.pq_codebook.read().is_none() 
-            && self.nodes.len() >= self.config.rng_optimization.pq_training_vectors 
+        if self.config.rng_optimization.enable_product_quantization
+            && self.pq_codebook.read().is_none()
+            && self.nodes.len() >= self.config.rng_optimization.pq_training_vectors
         {
             // Try to train PQ codebook in background (non-blocking)
             // Note: In a real implementation, this should be done on a separate thread
@@ -2995,26 +3195,33 @@ impl HnswIndex {
         // Task #8: Schedule async RNG optimization for inserted node
         if let Some(ref scheduler) = self.rng_scheduler {
             let scheduler_guard = scheduler.write();
-            
+
             // Schedule neighbor refinement for the newly inserted node
             scheduler_guard.schedule_neighbor_refine(id, node.layer, 0.8); // Use default quality
-                
+
             // If this node has high degree, schedule connectivity repair
             if let Some(node_ref) = self.nodes.get(&id) {
                 let layer0_neighbors = node_ref.layers[0].read();
                 if layer0_neighbors.neighbors.len() > self.config.max_connections_layer0 as usize {
-                    scheduler_guard.schedule_connectivity_repair(id, 0, layer0_neighbors.neighbors.len());
+                    scheduler_guard.schedule_connectivity_repair(
+                        id,
+                        0,
+                        layer0_neighbors.neighbors.len(),
+                    );
                 }
             }
-            
+
             // Periodically schedule degree balancing for random existing nodes
             if self.nodes.len() % 100 == 0 && self.nodes.len() > 1000 {
                 // Pick a random node to balance - just use the current id for now
                 scheduler_guard.schedule_degree_balance(
-                    id, 0, 10, (8, 16) // Use reasonable defaults
+                    id,
+                    0,
+                    10,
+                    (8, 16), // Use reasonable defaults
                 );
             }
-            
+
             // Task #9: Schedule IVF cluster assignment for high-dimensional vectors
             if self.dimension > 512 {
                 scheduler_guard.schedule_ivf_assignment(id, self.dimension);
@@ -3067,7 +3274,9 @@ impl HnswIndex {
             if vector.len() != self.dimension {
                 return Err(format!(
                     "Vector {} dimension mismatch: expected {}, got {}",
-                    id, self.dimension, vector.len()
+                    id,
+                    self.dimension,
+                    vector.len()
                 ));
             }
         }
@@ -3086,21 +3295,21 @@ impl HnswIndex {
         //
         // Scaffold size: We need at least scaffold_threshold nodes to ensure good connectivity.
         // =========================================================================
-        
+
         let existing_nodes = self.nodes.len();
         let scaffold_threshold = 10 * self.config.max_connections_layer0;
-        
+
         // Only use scaffold if graph is cold (few existing nodes)
         if existing_nodes < scaffold_threshold {
             let n = batch.len();
-            
+
             // Calculate how many scaffold nodes we need to warm up the graph
             // We want at least scaffold_threshold nodes total to ensure good connectivity
             let nodes_needed_for_warm = scaffold_threshold.saturating_sub(existing_nodes);
-            
+
             // Cap at available nodes and reasonable upper bound
             let scaffold_end = nodes_needed_for_warm.min(n).min(2048);
-            
+
             if scaffold_end > 0 {
                 // Insert scaffold via proven sequential single-insert
                 for i in 0..scaffold_end {
@@ -3108,25 +3317,26 @@ impl HnswIndex {
                     // Use single insert for scaffold - guaranteed correct connectivity
                     let _ = self.insert(*id, vector.clone());
                 }
-                
+
                 // Process remaining bulk using batch method
                 if scaffold_end < n {
                     let bulk_batch = &batch[scaffold_end..];
-                    return self.insert_batch_bulk(bulk_batch)
+                    return self
+                        .insert_batch_bulk(bulk_batch)
                         .map(|bulk_count| scaffold_end + bulk_count);
                 }
-                
+
                 metrics::INSERT_COUNT.inc_by(scaffold_end as f64);
                 return Ok(scaffold_end);
             }
         }
-        
+
         // Graph is warm enough - use standard batch processing
         self.insert_batch_bulk(batch)
     }
-    
+
     /// Internal bulk insert with wave-based parallelization (Task 3)
-    /// 
+    ///
     /// Implements parallel wave graph construction to achieve near-linear multi-core scaling
     /// while preserving HNSW graph invariants. Expected speedup: 3-4x on 4 cores, 5-7x on 8 cores.
     fn insert_batch_bulk(&self, batch: &[(u128, Vec<f32>)]) -> Result<usize, String> {
@@ -3138,89 +3348,108 @@ impl HnswIndex {
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
         let normalize_cosine = matches!(self.config.metric, DistanceMetric::Cosine)
             && self.config.rng_optimization.normalize_at_ingest;
-        let node_ids: Result<Vec<_>, String> = batch.par_iter().map(|(id, vector)| {
-            let quantized = if normalize_cosine {
-                QuantizedVector::from_f32_normalized(
-                    ndarray::Array1::from_vec(vector.clone()),
-                    precision,
-                )
-            } else {
-                self.quantize_vector(vector)?
-            };
-            let layer = self.random_level();
-            let dense_index = self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
-            self.record_dense_id(dense_index, *id);
-            
-            let vector_index = {
-                let mut store = self.vector_store.write();
-                let idx = store.len() as u32;
-                store.push(quantized); // move, not clone
-                idx
-            };
-            let node = HnswNode {
-                id: *id,
-                dense_index,
-                vector_index,
-                vector: QuantizedVector::empty(),
-                layer,
-                layers: (0..=layer).map(|_| RwLock::new(VersionedNeighbors {
-                    neighbors: SmallVec::new(),
-                    version: 0,
-                })).collect(),
-                storage_id: None,
-            };
-            
-            // Insert node into storage
-            let node = Arc::new(node);
-            self.nodes.insert(*id, node.clone());
-            // O(1) hot path storage
-            self.store_internal_node(dense_index, node);
-            
-            Ok(*id)
-        }).collect();
-        
+        let node_ids: Result<Vec<_>, String> = batch
+            .par_iter()
+            .map(|(id, vector)| {
+                let quantized = if normalize_cosine {
+                    QuantizedVector::from_f32_normalized(
+                        ndarray::Array1::from_vec(vector.clone()),
+                        precision,
+                    )
+                } else {
+                    self.quantize_vector(vector)?
+                };
+                let layer = self.random_level();
+                let dense_index =
+                    self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
+                self.record_dense_id(dense_index, *id);
+
+                let vector_index = {
+                    let mut store = self.vector_store.write();
+                    let idx = store.len() as u32;
+                    store.push(quantized); // move, not clone
+                    idx
+                };
+                let node = HnswNode {
+                    id: *id,
+                    dense_index,
+                    vector_index,
+                    vector: QuantizedVector::empty(),
+                    layer,
+                    layers: (0..=layer)
+                        .map(|_| {
+                            RwLock::new(VersionedNeighbors {
+                                neighbors: SmallVec::new(),
+                                version: 0,
+                            })
+                        })
+                        .collect(),
+                    storage_id: None,
+                };
+
+                // Insert node into storage
+                let node = Arc::new(node);
+                self.nodes.insert(*id, node.clone());
+                // O(1) hot path storage
+                self.store_internal_node(dense_index, node);
+
+                Ok(*id)
+            })
+            .collect();
+
         let node_ids = node_ids?;
-        
+
         // Phase 2: Compute independent waves for parallel connection
-        let waves = compute_independent_waves(&node_ids, |node_id| {
-            self.get_candidate_neighbors(node_id, self.config.ef_construction)
-        }, self.config.ef_construction);
-        
+        let waves = compute_independent_waves(
+            &node_ids,
+            |node_id| self.get_candidate_neighbors(node_id, self.config.ef_construction),
+            self.config.ef_construction,
+        );
+
         #[cfg(debug_assertions)]
         {
             let stats = WaveStats::compute(&waves, node_ids.len());
-            eprintln!("[HNSW] Wave stats: {} waves, {:.1}% parallel efficiency, avg size {:.1}",
-                     stats.total_waves, stats.parallel_efficiency * 100.0, stats.avg_wave_size);
+            eprintln!(
+                "[HNSW] Wave stats: {} waves, {:.1}% parallel efficiency, avg size {:.1}",
+                stats.total_waves,
+                stats.parallel_efficiency * 100.0,
+                stats.avg_wave_size
+            );
         }
-        
+
         // Phase 3: Process each wave in parallel
         let mut total_inserted = 0;
-        
+
         for wave in waves {
             let wave_results: Vec<WaveResult> = process_wave_parallel(&wave, |node_id| {
                 let mut result = WaveResult::new(node_id);
-                
+
                 // Connect this node using existing connection logic
                 if let Some(node) = self.nodes.get(&node_id) {
                     let vector_store = self.vector_store.read();
                     let node_vector = vector_store
                         .get(node.vector_index as usize)
                         .unwrap_or(&node.vector);
-                    let node_dense = node.dense_index;
+                    let _node_dense = node.dense_index;
                     for layer in 0..=node.layer {
-                        let m = if layer == 0 { 
-                            self.config.max_connections_layer0 
-                        } else { 
-                            self.config.max_connections 
+                        let m = if layer == 0 {
+                            self.config.max_connections_layer0
+                        } else {
+                            self.config.max_connections
                         };
-                        
+
                         // Search for candidates at this layer
-                        let candidates = self.search_layer_for_insertion(node_vector, layer, self.config.ef_construction);
-                        
+                        let candidates = self.search_layer_for_insertion(
+                            node_vector,
+                            layer,
+                            self.config.ef_construction,
+                        );
+
                         // Select best neighbors using optimized heuristic
-                        let neighbors = self.select_neighbors_heuristic(&candidates, m, node_vector);
-                        
-                        // Add bidirectional connections  
+                        let neighbors =
+                            self.select_neighbors_heuristic(&candidates, m, node_vector);
+
+                        // Add bidirectional connections
                         for &neighbor_id in &neighbors {
                             let neighbor_dense = match self.node_id_to_dense(neighbor_id) {
                                 Some(dense) => dense,
@@ -3234,40 +3463,47 @@ impl HnswIndex {
                                     result.add_connection(node_id, layer, neighbor_id);
                                 }
                             }
-                            
+
                             // Add backward connection — use safe method that
                             // respects capacity limits and replaces worst neighbor
                             self.add_connection_safe(neighbor_id, node_id, node_vector, layer, m);
                         }
-                        
+
                         // NOTE: Do NOT prune during construction — pruning happens
                         // in the post-batch repair_connectivity pass. Pruning mid-construction
                         // with RNG destroys connectivity for subsequent wave members.
                     }
-                    
+
                     // Ensure minimum degree at layer 0 — prevents orphan nodes
                     self.ensure_minimum_degree_layer0(node_id, &[]);
                 }
-                
+
                 result
             });
-            
+
             total_inserted += wave.node_ids.len();
-            
+
             // Log wave completion for monitoring
             #[cfg(debug_assertions)]
             {
-                let total_connections: usize = wave_results.iter().map(|r| r.connections_count).sum();
-                eprintln!("[HNSW] Completed wave with {} nodes, {} connections", 
-                         wave.node_ids.len(), total_connections);
+                let total_connections: usize =
+                    wave_results.iter().map(|r| r.connections_count).sum();
+                eprintln!(
+                    "[HNSW] Completed wave with {} nodes, {} connections",
+                    wave.node_ids.len(),
+                    total_connections
+                );
             }
         }
-        
+
         // Phase 4: Post-batch optimization and repair
         let repaired = self.repair_connectivity();
         if repaired > 0 {
             #[cfg(debug_assertions)]
-            eprintln!("[HNSW] Repaired {} disconnected nodes after parallel batch insert", repaired);
+            eprintln!(
+                "[HNSW] Repaired {} disconnected nodes after parallel batch insert",
+                repaired
+            );
         }
 
         Ok(total_inserted)
@@ -3325,24 +3561,24 @@ impl HnswIndex {
         // - Only 2×M0 nodes needed for minimum viable scaffold (~64 nodes)
         // - This provides enough entry points for batch processing
         // =========================================================================
-        
+
         let existing_nodes = self.nodes.len();
         // Scaffold size: 2×M0 sequential inserts build a minimal connected core.
         // Smaller scaffold = faster batch inserts; 64 nodes provide enough entry
         // points for the wave-based bulk path. Full ef_construction is used for
         // scaffold so these backbone nodes have high-quality edges.
         let scaffold_threshold = 2 * self.config.max_connections_layer0;
-        
+
         // Only use scaffold if graph is cold (few existing nodes)
         if existing_nodes < scaffold_threshold {
             let n = ids.len();
-            
+
             // Calculate how many scaffold nodes we need to warm up the graph
             let nodes_needed_for_warm = scaffold_threshold.saturating_sub(existing_nodes);
-            
+
             // Scaffold should cover scaffold_threshold nodes
             let scaffold_end = nodes_needed_for_warm.min(n);
-            
+
             if scaffold_end > 0 {
                 // Insert scaffold via proven sequential single-insert
                 let scaffold_start = std::time::Instant::now();
@@ -3350,29 +3586,34 @@ impl HnswIndex {
                     let start = i * dimension;
                     let end = start + dimension;
                     let vec_slice = &vectors[start..end];
-                    
+
                     // Use single insert for scaffold - guaranteed correct connectivity
                     let _ = self.insert(ids[i], vec_slice.to_vec());
                 }
-                eprintln!("[HNSW] Scaffold {} nodes in {:?}", scaffold_end, scaffold_start.elapsed());
-                
+                eprintln!(
+                    "[HNSW] Scaffold {} nodes in {:?}",
+                    scaffold_end,
+                    scaffold_start.elapsed()
+                );
+
                 // Process remaining bulk using batch method
                 if scaffold_end < n {
                     let bulk_ids = &ids[scaffold_end..];
                     let bulk_vectors = &vectors[scaffold_end * dimension..];
-                    return self.insert_batch_contiguous_bulk(bulk_ids, bulk_vectors, dimension)
+                    return self
+                        .insert_batch_contiguous_bulk(bulk_ids, bulk_vectors, dimension)
                         .map(|bulk_count| scaffold_end + bulk_count);
                 }
-                
+
                 metrics::INSERT_COUNT.inc_by(scaffold_end as f64);
                 return Ok(scaffold_end);
             }
         }
-        
+
         // Graph is warm enough - use standard batch processing
         self.insert_batch_contiguous_bulk(ids, vectors, dimension)
     }
-    
+
     /// Zero-copy batch insert from u64 IDs (FFI-optimized)
     ///
     /// This method avoids the need for callers to allocate a Vec<u128> when
@@ -3409,15 +3650,15 @@ impl HnswIndex {
         let ids_u128: Vec<u128> = ids.iter().map(|&id| id as u128).collect();
         self.insert_batch_contiguous(&ids_u128, vectors, dimension)
     }
-    
+
     /// Internal bulk insert - uses optimized micro-batch processing
-    /// 
+    ///
     /// OPTIMIZATION: Instead of fully sequential single-insert, we use micro-batches:
-    /// 1. Pre-allocate all nodes (parallel quantization) 
+    /// 1. Pre-allocate all nodes (parallel quantization)
     /// 2. Insert nodes into graph map
     /// 3. Build connections in micro-waves (wave_size nodes at a time)
     /// 4. Each wave processes sequentially (HNSW invariant) but with optimized code path
-    /// 
+    ///
     /// This achieves ~5-10x speedup over pure sequential while maintaining correctness.
     fn insert_batch_contiguous_bulk(
         &self,
@@ -3425,9 +3666,9 @@ impl HnswIndex {
         vectors: &[f32],
         dimension: usize,
     ) -> Result<usize, String> {
+        use crate::profiling::is_profiling_enabled;
         use rayon::prelude::*;
-        use crate::profiling::{is_profiling_enabled, PROFILE_COLLECTOR};
-        
+
         if ids.is_empty() {
             return Ok(0);
         }
@@ -3435,15 +3676,15 @@ impl HnswIndex {
         let _profiling = is_profiling_enabled();
         let n = ids.len();
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
-        
+
         // =========================================================================
         // PHASE 1: Parallel quantization + batch vector_store write
         // =========================================================================
         // Quantize in parallel (CPU-bound), then batch-push into vector_store
         // under a single write lock to eliminate per-node lock contention.
-        
+
         let phase1_start = std::time::Instant::now();
-        
+
         // Step 1a: Parallel quantization (no locks needed)
         let quantized_nodes: Vec<_> = ids
             .par_iter()
@@ -3452,11 +3693,12 @@ impl HnswIndex {
                 let start = i * dimension;
                 let end = start + dimension;
                 let vec_slice = &vectors[start..end];
-                
+
                 let layer = self.random_level();
-                
-                let quantized = if matches!(self.config.metric, DistanceMetric::Cosine) 
-                    && self.config.rng_optimization.normalize_at_ingest {
+
+                let quantized = if matches!(self.config.metric, DistanceMetric::Cosine)
+                    && self.config.rng_optimization.normalize_at_ingest
+                {
                     QuantizedVector::from_f32_normalized(
                         ndarray::Array1::from_vec(vec_slice.to_vec()),
                         precision,
@@ -3467,14 +3709,15 @@ impl HnswIndex {
                         precision,
                     )
                 };
-                
-                let dense_index = self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
+
+                let dense_index =
+                    self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
                 self.record_dense_id(dense_index, id);
-                
+
                 (id, dense_index, layer, quantized)
             })
             .collect();
-        
+
         // Step 1b: Batch push into vector_store under ONE write lock
         // MEMORY FIX: Move vector into vector_store only (no clone).
         // HnswNode.vector gets a zero-length dummy — search and connection
@@ -3482,32 +3725,35 @@ impl HnswIndex {
         let nodes: Vec<(u128, Arc<HnswNode>)> = {
             let mut store = self.vector_store.write();
             store.reserve(quantized_nodes.len());
-            
-            quantized_nodes.into_iter().map(|(id, dense_index, layer, quantized)| {
-                let vector_index = store.len() as u32;
-                store.push(quantized); // move, not clone — single copy
-                
-                let mut layers = Vec::with_capacity(layer + 1);
-                for _ in 0..=layer {
-                    layers.push(RwLock::new(VersionedNeighbors::new()));
-                }
-                
-                let node = Arc::new(HnswNode {
-                    id,
-                    dense_index,
-                    vector_index,
-                    vector: QuantizedVector::empty(),
-                    storage_id: None,
-                    layers,
-                    layer,
-                });
-                
-                (id, node)
-            }).collect()
+
+            quantized_nodes
+                .into_iter()
+                .map(|(id, dense_index, layer, quantized)| {
+                    let vector_index = store.len() as u32;
+                    store.push(quantized); // move, not clone — single copy
+
+                    let mut layers = Vec::with_capacity(layer + 1);
+                    for _ in 0..=layer {
+                        layers.push(RwLock::new(VersionedNeighbors::new()));
+                    }
+
+                    let node = Arc::new(HnswNode {
+                        id,
+                        dense_index,
+                        vector_index,
+                        vector: QuantizedVector::empty(),
+                        storage_id: None,
+                        layers,
+                        layer,
+                    });
+
+                    (id, node)
+                })
+                .collect()
         };
-        
+
         let phase1_elapsed = phase1_start.elapsed();
-        
+
         // =========================================================================
         // PHASE 2: Insert all nodes into the map (but DON'T update entry point yet)
         // =========================================================================
@@ -3516,15 +3762,15 @@ impl HnswIndex {
         // node's connections are built. Otherwise, the entry point would be a
         // disconnected node that can't navigate to the rest of the graph.
         let phase2_start = std::time::Instant::now();
-        
+
         for (id, node) in &nodes {
             self.nodes.insert(*id, Arc::clone(node));
             // O(1) hot path storage
             self.store_internal_node(node.dense_index, Arc::clone(node));
         }
-        
+
         let phase2_elapsed = phase2_start.elapsed();
-        
+
         // =========================================================================
         // PHASE 3: Per-node-ready parallel construction (Qdrant-style).
         //
@@ -3546,14 +3792,13 @@ impl HnswIndex {
         // =========================================================================
         let phase3_start = std::time::Instant::now();
         let connected = std::sync::atomic::AtomicUsize::new(0);
-        
+
         // Allocate ready flags for ALL dense indices (existing + new).
         // Existing nodes (from scaffold or prior batches) are marked ready.
         // New nodes start as not-ready.
         let total_dense = self.next_dense_index.load(AtomicOrdering::Relaxed);
         let ready_arc = {
-            let mut ready_vec: Vec<std::sync::atomic::AtomicBool> =
-                Vec::with_capacity(total_dense);
+            let mut ready_vec: Vec<std::sync::atomic::AtomicBool> = Vec::with_capacity(total_dense);
             for _ in 0..total_dense {
                 ready_vec.push(std::sync::atomic::AtomicBool::new(true)); // all existing = ready
             }
@@ -3566,8 +3811,9 @@ impl HnswIndex {
             Arc::new(ready_vec)
         };
         *self.construction_ready.write() = Arc::clone(&ready_arc);
-        self.construction_in_progress.store(true, AtomicOrdering::Release);
-        
+        self.construction_in_progress
+            .store(true, AtomicOrdering::Release);
+
         // Shuffle to distribute spatially-close nodes across rayon's work queue.
         // Not strictly necessary with per-node-ready (unlike waves), but helps
         // distribute load across threads and reduces contention on nearby edges.
@@ -3577,7 +3823,7 @@ impl HnswIndex {
             let mut rng = rand::thread_rng();
             shuffled_nodes.shuffle(&mut rng);
         }
-        
+
         // Process ALL nodes in parallel with rayon. Each node:
         // 1. Searches the graph (seeing only ready nodes)
         // 2. Builds its forward + backward edges
@@ -3591,45 +3837,53 @@ impl HnswIndex {
         shuffled_nodes.par_iter().for_each(|(id, node)| {
             let nav_state = self.navigation_state();
             let _ = self.connect_node_fast(*id, node, &nav_state);
-            
+
             // PUBLISH: mark this node as ready (Release ordering ensures
             // all edge writes are visible before the flag flip).
             if let Some(flag) = ready_arc.get(node.dense_index as usize) {
                 flag.store(true, std::sync::atomic::Ordering::Release);
             }
-            
+
             // Update entry point atomically
-            if self.nav_state.update_if_higher(node.dense_index as u64, node.layer) {
-                self.entry_point_dense.store(node.dense_index, AtomicOrdering::Release);
+            if self
+                .nav_state
+                .update_if_higher(node.dense_index as u64, node.layer)
+            {
+                self.entry_point_dense
+                    .store(node.dense_index, AtomicOrdering::Release);
             }
-            
+
             connected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
-        
+
         // Clear construction_ready — back to zero-overhead query mode.
-        self.construction_in_progress.store(false, AtomicOrdering::Release);
+        self.construction_in_progress
+            .store(false, AtomicOrdering::Release);
         *self.construction_ready.write() = Arc::new(Vec::new());
-        
+
         let total_connected = connected.load(std::sync::atomic::Ordering::Relaxed);
         let phase3_elapsed = phase3_start.elapsed();
-        
+
         eprintln!(
             "[HNSW] insert_batch_bulk n={}: phase1={:?} phase2={:?} connect={:?} total={:?} ({} connected)",
-            n, phase1_elapsed, phase2_elapsed, phase3_elapsed, phase1_start.elapsed(), total_connected
+            n,
+            phase1_elapsed,
+            phase2_elapsed,
+            phase3_elapsed,
+            phase1_start.elapsed(),
+            total_connected
         );
-        
+
         metrics::INSERT_COUNT.inc_by(n as f64);
-        
+
         Ok(n)
     }
-    
+
     /// Build HNSW connections for all pending (deferred) nodes.
     ///
     /// Called lazily before the first search to amortize construction cost.
     /// Uses sequential wave processing for maximum graph quality.
     pub fn build_pending_connections(&self) {
-        use rayon::prelude::*;
-        
         // Atomically drain all pending nodes
         let nodes: Vec<(u128, Arc<HnswNode>)> = {
             let mut pending = self.pending_nodes.lock();
@@ -3638,36 +3892,39 @@ impl HnswIndex {
             }
             std::mem::take(&mut *pending)
         };
-        
+
         let n = nodes.len();
         tracing::info!("Building HNSW connections for {} deferred nodes", n);
-        
+
         let ef = self.config.ef_construction;
         // wave_size=512 → process 512 nodes per wave for faster deferred build.
         // Nodes within the same wave share the same graph snapshot.
         let wave_size = 512;
         let mut connected = 0;
-        
+
         let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
             && self.config.rng_optimization.normalize_at_ingest;
-        
+
         let waves: Vec<_> = nodes.chunks(wave_size).collect();
-        
+
         for wave in waves {
             let nav_state = self.navigation_state();
             let vector_store = self.vector_store.read();
             let internal_nodes = self.internal_nodes.read();
-            
+
             for (id, node) in wave {
                 let ep_id = match nav_state.entry_point {
                     Some(ep) if ep != *id => ep,
-                    _ => { connected += 1; continue; }
+                    _ => {
+                        connected += 1;
+                        continue;
+                    }
                 };
-                
+
                 let node_vector = vector_store
                     .get(node.vector_index as usize)
                     .unwrap_or(&node.vector);
-                
+
                 let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
                 let ep_vi = if ep_dense != u32::MAX {
                     if let Some(Some(ep_n)) = internal_nodes.get(ep_dense as usize) {
@@ -3675,55 +3932,69 @@ impl HnswIndex {
                     } else {
                         match self.nodes.get(&ep_id) {
                             Some(ep_n) => ep_n.vector_index as usize,
-                            None => { connected += 1; continue; }
+                            None => {
+                                connected += 1;
+                                continue;
+                            }
                         }
                     }
                 } else {
                     match self.nodes.get(&ep_id) {
                         Some(ep_n) => ep_n.vector_index as usize,
-                        None => { connected += 1; continue; }
+                        None => {
+                            connected += 1;
+                            continue;
+                        }
                     }
                 };
                 let ep_vector = &vector_store[ep_vi];
-                
+
                 let initial_distance = if use_normalized {
                     self.calculate_distance_normalized(node_vector, ep_vector)
                 } else {
                     self.calculate_distance(node_vector, ep_vector)
                 };
-                
+
                 let mut curr_nearest = vec![SearchCandidate {
                     distance: initial_distance,
                     id: ep_id,
                 }];
-                
+
                 for lc in (node.layer + 1..=nav_state.max_layer).rev() {
                     curr_nearest = self.search_layer_ref(
-                        node_vector, &curr_nearest, 1, lc,
-                        &vector_store, &internal_nodes,
+                        node_vector,
+                        &curr_nearest,
+                        1,
+                        lc,
+                        &vector_store,
+                        &internal_nodes,
                     );
                 }
-                
+
                 for lc in (0..=node.layer).rev() {
                     let candidates = self.search_layer_ref(
-                        node_vector, &curr_nearest, ef, lc,
-                        &vector_store, &internal_nodes,
+                        node_vector,
+                        &curr_nearest,
+                        ef,
+                        lc,
+                        &vector_store,
+                        &internal_nodes,
                     );
-                    
+
                     let m = if lc == 0 {
                         self.config.max_connections_layer0
                     } else {
                         self.config.max_connections
                     };
-                    
+
                     let neighbors = self.select_neighbors_heuristic(&candidates, m, node_vector);
-                    
+
                     {
                         let mut layer_guard = node.layers[lc].write();
                         layer_guard.neighbors = self.ids_to_dense_neighbors(&neighbors);
                         layer_guard.version += 1;
                     }
-                    
+
                     let mut reverse_edge_added = false;
                     for &neighbor_id in &neighbors {
                         if self.add_connection_safe(neighbor_id, *id, node_vector, lc, m) {
@@ -3733,20 +4004,20 @@ impl HnswIndex {
                     if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
                         self.force_add_reverse_edge(*id, neighbors[0], node_vector, 0);
                     }
-                    
+
                     curr_nearest = candidates;
                 }
-                
+
                 connected += 1;
             }
         }
-        
+
         // Repair connectivity for the entire graph
         let repaired = self.repair_connectivity();
         if repaired > 0 {
             tracing::debug!("Deferred build: repaired {} disconnected nodes", repaired);
         }
-        
+
         // Update entry point to highest-layer node now that connections are built
         for (id, node) in &nodes {
             if let Some(dense) = self.node_id_to_dense(*id) {
@@ -3755,10 +4026,14 @@ impl HnswIndex {
                 }
             }
         }
-        
-        tracing::info!("Built connections for {} nodes ({} repaired)", connected, repaired);
+
+        tracing::info!(
+            "Built connections for {} nodes ({} repaired)",
+            connected,
+            repaired
+        );
     }
-    
+
     /// Profiled version of connect_node_fast - returns timing breakdown
     #[inline]
     fn connect_node_fast_profiled(
@@ -3770,12 +4045,12 @@ impl HnswIndex {
         let mut search_ns: u64 = 0;
         let mut neighbor_ns: u64 = 0;
         let mut connection_ns: u64 = 0;
-        
+
         let ep_id = match nav_state.entry_point {
             Some(ep) if ep != id => ep,
             _ => return (0, 0, 0),
         };
-        
+
         let ep_node = match self.nodes.get(&ep_id) {
             Some(n) => n,
             None => return (0, 0, 0),
@@ -3787,51 +4062,52 @@ impl HnswIndex {
         let ep_vector = vector_store
             .get(ep_node.vector_index as usize)
             .unwrap_or(&ep_node.vector);
-        
+
         // Search from top layer
         let mut curr_nearest = vec![SearchCandidate {
             distance: self.calculate_distance(node_vector, ep_vector),
             id: ep_id,
         }];
-        
+
         // Navigate down to node's layer
         for lc in (node.layer + 1..=nav_state.max_layer).rev() {
             let t = std::time::Instant::now();
             curr_nearest = self.search_layer_concurrent(node_vector, &curr_nearest, 1, lc);
             search_ns += t.elapsed().as_nanos() as u64;
         }
-        
+
         let ef = self.adaptive_ef_construction_with_mode(true);
-        
+
         // Build connections at all layers
         for lc in (0..=node.layer).rev() {
             let t = std::time::Instant::now();
             let candidates = self.search_layer_concurrent(node_vector, &curr_nearest, ef, lc);
             search_ns += t.elapsed().as_nanos() as u64;
-            
+
             let m = if lc == 0 {
                 self.config.max_connections_layer0
             } else {
                 self.config.max_connections
             };
-            
+
             let t = std::time::Instant::now();
             let neighbors = if matches!(self.config.metric, DistanceMetric::Cosine)
                 && self.config.rng_optimization.triangle_inequality_gating
-                && self.config.rng_optimization.normalize_at_ingest {
+                && self.config.rng_optimization.normalize_at_ingest
+            {
                 self.select_neighbors_optimized(&candidates, m, node_vector)
             } else {
                 self.select_neighbors_heuristic(&candidates, m, node_vector)
             };
             neighbor_ns += t.elapsed().as_nanos() as u64;
-            
+
             // Update node's neighbors
             {
                 let mut layer_guard = node.layers[lc].write();
                 layer_guard.neighbors = self.ids_to_dense_neighbors(&neighbors);
                 layer_guard.version += 1;
             }
-            
+
             // Add reverse connections — track success for connectivity safety net
             let t = std::time::Instant::now();
             let mut reverse_edge_added = false;
@@ -3844,18 +4120,18 @@ impl HnswIndex {
                 self.force_add_reverse_edge(id, neighbors[0], node_vector, 0);
             }
             connection_ns += t.elapsed().as_nanos() as u64;
-            
+
             curr_nearest = candidates;
         }
-        
+
         // Ensure minimum degree at layer 0
         self.ensure_minimum_degree_layer0(id, &curr_nearest);
-        
+
         (search_ns, neighbor_ns, connection_ns)
     }
-    
+
     /// Optimized node connection - avoids redundant allocations
-    /// 
+    ///
     /// This is a streamlined version of the insert() connection logic,
     /// used when nodes are already pre-allocated in the graph.
     #[inline]
@@ -3869,58 +4145,76 @@ impl HnswIndex {
             Some(ep) if ep != id => ep,
             _ => return Ok(()), // First node or self, no connections needed
         };
-        
+
         let ep_node = match self.nodes.get(&ep_id) {
             Some(n) => n,
             None => return Ok(()),
         };
+        // Acquire read locks ONCE and pass refs to search_layer_ref
+        // instead of re-acquiring per search_layer_concurrent call
         let vector_store = self.vector_store.read();
+        let internal_nodes = self.internal_nodes.read();
         let node_vector = vector_store
             .get(node.vector_index as usize)
             .unwrap_or(&node.vector);
         let ep_vector = vector_store
             .get(ep_node.vector_index as usize)
             .unwrap_or(&ep_node.vector);
-        
+
         // Search from top layer
         let mut curr_nearest = vec![SearchCandidate {
             distance: self.calculate_distance(node_vector, ep_vector),
             id: ep_id,
         }];
-        
-        // Navigate down to node's layer
+
+        // Navigate down to node's layer using search_layer_ref (shared locks)
         for lc in (node.layer + 1..=nav_state.max_layer).rev() {
-            curr_nearest = self.search_layer_concurrent(node_vector, &curr_nearest, 1, lc);
+            curr_nearest = self.search_layer_ref(
+                node_vector,
+                &curr_nearest,
+                1,
+                lc,
+                &vector_store,
+                &internal_nodes,
+            );
         }
-        
+
         // Adaptive ef for early speedup - optimized for batch inserts
         let ef = self.adaptive_ef_construction_with_mode(true);
-        
+
         // Build connections at all layers
         for lc in (0..=node.layer).rev() {
-            let candidates = self.search_layer_concurrent(node_vector, &curr_nearest, ef, lc);
-            
+            let candidates = self.search_layer_ref(
+                node_vector,
+                &curr_nearest,
+                ef,
+                lc,
+                &vector_store,
+                &internal_nodes,
+            );
+
             let m = if lc == 0 {
                 self.config.max_connections_layer0
             } else {
                 self.config.max_connections
             };
-            
+
             let neighbors = if matches!(self.config.metric, DistanceMetric::Cosine)
                 && self.config.rng_optimization.triangle_inequality_gating
-                && self.config.rng_optimization.normalize_at_ingest {
+                && self.config.rng_optimization.normalize_at_ingest
+            {
                 self.select_neighbors_optimized(&candidates, m, node_vector)
             } else {
                 self.select_neighbors_heuristic(&candidates, m, node_vector)
             };
-            
+
             // Update node's neighbors
             {
                 let mut layer_guard = node.layers[lc].write();
                 layer_guard.neighbors = self.ids_to_dense_neighbors(&neighbors);
                 layer_guard.version += 1;
             }
-            
+
             // Add reverse connections — track success for connectivity safety net
             let mut reverse_edge_added = false;
             for &neighbor_id in &neighbors {
@@ -3928,39 +4222,39 @@ impl HnswIndex {
                     reverse_edge_added = true;
                 }
             }
-            
+
             // Force-add at least one reverse edge if all failed (connectivity invariant)
             if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
                 self.force_add_reverse_edge(id, neighbors[0], node_vector, 0);
             }
-            
+
             curr_nearest = candidates;
         }
-        
+
         // Ensure minimum degree at layer 0 — guarantees node is reachable
         self.ensure_minimum_degree_layer0(id, &curr_nearest);
-        
+
         Ok(())
     }
 
     // =========================================================================
     // TASK 1: FLAT-SLICE INSERT API (Zero-Allocation Path)
     // =========================================================================
-    
+
     /// Insert vectors from contiguous memory without per-vector allocation.
-    /// 
+    ///
     /// This is the **high-performance FFI path** that eliminates the structural
     /// allocation requirement of `insert_batch(&[(u128, Vec<f32>)])`.
-    /// 
+    ///
     /// # Arguments
     /// * `ids` - Slice of N vector IDs
     /// * `vectors` - Contiguous f32 buffer of length N × dimension (row-major)
     /// * `dimension` - Vector dimension (must match index dimension)
     ///
     /// # Performance
-    /// 
+    ///
     /// Zero heap allocations for vector data; only allocates graph nodes.
-    /// 
+    ///
     /// | API | Allocations per Batch | Memory Locality |
     /// |-----|----------------------|-----------------|
     /// | `insert_batch` | O(N) Vec<f32> | Scattered heap |
@@ -4004,11 +4298,11 @@ impl HnswIndex {
     }
 
     /// Single-vector insert from slice reference (no allocation)
-    /// 
+    ///
     /// This is the allocation-free path for single inserts from FFI.
     /// Instead of `index.insert(id, vec.to_vec())`, use:
     /// `index.insert_one_from_slice(id, vec_slice)`
-    /// 
+    ///
     /// # Arguments
     /// * `id` - Vector ID
     /// * `vector` - Slice reference to vector data (must match index dimension)
@@ -4030,20 +4324,14 @@ impl HnswIndex {
         }
 
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
-        
+
         // Quantize and optionally normalize directly from slice
         let quantized = if matches!(self.config.metric, DistanceMetric::Cosine) {
             // For cosine similarity, normalize during ingestion
-            QuantizedVector::from_f32_normalized(
-                ndarray::Array1::from(vector.to_vec()),
-                precision,
-            )
+            QuantizedVector::from_f32_normalized(ndarray::Array1::from(vector.to_vec()), precision)
         } else {
             // For other metrics, use original vector
-            QuantizedVector::from_f32(
-                ndarray::Array1::from(vector.to_vec()),
-                precision,
-            )
+            QuantizedVector::from_f32(ndarray::Array1::from(vector.to_vec()), precision)
         };
 
         // Create node
@@ -4078,7 +4366,8 @@ impl HnswIndex {
 
         // Update entry point if this is first node or higher layer (lock-free CAS)
         if self.nav_state.update_if_higher(dense_index as u64, layer) {
-            self.entry_point_dense.store(dense_index, AtomicOrdering::Release);
+            self.entry_point_dense
+                .store(dense_index, AtomicOrdering::Release);
         }
 
         // Connect to graph using optimized path
@@ -4115,13 +4404,13 @@ impl HnswIndex {
     /// # Example
     /// ```ignore
     /// use memmap2::Mmap;
-    /// 
+    ///
     /// let file = File::open("embeddings.bin")?;
     /// let mmap = unsafe { Mmap::map(&file)? };
-    /// let vectors = unsafe { 
-    ///     std::slice::from_raw_parts(mmap.as_ptr() as *const f32, n * dim) 
+    /// let vectors = unsafe {
+    ///     std::slice::from_raw_parts(mmap.as_ptr() as *const f32, n * dim)
     /// };
-    /// 
+    ///
     /// let index = HnswIndex::new(dim, config);
     /// index.build_from_mmap(vectors, dim, n)?;
     /// ```
@@ -4199,7 +4488,7 @@ impl HnswIndex {
 
         for i in 0..n_vectors {
             let id = i as u128;
-            
+
             // Read vector from storage
             let vector = storage
                 .get(i as u64)
@@ -4246,7 +4535,8 @@ impl HnswIndex {
 
             // Update entry point if needed (lock-free CAS)
             if self.nav_state.update_if_higher(dense_index as u64, layer) {
-                self.entry_point_dense.store(dense_index, AtomicOrdering::Release);
+                self.entry_point_dense
+                    .store(dense_index, AtomicOrdering::Release);
             }
 
             // Connect to graph
@@ -4261,7 +4551,7 @@ impl HnswIndex {
     }
 
     /// Phase 3: Two-phase parallel connection building
-    /// 
+    ///
     /// **Key Innovation**: Eliminates lock convoy on hub nodes by:
     /// 1. Phase 3a: Build forward edges only (each node owns its neighbors - fully parallel)
     /// 2. Phase 3b: Consolidate backedges by target (partitioned, no conflicts)
@@ -4272,7 +4562,7 @@ impl HnswIndex {
         use dashmap::DashMap;
         use rayon::prelude::*;
         use std::collections::HashMap;
-        
+
         if nodes_to_connect.is_empty() {
             return 0;
         }
@@ -4290,10 +4580,10 @@ impl HnswIndex {
         // SOLUTION: Process forward edges SEQUENTIALLY to maintain the incremental
         // construction invariant. Backedge consolidation can still be parallel.
         //
-        // Complexity: O(N · ef · log N) for forward edges + O(N · m) parallel 
+        // Complexity: O(N · ef · log N) for forward edges + O(N · m) parallel
         // backedge work = O(N · ef · log N) total.
         // =========================================================================
-        
+
         // =========================================================================
         // EP-SAFE ORIGIN SNAPSHOT (Task 1 Extension)
         // =========================================================================
@@ -4308,21 +4598,29 @@ impl HnswIndex {
 
         // Pending backedges: target_id -> Vec<(layer, source_id)>
         let pending_backedges: DashMap<u128, Vec<(usize, u128)>> = DashMap::new();
-        
+
         // Phase 3a: Build forward edges SEQUENTIALLY to maintain navigability
         // Each node searches a connected subgraph containing all previously processed vertices
         let mut successful_ids: Vec<u128> = Vec::with_capacity(nodes_to_connect.len());
-        
+
         for (id, node) in nodes_to_connect {
             // Use pre-batch nav state so no node skips edge construction
-            if self.build_forward_edges_with_origin(*id, node, base_nav_state.clone(), &pending_backedges).is_ok() {
+            if self
+                .build_forward_edges_with_origin(
+                    *id,
+                    node,
+                    base_nav_state.clone(),
+                    &pending_backedges,
+                )
+                .is_ok()
+            {
                 successful_ids.push(*id);
             }
         }
 
         // Phase 3b: Consolidate backedges by target (parallel by target, no conflicts)
         let targets: Vec<u128> = pending_backedges.iter().map(|e| *e.key()).collect();
-        
+
         targets.par_iter().for_each(|target_id| {
             if let Some(backedges) = pending_backedges.get(target_id) {
                 if let Some(target_node) = self.nodes.get(target_id) {
@@ -4333,7 +4631,7 @@ impl HnswIndex {
                             by_layer.entry(*layer).or_default().push(*source);
                         }
                     }
-                    
+
                     // Apply backedges to each layer
                     for (layer, sources) in by_layer {
                         let m = if layer == 0 {
@@ -4341,9 +4639,9 @@ impl HnswIndex {
                         } else {
                             self.config.max_connections
                         };
-                        
+
                         let mut layer_guard = target_node.layers[layer].write();
-                        
+
                         // Add all backedges that aren't already present
                         for source in sources {
                             if let Some(source_dense) = self.node_id_to_dense(source) {
@@ -4353,7 +4651,7 @@ impl HnswIndex {
                             }
                         }
                         layer_guard.version += 1;
-                        
+
                         // Prune if over capacity
                         if layer_guard.neighbors.len() > m {
                             // Get target vector for pruning
@@ -4363,7 +4661,7 @@ impl HnswIndex {
                                 .unwrap_or(&target_node.vector)
                                 .clone();
                             drop(layer_guard);
-                            
+
                             // Use existing pruning logic
                             self.prune_layer_neighbors(*target_id, layer, m, &target_vec);
                         }
@@ -4376,16 +4674,16 @@ impl HnswIndex {
     }
 
     /// Build forward edges for a single node without adding backedges
-    /// 
+    ///
     /// This function uses an explicit navigation state snapshot to ensure all nodes
     /// in a batch build edges from the same consistent origin (the pre-batch EP).
-    /// 
+    ///
     /// # Arguments
     /// * `id` - The node ID being processed
     /// * `node` - The node to build edges for
     /// * `base_nav_state` - Pre-batch navigation state (use navigation_state() before batch)
     /// * `pending_backedges` - Map to accumulate backedges for later consolidation
-    /// 
+    ///
     /// Returns the list of forward edges to be used for deferred backedge consolidation.
     #[allow(dead_code)]
     fn build_forward_edges_only(
@@ -4398,9 +4696,9 @@ impl HnswIndex {
         let nav_state = self.navigation_state();
         self.build_forward_edges_with_origin(id, node, nav_state, pending_backedges)
     }
-    
+
     /// Build forward edges using an explicit navigation origin
-    /// 
+    ///
     /// This is the core implementation that accepts a navigation state snapshot.
     /// The batch pipeline should call this with the pre-batch state to ensure
     /// all nodes connect to the existing graph, not to themselves.
@@ -4437,10 +4735,12 @@ impl HnswIndex {
                 // This node IS the base entry point - find alternative search origin
                 // This shouldn't happen in batch mode if base_nav_state is correct,
                 // but handle it gracefully for robustness
-                let alt_origin = self.nodes.iter()
+                let alt_origin = self
+                    .nodes
+                    .iter()
                     .find(|entry| *entry.key() != id)
                     .map(|entry| (*entry.key(), entry.value().clone()));
-                
+
                 match alt_origin {
                     Some((alt_id, alt_node)) => (alt_id, alt_node),
                     None => return Ok(()), // No other nodes exist yet
@@ -4472,12 +4772,7 @@ impl HnswIndex {
 
         // Insert at all layers from node.layer down to 0
         for lc in (0..=node.layer).rev() {
-            let candidates = self.search_layer_concurrent(
-                node_vector,
-                &curr_nearest,
-                ef,
-                lc,
-            );
+            let candidates = self.search_layer_concurrent(node_vector, &curr_nearest, ef, lc);
 
             let m = if lc == 0 {
                 self.config.max_connections_layer0
@@ -4509,42 +4804,50 @@ impl HnswIndex {
     }
 
     /// Prune neighbors in a specific layer using the selection heuristic
-    /// 
+    ///
     /// LAYER-0 MINIMUM DEGREE INVARIANT: At layer 0, we never reduce neighbors to 0.
     /// This ensures every node remains reachable from the entry point.
-    pub(crate) fn prune_layer_neighbors(&self, node_id: u128, layer: usize, m: usize, node_vector: &QuantizedVector) {
+    pub(crate) fn prune_layer_neighbors(
+        &self,
+        node_id: u128,
+        layer: usize,
+        m: usize,
+        node_vector: &QuantizedVector,
+    ) {
         if let Some(node) = self.nodes.get(&node_id) {
             let mut layer_guard = node.layers[layer].write();
             let vector_store = self.vector_store.read();
-            
+
             // Layer-0 invariant: never prune to zero neighbors
             if layer == 0 && layer_guard.neighbors.len() <= 1 {
                 // Already at minimum degree (0 or 1), skip pruning
                 return;
             }
-            
+
             // Build candidates from current neighbors
             let candidates: Vec<SearchCandidate> = layer_guard
                 .neighbors
                 .iter()
                 .filter_map(|&neighbor_dense| {
-                    self.dense_to_node_id(neighbor_dense).and_then(|neighbor_id| {
-                        self.nodes.get(&neighbor_id).map(|neighbor| {
-                            let neighbor_vector = vector_store
-                                .get(neighbor.vector_index as usize)
-                                .unwrap_or(&neighbor.vector);
-                            SearchCandidate {
-                                distance: self.calculate_distance_pq(node_vector, neighbor_vector),
-                                id: neighbor_id,
-                            }
+                    self.dense_to_node_id(neighbor_dense)
+                        .and_then(|neighbor_id| {
+                            self.nodes.get(&neighbor_id).map(|neighbor| {
+                                let neighbor_vector = vector_store
+                                    .get(neighbor.vector_index as usize)
+                                    .unwrap_or(&neighbor.vector);
+                                SearchCandidate {
+                                    distance: self
+                                        .calculate_distance_pq(node_vector, neighbor_vector),
+                                    id: neighbor_id,
+                                }
+                            })
                         })
-                    })
                 })
                 .collect();
-            
+
             // Select best neighbors using heuristic
             let mut pruned = self.select_neighbors_heuristic(&candidates, m, node_vector);
-            
+
             // =========================================================================
             // LAYER-0 NON-EMPTY NEIGHBOR INVARIANT (Task 3)
             // =========================================================================
@@ -4555,14 +4858,15 @@ impl HnswIndex {
             // =========================================================================
             if layer == 0 && pruned.is_empty() && !candidates.is_empty() {
                 // Keep the closest neighbor to prevent isolation
-                let closest = candidates.iter()
+                let closest = candidates
+                    .iter()
                     .min_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap())
                     .map(|c| c.id);
                 if let Some(id) = closest {
                     pruned.push(id);
                 }
             }
-            
+
             layer_guard.neighbors = self.ids_to_dense_neighbors(&pruned);
             layer_guard.version += 1;
         }
@@ -4607,12 +4911,7 @@ impl HnswIndex {
 
         // Insert at all layers from node.layer down to 0
         for lc in (0..=node.layer).rev() {
-            let candidates = self.search_layer_concurrent(
-                node_vector,
-                &curr_nearest,
-                ef,
-                lc,
-            );
+            let candidates = self.search_layer_concurrent(node_vector, &curr_nearest, ef, lc);
 
             let m = if lc == 0 {
                 self.config.max_connections_layer0
@@ -4640,13 +4939,7 @@ impl HnswIndex {
                             neighbor_layer_lock.version += 1;
                         } else {
                             drop(neighbor_layer_lock);
-                            self.prune_connections_concurrent(
-                                neighbor_id,
-                                lc,
-                                m,
-                                node_vector,
-                                id,
-                            );
+                            self.prune_connections_concurrent(neighbor_id, lc, m, node_vector, id);
                         }
                     }
                 }
@@ -4665,14 +4958,14 @@ impl HnswIndex {
     // Eliminates all heap allocations in the search loop.
 
     /// Ultra-fast search for robotics/edge use cases
-    /// 
+    ///
     /// This bypasses the QuantizedVector wrapper and operates directly on raw slices.
     /// Achieves sub-millisecond latency for 10k vectors.
-    /// 
+    ///
     /// # Arguments
     /// * `query` - Query vector as raw f32 slice (must match index dimension)
     /// * `k` - Number of nearest neighbors to return
-    /// 
+    ///
     /// # Performance
     /// - Zero heap allocations in hot path (uses thread-local scratch buffers)
     /// - Direct SIMD distance computation
@@ -4690,7 +4983,7 @@ impl HnswIndex {
 
         // Fast path: check if empty + get consistent (ep, max_layer) snapshot
         let (ep_dense_opt, max_layer) = self.nav_state.load();
-        
+
         if ep_dense_opt.is_none() {
             return Ok(Vec::new());
         }
@@ -4699,23 +4992,25 @@ impl HnswIndex {
         let vector_store = self.vector_store.read();
         let internal_nodes = self.internal_nodes.read();
         let dense_to_id = self.dense_to_id.read();
-        
+
         // Get entry point's dense_index from atomic nav_state snapshot
         let ep_dense = ep_dense_opt.unwrap() as u32;
         if ep_dense == u32::MAX {
             return Ok(Vec::new());
         }
-        let ep_node = internal_nodes.get(ep_dense as usize)
+        let ep_node = internal_nodes
+            .get(ep_dense as usize)
             .and_then(|opt| opt.as_ref())
             .ok_or("Entry point not found in dense array")?;
         let ep_vec_idx = ep_node.vector_index;
-        
+
         // Get entry point vector directly from array (O(1))
-        let ep_vector = Self::get_raw_vector_from_store(&vector_store, &internal_nodes, ep_vec_idx, ep_dense)?;
-        
+        let ep_vector =
+            Self::get_raw_vector_from_store(&vector_store, &internal_nodes, ep_vec_idx, ep_dense)?;
+
         // Calculate initial distance with SIMD
         let initial_distance = self.distance_raw(query, ep_vector);
-        
+
         // Use FastCandidate with dense_index for O(1) access in hot loop
         let mut curr_nearest = smallvec::smallvec![FastCandidate {
             distance: initial_distance,
@@ -4749,35 +5044,37 @@ impl HnswIndex {
             .into_iter()
             .take(k)
             .filter_map(|c| {
-                dense_to_id.get(c.dense_index as usize).map(|&id| (id, c.distance))
+                dense_to_id
+                    .get(c.dense_index as usize)
+                    .map(|&id| (id, c.distance))
             })
             .collect())
     }
-    
+
     /// Ultra-low-latency search using flat neighbor cache
-    /// 
+    ///
     /// **IMPORTANT PERFORMANCE NOTE (2026-01-22):**
     /// After rigorous profiling, `search_fast()` is actually FASTER than `search_ultra()`
     /// for most workloads due to:
-    /// 
+    ///
     /// 1. SmallVec inline storage provides better cache locality
     /// 2. parking_lot RwLock read is nearly free under no contention
     /// 3. Flat array access adds multiplication + cache miss overhead
-    /// 
+    ///
     /// This method exists for scenarios with HIGH CONCURRENT WRITE CONTENTION where
     /// the RwLock reads in `search_fast()` may block. For read-heavy workloads
     /// (the common case), prefer `search_fast()`.
-    /// 
+    ///
     /// # When to use `search_ultra()`:
     /// - Many concurrent writers (>10 threads) competing for node locks
     /// - Real-time systems that cannot tolerate ANY lock blocking
     /// - After calling `build_flat_neighbor_cache()`
-    /// 
+    ///
     /// # When to use `search_fast()` (recommended):
     /// - Read-heavy workloads (common case)
     /// - Single-threaded or low-contention scenarios
     /// - When you haven't called `build_flat_neighbor_cache()`
-    /// 
+    ///
     /// Falls back to search_fast() if cache is not built.
     #[inline]
     pub fn search_ultra(&self, query: &[f32], k: usize) -> Result<Vec<(u128, f32)>, String> {
@@ -4786,7 +5083,7 @@ impl HnswIndex {
             // Fall back to search_fast if cache not built
             return self.search_fast(query, k);
         }
-        
+
         if query.len() != self.dimension {
             return Err(format!(
                 "Query dimension mismatch: expected {}, got {}",
@@ -4797,7 +5094,7 @@ impl HnswIndex {
 
         // Fast path: check if empty + get consistent snapshot
         let (ep_dense_opt, max_layer) = self.nav_state.load();
-        
+
         if ep_dense_opt.is_none() {
             return Ok(Vec::new());
         }
@@ -4807,20 +5104,22 @@ impl HnswIndex {
         let internal_nodes = self.internal_nodes.read();
         let dense_to_id = self.dense_to_id.read();
         let flat_neighbors = self.flat_neighbors.read();
-        
+
         // Get entry point's dense_index from atomic nav_state snapshot
         let ep_dense = ep_dense_opt.unwrap() as u32;
         if ep_dense == u32::MAX {
             return Ok(Vec::new());
         }
-        let ep_node = internal_nodes.get(ep_dense as usize)
+        let ep_node = internal_nodes
+            .get(ep_dense as usize)
             .and_then(|opt| opt.as_ref())
             .ok_or("Entry point not found in dense array")?;
         let ep_vec_idx = ep_node.vector_index;
-        
-        let ep_vector = Self::get_raw_vector_from_store(&vector_store, &internal_nodes, ep_vec_idx, ep_dense)?;
+
+        let ep_vector =
+            Self::get_raw_vector_from_store(&vector_store, &internal_nodes, ep_vec_idx, ep_dense)?;
         let initial_distance = self.distance_raw(query, ep_vector);
-        
+
         let mut curr_nearest = smallvec::smallvec![FastCandidate {
             distance: initial_distance,
             dense_index: ep_dense,
@@ -4852,13 +5151,15 @@ impl HnswIndex {
             .into_iter()
             .take(k)
             .filter_map(|c| {
-                dense_to_id.get(c.dense_index as usize).map(|&id| (id, c.distance))
+                dense_to_id
+                    .get(c.dense_index as usize)
+                    .map(|&id| (id, c.distance))
             })
             .collect())
     }
-    
+
     /// Search layer 0 using flat neighbor cache - TRULY ZERO LOCKS
-    /// 
+    ///
     /// This is the innermost hot loop, optimized for:
     /// - No lock acquisition (neighbors pre-flattened)
     /// - Sequential memory access (cache prefetch friendly)
@@ -4873,15 +5174,13 @@ impl HnswIndex {
         internal_nodes: &[Option<Arc<HnswNode>>],
         flat_neighbors: &[u32],
     ) -> smallvec::SmallVec<[FastCandidate; 64]> {
-        use std::collections::BinaryHeap;
-        
         let slots_per_node = self.max_neighbors_per_node;
-        
+
         with_scratch_buffers(|scratch| {
             // Reuse thread-local FastCandidate heaps — zero per-call allocation
             let candidates = &mut scratch.fast_candidates;
             let results = &mut scratch.fast_results_heap;
-            
+
             // Initialize with entry points
             for ep in entry_points {
                 scratch.visited.insert(ep.dense_index);
@@ -4906,7 +5205,7 @@ impl HnswIndex {
                 // Get neighbors from FLAT array - O(1), NO LOCKS!
                 let base = (curr.dense_index as usize) * slots_per_node;
                 let neighbor_slice = &flat_neighbors[base..base + slots_per_node];
-                
+
                 // Prefetch next cache line
                 #[cfg(target_arch = "aarch64")]
                 if let Some(&next_dense) = neighbor_slice.get(4) {
@@ -4924,14 +5223,14 @@ impl HnswIndex {
                         }
                     }
                 }
-                
+
                 // Process each neighbor
                 for &neighbor_dense in neighbor_slice {
                     // Sentinel check (u32::MAX = empty slot)
                     if neighbor_dense == u32::MAX {
-                        break;  // Remaining slots are empty
+                        break; // Remaining slots are empty
                     }
-                    
+
                     // Fast visited check
                     if !scratch.visited.insert(neighbor_dense) {
                         continue;
@@ -4939,17 +5238,23 @@ impl HnswIndex {
 
                     // Get neighbor's vector
                     if let Some(Some(neighbor_node)) = internal_nodes.get(neighbor_dense as usize) {
-                        let neighbor_vector = if let Some(qv) = vector_store.get(neighbor_node.vector_index as usize) {
+                        let neighbor_vector = if let Some(qv) =
+                            vector_store.get(neighbor_node.vector_index as usize)
+                        {
                             if let QuantizedVector::F32(arr) = qv {
                                 arr.as_slice().unwrap_or(&[])
-                            } else { continue; }
+                            } else {
+                                continue;
+                            }
                         } else if let QuantizedVector::F32(arr) = &neighbor_node.vector {
                             arr.as_slice().unwrap_or(&[])
-                        } else { continue; };
-                        
+                        } else {
+                            continue;
+                        };
+
                         // SIMD distance
                         let distance = self.distance_raw(query, neighbor_vector);
-                        
+
                         let candidate = FastCandidate {
                             distance,
                             dense_index: neighbor_dense,
@@ -4979,7 +5284,7 @@ impl HnswIndex {
             output
         })
     }
-    
+
     /// Extract raw f32 slice from vector store with O(1) access
     #[inline(always)]
     fn get_raw_vector_from_store<'a>(
@@ -5016,9 +5321,9 @@ impl HnswIndex {
             DistanceMetric::DotProduct => -simd_distance::dot_product_fast(a, b),
         }
     }
-    
+
     /// Zero-lock search layer using FastCandidate with dense_index
-    /// 
+    ///
     /// This is the hot path - absolutely NO synchronization primitives:
     /// - No DashMap lookups (uses dense_index for O(1) array access)
     /// - No RwLock acquisitions (all locks acquired at search start)
@@ -5033,14 +5338,12 @@ impl HnswIndex {
         vector_store: &[QuantizedVector],
         internal_nodes: &[Option<Arc<HnswNode>>],
     ) -> smallvec::SmallVec<[FastCandidate; 64]> {
-        use std::collections::BinaryHeap;
-        
         // Use scratch buffers for zero allocation
         with_scratch_buffers(|scratch| {
             // Reuse thread-local FastCandidate heaps — zero per-call allocation
             let candidates = &mut scratch.fast_candidates;
             let results = &mut scratch.fast_results_heap;
-            
+
             // Initialize with entry points
             for ep in entry_points {
                 scratch.visited.insert(ep.dense_index);
@@ -5068,18 +5371,20 @@ impl HnswIndex {
                     if layer <= node.layer {
                         // Get neighbors - single RwLock read per node
                         let layer_data = node.layers[layer].read();
-                        
+
                         // Process each neighbor with prefetch pipeline
                         let neighbors = &layer_data.neighbors;
                         let n_neighbors = neighbors.len();
-                        
+
                         for (i, &neighbor_dense) in neighbors.iter().enumerate() {
                             // Prefetch next neighbor's data (hide memory latency)
                             #[cfg(target_arch = "aarch64")]
                             if i + 4 < n_neighbors {
                                 let future_dense = neighbors[i + 4] as usize;
                                 if let Some(Some(future_node)) = internal_nodes.get(future_dense) {
-                                    if let Some(future_vec) = vector_store.get(future_node.vector_index as usize) {
+                                    if let Some(future_vec) =
+                                        vector_store.get(future_node.vector_index as usize)
+                                    {
                                         let ptr = future_vec.as_ptr();
                                         unsafe {
                                             // ARM prefetch instruction
@@ -5092,26 +5397,34 @@ impl HnswIndex {
                                     }
                                 }
                             }
-                            
+
                             // Fast visited check using FastBitSet (O(1) bit operation)
                             if !scratch.visited.insert(neighbor_dense) {
                                 continue;
                             }
 
                             // O(1) array access for neighbor node
-                            if let Some(Some(neighbor_node)) = internal_nodes.get(neighbor_dense as usize) {
+                            if let Some(Some(neighbor_node)) =
+                                internal_nodes.get(neighbor_dense as usize)
+                            {
                                 // Get raw vector with zero-copy
-                                let neighbor_vector = if let Some(qv) = vector_store.get(neighbor_node.vector_index as usize) {
+                                let neighbor_vector = if let Some(qv) =
+                                    vector_store.get(neighbor_node.vector_index as usize)
+                                {
                                     if let QuantizedVector::F32(arr) = qv {
                                         arr.as_slice().unwrap_or(&[])
-                                    } else { continue; }
+                                    } else {
+                                        continue;
+                                    }
                                 } else if let QuantizedVector::F32(arr) = &neighbor_node.vector {
                                     arr.as_slice().unwrap_or(&[])
-                                } else { continue; };
-                                
+                                } else {
+                                    continue;
+                                };
+
                                 // SIMD distance computation
                                 let distance = self.distance_raw(query, neighbor_vector);
-                                
+
                                 let candidate = FastCandidate {
                                     distance,
                                     dense_index: neighbor_dense,
@@ -5167,7 +5480,9 @@ impl HnswIndex {
                 } else if let Some(node) = self.nodes.get(&ep.id) {
                     id_to_dense.insert(ep.id, node.dense_index);
                     node.dense_index
-                } else { continue; };
+                } else {
+                    continue;
+                };
                 scratch.visited.insert(dense);
                 scratch.candidates.push(*ep);
                 scratch.results_heap.push(Reverse(*ep));
@@ -5195,7 +5510,7 @@ impl HnswIndex {
                 if let Some(Some(node)) = internal_nodes.get(curr_dense as usize) {
                     if layer <= node.layer {
                         let layer_data = node.layers[layer].read();
-                        
+
                         // Process neighbors with direct SIMD
                         for &neighbor_dense in &layer_data.neighbors {
                             if !scratch.visited.insert(neighbor_dense) {
@@ -5203,21 +5518,29 @@ impl HnswIndex {
                             }
 
                             // O(1) lookup in internal_nodes array
-                            if let Some(Some(neighbor_node)) = internal_nodes.get(neighbor_dense as usize) {
+                            if let Some(Some(neighbor_node)) =
+                                internal_nodes.get(neighbor_dense as usize)
+                            {
                                 // Cache id→dense for when this neighbor becomes curr
                                 id_to_dense.insert(neighbor_node.id, neighbor_dense);
                                 // Get raw vector slice (zero-copy)
-                                let neighbor_vector = if let Some(qv) = vector_store.get(neighbor_node.vector_index as usize) {
+                                let neighbor_vector = if let Some(qv) =
+                                    vector_store.get(neighbor_node.vector_index as usize)
+                                {
                                     if let QuantizedVector::F32(arr) = qv {
                                         arr.as_slice().unwrap_or(&[])
-                                    } else { continue; }
+                                    } else {
+                                        continue;
+                                    }
                                 } else if let QuantizedVector::F32(arr) = &neighbor_node.vector {
                                     arr.as_slice().unwrap_or(&[])
-                                } else { continue; };
-                                
+                                } else {
+                                    continue;
+                                };
+
                                 // Direct SIMD distance
                                 let distance = self.distance_raw(query, neighbor_vector);
-                                
+
                                 let candidate = SearchCandidate {
                                     distance,
                                     id: neighbor_node.id,
@@ -5252,16 +5575,12 @@ impl HnswIndex {
     /// Search for k nearest neighbors
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<(u128, f32)>, String> {
         // Task #5: Conditional metrics - only record when enabled
-        #[cfg(feature = "metrics")]
         let _timer = metrics::SEARCH_LATENCY.start_timer();
-        #[cfg(feature = "metrics")]
         metrics::SEARCH_COUNT.inc();
-        
-        #[cfg(feature = "metrics")]
+
         let search_start = std::time::Instant::now();
 
         if query.len() != self.dimension {
-            #[cfg(feature = "metrics")]
             metrics::ERROR_COUNT.inc();
             return Err(format!(
                 "Query dimension mismatch: expected {}, got {}",
@@ -5275,12 +5594,14 @@ impl HnswIndex {
         // Check BEFORE building pending connections since flat scan doesn't need them.
         // Flat scan fallback: brute-force is faster than HNSW for small datasets.
         // The crossover depends on dimension (higher D = more expensive scan).
+        // Thresholds tuned empirically: HNSW graph traversal beats flat scan once
+        // the dataset is large enough that O(log N) hops < O(N) full scan.
         let flat_scan_threshold = if self.dimension <= 128 {
-            200_000
+            10_000
         } else if self.dimension <= 384 {
-            100_000
+            4_000
         } else {
-            50_000  // 768D: flat scan competitive only below ~50K
+            1_000 // 768D+: HNSW wins above ~1K vectors (sub-ms vs linear scan)
         };
         let node_count = self.nodes.len();
         if node_count > 0 && node_count <= flat_scan_threshold {
@@ -5290,7 +5611,11 @@ impl HnswIndex {
                 && self.config.rng_optimization.normalize_at_ingest;
             let query_norm: Vec<f32> = if use_normalized {
                 let norm = simd_distance::dot_product_fast(query, query).sqrt();
-                if norm > 0.0 { query.iter().map(|&x| x / norm).collect() } else { query.to_vec() }
+                if norm > 0.0 {
+                    query.iter().map(|&x| x / norm).collect()
+                } else {
+                    query.to_vec()
+                }
             } else {
                 query.to_vec()
             };
@@ -5337,7 +5662,9 @@ impl HnswIndex {
                                 match self.config.metric {
                                     DistanceMetric::Euclidean => {
                                         // L2 distance from raw slices
-                                        query_ref.iter().zip(slice.iter())
+                                        query_ref
+                                            .iter()
+                                            .zip(slice.iter())
                                             .map(|(a, b)| (a - b) * (a - b))
                                             .sum::<f32>()
                                     }
@@ -5363,10 +5690,8 @@ impl HnswIndex {
             });
             let results: Vec<(u128, f32)> = dists.iter().map(|(d, id)| (*id, *d)).collect();
 
-            #[cfg(feature = "metrics")]
             metrics::SEARCH_RESULT_COUNT.observe(results.len() as f64);
 
-            #[cfg(feature = "metrics")]
             {
                 let search_latency_ms = search_start.elapsed().as_secs_f32() * 1000.0;
                 self.record_performance_measurement(search_latency_ms, &results, query);
@@ -5394,11 +5719,13 @@ impl HnswIndex {
         // Task #1: Acquire all needed read locks ONCE at the top level
         let vector_store = self.vector_store.read();
         let internal_nodes = self.internal_nodes.read();
-        
+
         // Rec 9: resolve entry point via dense array — zero DashMap
         let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
         let ep_node_ref = if ep_dense != u32::MAX {
-            internal_nodes.get(ep_dense as usize).and_then(|opt| opt.as_ref())
+            internal_nodes
+                .get(ep_dense as usize)
+                .and_then(|opt| opt.as_ref())
         } else {
             None
         };
@@ -5416,9 +5743,13 @@ impl HnswIndex {
 
         // Task #6: Use stack buffer for common dimensions to avoid heap allocation
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
-        let query_quantized = if matches!(self.config.metric, DistanceMetric::Cosine) 
-            && self.config.rng_optimization.normalize_at_ingest {
-            QuantizedVector::from_f32_normalized(ndarray::Array1::from_vec(query.to_vec()), precision)
+        let query_quantized = if matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest
+        {
+            QuantizedVector::from_f32_normalized(
+                ndarray::Array1::from_vec(query.to_vec()),
+                precision,
+            )
         } else {
             QuantizedVector::from_f32(ndarray::Array1::from_vec(query.to_vec()), precision)
         };
@@ -5429,7 +5760,7 @@ impl HnswIndex {
         }
 
         // Task #1: Use reference-passing search to avoid lock re-acquisition
-        let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine) 
+        let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
             && self.config.rng_optimization.normalize_at_ingest;
         let initial_distance = if use_normalized {
             self.calculate_distance_normalized(&query_quantized, ep_vector)
@@ -5449,9 +5780,9 @@ impl HnswIndex {
         let upper_ef = 1usize;
         for lc in (2..=max_layer).rev() {
             curr_nearest = self.search_layer_ref(
-                &query_quantized, 
-                &curr_nearest, 
-                upper_ef, 
+                &query_quantized,
+                &curr_nearest,
+                upper_ef,
                 lc,
                 &vector_store,
                 &internal_nodes,
@@ -5488,11 +5819,9 @@ impl HnswIndex {
             .map(|c| (c.id, c.distance))
             .collect();
 
-        #[cfg(feature = "metrics")]
         metrics::SEARCH_RESULT_COUNT.observe(results.len() as f64);
-        
+
         // Task #11: Record performance measurement for cost model (only when profiling)
-        #[cfg(feature = "metrics")]
         {
             let search_latency_ms = search_start.elapsed().as_secs_f32() * 1000.0;
             self.record_performance_measurement(search_latency_ms, &results, query);
@@ -5550,7 +5879,10 @@ impl HnswIndex {
 
         let mut storage_order: Vec<u64> = Vec::with_capacity(ordered_ids.len());
         for node_id in ordered_ids {
-            let node = self.nodes.get(&node_id).ok_or("Node missing during reorder")?;
+            let node = self
+                .nodes
+                .get(&node_id)
+                .ok_or("Node missing during reorder")?;
             let storage_id = node
                 .storage_id
                 .ok_or("Node missing storage_id for region reorder")?;
@@ -5563,7 +5895,11 @@ impl HnswIndex {
     }
 
     /// Batch search with candidate deduplication
-    pub fn search_batch(&self, queries: &[&[f32]], k: usize) -> Result<Vec<Vec<(u128, f32)>>, String> {
+    pub fn search_batch(
+        &self,
+        queries: &[&[f32]],
+        k: usize,
+    ) -> Result<Vec<Vec<(u128, f32)>>, String> {
         if queries.is_empty() {
             return Ok(Vec::new());
         }
@@ -5614,7 +5950,8 @@ impl HnswIndex {
             })
             .collect();
 
-        let mut per_query_candidates: Vec<Vec<SearchCandidate>> = Vec::with_capacity(query_vectors.len());
+        let mut per_query_candidates: Vec<Vec<SearchCandidate>> =
+            Vec::with_capacity(query_vectors.len());
 
         for query_quantized in &query_vectors {
             let initial_distance = if normalize {
@@ -5657,6 +5994,7 @@ impl HnswIndex {
         }
 
         let mut results: Vec<Vec<(u128, f32)>> = Vec::with_capacity(query_vectors.len());
+        let use_normalized = self.use_normalized_fast_path();
         for query_quantized in &query_vectors {
             let mut heap: BinaryHeap<Reverse<SearchCandidate>> = BinaryHeap::with_capacity(k);
 
@@ -5664,7 +6002,8 @@ impl HnswIndex {
                 let candidate_vector = vector_store
                     .get(*vector_index as usize)
                     .ok_or_else(|| format!("Missing vector for candidate {}", candidate_id))?;
-                let distance = self.calculate_distance_pq(query_quantized, candidate_vector);
+                let distance =
+                    self.neighbor_distance(use_normalized, query_quantized, candidate_vector);
                 let candidate = SearchCandidate {
                     distance,
                     id: *candidate_id,
@@ -5681,8 +6020,17 @@ impl HnswIndex {
             }
 
             let mut query_results: Vec<SearchCandidate> = heap.into_iter().map(|r| r.0).collect();
-            query_results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(Ordering::Equal));
-            results.push(query_results.into_iter().map(|c| (c.id, c.distance)).collect());
+            query_results.sort_by(|a, b| {
+                a.distance
+                    .partial_cmp(&b.distance)
+                    .unwrap_or(Ordering::Equal)
+            });
+            results.push(
+                query_results
+                    .into_iter()
+                    .map(|c| (c.id, c.distance))
+                    .collect(),
+            );
         }
 
         Ok(results)
@@ -5709,9 +6057,13 @@ impl HnswIndex {
         // For small datasets, delegate to flat scan in search() which is faster
         // and gives perfect recall regardless of ef.
         let node_count = self.nodes.len();
-        let flat_threshold = if self.dimension <= 128 { 200_000 }
-            else if self.dimension <= 384 { 100_000 }
-            else { 50_000 };
+        let flat_threshold = if self.dimension <= 128 {
+            10_000
+        } else if self.dimension <= 384 {
+            4_000
+        } else {
+            1_000
+        };
         if node_count > 0 && node_count <= flat_threshold {
             return self.search(query, k);
         }
@@ -5750,7 +6102,9 @@ impl HnswIndex {
         // Resolve entry point via dense array (zero DashMap)
         let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
         let ep_node_ref = if ep_dense != u32::MAX {
-            internal_nodes.get(ep_dense as usize).and_then(|opt| opt.as_ref())
+            internal_nodes
+                .get(ep_dense as usize)
+                .and_then(|opt| opt.as_ref())
         } else {
             None
         };
@@ -5768,7 +6122,10 @@ impl HnswIndex {
         let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
             && self.config.rng_optimization.normalize_at_ingest;
         let query_quantized = if use_normalized {
-            QuantizedVector::from_f32_normalized(ndarray::Array1::from_vec(query.to_vec()), precision)
+            QuantizedVector::from_f32_normalized(
+                ndarray::Array1::from_vec(query.to_vec()),
+                precision,
+            )
         } else {
             QuantizedVector::from_f32(ndarray::Array1::from_vec(query.to_vec()), precision)
         };
@@ -5910,12 +6267,11 @@ impl HnswIndex {
             && self.config.rng_optimization.normalize_at_ingest;
         let query_quantized = if use_normalized {
             QuantizedVector::from_f32_normalized(
-                ndarray::Array1::from_vec(query.to_vec()), precision,
+                ndarray::Array1::from_vec(query.to_vec()),
+                precision,
             )
         } else {
-            QuantizedVector::from_f32(
-                ndarray::Array1::from_vec(query.to_vec()), precision,
-            )
+            QuantizedVector::from_f32(ndarray::Array1::from_vec(query.to_vec()), precision)
         };
 
         // Resolve entry point
@@ -5945,16 +6301,24 @@ impl HnswIndex {
         // Navigate upper layers with ef=1
         for lc in (2..=max_layer).rev() {
             curr_nearest = self.search_layer_ref(
-                &query_quantized, &curr_nearest, 1, lc,
-                &vector_store, &internal_nodes,
+                &query_quantized,
+                &curr_nearest,
+                1,
+                lc,
+                &vector_store,
+                &internal_nodes,
             );
         }
         // Layer 1: wider beam for diverse entry points into layer 0
         if max_layer >= 1 {
             let layer1_ef = 5usize.min(ef);
             curr_nearest = self.search_layer_ref(
-                &query_quantized, &curr_nearest, layer1_ef, 1,
-                &vector_store, &internal_nodes,
+                &query_quantized,
+                &curr_nearest,
+                layer1_ef,
+                1,
+                &vector_store,
+                &internal_nodes,
             );
         }
 
@@ -5963,8 +6327,12 @@ impl HnswIndex {
         // ensure we find enough matching candidates after filtering.
         let expanded_ef = (ef * 10).max(ef + 200).max(k * 20);
         let candidates = self.search_layer_ref(
-            &query_quantized, &curr_nearest, expanded_ef, 0,
-            &vector_store, &internal_nodes,
+            &query_quantized,
+            &curr_nearest,
+            expanded_ef,
+            0,
+            &vector_store,
+            &internal_nodes,
         );
 
         // Post-filter: keep only candidates whose metadata matches ALL filter pairs
@@ -5978,9 +6346,9 @@ impl HnswIndex {
             };
             // Check metadata match
             if let Some(Some(meta)) = metadata_store.get(dense as usize) {
-                let matches = filter.iter().all(|(fk, fv)| {
-                    meta.iter().any(|(mk, mv)| mk == fk && mv == fv)
-                });
+                let matches = filter
+                    .iter()
+                    .all(|(fk, fv)| meta.iter().any(|(mk, mv)| mk == fk && mv == fv));
                 if matches {
                     filtered.push((c.id, c.distance));
                     if filtered.len() >= k {
@@ -5992,6 +6360,311 @@ impl HnswIndex {
         }
 
         Ok(filtered)
+    }
+
+    /// Filtered search by an arbitrary membership predicate, applied as a true
+    /// *in-traversal* filter: the graph is walked in full (disallowed nodes are
+    /// still expanded for reachability) but only `allowed(id)` nodes are
+    /// admitted into the result beam, preserving the `result ⊆ allowed`
+    /// contract.
+    ///
+    /// Unlike [`search_filtered`](Self::search_filtered), which post-filters
+    /// layer-0 candidates by `(String, String)` metadata equality (O(f) string
+    /// compares per node), this gates on `allowed(id)` — for a bitmap-backed
+    /// `AllowedSet` an O(1) bit test on the retrieval-universe id, the same key
+    /// space the BM25 and grep lanes use. It lets the vector lane honor the
+    /// identical pre-filter pushdown as the other retrieval lanes.
+    ///
+    /// This is in-beam acceptance, **not** over-fetch-then-gate: expansion
+    /// continues until no closer allowed node can remain (or the reachable
+    /// component is exhausted), so it cannot under-fill `k` when the allowed
+    /// set is sparse — the death-spiral a fixed `k×N` over-fetch suffers below
+    /// ~1/N selectivity. `ef` is the caller's selectivity-derived beam width
+    /// (≈ k/p for acceptance rate p) and is used directly as the result-list
+    /// capacity.
+    pub fn search_allowed<F>(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        allowed: F,
+    ) -> Result<Vec<(u128, f32)>, String>
+    where
+        F: Fn(u128) -> bool,
+    {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        if query.len() != self.dimension {
+            return Err(format!(
+                "Query dimension mismatch: expected {}, got {}",
+                self.dimension,
+                query.len()
+            ));
+        }
+
+        let node_count = self.nodes.len();
+        if node_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Small datasets: a full flat scan is cheap and exact. Gating the
+        // fully-ranked list guarantees k allowed results whenever ≥k exist,
+        // with no over-fetch heuristic that could under-fill. (Mirrors
+        // search_with_ef's flat-scan thresholds.)
+        let flat_threshold = if self.dimension <= 128 {
+            10_000
+        } else if self.dimension <= 384 {
+            4_000
+        } else {
+            1_000
+        };
+        if node_count <= flat_threshold {
+            let all = self.search_with_ef(query, node_count, node_count)?;
+            let mut out: Vec<(u128, f32)> = Vec::with_capacity(k);
+            for (id, dist) in all {
+                if allowed(id) {
+                    out.push((id, dist));
+                    if out.len() >= k {
+                        break;
+                    }
+                }
+            }
+            return Ok(out);
+        }
+
+        // Large datasets: in-traversal (in-beam) filtering at layer 0.
+        if !self.pending_nodes.lock().is_empty() {
+            self.build_pending_connections();
+        }
+
+        let nav = self.navigation_state();
+        let max_layer = nav.max_layer;
+        let ep_id = match nav.entry_point {
+            Some(id) => id,
+            None => return Ok(Vec::new()),
+        };
+
+        let vector_store = self.vector_store.read();
+        let internal_nodes = self.internal_nodes.read();
+
+        // Resolve entry point via dense array (zero DashMap on the hot path).
+        let ep_dense = self.entry_point_dense.load(AtomicOrdering::Acquire);
+        let ep_node_ref = if ep_dense != u32::MAX {
+            internal_nodes
+                .get(ep_dense as usize)
+                .and_then(|opt| opt.as_ref())
+        } else {
+            None
+        };
+        let ep_vector = if let Some(ep_n) = ep_node_ref {
+            vector_store
+                .get(ep_n.vector_index as usize)
+                .unwrap_or(&ep_n.vector)
+        } else {
+            let ep_node = self.nodes.get(&ep_id).ok_or("Entry point not found")?;
+            let vi = ep_node.vector_index as usize;
+            &vector_store[vi]
+        };
+
+        let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
+        let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest;
+        let query_quantized = if use_normalized {
+            QuantizedVector::from_f32_normalized(
+                ndarray::Array1::from_vec(query.to_vec()),
+                precision,
+            )
+        } else {
+            QuantizedVector::from_f32(ndarray::Array1::from_vec(query.to_vec()), precision)
+        };
+
+        let initial_distance = if use_normalized {
+            self.calculate_distance_normalized(&query_quantized, ep_vector)
+        } else {
+            self.calculate_distance(&query_quantized, ep_vector)
+        };
+        let mut curr_nearest = vec![SearchCandidate {
+            distance: initial_distance,
+            id: ep_id,
+        }];
+
+        // Descend upper layers UNFILTERED to find good layer-0 entry points;
+        // the membership gate only applies to the final accept set.
+        for lc in (2..=max_layer).rev() {
+            curr_nearest = self.search_layer_ref(
+                &query_quantized,
+                &curr_nearest,
+                1,
+                lc,
+                &vector_store,
+                &internal_nodes,
+            );
+        }
+        if max_layer >= 1 {
+            let layer1_ef = 5usize.min(ef.max(k));
+            curr_nearest = self.search_layer_ref(
+                &query_quantized,
+                &curr_nearest,
+                layer1_ef,
+                1,
+                &vector_store,
+                &internal_nodes,
+            );
+        }
+
+        // Filtered beam at layer 0: in-traversal acceptance fills the result
+        // list up to `ef.max(k)` allowed nodes.
+        let result_ef = ef.max(k);
+        let filtered = self.search_layer0_filtered(
+            &query_quantized,
+            &curr_nearest,
+            result_ef,
+            &allowed,
+            &vector_store,
+            &internal_nodes,
+        );
+
+        let out: Vec<(u128, f32)> = filtered
+            .into_iter()
+            .take(k)
+            .map(|c| (c.id, c.distance))
+            .collect();
+        Ok(out)
+    }
+
+    /// Layer-0 search with **in-traversal** membership filtering.
+    ///
+    /// The frontier is expanded through every reachable node (disallowed nodes
+    /// included, for graph connectivity), but only nodes satisfying
+    /// `allowed(id)` are admitted into the result list. This is true in-beam
+    /// acceptance: unlike over-fetch-then-gate, it cannot under-fill the beam
+    /// when the allowed set is sparse, because expansion continues until no
+    /// closer allowed node can exist (full result list with the nearest
+    /// unexpanded node farther than the worst kept) or the reachable component
+    /// is exhausted.
+    ///
+    /// `ef` is the result-list capacity (pass `ef.max(k)`). Each node is
+    /// inserted into `visited` before it can enter the frontier, so it is
+    /// expanded at most once — total work is bounded by the reachable
+    /// component size.
+    fn search_layer0_filtered<F>(
+        &self,
+        query: &QuantizedVector,
+        entry_points: &[SearchCandidate],
+        ef: usize,
+        allowed: &F,
+        vector_store: &[QuantizedVector],
+        internal_nodes: &[Option<Arc<HnswNode>>],
+    ) -> Vec<SearchCandidate>
+    where
+        F: Fn(u128) -> bool,
+    {
+        use std::cmp::Reverse;
+        use std::collections::{BinaryHeap, HashMap, HashSet};
+
+        // Frontier: SearchCandidate's Ord is reversed, so this max-heap pops the
+        // CLOSEST unexpanded node first.
+        let mut frontier: BinaryHeap<SearchCandidate> = BinaryHeap::new();
+        // Result list: only allowed nodes. Reverse keeps the FARTHEST kept
+        // result at peek() so it can be evicted for a closer allowed node.
+        let mut results: BinaryHeap<Reverse<SearchCandidate>> = BinaryHeap::new();
+        let mut visited: HashSet<u32> = HashSet::with_capacity(ef.saturating_mul(8).max(64));
+        let mut id_to_dense: HashMap<u128, u32> =
+            HashMap::with_capacity(ef.saturating_mul(8).max(64));
+
+        let use_normalized = self.use_normalized_fast_path();
+
+        for ep in entry_points {
+            let dense = if let Some(node) = self.nodes.get(&ep.id) {
+                node.dense_index
+            } else {
+                continue;
+            };
+            if !visited.insert(dense) {
+                continue;
+            }
+            id_to_dense.insert(ep.id, dense);
+            frontier.push(*ep);
+            if allowed(ep.id) {
+                results.push(Reverse(*ep));
+                if results.len() > ef {
+                    results.pop();
+                }
+            }
+        }
+
+        while let Some(curr) = frontier.pop() {
+            // Termination: once the result list is full, stop as soon as the
+            // closest unexpanded node is farther than the worst kept result —
+            // no closer allowed node can remain. While the list is NOT full we
+            // must keep walking (through disallowed nodes) to reach more
+            // allowed ones.
+            if results.len() >= ef
+                && let Some(Reverse(worst)) = results.peek()
+                && curr.distance > worst.distance
+            {
+                break;
+            }
+
+            let curr_dense = match id_to_dense.get(&curr.id) {
+                Some(&d) => d,
+                None => continue,
+            };
+
+            let Some(Some(node)) = internal_nodes.get(curr_dense as usize) else {
+                continue;
+            };
+            let layer_data = node.layers[0].read();
+            for &neighbor_dense in &layer_data.neighbors {
+                if !visited.insert(neighbor_dense) {
+                    continue;
+                }
+                let Some(Some(neighbor_node)) = internal_nodes.get(neighbor_dense as usize) else {
+                    continue;
+                };
+                id_to_dense.insert(neighbor_node.id, neighbor_dense);
+                let neighbor_vector = vector_store
+                    .get(neighbor_node.vector_index as usize)
+                    .unwrap_or(&neighbor_node.vector);
+                let distance = self.neighbor_distance(use_normalized, query, neighbor_vector);
+                let cand = SearchCandidate {
+                    distance,
+                    id: neighbor_node.id,
+                };
+
+                // Expand the frontier whenever this node could still lead to a
+                // closer allowed result: list not yet full, or closer than the
+                // worst kept result (standard greedy beam pruning).
+                let frontier_worthy = match results.peek() {
+                    Some(Reverse(worst)) if results.len() >= ef => distance < worst.distance,
+                    _ => true,
+                };
+                if frontier_worthy {
+                    frontier.push(cand);
+                }
+
+                // Admit to the result list only if allowed.
+                if allowed(neighbor_node.id) {
+                    if results.len() < ef {
+                        results.push(Reverse(cand));
+                    } else if let Some(Reverse(worst)) = results.peek()
+                        && distance < worst.distance
+                    {
+                        results.pop();
+                        results.push(Reverse(cand));
+                    }
+                }
+            }
+        }
+
+        let mut out: Vec<SearchCandidate> = results.into_iter().map(|Reverse(c)| c).collect();
+        out.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        out
     }
 
     /// Calibrate adaptive ef to achieve target recall (Gap #4 fix)
@@ -6092,10 +6765,14 @@ impl HnswIndex {
         }
 
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
-        let query_quantized = if matches!(self.config.metric, DistanceMetric::Cosine) 
-            && self.config.rng_optimization.normalize_at_ingest {
+        let query_quantized = if matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest
+        {
             // For cosine similarity with normalization, normalize query as well
-            QuantizedVector::from_f32_normalized(ndarray::Array1::from_vec(query.to_vec()), precision)
+            QuantizedVector::from_f32_normalized(
+                ndarray::Array1::from_vec(query.to_vec()),
+                precision,
+            )
         } else {
             QuantizedVector::from_f32(ndarray::Array1::from_vec(query.to_vec()), precision)
         };
@@ -6158,8 +6835,8 @@ impl HnswIndex {
         // Use Rayon parallel iteration: each core processes a chunk of nodes
         // Each thread maintains a local BinaryHeap of size k (max-heap by distance)
         // to avoid collecting all 1.18M distances and sorting them.
+
         use std::collections::BinaryHeap;
-        use std::cmp::Reverse;
 
         // Collect node refs into a Vec so Rayon can partition them
         let node_entries: Vec<_> = self.nodes.iter().collect();
@@ -6257,9 +6934,7 @@ impl HnswIndex {
             .map(|(d, id)| (id, d.0))
             .collect();
 
-        let results: Vec<(u128, f32)> = top_k.into_iter()
-            .map(|(id, d)| (id, d as f32))
-            .collect();
+        let results: Vec<(u128, f32)> = top_k.into_iter().map(|(id, d)| (id, d as f32)).collect();
         metrics::SEARCH_RESULT_COUNT.observe(results.len() as f64);
         Ok(results)
     }
@@ -6328,7 +7003,7 @@ impl HnswIndex {
     }
 
     /// Set the ef_search value at runtime for higher recall
-    /// 
+    ///
     /// Higher ef_search = better recall but slower search.
     /// Recommended: ef_search >= 2 * k for good recall, or 100-200 for high recall.
     pub fn set_ef_search(&self, ef_search: usize) {
@@ -6346,7 +7021,7 @@ impl HnswIndex {
     }
 
     /// Task #1: Zero-lock search layer - takes pre-acquired references
-    /// 
+    ///
     /// This is the HOT PATH optimized version that:
     /// - Takes references instead of acquiring locks
     /// - Uses O(1) internal_nodes lookup
@@ -6372,7 +7047,9 @@ impl HnswIndex {
                 } else if let Some(node) = self.nodes.get(&ep.id) {
                     id_to_dense.insert(ep.id, node.dense_index);
                     node.dense_index
-                } else { continue; };
+                } else {
+                    continue;
+                };
                 scratch.visited.insert(dense);
                 scratch.candidates.push(*ep);
                 scratch.results_heap.push(Reverse(*ep));
@@ -6422,7 +7099,7 @@ impl HnswIndex {
     }
 
     /// Task #10: Process neighbors with software prefetching
-    /// 
+    ///
     /// Prefetches vector data 4 neighbors ahead to hide memory latency.
     /// Expected improvement: 20-30% in neighbor processing.
     #[inline]
@@ -6438,9 +7115,11 @@ impl HnswIndex {
     ) {
         use std::cmp::Reverse;
         const PREFETCH_DISTANCE: usize = 4;
-        
+
         let neighbor_count = neighbor_ids.len();
-        
+        // Hoist the distance-mode decision out of the per-neighbor loop.
+        let use_normalized = self.use_normalized_fast_path();
+
         for (i, &neighbor_dense) in neighbor_ids.iter().enumerate() {
             // Task #10: Prefetch future neighbor vectors
             #[cfg(target_arch = "x86_64")]
@@ -6458,7 +7137,38 @@ impl HnswIndex {
                     }
                 }
             }
-            
+
+            // aarch64 (Apple Silicon) prefetch: the search is memory-latency
+            // bound — each neighbor visit is a cold gather of a multi-KB vector
+            // from a store far larger than cache. Issue a PRFM 4 neighbors ahead
+            // so the first cache lines are warm by the time the distance kernel
+            // touches them. Without this, Apple Silicon does no software
+            // prefetch here at all (the x86 block above is compiled out).
+            #[cfg(target_arch = "aarch64")]
+            if i + PREFETCH_DISTANCE < neighbor_count {
+                let future_dense = neighbor_ids[i + PREFETCH_DISTANCE] as usize;
+                if let Some(Some(future_node)) = internal_nodes.get(future_dense) {
+                    if let Some(future_vec) = vector_store.get(future_node.vector_index as usize) {
+                        let vec_ptr = future_vec.as_ptr();
+                        unsafe {
+                            use std::arch::asm;
+                            // PRFM PLDL1KEEP: prefetch for load into L1, temporal.
+                            asm!(
+                                "prfm pldl1keep, [{0}]",
+                                in(reg) vec_ptr,
+                                options(nostack, preserves_flags, readonly),
+                            );
+                            // Second cache line (offset 16 f32 = 64 bytes).
+                            asm!(
+                                "prfm pldl1keep, [{0}]",
+                                in(reg) vec_ptr.add(16),
+                                options(nostack, preserves_flags, readonly),
+                            );
+                        }
+                    }
+                }
+            }
+
             if !scratch.visited.insert(neighbor_dense) {
                 continue;
             }
@@ -6470,7 +7180,7 @@ impl HnswIndex {
                 let neighbor_vector = vector_store
                     .get(neighbor_node.vector_index as usize)
                     .unwrap_or(&neighbor_node.vector);
-                let distance = self.calculate_distance_pq(query, neighbor_vector);
+                let distance = self.neighbor_distance(use_normalized, query, neighbor_vector);
                 let candidate = SearchCandidate {
                     distance,
                     id: neighbor_node.id,
@@ -6491,14 +7201,14 @@ impl HnswIndex {
     }
 
     /// Search within a single layer with lock-free concurrent access and hardware prefetching
-    /// 
+    ///
     /// **Task #2 Implementation**: Hardware prefetch integration for 1.5-2x improvement
-    /// 
+    ///
     /// This function now includes:
     /// - SIMD prefetch instructions for next-iteration cache warming
     /// - Batch processing for improved memory locality
     /// - Cache-line aligned data access patterns
-    /// 
+    ///
     /// Hardware prefetch benefits:
     /// - L1 cache miss elimination for neighbor traversal: ~90% hit rate
     /// - Memory bandwidth utilization: +40% effective throughput
@@ -6523,7 +7233,9 @@ impl HnswIndex {
                 } else if let Some(node) = self.nodes.get(&ep.id) {
                     id_to_dense.insert(ep.id, node.dense_index);
                     node.dense_index
-                } else { continue; };
+                } else {
+                    continue;
+                };
                 scratch.visited.insert(dense);
                 scratch.candidates.push(*ep);
                 scratch.results_heap.push(Reverse(*ep));
@@ -6586,13 +7298,17 @@ impl HnswIndex {
         use std::cmp::Reverse;
         // Fast-path: if not constructing, skip the RwLock entirely.
         // Single atomic load — essentially free (1 cycle, always in L1).
-        let check_ready = self.construction_in_progress.load(std::sync::atomic::Ordering::Relaxed);
+        let check_ready = self
+            .construction_in_progress
+            .load(std::sync::atomic::Ordering::Relaxed);
         // Only acquire RwLock + clone Arc when actually constructing.
         let ready = if check_ready {
             Some(self.construction_ready.read().clone())
         } else {
             None
         };
+        // Hoist the distance-mode decision out of the per-neighbor loop.
+        let use_normalized = self.use_normalized_fast_path();
 
         for &neighbor_dense in neighbor_ids.iter() {
             if !scratch.visited.insert(neighbor_dense) {
@@ -6620,7 +7336,7 @@ impl HnswIndex {
                 let neighbor_vector = vector_store
                     .get(neighbor_node.vector_index as usize)
                     .unwrap_or(&neighbor_node.vector);
-                let distance = self.calculate_distance_pq(query, neighbor_vector);
+                let distance = self.neighbor_distance(use_normalized, query, neighbor_vector);
                 let candidate = SearchCandidate {
                     distance,
                     id: neighbor_node.id,
@@ -6652,6 +7368,7 @@ impl HnswIndex {
         vector_store: &[QuantizedVector],
     ) {
         use std::cmp::Reverse;
+        let use_normalized = self.use_normalized_fast_path();
         for &neighbor_dense in neighbor_ids.iter() {
             if !scratch.visited.insert(neighbor_dense) {
                 continue;
@@ -6666,7 +7383,7 @@ impl HnswIndex {
                     let neighbor_vector = vector_store
                         .get(neighbor_node.vector_index as usize)
                         .unwrap_or(&neighbor_node.vector);
-                    let distance = self.calculate_distance_pq(query, neighbor_vector);
+                    let distance = self.neighbor_distance(use_normalized, query, neighbor_vector);
                     let candidate = SearchCandidate {
                         distance,
                         id: neighbor_id,
@@ -6718,14 +7435,14 @@ impl HnswIndex {
     // ============================================================================
     // Specialized Inline Distance Kernels (Task 5)
     // ============================================================================
-    
+
     /// Inline cosine distance for 128-dimensional vectors
     /// Eliminates function call overhead and enables optimal register allocation
     #[inline(always)]
     fn cosine_distance_inline_128(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 128);
         debug_assert_eq!(b.len(), 128);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.cosine_distance_avx2_unrolled_128(a, b)
@@ -6739,7 +7456,7 @@ impl HnswIndex {
             let dot = simd_distance::dot_product_scalar(a, b);
             let norm_a = simd_distance::dot_product_scalar(a, a).sqrt();
             let norm_b = simd_distance::dot_product_scalar(b, b).sqrt();
-            
+
             if norm_a < 1e-10 || norm_b < 1e-10 {
                 1.0
             } else {
@@ -6747,13 +7464,13 @@ impl HnswIndex {
             }
         }
     }
-    
+
     /// Inline cosine distance for 256-dimensional vectors
     #[inline(always)]
     fn cosine_distance_inline_256(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 256);
         debug_assert_eq!(b.len(), 256);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.cosine_distance_avx2_unrolled_256(a, b)
@@ -6767,7 +7484,7 @@ impl HnswIndex {
             let dot = simd_distance::dot_product_scalar(a, b);
             let norm_a = simd_distance::dot_product_scalar(a, a).sqrt();
             let norm_b = simd_distance::dot_product_scalar(b, b).sqrt();
-            
+
             if norm_a < 1e-10 || norm_b < 1e-10 {
                 1.0
             } else {
@@ -6775,13 +7492,13 @@ impl HnswIndex {
             }
         }
     }
-    
+
     /// Inline cosine distance for 384-dimensional vectors (common for all-MiniLM-L6-v2)
     #[inline(always)]
     fn cosine_distance_inline_384(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 384);
         debug_assert_eq!(b.len(), 384);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.cosine_distance_avx2_unrolled_384(a, b)
@@ -6795,7 +7512,7 @@ impl HnswIndex {
             let dot = simd_distance::dot_product_scalar(a, b);
             let norm_a = simd_distance::dot_product_scalar(a, a).sqrt();
             let norm_b = simd_distance::dot_product_scalar(b, b).sqrt();
-            
+
             if norm_a < 1e-10 || norm_b < 1e-10 {
                 1.0
             } else {
@@ -6803,13 +7520,13 @@ impl HnswIndex {
             }
         }
     }
-    
+
     /// Inline cosine distance for 512-dimensional vectors
     #[inline(always)]
     fn cosine_distance_inline_512(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 512);
         debug_assert_eq!(b.len(), 512);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.cosine_distance_avx2_unrolled_512(a, b)
@@ -6823,7 +7540,7 @@ impl HnswIndex {
             let dot = simd_distance::dot_product_scalar(a, b);
             let norm_a = simd_distance::dot_product_scalar(a, a).sqrt();
             let norm_b = simd_distance::dot_product_scalar(b, b).sqrt();
-            
+
             if norm_a < 1e-10 || norm_b < 1e-10 {
                 1.0
             } else {
@@ -6831,13 +7548,13 @@ impl HnswIndex {
             }
         }
     }
-    
+
     /// Inline cosine distance for 768-dimensional vectors (BERT/RoBERTa embedding size)
     #[inline(always)]
     fn cosine_distance_inline_768(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 768);
         debug_assert_eq!(b.len(), 768);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.cosine_distance_avx2_unrolled_768(a, b)
@@ -6851,7 +7568,7 @@ impl HnswIndex {
             let dot = simd_distance::dot_product_scalar(a, b);
             let norm_a = simd_distance::dot_product_scalar(a, a).sqrt();
             let norm_b = simd_distance::dot_product_scalar(b, b).sqrt();
-            
+
             if norm_a < 1e-10 || norm_b < 1e-10 {
                 1.0
             } else {
@@ -6859,13 +7576,13 @@ impl HnswIndex {
             }
         }
     }
-    
+
     /// Inline cosine distance for 1536-dimensional vectors (OpenAI text-embedding-ada-002)
     #[inline(always)]
     fn cosine_distance_inline_1536(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 1536);
         debug_assert_eq!(b.len(), 1536);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.cosine_distance_avx2_unrolled_1536(a, b)
@@ -6879,7 +7596,7 @@ impl HnswIndex {
             let dot = simd_distance::dot_product_scalar(a, b);
             let norm_a = simd_distance::dot_product_scalar(a, a).sqrt();
             let norm_b = simd_distance::dot_product_scalar(b, b).sqrt();
-            
+
             if norm_a < 1e-10 || norm_b < 1e-10 {
                 1.0
             } else {
@@ -6887,13 +7604,13 @@ impl HnswIndex {
             }
         }
     }
-    
+
     /// Inline cosine distance for 1024-dimensional vectors (Cohere embed-english-v3.0)
     #[inline(always)]
     fn cosine_distance_inline_1024(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 1024);
         debug_assert_eq!(b.len(), 1024);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             simd_distance::cosine_distance_fast(a, b)
@@ -6907,13 +7624,13 @@ impl HnswIndex {
             simd_distance::DistanceKernel::detect().cosine_distance(a, b)
         }
     }
-    
+
     /// Inline cosine distance for 3072-dimensional vectors (OpenAI text-embedding-3-large)
     #[inline(always)]
     fn cosine_distance_inline_3072(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 3072);
         debug_assert_eq!(b.len(), 3072);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             simd_distance::cosine_distance_fast(a, b)
@@ -6927,13 +7644,13 @@ impl HnswIndex {
             simd_distance::DistanceKernel::detect().cosine_distance(a, b)
         }
     }
-    
+
     /// Inline L2 distance for 128-dimensional vectors
     #[inline(always)]
     fn l2_distance_inline_128(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 128);
         debug_assert_eq!(b.len(), 128);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.l2_distance_avx2_unrolled_128(a, b)
@@ -6947,13 +7664,13 @@ impl HnswIndex {
             simd_distance::l2_squared_scalar(a, b).sqrt()
         }
     }
-    
+
     /// Inline L2 distance for 256-dimensional vectors
     #[inline(always)]
     fn l2_distance_inline_256(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 256);
         debug_assert_eq!(b.len(), 256);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.l2_distance_avx2_unrolled_256(a, b)
@@ -6967,13 +7684,13 @@ impl HnswIndex {
             simd_distance::l2_squared_scalar(a, b).sqrt()
         }
     }
-    
+
     /// Inline L2 distance for 384-dimensional vectors (common for all-MiniLM-L6-v2)
     #[inline(always)]
     fn l2_distance_inline_384(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 384);
         debug_assert_eq!(b.len(), 384);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.l2_distance_avx2_unrolled_384(a, b)
@@ -6987,13 +7704,13 @@ impl HnswIndex {
             simd_distance::l2_squared_scalar(a, b).sqrt()
         }
     }
-    
+
     /// Inline L2 distance for 512-dimensional vectors
     #[inline(always)]
     fn l2_distance_inline_512(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 512);
         debug_assert_eq!(b.len(), 512);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.l2_distance_avx2_unrolled_512(a, b)
@@ -7007,13 +7724,13 @@ impl HnswIndex {
             simd_distance::l2_squared_scalar(a, b).sqrt()
         }
     }
-    
+
     /// Inline L2 distance for 768-dimensional vectors  
     #[inline(always)]
     fn l2_distance_inline_768(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 768);
         debug_assert_eq!(b.len(), 768);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.l2_distance_avx2_unrolled_768(a, b)
@@ -7027,13 +7744,13 @@ impl HnswIndex {
             simd_distance::l2_squared_scalar(a, b).sqrt()
         }
     }
-    
+
     /// Inline L2 distance for 1536-dimensional vectors
     #[inline(always)]
     fn l2_distance_inline_1536(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 1536);
         debug_assert_eq!(b.len(), 1536);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.l2_distance_avx2_unrolled_1536(a, b)
@@ -7047,13 +7764,13 @@ impl HnswIndex {
             simd_distance::l2_squared_scalar(a, b).sqrt()
         }
     }
-    
+
     /// Inline L2 distance for 1024-dimensional vectors (Cohere embed-english-v3.0)
     #[inline(always)]
     fn l2_distance_inline_1024(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 1024);
         debug_assert_eq!(b.len(), 1024);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             simd_distance::l2_distance_fast(a, b)
@@ -7067,13 +7784,13 @@ impl HnswIndex {
             simd_distance::l2_squared_scalar(a, b).sqrt()
         }
     }
-    
+
     /// Inline L2 distance for 3072-dimensional vectors (OpenAI text-embedding-3-large)
     #[inline(always)]
     fn l2_distance_inline_3072(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 3072);
         debug_assert_eq!(b.len(), 3072);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             simd_distance::l2_distance_fast(a, b)
@@ -7087,13 +7804,13 @@ impl HnswIndex {
             simd_distance::l2_squared_scalar(a, b).sqrt()
         }
     }
-    
+
     /// Inline dot product for 128-dimensional vectors
     #[inline(always)]
     fn dot_product_inline_128(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 128);
         debug_assert_eq!(b.len(), 128);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.dot_product_avx2_unrolled_128(a, b)
@@ -7107,13 +7824,13 @@ impl HnswIndex {
             simd_distance::dot_product_scalar(a, b)
         }
     }
-    
+
     /// Inline dot product for 256-dimensional vectors
     #[inline(always)]
     fn dot_product_inline_256(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 256);
         debug_assert_eq!(b.len(), 256);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.dot_product_avx2_unrolled_256(a, b)
@@ -7127,13 +7844,13 @@ impl HnswIndex {
             simd_distance::dot_product_scalar(a, b)
         }
     }
-    
+
     /// Inline dot product for 384-dimensional vectors (common for all-MiniLM-L6-v2)
     #[inline(always)]
     fn dot_product_inline_384(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 384);
         debug_assert_eq!(b.len(), 384);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.dot_product_avx2_unrolled_384(a, b)
@@ -7147,13 +7864,13 @@ impl HnswIndex {
             simd_distance::dot_product_scalar(a, b)
         }
     }
-    
+
     /// Inline dot product for 512-dimensional vectors
     #[inline(always)]
     fn dot_product_inline_512(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 512);
         debug_assert_eq!(b.len(), 512);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.dot_product_avx2_unrolled_512(a, b)
@@ -7167,13 +7884,13 @@ impl HnswIndex {
             simd_distance::dot_product_scalar(a, b)
         }
     }
-    
+
     /// Inline dot product for 768-dimensional vectors
     #[inline(always)]
     fn dot_product_inline_768(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 768);
         debug_assert_eq!(b.len(), 768);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.dot_product_avx2_unrolled_768(a, b)
@@ -7187,13 +7904,13 @@ impl HnswIndex {
             simd_distance::dot_product_scalar(a, b)
         }
     }
-    
+
     /// Inline dot product for 1536-dimensional vectors
     #[inline(always)]
     fn dot_product_inline_1536(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 1536);
         debug_assert_eq!(b.len(), 1536);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             self.dot_product_avx2_unrolled_1536(a, b)
@@ -7207,13 +7924,13 @@ impl HnswIndex {
             simd_distance::dot_product_scalar(a, b)
         }
     }
-    
+
     /// Inline dot product for 1024-dimensional vectors (Cohere embed-english-v3.0)
     #[inline(always)]
     fn dot_product_inline_1024(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 1024);
         debug_assert_eq!(b.len(), 1024);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             simd_distance::dot_product_avx2(a, b)
@@ -7227,13 +7944,13 @@ impl HnswIndex {
             simd_distance::dot_product_scalar(a, b)
         }
     }
-    
+
     /// Inline dot product for 3072-dimensional vectors (OpenAI text-embedding-3-large)
     #[inline(always)]
     fn dot_product_inline_3072(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), 3072);
         debug_assert_eq!(b.len(), 3072);
-        
+
         #[cfg(target_arch = "x86_64")]
         unsafe {
             simd_distance::dot_product_avx2(a, b)
@@ -7249,7 +7966,7 @@ impl HnswIndex {
     }
 
     /// Calculate distance between vectors with inline optimization for common dimensions
-    /// 
+    ///
     /// **Task 5 Implementation**: Specialized inline kernels for dimensions [128, 256, 512, 768, 1536]
     /// eliminate function call overhead. Achieves 1.2-1.5x performance improvement through:
     /// - Zero-cost function inlining for hot paths
@@ -7262,42 +7979,90 @@ impl HnswIndex {
         if let (QuantizedVector::F32(a_arr), QuantizedVector::F32(b_arr)) = (a, b) {
             if let (Some(a_slice), Some(b_slice)) = (a_arr.as_slice(), b_arr.as_slice()) {
                 let dim = a_slice.len();
-                
+
                 // Inline kernels for most common embedding dimensions
                 // Covers: 128, 256, 384 (MiniLM), 512, 768 (BERT), 1024 (Cohere), 1536 (OpenAI), 3072 (OpenAI large)
                 match (self.config.metric, dim) {
-                    (DistanceMetric::Cosine, 128) => return self.cosine_distance_inline_128(a_slice, b_slice),
-                    (DistanceMetric::Cosine, 256) => return self.cosine_distance_inline_256(a_slice, b_slice),
-                    (DistanceMetric::Cosine, 384) => return self.cosine_distance_inline_384(a_slice, b_slice),
-                    (DistanceMetric::Cosine, 512) => return self.cosine_distance_inline_512(a_slice, b_slice),
-                    (DistanceMetric::Cosine, 768) => return self.cosine_distance_inline_768(a_slice, b_slice),
-                    (DistanceMetric::Cosine, 1024) => return self.cosine_distance_inline_1024(a_slice, b_slice),
-                    (DistanceMetric::Cosine, 1536) => return self.cosine_distance_inline_1536(a_slice, b_slice),
-                    (DistanceMetric::Cosine, 3072) => return self.cosine_distance_inline_3072(a_slice, b_slice),
-                    
-                    (DistanceMetric::Euclidean, 128) => return self.l2_distance_inline_128(a_slice, b_slice),
-                    (DistanceMetric::Euclidean, 256) => return self.l2_distance_inline_256(a_slice, b_slice),
-                    (DistanceMetric::Euclidean, 384) => return self.l2_distance_inline_384(a_slice, b_slice),
-                    (DistanceMetric::Euclidean, 512) => return self.l2_distance_inline_512(a_slice, b_slice),
-                    (DistanceMetric::Euclidean, 768) => return self.l2_distance_inline_768(a_slice, b_slice),
-                    (DistanceMetric::Euclidean, 1024) => return self.l2_distance_inline_1024(a_slice, b_slice),
-                    (DistanceMetric::Euclidean, 1536) => return self.l2_distance_inline_1536(a_slice, b_slice),
-                    (DistanceMetric::Euclidean, 3072) => return self.l2_distance_inline_3072(a_slice, b_slice),
-                    
-                    (DistanceMetric::DotProduct, 128) => return -self.dot_product_inline_128(a_slice, b_slice),
-                    (DistanceMetric::DotProduct, 256) => return -self.dot_product_inline_256(a_slice, b_slice),
-                    (DistanceMetric::DotProduct, 384) => return -self.dot_product_inline_384(a_slice, b_slice),
-                    (DistanceMetric::DotProduct, 512) => return -self.dot_product_inline_512(a_slice, b_slice),
-                    (DistanceMetric::DotProduct, 768) => return -self.dot_product_inline_768(a_slice, b_slice),
-                    (DistanceMetric::DotProduct, 1024) => return -self.dot_product_inline_1024(a_slice, b_slice),
-                    (DistanceMetric::DotProduct, 1536) => return -self.dot_product_inline_1536(a_slice, b_slice),
-                    (DistanceMetric::DotProduct, 3072) => return -self.dot_product_inline_3072(a_slice, b_slice),
-                    
+                    (DistanceMetric::Cosine, 128) => {
+                        return self.cosine_distance_inline_128(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Cosine, 256) => {
+                        return self.cosine_distance_inline_256(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Cosine, 384) => {
+                        return self.cosine_distance_inline_384(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Cosine, 512) => {
+                        return self.cosine_distance_inline_512(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Cosine, 768) => {
+                        return self.cosine_distance_inline_768(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Cosine, 1024) => {
+                        return self.cosine_distance_inline_1024(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Cosine, 1536) => {
+                        return self.cosine_distance_inline_1536(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Cosine, 3072) => {
+                        return self.cosine_distance_inline_3072(a_slice, b_slice);
+                    }
+
+                    (DistanceMetric::Euclidean, 128) => {
+                        return self.l2_distance_inline_128(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Euclidean, 256) => {
+                        return self.l2_distance_inline_256(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Euclidean, 384) => {
+                        return self.l2_distance_inline_384(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Euclidean, 512) => {
+                        return self.l2_distance_inline_512(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Euclidean, 768) => {
+                        return self.l2_distance_inline_768(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Euclidean, 1024) => {
+                        return self.l2_distance_inline_1024(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Euclidean, 1536) => {
+                        return self.l2_distance_inline_1536(a_slice, b_slice);
+                    }
+                    (DistanceMetric::Euclidean, 3072) => {
+                        return self.l2_distance_inline_3072(a_slice, b_slice);
+                    }
+
+                    (DistanceMetric::DotProduct, 128) => {
+                        return -self.dot_product_inline_128(a_slice, b_slice);
+                    }
+                    (DistanceMetric::DotProduct, 256) => {
+                        return -self.dot_product_inline_256(a_slice, b_slice);
+                    }
+                    (DistanceMetric::DotProduct, 384) => {
+                        return -self.dot_product_inline_384(a_slice, b_slice);
+                    }
+                    (DistanceMetric::DotProduct, 512) => {
+                        return -self.dot_product_inline_512(a_slice, b_slice);
+                    }
+                    (DistanceMetric::DotProduct, 768) => {
+                        return -self.dot_product_inline_768(a_slice, b_slice);
+                    }
+                    (DistanceMetric::DotProduct, 1024) => {
+                        return -self.dot_product_inline_1024(a_slice, b_slice);
+                    }
+                    (DistanceMetric::DotProduct, 1536) => {
+                        return -self.dot_product_inline_1536(a_slice, b_slice);
+                    }
+                    (DistanceMetric::DotProduct, 3072) => {
+                        return -self.dot_product_inline_3072(a_slice, b_slice);
+                    }
+
                     _ => {} // Fall through to generic SIMD implementation
                 }
             }
         }
-        
+
         // Fallback to generic distance computation for non-optimized cases
         match self.config.metric {
             DistanceMetric::Cosine => cosine_distance_quantized(a, b),
@@ -7306,9 +8071,45 @@ impl HnswIndex {
         }
     }
 
+    /// Whether the cheap normalized distance (1 - dot) is valid for the hot loop.
+    ///
+    /// Holds when PQ is inactive, the metric is cosine, and vectors were
+    /// L2-normalized at ingest. In that case cosine distance reduces to a
+    /// single SIMD dot accumulation (1 - a·b) instead of three accumulations
+    /// (dot + ‖a‖² + ‖b‖²), and the result is mathematically identical for
+    /// unit vectors. Computed once per neighbor batch, not per neighbor.
+    #[inline(always)]
+    pub(crate) fn use_normalized_fast_path(&self) -> bool {
+        !self.pq_active.load(std::sync::atomic::Ordering::Acquire)
+            && matches!(self.config.metric, DistanceMetric::Cosine)
+            && self.config.rng_optimization.normalize_at_ingest
+    }
+
+    /// Distance for a neighbor in the search hot loop.
+    ///
+    /// Dispatches once on the precomputed `use_normalized` flag so the
+    /// per-neighbor cost is a single branch plus the distance kernel.
+    #[inline(always)]
+    pub(crate) fn neighbor_distance(
+        &self,
+        use_normalized: bool,
+        query: &QuantizedVector,
+        candidate: &QuantizedVector,
+    ) -> f32 {
+        if use_normalized {
+            self.calculate_distance_normalized(query, candidate)
+        } else {
+            self.calculate_distance_pq(query, candidate)
+        }
+    }
+
     /// Optimized distance calculation for normalized vectors
     /// Uses L2 distance on unit sphere for cosine similarity: ||a-b||² = 2 - 2(a·b)
-    pub(crate) fn calculate_distance_normalized(&self, a: &QuantizedVector, b: &QuantizedVector) -> f32 {
+    pub(crate) fn calculate_distance_normalized(
+        &self,
+        a: &QuantizedVector,
+        b: &QuantizedVector,
+    ) -> f32 {
         match self.config.metric {
             DistanceMetric::Cosine => {
                 // For normalized vectors, cosine distance = 1 - dot_product
@@ -7327,18 +8128,24 @@ impl HnswIndex {
     /// Threshold-aware distance calculation for early abort
     /// Returns actual distance if <= threshold, or value > threshold if exceeded
     #[allow(dead_code)]
-    pub(crate) fn calculate_distance_threshold(&self, a: &QuantizedVector, b: &QuantizedVector, threshold: f32) -> f32 {
+    pub(crate) fn calculate_distance_threshold(
+        &self,
+        a: &QuantizedVector,
+        b: &QuantizedVector,
+        threshold: f32,
+    ) -> f32 {
         // Only use optimized path if early abort is enabled and we have cosine metric with normalized vectors
-        if matches!(self.config.metric, DistanceMetric::Cosine) 
+        if matches!(self.config.metric, DistanceMetric::Cosine)
             && self.config.rng_optimization.early_abort_distance
-            && self.config.rng_optimization.normalize_at_ingest {
-            
+            && self.config.rng_optimization.normalize_at_ingest
+        {
             // For normalized vectors and cosine metric, we use L2 distance on unit sphere
             match (a, b) {
                 (QuantizedVector::F32(a_arr), QuantizedVector::F32(b_arr)) => {
                     if let (Some(a_slice), Some(b_slice)) = (a_arr.as_slice(), b_arr.as_slice()) {
                         let threshold_squared = threshold * threshold;
-                        simd_distance::l2_squared_threshold(a_slice, b_slice, threshold_squared).sqrt()
+                        simd_distance::l2_squared_threshold(a_slice, b_slice, threshold_squared)
+                            .sqrt()
                     } else {
                         self.calculate_distance_normalized(a, b)
                     }
@@ -7409,25 +8216,37 @@ impl HnswIndex {
                 // Process in batches of 8
                 let mut distances = Vec::with_capacity(slices.len());
                 let mut i = 0;
-                
+
                 while i + 8 <= slices.len() {
                     let batch: [&[f32]; 8] = [
-                        slices[i], slices[i + 1], slices[i + 2], slices[i + 3],
-                        slices[i + 4], slices[i + 5], slices[i + 6], slices[i + 7],
+                        slices[i],
+                        slices[i + 1],
+                        slices[i + 2],
+                        slices[i + 3],
+                        slices[i + 4],
+                        slices[i + 5],
+                        slices[i + 6],
+                        slices[i + 7],
                     ];
                     // Safety: We've verified AVX2+FMA are available
                     let batch_dists = unsafe {
-                        simd_batch_distance::avx2::batch_l2_squared_8x(query_slice, &batch, dimension)
+                        simd_batch_distance::avx2::batch_l2_squared_8x(
+                            query_slice,
+                            &batch,
+                            dimension,
+                        )
                     };
                     distances.extend_from_slice(&batch_dists);
                     i += 8;
                 }
-                
+
                 // Handle remainder with scalar
                 for j in i..slices.len() {
-                    distances.push(simd_batch_distance::batch_l2_squared_scalar(query_slice, &[slices[j]])[0]);
+                    distances.push(
+                        simd_batch_distance::batch_l2_squared_scalar(query_slice, &[slices[j]])[0],
+                    );
                 }
-                
+
                 return distances;
             }
         }
@@ -7438,24 +8257,29 @@ impl HnswIndex {
                 // Process in batches of 4 (NEON)
                 let mut distances = Vec::with_capacity(slices.len());
                 let mut i = 0;
-                
+
                 while i + 4 <= slices.len() {
-                    let batch: [&[f32]; 4] = [
-                        slices[i], slices[i + 1], slices[i + 2], slices[i + 3],
-                    ];
+                    let batch: [&[f32]; 4] =
+                        [slices[i], slices[i + 1], slices[i + 2], slices[i + 3]];
                     // Safety: NEON is always available on aarch64
                     let batch_dists = unsafe {
-                        simd_batch_distance::neon::batch_l2_squared_4x(query_slice, &batch, dimension)
+                        simd_batch_distance::neon::batch_l2_squared_4x(
+                            query_slice,
+                            &batch,
+                            dimension,
+                        )
                     };
                     distances.extend_from_slice(&batch_dists);
                     i += 4;
                 }
-                
+
                 // Handle remainder with scalar
                 for j in i..slices.len() {
-                    distances.push(simd_batch_distance::batch_l2_squared_scalar(query_slice, &[slices[j]])[0]);
+                    distances.push(
+                        simd_batch_distance::batch_l2_squared_scalar(query_slice, &[slices[j]])[0],
+                    );
                 }
-                
+
                 return distances;
             }
         }
@@ -7463,59 +8287,59 @@ impl HnswIndex {
         // Fallback to scalar
         simd_batch_distance::batch_l2_squared_scalar(query_slice, &slices)
     }
-    
+
     // ============================================================================
     // Unrolled SIMD Distance Kernels (Task 5 Implementation)
     // ============================================================================
-    
+
     /// Unrolled AVX2 cosine distance for 128-dimensional vectors
     /// Loop unrolling reduces instruction overhead by 20-30%
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn cosine_distance_avx2_unrolled_128(&self, a: &[f32], b: &[f32]) -> f32 {
         use std::arch::x86_64::*;
-        
+
         debug_assert_eq!(a.len(), 128);
-        
+
         let mut dot_sum = _mm256_setzero_ps();
         let mut norm_a_sum = _mm256_setzero_ps();
         let mut norm_b_sum = _mm256_setzero_ps();
-        
+
         let a_ptr = a.as_ptr();
         let b_ptr = b.as_ptr();
-        
+
         // Unroll loop for 16 iterations (128 floats / 8 per AVX2 register)
         for i in (0..128).step_by(8) {
             let va = _mm256_loadu_ps(a_ptr.add(i));
             let vb = _mm256_loadu_ps(b_ptr.add(i));
-            
+
             // Accumulate dot product, norm_a², norm_b²
             dot_sum = _mm256_fmadd_ps(va, vb, dot_sum);
             norm_a_sum = _mm256_fmadd_ps(va, va, norm_a_sum);
             norm_b_sum = _mm256_fmadd_ps(vb, vb, norm_b_sum);
         }
-        
+
         // Horizontal reduction
         let dot = Self::horizontal_sum_avx2(dot_sum);
         let norm_a = Self::horizontal_sum_avx2(norm_a_sum).sqrt();
         let norm_b = Self::horizontal_sum_avx2(norm_b_sum).sqrt();
-        
+
         if norm_a < 1e-10 || norm_b < 1e-10 {
             1.0
         } else {
             1.0 - (dot / (norm_a * norm_b))
         }
     }
-    
+
     /// Task #7: High-ILP AVX2 cosine distance for 768-dimensional vectors
     /// Uses 6 accumulators (2 per metric) to saturate FMA throughput
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn cosine_distance_avx2_unrolled_768(&self, a: &[f32], b: &[f32]) -> f32 {
         use std::arch::x86_64::*;
-        
+
         debug_assert_eq!(a.len(), 768);
-        
+
         // Task #7: Use 6 accumulators for better ILP (2 per metric)
         let mut dot0 = _mm256_setzero_ps();
         let mut dot1 = _mm256_setzero_ps();
@@ -7523,10 +8347,10 @@ impl HnswIndex {
         let mut norm_a1 = _mm256_setzero_ps();
         let mut norm_b0 = _mm256_setzero_ps();
         let mut norm_b1 = _mm256_setzero_ps();
-        
+
         let a_ptr = a.as_ptr();
         let b_ptr = b.as_ptr();
-        
+
         // Process 16 floats per iteration (2 × 8-wide AVX2)
         let mut i = 0;
         while i + 16 <= 768 {
@@ -7534,7 +8358,7 @@ impl HnswIndex {
             let vb0 = _mm256_loadu_ps(b_ptr.add(i));
             let va1 = _mm256_loadu_ps(a_ptr.add(i + 8));
             let vb1 = _mm256_loadu_ps(b_ptr.add(i + 8));
-            
+
             // All 6 FMAs are independent - CPU can issue in parallel
             dot0 = _mm256_fmadd_ps(va0, vb0, dot0);
             dot1 = _mm256_fmadd_ps(va1, vb1, dot1);
@@ -7542,35 +8366,35 @@ impl HnswIndex {
             norm_a1 = _mm256_fmadd_ps(va1, va1, norm_a1);
             norm_b0 = _mm256_fmadd_ps(vb0, vb0, norm_b0);
             norm_b1 = _mm256_fmadd_ps(vb1, vb1, norm_b1);
-            
+
             i += 16;
         }
-        
+
         // Merge accumulators
         let dot_sum = _mm256_add_ps(dot0, dot1);
         let norm_a_sum = _mm256_add_ps(norm_a0, norm_a1);
         let norm_b_sum = _mm256_add_ps(norm_b0, norm_b1);
-        
+
         let dot = Self::horizontal_sum_avx2(dot_sum);
         let norm_a = Self::horizontal_sum_avx2(norm_a_sum).sqrt();
         let norm_b = Self::horizontal_sum_avx2(norm_b_sum).sqrt();
-        
+
         if norm_a < 1e-10 || norm_b < 1e-10 {
             1.0
         } else {
             1.0 - (dot / (norm_a * norm_b))
         }
     }
-    
+
     /// Task #7: High-ILP AVX2 cosine distance for 1536-dimensional vectors
     /// Uses 6 accumulators (2 per metric) to saturate FMA throughput
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn cosine_distance_avx2_unrolled_1536(&self, a: &[f32], b: &[f32]) -> f32 {
         use std::arch::x86_64::*;
-        
+
         debug_assert_eq!(a.len(), 1536);
-        
+
         // Task #7: Use 6 accumulators for better ILP
         let mut dot0 = _mm256_setzero_ps();
         let mut dot1 = _mm256_setzero_ps();
@@ -7578,10 +8402,10 @@ impl HnswIndex {
         let mut norm_a1 = _mm256_setzero_ps();
         let mut norm_b0 = _mm256_setzero_ps();
         let mut norm_b1 = _mm256_setzero_ps();
-        
+
         let a_ptr = a.as_ptr();
         let b_ptr = b.as_ptr();
-        
+
         // Process 16 floats per iteration
         let mut i = 0;
         while i + 16 <= 1536 {
@@ -7589,44 +8413,44 @@ impl HnswIndex {
             let vb0 = _mm256_loadu_ps(b_ptr.add(i));
             let va1 = _mm256_loadu_ps(a_ptr.add(i + 8));
             let vb1 = _mm256_loadu_ps(b_ptr.add(i + 8));
-            
+
             dot0 = _mm256_fmadd_ps(va0, vb0, dot0);
             dot1 = _mm256_fmadd_ps(va1, vb1, dot1);
             norm_a0 = _mm256_fmadd_ps(va0, va0, norm_a0);
             norm_a1 = _mm256_fmadd_ps(va1, va1, norm_a1);
             norm_b0 = _mm256_fmadd_ps(vb0, vb0, norm_b0);
             norm_b1 = _mm256_fmadd_ps(vb1, vb1, norm_b1);
-            
+
             i += 16;
         }
-        
+
         let dot_sum = _mm256_add_ps(dot0, dot1);
         let norm_a_sum = _mm256_add_ps(norm_a0, norm_a1);
         let norm_b_sum = _mm256_add_ps(norm_b0, norm_b1);
-        
+
         let dot = Self::horizontal_sum_avx2(dot_sum);
         let norm_a = Self::horizontal_sum_avx2(norm_a_sum).sqrt();
         let norm_b = Self::horizontal_sum_avx2(norm_b_sum).sqrt();
-        
+
         if norm_a < 1e-10 || norm_b < 1e-10 {
             1.0
         } else {
             1.0 - (dot / (norm_a * norm_b))
         }
     }
-    
+
     /// Unrolled AVX2 L2 distance for 128-dimensional vectors
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn l2_distance_avx2_unrolled_128(&self, a: &[f32], b: &[f32]) -> f32 {
         use std::arch::x86_64::*;
-        
+
         debug_assert_eq!(a.len(), 128);
-        
+
         let mut sum = _mm256_setzero_ps();
         let a_ptr = a.as_ptr();
         let b_ptr = b.as_ptr();
-        
+
         // Unroll for 16 iterations
         for i in (0..128).step_by(8) {
             let va = _mm256_loadu_ps(a_ptr.add(i));
@@ -7634,74 +8458,74 @@ impl HnswIndex {
             let diff = _mm256_sub_ps(va, vb);
             sum = _mm256_fmadd_ps(diff, diff, sum);
         }
-        
+
         Self::horizontal_sum_avx2(sum).sqrt()
     }
-    
+
     /// Unrolled AVX2 L2 distance for 768-dimensional vectors
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn l2_distance_avx2_unrolled_768(&self, a: &[f32], b: &[f32]) -> f32 {
         use std::arch::x86_64::*;
-        
+
         debug_assert_eq!(a.len(), 768);
-        
+
         let mut sum = _mm256_setzero_ps();
         let a_ptr = a.as_ptr();
         let b_ptr = b.as_ptr();
-        
+
         for i in (0..768).step_by(8) {
             let va = _mm256_loadu_ps(a_ptr.add(i));
             let vb = _mm256_loadu_ps(b_ptr.add(i));
             let diff = _mm256_sub_ps(va, vb);
             sum = _mm256_fmadd_ps(diff, diff, sum);
         }
-        
+
         Self::horizontal_sum_avx2(sum).sqrt()
     }
-    
+
     /// Unrolled AVX2 dot product for 128-dimensional vectors
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn dot_product_avx2_unrolled_128(&self, a: &[f32], b: &[f32]) -> f32 {
         use std::arch::x86_64::*;
-        
+
         debug_assert_eq!(a.len(), 128);
-        
+
         let mut sum = _mm256_setzero_ps();
         let a_ptr = a.as_ptr();
         let b_ptr = b.as_ptr();
-        
+
         for i in (0..128).step_by(8) {
             let va = _mm256_loadu_ps(a_ptr.add(i));
             let vb = _mm256_loadu_ps(b_ptr.add(i));
             sum = _mm256_fmadd_ps(va, vb, sum);
         }
-        
+
         Self::horizontal_sum_avx2(sum)
     }
-    
+
     /// Horizontal sum reduction for AVX2 registers
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
     #[inline]
     unsafe fn horizontal_sum_avx2(reg: std::arch::x86_64::__m256) -> f32 {
         use std::arch::x86_64::*;
-        
+
         // Extract high and low 128-bit lanes
         let high = _mm256_extractf128_ps(reg, 1);
         let low = _mm256_castps256_ps128(reg);
-        
+
         // Add lanes together
         let sum128 = _mm_add_ps(low, high);
-        
+
         // Horizontal sum within 128-bit register
         let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
         let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
-        
+
         _mm_cvtss_f32(sum32)
     }
-    
+
     // Define stubs for missing dimension kernels to avoid compilation errors
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
@@ -7709,178 +8533,198 @@ impl HnswIndex {
         // Simple delegation to existing SIMD for now
         simd_distance::DistanceKernel::detect().cosine_distance(a, b)
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn cosine_distance_avx2_unrolled_384(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().cosine_distance(a, b)
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn cosine_distance_avx2_unrolled_512(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().cosine_distance(a, b)
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn l2_distance_avx2_unrolled_256(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn l2_distance_avx2_unrolled_384(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn l2_distance_avx2_unrolled_512(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn l2_distance_avx2_unrolled_1536(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn dot_product_avx2_unrolled_256(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn dot_product_avx2_unrolled_384(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn dot_product_avx2_unrolled_512(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn dot_product_avx2_unrolled_768(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2", enable = "fma")]
     unsafe fn dot_product_avx2_unrolled_1536(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     // NEON implementations for ARM64 - Task #7: All use high-ILP fused implementation
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn cosine_distance_neon_unrolled_128(&self, a: &[f32], b: &[f32]) -> f32 {
         unsafe { simd_distance::cosine_distance_neon_fused(a, b) }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn cosine_distance_neon_unrolled_256(&self, a: &[f32], b: &[f32]) -> f32 {
         unsafe { simd_distance::cosine_distance_neon_fused(a, b) }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn cosine_distance_neon_unrolled_384(&self, a: &[f32], b: &[f32]) -> f32 {
         unsafe { simd_distance::cosine_distance_neon_fused(a, b) }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn cosine_distance_neon_unrolled_512(&self, a: &[f32], b: &[f32]) -> f32 {
         unsafe { simd_distance::cosine_distance_neon_fused(a, b) }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn cosine_distance_neon_unrolled_768(&self, a: &[f32], b: &[f32]) -> f32 {
         // Task #7: Use high-ILP fused implementation
         unsafe { simd_distance::cosine_distance_neon_fused(a, b) }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn cosine_distance_neon_unrolled_1536(&self, a: &[f32], b: &[f32]) -> f32 {
         // Task #7: Use high-ILP fused implementation
         unsafe { simd_distance::cosine_distance_neon_fused(a, b) }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn l2_distance_neon_unrolled_128(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn l2_distance_neon_unrolled_256(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn l2_distance_neon_unrolled_384(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn l2_distance_neon_unrolled_512(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn l2_distance_neon_unrolled_768(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn l2_distance_neon_unrolled_1536(&self, a: &[f32], b: &[f32]) -> f32 {
-        simd_distance::DistanceKernel::detect().l2_squared(a, b).sqrt()
+        simd_distance::DistanceKernel::detect()
+            .l2_squared(a, b)
+            .sqrt()
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn dot_product_neon_unrolled_128(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn dot_product_neon_unrolled_256(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn dot_product_neon_unrolled_384(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn dot_product_neon_unrolled_512(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn dot_product_neon_unrolled_768(&self, a: &[f32], b: &[f32]) -> f32 {
         simd_distance::DistanceKernel::detect().dot_product(a, b)
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn dot_product_neon_unrolled_1536(&self, a: &[f32], b: &[f32]) -> f32 {
@@ -7892,7 +8736,7 @@ impl HnswIndex {
     // ============================================================================
 
     /// Train Product Quantization codebook from existing vectors
-    /// 
+    ///
     /// This should be called after inserting a sufficient number of vectors
     /// (at least pq_training_vectors) to create the quantization codebook.
     /// Once trained, subsequent distance computations will use the compressed
@@ -7901,11 +8745,11 @@ impl HnswIndex {
         if !self.config.rng_optimization.enable_product_quantization {
             return Ok(()); // PQ not enabled
         }
-        
+
         // Collect training vectors from vector_store (primary source)
         let training_limit = self.config.rng_optimization.pq_training_vectors;
         let mut training_vectors = Vec::new();
-        
+
         let store = self.vector_store.read();
         for qv in store.iter() {
             if training_vectors.len() >= training_limit {
@@ -7921,14 +8765,14 @@ impl HnswIndex {
             }
         }
         drop(store);
-        
+
         if training_vectors.len() < 1000 {
             return Err(format!(
-                "Insufficient training vectors: {} < 1000", 
+                "Insufficient training vectors: {} < 1000",
                 training_vectors.len()
             ));
         }
-        
+
         // Train PQ codebook
         let training_refs: Vec<&[f32]> = training_vectors.iter().map(|v| v.as_slice()).collect();
         let codebook = ProductQuantizationCodebook::train(
@@ -7936,45 +8780,59 @@ impl HnswIndex {
             self.config.rng_optimization.pq_segments,
             self.config.rng_optimization.pq_bits,
         )?;
-        
+
         *self.pq_codebook.write() = Some(Arc::new(codebook));
-        
+        // Publish AFTER the codebook is installed so the hot path never reads a
+        // true flag with a not-yet-visible codebook (Release pairs with the
+        // Acquire load in calculate_distance_pq).
+        self.pq_active.store(true, AtomicOrdering::Release);
+
         println!(
             "PQ codebook trained: {} segments, {} bits, {} training vectors",
             self.config.rng_optimization.pq_segments,
             self.config.rng_optimization.pq_bits,
             training_vectors.len()
         );
-        
+
         Ok(())
     }
 
     /// Compute distance using Product Quantization if available
-    /// 
+    ///
     /// For PQ-enabled distance computation, this builds a lookup table
     /// for the query vector and computes distances in the compressed space.
     /// Falls back to regular distance computation if PQ is not available.
     pub(crate) fn calculate_distance_pq(
-        &self, 
-        query: &QuantizedVector, 
-        candidate: &QuantizedVector
+        &self,
+        query: &QuantizedVector,
+        candidate: &QuantizedVector,
     ) -> f32 {
+        // Hot-path fast exit: when PQ is not installed (default config and every
+        // non-PQ workload) skip the RwLock entirely with one relaxed-acquire
+        // load. This kernel runs once per visited neighbor, so removing the
+        // per-call lock acquisition directly widens search throughput.
+        if !self.pq_active.load(AtomicOrdering::Acquire) {
+            return self.calculate_distance(query, candidate);
+        }
+
         // Check if PQ is available
-        if let (Some(pq_codebook), QuantizedVector::F32(query_arr)) = (self.pq_codebook.read().as_ref(), query) {
+        if let (Some(pq_codebook), QuantizedVector::F32(query_arr)) =
+            (self.pq_codebook.read().as_ref(), query)
+        {
             if let Some(query_slice) = query_arr.as_slice() {
                 // Try to use PQ-accelerated distance computation
                 if let QuantizedVector::F32(candidate_arr) = candidate {
                     if let Some(candidate_slice) = candidate_arr.as_slice() {
                         return self.distance_pq_compressed(
-                            pq_codebook, 
-                            query_slice, 
-                            candidate_slice
+                            pq_codebook,
+                            query_slice,
+                            candidate_slice,
                         );
                     }
                 }
             }
         }
-        
+
         // Fallback to regular distance computation
         self.calculate_distance(query, candidate)
     }
@@ -7988,13 +8846,13 @@ impl HnswIndex {
     ) -> f32 {
         // Build query lookup table
         let query_table = codebook.build_query_table(query);
-        
+
         // Quantize candidate vector
         let candidate_codes = codebook.quantize(candidate);
-        
+
         // Compute distance using lookup table
         let distance_squared = codebook.distance_with_table(&query_table, &candidate_codes);
-        
+
         // Return appropriate distance based on metric
         match self.config.metric {
             DistanceMetric::Euclidean => distance_squared.sqrt(),
@@ -8004,10 +8862,10 @@ impl HnswIndex {
                 let query_norm_sq: f32 = query.iter().map(|x| x * x).sum();
                 let candidate_norm_sq: f32 = candidate.iter().map(|x| x * x).sum();
                 let dot_product = -distance_squared + query_norm_sq + candidate_norm_sq; // Reconstruct dot product
-                
+
                 let query_norm = query_norm_sq.sqrt();
                 let candidate_norm = candidate_norm_sq.sqrt();
-                
+
                 if query_norm < 1e-10 || candidate_norm < 1e-10 {
                     1.0
                 } else {
@@ -8024,13 +8882,13 @@ impl HnswIndex {
             let original_bytes = self.dimension * 4; // f32 = 4 bytes
             let compressed_bytes = codebook.segments; // 1 byte per segment
             let compression_ratio = original_bytes as f32 / compressed_bytes as f32;
-            
+
             (original_bytes, compressed_bytes, compression_ratio)
         })
     }
 
     // ==================== Task #9: IVF Coarse Routing Layer ====================
-    
+
     /// Schedule IVF cluster assignment updates when enabled
     pub fn schedule_ivf_update(&self, node_id: u128) {
         if self.config.rng_optimization.enable_ivf_routing && self.dimension > 512 {
@@ -8067,7 +8925,7 @@ impl HnswIndex {
                 // Find closest clusters for this query
                 let target_clusters = (ef / 50).max(2).min(10); // 2-10 clusters based on ef
                 let cluster_candidates = ivf_index.search_clusters(query, target_clusters);
-                
+
                 // Collect all node IDs from these clusters
                 let mut candidates = Vec::new();
                 for cluster_id in cluster_candidates {
@@ -8075,7 +8933,7 @@ impl HnswIndex {
                         candidates.extend(cluster_nodes.iter().copied());
                     }
                 }
-                
+
                 // If we have enough candidates, return them for focused search
                 if candidates.len() >= ef * 2 {
                     return Some(candidates);
@@ -8096,7 +8954,7 @@ impl HnswIndex {
         // Compute distances to all IVF candidates
         let mut candidate_distances = Vec::with_capacity(candidates.len());
         let vector_store = self.vector_store.read();
-        
+
         for &node_id in candidates {
             if let Some(node) = self.nodes.get(&node_id) {
                 let node_vector = vector_store
@@ -8106,31 +8964,29 @@ impl HnswIndex {
                 candidate_distances.push((node_id, distance));
             }
         }
-        
+
         // Sort by distance and return top k
-        candidate_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        
-        let results = candidate_distances
-            .into_iter()
-            .take(k)
-            .collect();
-            
+        candidate_distances
+            .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let results = candidate_distances.into_iter().take(k).collect();
+
         Ok(results)
     }
 
     // ==================== Task #10: Triangle Inequality Pruning ====================
-    
+
     /// Apply triangle inequality pruning for L2 distance to reduce computations
-    /// 
+    ///
     /// For Euclidean distance in metric spaces, the triangle inequality states:
     /// d(a,c) ≤ d(a,b) + d(b,c), which can be rearranged to:
     /// d(a,c) ≥ |d(a,b) - d(b,c)|
-    /// 
+    ///
     /// In HNSW search, if we have:
     /// - Query Q, candidate C, and reference R (already computed d(Q,R))
     /// - We want to decide if we should compute d(Q,C)
     /// - If |d(Q,R) - d(R,C)| > current_threshold, we can skip d(Q,C)
-    /// 
+    ///
     /// This provides 1.2-1.4x improvement by reducing distance computations
     /// in search_layer operations, especially for high-dimensional vectors.
     #[allow(dead_code)]
@@ -8143,26 +8999,26 @@ impl HnswIndex {
     ) -> usize {
         let mut pruned_count = 0;
         let vector_store = self.vector_store.read();
-        
+
         // Only apply triangle inequality for L2 distance
         if !matches!(self.config.metric, DistanceMetric::Euclidean) {
             return pruned_count;
         }
-        
+
         candidates.retain(|candidate| {
             // Skip pruning if we don't have reference distances
             if reference_distances.is_empty() {
                 return true;
             }
-            
+
             // Try to find a reference point for triangle inequality
             let mut can_prune = false;
-            
+
             for (&ref_id, &query_ref_dist) in reference_distances.iter() {
                 if ref_id == candidate.id {
                     continue; // Can't use the same point as reference
                 }
-                
+
                 // Get candidate-reference distance
                 if let Some(candidate_node) = self.nodes.get(&candidate.id) {
                     if let Some(ref_node) = self.nodes.get(&ref_id) {
@@ -8172,15 +9028,13 @@ impl HnswIndex {
                         let ref_vector = vector_store
                             .get(ref_node.vector_index as usize)
                             .unwrap_or(&ref_node.vector);
-                        let candidate_ref_dist = self.calculate_distance(
-                            candidate_vector, 
-                            ref_vector
-                        );
-                        
+                        let candidate_ref_dist =
+                            self.calculate_distance(candidate_vector, ref_vector);
+
                         // Apply triangle inequality: |d(q,r) - d(c,r)| ≤ d(q,c)
                         // If |d(q,r) - d(c,r)| > threshold, we can prune candidate c
                         let lower_bound = (query_ref_dist - candidate_ref_dist).abs();
-                        
+
                         if lower_bound > prune_threshold {
                             can_prune = true;
                             pruned_count += 1;
@@ -8189,13 +9043,13 @@ impl HnswIndex {
                     }
                 }
             }
-            
+
             !can_prune
         });
-        
+
         pruned_count
     }
-    
+
     /// Enhanced search layer with triangle inequality pruning (Task #10)
     #[allow(dead_code)]
     fn search_layer_with_triangle_pruning(
@@ -8208,7 +9062,7 @@ impl HnswIndex {
         if entry_points.is_empty() {
             return Vec::new();
         }
-        
+
         // TODO(T12): Consider using FastBitSet with dense_index mapping
         // instead of HashSet<u128> for better cache performance.
         // Not urgent since this method is currently unused (dead_code).
@@ -8216,10 +9070,10 @@ impl HnswIndex {
         let mut candidates = BinaryHeap::new(); // Max heap for candidates
         let mut w = BinaryHeap::new(); // Min heap for dynamic list
         let vector_store = self.vector_store.read();
-        
+
         // Track reference distances for triangle inequality
         let mut reference_distances = std::collections::HashMap::new();
-        
+
         // Initialize with entry points
         for ep in entry_points {
             if let Some(node) = self.nodes.get(&ep.id) {
@@ -8231,91 +9085,96 @@ impl HnswIndex {
                     id: ep.id,
                     distance,
                 };
-                
+
                 visited.insert(ep.id);
                 candidates.push(Reverse(candidate)); // Max heap needs Reverse
                 w.push(candidate);
                 reference_distances.insert(ep.id, distance);
             }
         }
-        
+
         while let Some(current_candidate) = candidates.pop() {
             let current = current_candidate.0; // Unwrap from Reverse
-            
+
             // Early termination: if current distance > worst in w, stop
             if let Some(worst) = w.peek() {
                 if w.len() >= num_closest && current.distance > worst.distance {
                     break;
                 }
             }
-            
+
             // Get neighbors of current node
             if let Some(current_node) = self.nodes.get(&current.id) {
                 if let Some(layer_neighbors) = current_node.layers.get(layer) {
                     let neighbors = layer_neighbors.read();
-                        let mut neighbor_candidates = Vec::new();
-                        
-                        // Collect unvisited neighbors
-                        for &neighbor_dense in &neighbors.neighbors {
-                            if let Some(neighbor_id) = self.dense_to_node_id(neighbor_dense) {
-                                if !visited.contains(&neighbor_id) {
-                                    if let Some(_neighbor_node) = self.nodes.get(&neighbor_id) {
-                                        let neighbor_candidate = SearchCandidate {
-                                            id: neighbor_id,
-                                            distance: f32::INFINITY, // Will compute if not pruned
-                                        };
-                                        neighbor_candidates.push(neighbor_candidate);
-                                    }
+                    let mut neighbor_candidates = Vec::new();
+
+                    // Collect unvisited neighbors
+                    for &neighbor_dense in &neighbors.neighbors {
+                        if let Some(neighbor_id) = self.dense_to_node_id(neighbor_dense) {
+                            if !visited.contains(&neighbor_id) {
+                                if let Some(_neighbor_node) = self.nodes.get(&neighbor_id) {
+                                    let neighbor_candidate = SearchCandidate {
+                                        id: neighbor_id,
+                                        distance: f32::INFINITY, // Will compute if not pruned
+                                    };
+                                    neighbor_candidates.push(neighbor_candidate);
                                 }
                             }
                         }
-                        
-                        // Apply triangle inequality pruning
-                        let pruning_threshold = if let Some(worst) = w.peek() {
-                            if w.len() >= num_closest {
-                                worst.distance // Current threshold to beat
-                            } else {
-                                f32::INFINITY // No threshold if we need more candidates
-                            }
+                    }
+
+                    // Apply triangle inequality pruning
+                    let pruning_threshold = if let Some(worst) = w.peek() {
+                        if w.len() >= num_closest {
+                            worst.distance // Current threshold to beat
                         } else {
-                            f32::INFINITY
-                        };
-                        
-                        let _pruned_count = self.triangle_inequality_prune_candidates(
-                            query,
-                            &mut neighbor_candidates,
-                            &reference_distances,
-                            pruning_threshold,
-                        );
-                        
-                        // Compute distances for remaining candidates
-                        for mut neighbor in neighbor_candidates {
-                            visited.insert(neighbor.id);
-                            
-                            if let Some(neighbor_node) = self.nodes.get(&neighbor.id) {
-                                let neighbor_vector = vector_store
-                                    .get(neighbor_node.vector_index as usize)
-                                    .unwrap_or(&neighbor_node.vector);
-                                let distance = self.calculate_distance_normalized(query, neighbor_vector);
-                                neighbor.distance = distance;
-                                reference_distances.insert(neighbor.id, distance);
-                                
-                                candidates.push(Reverse(neighbor.clone()));
-                                w.push(neighbor);
-                                
-                                // Maintain w as top-k candidates
-                                if w.len() > num_closest {
-                                    w.pop(); // Remove worst
-                                }
+                            f32::INFINITY // No threshold if we need more candidates
+                        }
+                    } else {
+                        f32::INFINITY
+                    };
+
+                    let _pruned_count = self.triangle_inequality_prune_candidates(
+                        query,
+                        &mut neighbor_candidates,
+                        &reference_distances,
+                        pruning_threshold,
+                    );
+
+                    // Compute distances for remaining candidates
+                    for mut neighbor in neighbor_candidates {
+                        visited.insert(neighbor.id);
+
+                        if let Some(neighbor_node) = self.nodes.get(&neighbor.id) {
+                            let neighbor_vector = vector_store
+                                .get(neighbor_node.vector_index as usize)
+                                .unwrap_or(&neighbor_node.vector);
+                            let distance =
+                                self.calculate_distance_normalized(query, neighbor_vector);
+                            neighbor.distance = distance;
+                            reference_distances.insert(neighbor.id, distance);
+
+                            candidates.push(Reverse(neighbor.clone()));
+                            w.push(neighbor);
+
+                            // Maintain w as top-k candidates
+                            if w.len() > num_closest {
+                                w.pop(); // Remove worst
                             }
                         }
+                    }
                 }
             }
         }
-        
+
         // Return sorted results
         let mut results: Vec<SearchCandidate> = w.into_vec();
-        results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(num_closest);
         results
     }
@@ -8334,10 +9193,10 @@ impl HnswIndex {
 
     /// Select neighbors using optimized algorithm for cosine distance
     pub fn select_neighbors_optimized(
-        &self, 
-        candidates: &[SearchCandidate], 
-        m: usize, 
-        query_vector: &QuantizedVector
+        &self,
+        candidates: &[SearchCandidate],
+        m: usize,
+        query_vector: &QuantizedVector,
     ) -> SmallVec<[u128; MAX_M]> {
         // For now, fall back to heuristic selection
         // In a real implementation, this would use cosine-specific optimizations
@@ -8353,10 +9212,10 @@ impl HnswIndex {
     ///
     /// Expected overall speedup: 2-4x on neighbor selection critical path
     pub fn select_neighbors_heuristic(
-        &self, 
-        candidates: &[SearchCandidate], 
-        m: usize, 
-        _query_vector: &QuantizedVector
+        &self,
+        candidates: &[SearchCandidate],
+        m: usize,
+        _query_vector: &QuantizedVector,
     ) -> SmallVec<[u128; MAX_M]> {
         if candidates.len() <= m {
             return candidates.iter().map(|c| c.id).collect();
@@ -8375,17 +9234,18 @@ impl HnswIndex {
         //
         // Skip RNG at layer 0. Just keep the M₀ closest.
         // =====================================================================
+        // Layer 0 keeps pure-proximity selection (the closest M₀): empirically
+        // the RNG diversity heuristic adds no recall here (measured equal within
+        // noise) while costing extra distance computations during construction.
+        // Diversity/backfill below applies to the routing (upper) layers.
         if m >= self.config.max_connections_layer0 {
-            let mut sorted_candidates: Vec<&SearchCandidate> =
-                candidates.iter().collect();
-            sorted_candidates.sort_by(|a, b|
-                a.distance.partial_cmp(&b.distance)
+            let mut sorted_candidates: Vec<&SearchCandidate> = candidates.iter().collect();
+            sorted_candidates.sort_by(|a, b| {
+                a.distance
+                    .partial_cmp(&b.distance)
                     .unwrap_or(Ordering::Equal)
-            );
-            return sorted_candidates.iter()
-                .take(m)
-                .map(|c| c.id)
-                .collect();
+            });
+            return sorted_candidates.iter().take(m).map(|c| c.id).collect();
         }
 
         // =====================================================================
@@ -8395,7 +9255,7 @@ impl HnswIndex {
         // routing (the "highway" system). RNG pruning is essential here.
         // =====================================================================
         let alpha: f32 = 1.2;
-        
+
         let mut indices: Vec<usize> = (0..candidates.len()).collect();
 
         // Pre-filter to reduce quadratic cost.
@@ -8403,27 +9263,39 @@ impl HnswIndex {
         // that RNG would accept but fall outside a tight distance cutoff.
         let k_prefilter = (m * 10).min(indices.len());
         if indices.len() > k_prefilter {
-            let (_left, _nth, _right) = indices.select_nth_unstable_by(
-                k_prefilter,
-                |&a, &b| candidates[a].distance.partial_cmp(&candidates[b].distance).unwrap_or(Ordering::Equal),
-            );
+            let (_left, _nth, _right) = indices.select_nth_unstable_by(k_prefilter, |&a, &b| {
+                candidates[a]
+                    .distance
+                    .partial_cmp(&candidates[b].distance)
+                    .unwrap_or(Ordering::Equal)
+            });
             indices.truncate(k_prefilter);
         }
 
         // Sort only the reduced candidate set
-        indices.sort_by(|&a, &b| candidates[a].distance.partial_cmp(&candidates[b].distance).unwrap_or(Ordering::Equal));
-        
+        indices.sort_by(|&a, &b| {
+            candidates[a]
+                .distance
+                .partial_cmp(&candidates[b].distance)
+                .unwrap_or(Ordering::Equal)
+        });
+
         // Result stores (id, distance_to_query) for selected neighbors
         let mut result: SmallVec<[(u128, f32); MAX_M]> = SmallVec::new();
-        
+        // keepPrunedConnections: candidates rejected by the RNG criterion,
+        // kept in increasing-distance order so we can backfill up to M and
+        // never leave an upper-layer node under-connected (matches the
+        // reference HNSW Algorithm 4).
+        let mut discarded: SmallVec<[(u128, f32); MAX_M]> = SmallVec::new();
+
         let vector_store = self.vector_store.read();
         for &idx in &indices {
             let candidate = &candidates[idx];
             // Try to get candidate node for RNG check
             let candidate_node_opt = self.nodes.get(&candidate.id);
-            
+
             let mut reject = false;
-            
+
             // Only apply RNG filtering if we can access the candidate node
             if let Some(ref candidate_node) = candidate_node_opt {
                 let candidate_vector = vector_store
@@ -8438,14 +9310,14 @@ impl HnswIndex {
                     if lower_bound >= alpha * candidate.distance {
                         continue; // Can't possibly reject based on triangle inequality
                     }
-                    
+
                     // Need to compute actual distance
                     if let Some(selected_node) = self.nodes.get(&selected_id) {
                         let selected_vector = vector_store
                             .get(selected_node.vector_index as usize)
                             .unwrap_or(&selected_node.vector);
                         let dist = self.calculate_distance(candidate_vector, selected_vector);
-                        
+
                         // RNG rejection: candidate closer to existing neighbor than to query
                         if dist < alpha * candidate.distance {
                             reject = true;
@@ -8455,16 +9327,31 @@ impl HnswIndex {
                 }
             }
             // If candidate_node_opt is None, reject stays false and we add the candidate
-            
+
             if !reject {
                 result.push((candidate.id, candidate.distance));
-                
+
+                if result.len() >= m {
+                    break;
+                }
+            } else if discarded.len() < m {
+                // Remember pruned candidate for keepPrunedConnections backfill.
+                discarded.push((candidate.id, candidate.distance));
+            }
+        }
+
+        // keepPrunedConnections: if RNG pruning left the node under-connected,
+        // backfill with the closest rejected candidates until we reach M.
+        // `indices` was distance-sorted, so `discarded` is already ordered.
+        if result.len() < m {
+            for (id, dist) in discarded {
+                result.push((id, dist));
                 if result.len() >= m {
                     break;
                 }
             }
         }
-        
+
         result.into_iter().map(|(id, _)| id).collect()
     }
 
@@ -8487,7 +9374,7 @@ impl HnswIndex {
     /// scaffold and batch partitions. Graph quality is handled by
     /// `refine_graph()` (GNR) which properly re-searches the complete graph.
     pub fn repair_connectivity(&self) -> usize {
-        let (reachable, total, orphans) = self.diagnose_connectivity();
+        let (_reachable, _total, orphans) = self.diagnose_connectivity();
         if orphans.is_empty() {
             return 0;
         }
@@ -8524,7 +9411,7 @@ impl HnswIndex {
             } else {
                 continue;
             };
-            
+
             let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
                 && self.config.rng_optimization.normalize_at_ingest;
             let initial_distance = if use_normalized {
@@ -8540,28 +9427,41 @@ impl HnswIndex {
             // Navigate to orphan's neighborhood
             for lc in (1..=nav.max_layer).rev() {
                 curr_nearest = self.search_layer_ref(
-                    orphan_vector, &curr_nearest, 1, lc,
-                    &vector_store, &internal_nodes,
+                    orphan_vector,
+                    &curr_nearest,
+                    1,
+                    lc,
+                    &vector_store,
+                    &internal_nodes,
                 );
             }
-            
+
             // Search layer 0 to find nearest neighbors
             let candidates = self.search_layer_ref(
-                orphan_vector, &curr_nearest, self.config.ef_construction, 0,
-                &vector_store, &internal_nodes,
+                orphan_vector,
+                &curr_nearest,
+                self.config.ef_construction,
+                0,
+                &vector_store,
+                &internal_nodes,
             );
 
-            if candidates.is_empty() { continue; }
+            if candidates.is_empty() {
+                continue;
+            }
 
             // Set orphan's layer-0 neighbors
             let m0 = self.config.max_connections_layer0;
-            let neighbors: SmallVec<[u128; MAX_M]> = candidates.iter()
+            let neighbors: SmallVec<[u128; MAX_M]> = candidates
+                .iter()
                 .filter(|c| c.id != orphan_id)
                 .take(m0)
                 .map(|c| c.id)
                 .collect();
 
-            if neighbors.is_empty() { continue; }
+            if neighbors.is_empty() {
+                continue;
+            }
 
             {
                 let mut ld = orphan_node.layers[0].write();
@@ -8681,9 +9581,8 @@ impl HnswIndex {
             }
 
             // Build combined candidate set: existing + new
-            let mut all_candidates: Vec<SearchCandidate> = Vec::with_capacity(
-                current_neighbors.len() + new_candidates.len()
-            );
+            let mut all_candidates: Vec<SearchCandidate> =
+                Vec::with_capacity(current_neighbors.len() + new_candidates.len());
 
             // Add existing neighbors as candidates
             for &ndense in &current_neighbors {
@@ -8693,7 +9592,10 @@ impl HnswIndex {
                             .get(nn.vector_index as usize)
                             .unwrap_or(&nn.vector);
                         let d = self.calculate_distance(node_vector, nv);
-                        all_candidates.push(SearchCandidate { distance: d, id: nid });
+                        all_candidates.push(SearchCandidate {
+                            distance: d,
+                            id: nid,
+                        });
                     }
                 }
             }
@@ -8701,7 +9603,10 @@ impl HnswIndex {
             // Add new 2-hop candidates
             for &(hop2_dense, dist) in &new_candidates {
                 if let Some(nid) = self.dense_to_node_id(hop2_dense) {
-                    all_candidates.push(SearchCandidate { distance: dist, id: nid });
+                    all_candidates.push(SearchCandidate {
+                        distance: dist,
+                        id: nid,
+                    });
                 }
             }
 
@@ -8797,7 +9702,10 @@ impl HnswIndex {
                                     .get(nn.vector_index as usize)
                                     .unwrap_or(&nn.vector);
                                 let d = self.calculate_distance(node_vector, nv);
-                                all_candidates.push(SearchCandidate { distance: d, id: nid });
+                                all_candidates.push(SearchCandidate {
+                                    distance: d,
+                                    id: nid,
+                                });
                             }
                         }
                     }
@@ -8816,7 +9724,10 @@ impl HnswIndex {
                     .get(ep_node.vector_index as usize)
                     .unwrap_or(&ep_node.vector);
                 let ep_dist = self.calculate_distance(node_vector, ep_vector);
-                let entry = vec![SearchCandidate { distance: ep_dist, id: ep_id }];
+                let entry = vec![SearchCandidate {
+                    distance: ep_dist,
+                    id: ep_id,
+                }];
 
                 let mut curr = entry;
                 let max_layer = self.navigation_state().max_layer;
@@ -8844,18 +9755,22 @@ impl HnswIndex {
                 }
 
                 // Compute mean distance for old vs new to verify improvement
-                let old_mean: f32 = all_candidates.iter()
+                let old_mean: f32 = all_candidates
+                    .iter()
                     .filter(|c| {
                         self.node_id_to_dense(c.id)
                             .map_or(false, |d| current_neighbors.contains(&d))
                     })
                     .map(|c| c.distance)
-                    .sum::<f32>() / current_neighbors.len().max(1) as f32;
+                    .sum::<f32>()
+                    / current_neighbors.len().max(1) as f32;
 
-                let new_mean: f32 = all_candidates.iter()
+                let new_mean: f32 = all_candidates
+                    .iter()
                     .filter(|c| selected.contains(&c.id))
                     .map(|c| c.distance)
-                    .sum::<f32>() / selected.len().max(1) as f32;
+                    .sum::<f32>()
+                    / selected.len().max(1) as f32;
 
                 // Only apply if strictly better (or equal — heuristic diversity wins)
                 if new_mean > old_mean * 1.01 {
@@ -8871,7 +9786,8 @@ impl HnswIndex {
 
                 // Add reverse edges for any NEW neighbors
                 for &nid in &selected {
-                    if !self.node_id_to_dense(nid)
+                    if !self
+                        .node_id_to_dense(nid)
                         .map_or(false, |d| current_neighbors.contains(&d))
                     {
                         self.add_connection_safe(nid, node_id, node_vector, 0, m0);
@@ -8885,7 +9801,9 @@ impl HnswIndex {
             total_improved += pass_improved;
             eprintln!(
                 "[HNSW] refine pass {}: {} nodes improved ({:?} elapsed)",
-                pass + 1, pass_improved, start.elapsed()
+                pass + 1,
+                pass_improved,
+                start.elapsed()
             );
 
             if pass_improved == 0 {
@@ -8895,7 +9813,8 @@ impl HnswIndex {
 
         eprintln!(
             "[HNSW] refine_graph_additive: {} total node improvements in {:?}",
-            total_improved, start.elapsed()
+            total_improved,
+            start.elapsed()
         );
         total_improved
     }
@@ -8931,7 +9850,9 @@ impl HnswIndex {
             }
         }
 
-        let orphans: Vec<u128> = self.nodes.iter()
+        let orphans: Vec<u128> = self
+            .nodes
+            .iter()
             .filter(|e| !visited.contains(e.key()))
             .map(|e| *e.key())
             .collect();
@@ -8951,12 +9872,18 @@ impl HnswIndex {
             if !node.layers.is_empty() {
                 let deg = node.layers[0].read().neighbors.len();
                 total_degree += deg;
-                if deg == 0 { zero_degree += 1; }
+                if deg == 0 {
+                    zero_degree += 1;
+                }
                 count += 1;
             }
         }
 
-        let avg = if count > 0 { total_degree as f32 / count as f32 } else { 0.0 };
+        let avg = if count > 0 {
+            total_degree as f32 / count as f32
+        } else {
+            0.0
+        };
         (avg, zero_degree, m0)
     }
 
@@ -8969,19 +9896,28 @@ impl HnswIndex {
     /// For N=10K, D=128: ~0.1-0.5 seconds with SIMD + rayon.
     pub fn rebuild_layer0_exact(&self) -> usize {
         let n = self.nodes.len();
-        if n < 2 { return 0; }
+        if n < 2 {
+            return 0;
+        }
 
         let m0 = self.config.max_connections_layer0;
 
         // Step 1: Snapshot all node data into contiguous arrays
         let node_ids: Vec<u128> = self.nodes.iter().map(|e| *e.key()).collect();
-        let dense_indices: Vec<u32> = node_ids.iter()
-            .map(|id| self.nodes.get(id).map(|n| n.dense_index).unwrap_or(u32::MAX))
+        let dense_indices: Vec<u32> = node_ids
+            .iter()
+            .map(|id| {
+                self.nodes
+                    .get(id)
+                    .map(|n| n.dense_index)
+                    .unwrap_or(u32::MAX)
+            })
             .collect();
 
         // Extract raw f32 slices for SIMD-friendly distance computation
         let vector_store = self.vector_store.read();
-        let raw_vectors: Vec<Vec<f32>> = node_ids.iter()
+        let raw_vectors: Vec<Vec<f32>> = node_ids
+            .iter()
             .map(|id| {
                 let node = self.nodes.get(id).unwrap();
                 let v = vector_store
@@ -9003,13 +9939,19 @@ impl HnswIndex {
             .into_par_iter()
             .map(|i| {
                 let query = &raw_vectors[i];
-                if query.is_empty() { return Vec::new(); }
+                if query.is_empty() {
+                    return Vec::new();
+                }
 
                 let mut dists: Vec<(usize, f32)> = Vec::with_capacity(n - 1);
                 for j in 0..n {
-                    if j == i { continue; }
+                    if j == i {
+                        continue;
+                    }
                     let target = &raw_vectors[j];
-                    if target.is_empty() { continue; }
+                    if target.is_empty() {
+                        continue;
+                    }
                     let dist = self.distance_raw(query, target);
                     dists.push((j, dist));
                 }
@@ -9017,14 +9959,12 @@ impl HnswIndex {
                 // select_nth_unstable is O(n) average — much faster than full sort
                 let take = m0.min(dists.len());
                 if dists.len() > take {
-                    dists.select_nth_unstable_by(take, |a, b|
+                    dists.select_nth_unstable_by(take, |a, b| {
                         a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-                    );
+                    });
                     dists.truncate(take);
                 }
-                dists.sort_by(|a, b|
-                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-                );
+                dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                 dists.into_iter().map(|(j, _)| j).collect()
             })
             .collect();
@@ -9034,9 +9974,12 @@ impl HnswIndex {
         for (i, neighbors) in all_neighbors.iter().enumerate() {
             let node_id = node_ids[i];
             if let Some(node) = self.nodes.get(&node_id) {
-                if node.layers.is_empty() { continue; }
+                if node.layers.is_empty() {
+                    continue;
+                }
 
-                let new_dense: SmallVec<[u32; MAX_M]> = neighbors.iter()
+                let new_dense: SmallVec<[u32; MAX_M]> = neighbors
+                    .iter()
                     .map(|&j| dense_indices[j])
                     .filter(|&d| d != u32::MAX)
                     .collect();
@@ -9058,16 +10001,28 @@ impl HnswIndex {
     /// between scaffold and batch partitions. Pruning them severs the
     /// only paths between batch-inserted nodes. Graph quality is fixed
     /// by `refine_graph()` (GNR) after construction completes.
-    pub fn prune_connections_concurrent(&self, _node_id: u128, _layer: usize, _max_connections: usize, _node_vector: &QuantizedVector, _new_neighbor: u128) {
+    pub fn prune_connections_concurrent(
+        &self,
+        _node_id: u128,
+        _layer: usize,
+        _max_connections: usize,
+        _node_vector: &QuantizedVector,
+        _new_neighbor: u128,
+    ) {
     }
 
     /// Record performance measurement for cost model analysis
-    pub fn record_performance_measurement(&self, search_latency_ms: f32, results: &[(u128, f32)], _query: &[f32]) {
+    pub fn record_performance_measurement(
+        &self,
+        search_latency_ms: f32,
+        results: &[(u128, f32)],
+        _query: &[f32],
+    ) {
         // Calculate accuracy as a simple ratio for now
         let _accuracy = results.len() as f32 / 10.0; // Assume top-10 results
         let _throughput = 1000.0 / search_latency_ms; // QPS estimate
-        
-        // Delegate to the existing record_performance method  
+
+        // Delegate to the existing record_performance method
         // Note: This assumes record_performance exists elsewhere or will be added
         // self.record_performance(search_latency_ms, accuracy.min(1.0), throughput);
     }
@@ -9076,24 +10031,24 @@ impl HnswIndex {
     pub fn stats(&self) -> HnswStats {
         let mut total_connections = 0;
         let mut max_layer = 0;
-        
+
         for node in self.nodes.iter() {
             let node_ref = node.value();
             max_layer = max_layer.max(node_ref.layer);
-            
+
             // Count connections across all layers
             for layer in 0..=node_ref.layer {
                 let neighbors = node_ref.layers[layer].read();
                 total_connections += neighbors.neighbors.len();
             }
         }
-        
+
         let avg_connections = if self.nodes.is_empty() {
             0.0
         } else {
             total_connections as f32 / self.nodes.len() as f32
         };
-        
+
         HnswStats {
             num_vectors: self.nodes.len(),
             max_layer,
@@ -9101,7 +10056,6 @@ impl HnswIndex {
             dimension: self.dimension,
         }
     }
-
 }
 /// HNSW index statistics
 #[derive(Debug, Clone)]
@@ -9173,16 +10127,20 @@ impl HnswIndex {
                         .get(entry_node.vector_index as usize)
                         .unwrap_or(&entry_node.vector);
                     let entry_dist = self.calculate_distance(node_vector, entry_vector);
-                    let mut candidates = vec![SearchCandidate { distance: entry_dist, id: entry_id }];
-                    
+                    let mut candidates = vec![SearchCandidate {
+                        distance: entry_dist,
+                        id: entry_id,
+                    }];
+
                     // Search from top layer down to layer 1
                     for layer in (1..=entry_node.layer).rev() {
-                        candidates = self.search_layer_concurrent(node_vector, &candidates, 1, layer);
+                        candidates =
+                            self.search_layer_concurrent(node_vector, &candidates, 1, layer);
                     }
-                    
+
                     // Search layer 0 with ef candidates
                     candidates = self.search_layer_concurrent(node_vector, &candidates, ef, 0);
-                    
+
                     return candidates.into_iter().map(|c| c.id).collect();
                 }
             }
@@ -9191,7 +10149,12 @@ impl HnswIndex {
     }
 
     /// Search layer for insertion candidates
-    fn search_layer_for_insertion(&self, query: &QuantizedVector, layer: usize, ef: usize) -> Vec<SearchCandidate> {
+    fn search_layer_for_insertion(
+        &self,
+        query: &QuantizedVector,
+        layer: usize,
+        ef: usize,
+    ) -> Vec<SearchCandidate> {
         // Start from entry point
         if let Some(entry_id) = self.get_entry_point() {
             if let Some(entry_node) = self.nodes.get(&entry_id) {
@@ -9200,8 +10163,11 @@ impl HnswIndex {
                     .get(entry_node.vector_index as usize)
                     .unwrap_or(&entry_node.vector);
                 let entry_dist = self.calculate_distance(query, entry_vector);
-                let candidates = vec![SearchCandidate { distance: entry_dist, id: entry_id }];
-                
+                let candidates = vec![SearchCandidate {
+                    distance: entry_dist,
+                    id: entry_id,
+                }];
+
                 // Search the specified layer
                 return self.search_layer_concurrent(query, &candidates, ef, layer);
             }
@@ -9215,17 +10181,15 @@ impl HnswIndex {
             Precision::F32 => {
                 let array = ndarray::Array1::from(vector.to_vec());
                 Ok(QuantizedVector::F32(array))
-            },
+            }
             Precision::F16 => {
-                let quantized: Vec<half::f16> = vector.iter()
-                    .map(|&x| half::f16::from_f32(x))
-                    .collect();
+                let quantized: Vec<half::f16> =
+                    vector.iter().map(|&x| half::f16::from_f32(x)).collect();
                 Ok(QuantizedVector::F16(quantized))
-            },
+            }
             Precision::BF16 => {
-                let quantized: Vec<half::bf16> = vector.iter()
-                    .map(|&x| half::bf16::from_f32(x))
-                    .collect();
+                let quantized: Vec<half::bf16> =
+                    vector.iter().map(|&x| half::bf16::from_f32(x)).collect();
                 Ok(QuantizedVector::BF16(quantized))
             }
         }
@@ -9295,6 +10259,95 @@ mod tests {
     }
 
     #[test]
+    fn test_search_allowed_respects_membership() {
+        let config = HnswConfig::default();
+        let index = HnswIndex::new(16, config);
+        for i in 0..60u128 {
+            let mut v = vec![0.0f32; 16];
+            v[(i % 16) as usize] = 1.0 + i as f32 * 0.01;
+            v[0] += i as f32 * 0.001;
+            index.insert(i, v).unwrap();
+        }
+        let mut query = vec![0.0f32; 16];
+        query[0] = 1.0;
+
+        // Only even ids allowed.
+        let allowed: std::collections::HashSet<u128> = (0..60u128).filter(|i| i % 2 == 0).collect();
+        let res = index
+            .search_allowed(&query, 5, 64, |id| allowed.contains(&id))
+            .unwrap();
+
+        // Core invariant (deterministic regardless of HNSW randomness):
+        // every returned id is in the allowed set.
+        for (id, _) in &res {
+            assert!(allowed.contains(id), "result {id} not in allowed set");
+        }
+        // Distances must be ascending (nearest first).
+        for w in res.windows(2) {
+            assert!(w[0].1 <= w[1].1, "results not sorted by distance");
+        }
+
+        // An empty allowed set yields an empty result.
+        let none = index.search_allowed(&query, 5, 64, |_| false).unwrap();
+        assert!(none.is_empty(), "no id allowed must return nothing");
+    }
+
+    #[test]
+    fn test_search_allowed_in_traversal_fills_under_low_selectivity() {
+        // Force the large-dataset (in-traversal) path: dimension > 384 lowers
+        // the flat-scan threshold to 1_000, so 1_200 nodes exercise the HNSW
+        // graph walk rather than the flat gate.
+        let dim = 400usize;
+        let config = HnswConfig::default();
+        let index = HnswIndex::new(dim, config);
+
+        let n = 1_200u128;
+        for i in 0..n {
+            let mut v = vec![0.0f32; dim];
+            // Spread vectors along a 1-D ramp so nearest-neighbour order is
+            // well defined and the allowed subset is scattered through it.
+            v[(i as usize) % dim] = 1.0 + i as f32 * 0.001;
+            v[0] += i as f32 * 0.0005;
+            index.insert(i, v).unwrap();
+        }
+
+        let mut query = vec![0.0f32; dim];
+        query[0] = 1.0;
+
+        // Only ~5% of ids allowed (every 20th) — a low-selectivity set that a
+        // fixed k×10 over-fetch could under-fill.
+        let allowed: std::collections::HashSet<u128> = (0..n).filter(|i| i % 20 == 0).collect();
+        assert!(
+            allowed.len() >= 10,
+            "need ≥k allowed ids for the fill check"
+        );
+
+        let res = index
+            .search_allowed(&query, 10, 200, |id| allowed.contains(&id))
+            .unwrap();
+
+        // In-traversal acceptance must FILL k even though allowed ids are
+        // sparse and scattered — the regression the over-fetch path suffered.
+        assert_eq!(
+            res.len(),
+            10,
+            "in-traversal must fill k under low selectivity"
+        );
+        // Contract: every returned id is allowed.
+        for (id, _) in &res {
+            assert!(allowed.contains(id), "result {id} not in allowed set");
+        }
+        // Nearest-first ordering.
+        for w in res.windows(2) {
+            assert!(w[0].1 <= w[1].1, "results not sorted by distance");
+        }
+
+        // Empty allowed set still yields nothing on the large path.
+        let none = index.search_allowed(&query, 10, 200, |_| false).unwrap();
+        assert!(none.is_empty(), "no id allowed must return nothing");
+    }
+
+    #[test]
     fn test_quantization_config() {
         let config = HnswConfig {
             quantization_precision: Some(Precision::F16),
@@ -9315,7 +10368,7 @@ mod tests {
     }
 
     /// TOCTOU regression test (Task 4):
-    /// 
+    ///
     /// Verifies that concurrent insert + navigation_state() never observes an
     /// inconsistent (entry_point, max_layer) pair. Before the fix, separate
     /// RwLocks allowed a reader to see entry_point from generation N but
@@ -9377,7 +10430,7 @@ mod tests {
                 while !stop_flag.load(Ordering::Relaxed) {
                     let nav = idx.navigation_state();
                     if let Some(ep_id) = nav.entry_point {
-                        // Verify: entry point node has layers up to max_layer  
+                        // Verify: entry point node has layers up to max_layer
                         if let Some(node) = idx.nodes.get(&ep_id) {
                             if node.layer < nav.max_layer {
                                 incon.fetch_add(1, Ordering::Relaxed);

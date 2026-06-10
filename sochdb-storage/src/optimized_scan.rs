@@ -37,10 +37,6 @@
 //! Compare to naive scan: O(n) where n = total entries
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::sync::Arc;
-
-use parking_lot::RwLock;
 
 /// Snapshot timestamp for MVCC visibility
 pub type Timestamp = u64;
@@ -130,10 +126,12 @@ impl TournamentNode {
                                 a.sequence > b.sequence
                             } else {
                                 // Same sequence: lower priority source wins
-                                let a_priority = sources.get(self.source_idx as usize)
+                                let a_priority = sources
+                                    .get(self.source_idx as usize)
                                     .map(|s| s.priority())
                                     .unwrap_or(u32::MAX);
-                                let b_priority = sources.get(other.source_idx as usize)
+                                let b_priority = sources
+                                    .get(other.source_idx as usize)
                                     .map(|s| s.priority())
                                     .unwrap_or(u32::MAX);
                                 a_priority < b_priority
@@ -160,7 +158,11 @@ pub struct TournamentTree {
 impl TournamentTree {
     /// Create a new tournament tree
     pub fn new(num_sources: usize) -> Self {
-        let tree_size = if num_sources == 0 { 0 } else { 2 * num_sources - 1 };
+        let tree_size = if num_sources == 0 {
+            0
+        } else {
+            2 * num_sources - 1
+        };
         Self {
             nodes: (0..tree_size).map(|_| TournamentNode::empty()).collect(),
             num_sources,
@@ -252,7 +254,10 @@ impl TournamentTree {
         // Update the leaf for this source
         let leaf_idx = self.num_sources - 1 + winner_source as usize;
         if leaf_idx < self.nodes.len() {
-            self.nodes[leaf_idx] = match sources.get(winner_source as usize).and_then(|s| s.current()) {
+            self.nodes[leaf_idx] = match sources
+                .get(winner_source as usize)
+                .and_then(|s| s.current())
+            {
                 Some(entry) => TournamentNode::with_entry(winner_source, entry.clone()),
                 None => TournamentNode::empty(),
             };
@@ -417,24 +422,24 @@ impl LevelFiles {
         // Find first file that might contain start
         let start_idx = match start {
             None => 0,
-            Some(s) => {
-                self.files
-                    .binary_search_by(|f| {
-                        if f.largest_key.as_slice() < s {
-                            Ordering::Less
-                        } else {
-                            Ordering::Greater
-                        }
-                    })
-                    .unwrap_or_else(|i| i)
-            }
+            Some(s) => self
+                .files
+                .binary_search_by(|f| {
+                    if f.largest_key.as_slice() < s {
+                        Ordering::Less
+                    } else {
+                        Ordering::Greater
+                    }
+                })
+                .unwrap_or_else(|i| i),
         };
 
         // Find last file that might contain end
         let end_idx = match end {
             None => self.files.len(),
             Some(e) => {
-                let idx = self.files
+                let idx = self
+                    .files
                     .binary_search_by(|f| {
                         if f.smallest_key.as_slice() >= e {
                             Ordering::Greater
@@ -655,7 +660,11 @@ mod tests {
         }
 
         fn seek(&mut self, key: &[u8]) {
-            self.pos = self.entries.iter().position(|e| e.key.as_slice() >= key).unwrap_or(self.entries.len());
+            self.pos = self
+                .entries
+                .iter()
+                .position(|e| e.key.as_slice() >= key)
+                .unwrap_or(self.entries.len());
         }
 
         fn exhausted(&self) -> bool {
@@ -708,10 +717,7 @@ mod tests {
     #[test]
     fn test_tournament_tree_merge() {
         // Simulate L0 and L1 with overlapping keys
-        let l0_entries = vec![
-            make_entry("a", "new", 200),
-            make_entry("c", "new", 200),
-        ];
+        let l0_entries = vec![make_entry("a", "new", 200), make_entry("c", "new", 200)];
         let l1_entries = vec![
             make_entry("a", "old", 100),
             make_entry("b", "old", 100),
@@ -719,8 +725,8 @@ mod tests {
         ];
 
         let sources: Vec<Box<dyn EntrySource>> = vec![
-            Box::new(VecSource::new(l0_entries, 0)),  // L0 higher priority
-            Box::new(VecSource::new(l1_entries, 1)),  // L1 lower priority
+            Box::new(VecSource::new(l0_entries, 0)), // L0 higher priority
+            Box::new(VecSource::new(l1_entries, 1)), // L1 lower priority
         ];
 
         let config = ScanConfig {

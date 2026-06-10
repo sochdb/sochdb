@@ -29,7 +29,7 @@
 //! alloc.prefault(&buffer); // Touch all pages
 //! ```
 
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{Layout, alloc, dealloc};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -86,12 +86,12 @@ impl NumaTopology {
     pub fn detect() -> Self {
         // On most systems, we can read from /sys/devices/system/node/
         // For cross-platform compatibility, we provide a reasonable default
-        
+
         #[cfg(target_os = "linux")]
         {
             Self::detect_linux().unwrap_or_else(Self::single_node)
         }
-        
+
         #[cfg(not(target_os = "linux"))]
         {
             Self::single_node()
@@ -107,7 +107,7 @@ impl NumaTopology {
         Self {
             num_nodes: 1,
             cpus_per_node: vec![(0..num_cpus).collect()],
-            memory_per_node: vec![0], // Unknown
+            memory_per_node: vec![0],  // Unknown
             distances: vec![vec![10]], // Local distance
         }
     }
@@ -115,11 +115,11 @@ impl NumaTopology {
     #[cfg(target_os = "linux")]
     fn detect_linux() -> Option<Self> {
         use std::fs;
-        
+
         // Read number of NUMA nodes
         let node_path = "/sys/devices/system/node";
         let entries = fs::read_dir(node_path).ok()?;
-        
+
         let mut nodes = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -130,14 +130,14 @@ impl NumaTopology {
                 }
             }
         }
-        
+
         if nodes.is_empty() {
             return None;
         }
-        
+
         nodes.sort();
         let num_nodes = nodes.len();
-        
+
         // Get CPUs per node
         let mut cpus_per_node = Vec::new();
         for node in &nodes {
@@ -146,7 +146,7 @@ impl NumaTopology {
             let cpus = Self::parse_cpulist(&cpulist);
             cpus_per_node.push(cpus);
         }
-        
+
         // Get memory per node (approximate from meminfo)
         let mut memory_per_node = Vec::new();
         for node in &nodes {
@@ -155,13 +155,13 @@ impl NumaTopology {
             let mem = Self::parse_meminfo(&meminfo);
             memory_per_node.push(mem);
         }
-        
+
         // Simple distance matrix (assume uniform for now)
         let mut distances = vec![vec![20u32; num_nodes]; num_nodes];
         for i in 0..num_nodes {
             distances[i][i] = 10; // Local distance
         }
-        
+
         Some(Self {
             num_nodes,
             cpus_per_node,
@@ -177,7 +177,9 @@ impl NumaTopology {
             if part.contains('-') {
                 let range: Vec<&str> = part.split('-').collect();
                 if range.len() == 2 {
-                    if let (Ok(start), Ok(end)) = (range[0].parse::<usize>(), range[1].parse::<usize>()) {
+                    if let (Ok(start), Ok(end)) =
+                        (range[0].parse::<usize>(), range[1].parse::<usize>())
+                    {
                         cpus.extend(start..=end);
                     }
                 }
@@ -445,9 +447,7 @@ impl NumaAllocator {
 
 impl Default for NumaAllocator {
     fn default() -> Self {
-        Self::new().unwrap_or_else(|_| {
-            Self::with_topology(NumaTopology::single_node()).unwrap()
-        })
+        Self::new().unwrap_or_else(|_| Self::with_topology(NumaTopology::single_node()).unwrap())
     }
 }
 
@@ -499,7 +499,7 @@ impl ThreadPinner {
         if cpus.is_empty() {
             return Err(NumaError::InvalidNode(node));
         }
-        
+
         // Pin to first CPU on node
         self.pin_to_cpu(cpus[0])
     }
@@ -509,11 +509,7 @@ impl ThreadPinner {
     pub fn current_cpu(&self) -> Option<usize> {
         unsafe {
             let cpu = libc::sched_getcpu();
-            if cpu >= 0 {
-                Some(cpu as usize)
-            } else {
-                None
-            }
+            if cpu >= 0 { Some(cpu as usize) } else { None }
         }
     }
 
@@ -526,13 +522,13 @@ impl ThreadPinner {
     /// Find which NUMA node the current thread is on.
     pub fn current_node(&self) -> Option<NumaNode> {
         let cpu = self.current_cpu()?;
-        
+
         for (node, cpus) in self.topology.cpus_per_node.iter().enumerate() {
             if cpus.contains(&cpu) {
                 return Some(node as NumaNode);
             }
         }
-        
+
         None
     }
 }
@@ -590,14 +586,12 @@ impl<T: Copy> NumaVectorStorage<T> {
         // Simple: assume single buffer for now
         let buffer = &self.buffers[0];
         let offset = index * self.element_size;
-        
+
         if offset + self.element_size > buffer.len() {
             return None;
         }
 
-        unsafe {
-            Some(&*(buffer.as_ptr().add(offset) as *const T))
-        }
+        unsafe { Some(&*(buffer.as_ptr().add(offset) as *const T)) }
     }
 
     /// Push element.
@@ -655,7 +649,7 @@ mod tests {
     #[test]
     fn test_allocator_basic() {
         let allocator = NumaAllocator::default();
-        
+
         let buffer = allocator.allocate(4096).unwrap();
         assert!(buffer.len() >= 4096);
         assert!(!buffer.is_faulted());
@@ -664,7 +658,7 @@ mod tests {
     #[test]
     fn test_allocator_on_node() {
         let allocator = NumaAllocator::default();
-        
+
         // Allocate on node 0 (always exists)
         let buffer = allocator.allocate_on_node(8192, 0).unwrap();
         assert!(buffer.len() >= 8192);
@@ -675,7 +669,7 @@ mod tests {
     fn test_prefault() {
         let allocator = NumaAllocator::default();
         let mut buffer = allocator.allocate(65536).unwrap();
-        
+
         assert!(!buffer.is_faulted());
         allocator.prefault(&mut buffer);
         assert!(buffer.is_faulted());
@@ -710,11 +704,11 @@ mod tests {
     #[test]
     fn test_total_allocated() {
         let allocator = NumaAllocator::default();
-        
+
         let initial = allocator.total_allocated();
         let _b1 = allocator.allocate(4096).unwrap();
         let _b2 = allocator.allocate(8192).unwrap();
-        
+
         let total = allocator.total_allocated();
         // Total should be at least the sum (may be more due to page alignment)
         assert!(total >= initial + 4096 + 8192);
@@ -726,11 +720,7 @@ mod tests {
             num_nodes: 3,
             cpus_per_node: vec![vec![0, 1], vec![2, 3], vec![4, 5]],
             memory_per_node: vec![0, 0, 0],
-            distances: vec![
-                vec![10, 20, 30],
-                vec![20, 10, 20],
-                vec![30, 20, 10],
-            ],
+            distances: vec![vec![10, 20, 30], vec![20, 10, 20], vec![30, 20, 10]],
         };
 
         let nearest = topo.nearest_nodes(0);
@@ -741,16 +731,16 @@ mod tests {
 
     #[test]
     fn test_vector_storage() {
-        let storage: NumaVectorStorage<f32> = 
+        let storage: NumaVectorStorage<f32> =
             NumaVectorStorage::with_capacity_on_node(100, 0).unwrap();
-        
+
         assert_eq!(storage.len(), 0);
         assert_eq!(storage.capacity(), 100);
     }
 
     #[test]
     fn test_vector_storage_push_get() {
-        let mut storage: NumaVectorStorage<u64> = 
+        let mut storage: NumaVectorStorage<u64> =
             NumaVectorStorage::with_capacity_on_node(10, 0).unwrap();
 
         storage.push(42).unwrap();
@@ -766,7 +756,7 @@ mod tests {
     fn test_thread_pinner() {
         let topo = NumaTopology::detect();
         let pinner = ThreadPinner::new(topo);
-        
+
         // current_cpu may or may not work depending on platform
         let _ = pinner.current_cpu();
         let _ = pinner.current_node();
@@ -776,7 +766,7 @@ mod tests {
     fn test_thread_pinner_pin_to_cpu() {
         let topo = NumaTopology::detect();
         let pinner = ThreadPinner::new(topo.clone());
-        
+
         // Get first available CPU
         if let Some(cpus) = topo.cpus_per_node.first() {
             if let Some(&cpu) = cpus.first() {
@@ -795,7 +785,7 @@ mod tests {
     fn test_thread_pinner_pin_to_node() {
         let topo = NumaTopology::detect();
         let pinner = ThreadPinner::new(topo.clone());
-        
+
         // Attempt to pin to node 0
         let result = pinner.pin_to_node(0);
         #[cfg(target_os = "linux")]
@@ -813,14 +803,14 @@ mod tests {
     fn test_thread_pinner_current_cpu_libc() {
         let topo = NumaTopology::detect();
         let pinner = ThreadPinner::new(topo);
-        
+
         // On Linux, sched_getcpu should return a valid CPU
         #[cfg(target_os = "linux")]
         {
             let cpu = pinner.current_cpu();
             assert!(cpu.is_some(), "sched_getcpu should work on Linux");
         }
-        
+
         // On non-Linux, returns None
         #[cfg(not(target_os = "linux"))]
         {
@@ -834,11 +824,11 @@ mod tests {
         // Use NumaAllocator's page_size which internally calls get_page_size() with libc
         let allocator = NumaAllocator::default();
         let page_size = allocator.page_size;
-        
+
         // Should be a power of 2 and at least 4KB
         assert!(page_size >= 4096);
         assert!(page_size.is_power_of_two());
-        
+
         // On Unix, verify it matches libc::sysconf directly
         #[cfg(unix)]
         {

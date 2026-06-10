@@ -48,8 +48,8 @@
 //! - Cache lookup: O(1) expected (hash-based LRU)
 //! - Batch embedding: O(k) compute with ~O(1) ONNX session overhead
 
-use std::sync::Arc;
 use moka::sync::Cache;
+use std::sync::Arc;
 
 // ============================================================================
 // Embedding Provider Trait
@@ -78,7 +78,11 @@ impl std::fmt::Display for EmbeddingError {
                 write!(f, "Text too long: {} > {} max", actual, max_length)
             }
             Self::DimensionMismatch { expected, actual } => {
-                write!(f, "Dimension mismatch: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "Dimension mismatch: expected {}, got {}",
+                    expected, actual
+                )
             }
             Self::ProviderError(msg) => write!(f, "Provider error: {}", msg),
             Self::CacheError(msg) => write!(f, "Cache error: {}", msg),
@@ -95,22 +99,22 @@ pub type EmbeddingResult<T> = Result<T, EmbeddingError>;
 pub trait EmbeddingProvider: Send + Sync {
     /// Get the model name
     fn model_name(&self) -> &str;
-    
+
     /// Get the embedding dimension
     fn dimension(&self) -> usize;
-    
+
     /// Maximum text length (in characters or tokens)
     fn max_length(&self) -> usize;
-    
+
     /// Generate embedding for a single text
     fn embed(&self, text: &str) -> EmbeddingResult<Vec<f32>>;
-    
+
     /// Generate embeddings for multiple texts (batch)
     fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
         // Default implementation: sequential embedding
         texts.iter().map(|t| self.embed(t)).collect()
     }
-    
+
     /// Normalize an embedding vector (L2 normalization)
     fn normalize(&self, embedding: &mut [f32]) {
         let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -131,25 +135,25 @@ pub trait EmbeddingProvider: Send + Sync {
 pub struct EmbeddingConfig {
     /// Model identifier (e.g., "all-MiniLM-L6-v2")
     pub model: String,
-    
+
     /// Model path (for local ONNX models)
     pub model_path: Option<String>,
-    
+
     /// Embedding dimension
     pub dimension: usize,
-    
+
     /// Maximum text length
     pub max_length: usize,
-    
+
     /// Whether to normalize embeddings
     pub normalize: bool,
-    
+
     /// Batch size for embedding generation
     pub batch_size: usize,
-    
+
     /// Cache size (number of embeddings to cache)
     pub cache_size: usize,
-    
+
     /// Cache TTL in seconds (0 = no expiry)
     pub cache_ttl_secs: u64,
 }
@@ -180,14 +184,14 @@ impl EmbeddingConfig {
             "multi-qa-MiniLM-L6-cos-v1" => 384,
             _ => 384, // Default
         };
-        
+
         Self {
             model: model.to_string(),
             dimension,
             ..Default::default()
         }
     }
-    
+
     /// Create config for OpenAI-compatible models
     pub fn openai(model: &str) -> Self {
         let dimension = match model {
@@ -196,7 +200,7 @@ impl EmbeddingConfig {
             "text-embedding-3-large" => 3072,
             _ => 1536,
         };
-        
+
         Self {
             model: model.to_string(),
             dimension,
@@ -229,7 +233,7 @@ impl MockEmbeddingProvider {
             use_hash: true,
         }
     }
-    
+
     /// Create with custom config
     pub fn with_config(config: EmbeddingConfig) -> Self {
         Self {
@@ -237,26 +241,26 @@ impl MockEmbeddingProvider {
             use_hash: true,
         }
     }
-    
+
     /// Generate a deterministic embedding from text
     fn hash_embed(&self, text: &str) -> Vec<f32> {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
-        
+        use std::hash::{Hash, Hasher};
+
         let mut embedding = Vec::with_capacity(self.config.dimension);
-        
+
         // Generate pseudo-random values based on text hash
         for i in 0..self.config.dimension {
             let mut hasher = DefaultHasher::new();
             text.hash(&mut hasher);
             i.hash(&mut hasher);
             let hash = hasher.finish();
-            
+
             // Convert to f32 in range [-1, 1]
             let value = ((hash as f64) / (u64::MAX as f64) * 2.0 - 1.0) as f32;
             embedding.push(value);
         }
-        
+
         embedding
     }
 }
@@ -265,15 +269,15 @@ impl EmbeddingProvider for MockEmbeddingProvider {
     fn model_name(&self) -> &str {
         &self.config.model
     }
-    
+
     fn dimension(&self) -> usize {
         self.config.dimension
     }
-    
+
     fn max_length(&self) -> usize {
         self.config.max_length
     }
-    
+
     fn embed(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
         if text.len() > self.config.max_length {
             return Err(EmbeddingError::TextTooLong {
@@ -281,17 +285,17 @@ impl EmbeddingProvider for MockEmbeddingProvider {
                 actual: text.len(),
             });
         }
-        
+
         let mut embedding = if self.use_hash {
             self.hash_embed(text)
         } else {
             vec![0.0; self.config.dimension]
         };
-        
+
         if self.config.normalize {
             self.normalize(&mut embedding);
         }
-        
+
         Ok(embedding)
     }
 }
@@ -304,10 +308,10 @@ impl EmbeddingProvider for MockEmbeddingProvider {
 pub struct CachedEmbeddingProvider<P: EmbeddingProvider> {
     /// Inner provider
     inner: P,
-    
+
     /// LRU cache: text hash -> embedding
     cache: Cache<u64, Vec<f32>>,
-    
+
     /// Cache statistics
     stats: Arc<CacheStats>,
 }
@@ -346,31 +350,31 @@ impl<P: EmbeddingProvider> CachedEmbeddingProvider<P> {
             stats: Arc::new(CacheStats::default()),
         }
     }
-    
+
     /// Create with TTL
     pub fn with_ttl(inner: P, cache_size: usize, ttl_secs: u64) -> Self {
         let cache = Cache::builder()
             .max_capacity(cache_size as u64)
             .time_to_live(std::time::Duration::from_secs(ttl_secs))
             .build();
-        
+
         Self {
             inner,
             cache,
             stats: Arc::new(CacheStats::default()),
         }
     }
-    
+
     /// Get cache statistics
     pub fn stats(&self) -> &Arc<CacheStats> {
         &self.stats
     }
-    
+
     /// Compute hash for cache key
     fn text_hash(text: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
-        
+        use std::hash::{Hash, Hasher};
+
         let mut hasher = DefaultHasher::new();
         text.hash(&mut hasher);
         hasher.finish()
@@ -381,65 +385,77 @@ impl<P: EmbeddingProvider> EmbeddingProvider for CachedEmbeddingProvider<P> {
     fn model_name(&self) -> &str {
         self.inner.model_name()
     }
-    
+
     fn dimension(&self) -> usize {
         self.inner.dimension()
     }
-    
+
     fn max_length(&self) -> usize {
         self.inner.max_length()
     }
-    
+
     fn embed(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
         let hash = Self::text_hash(text);
-        
+
         // Check cache
         if let Some(cached) = self.cache.get(&hash) {
-            self.stats.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.stats
+                .hits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(cached);
         }
-        
-        self.stats.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        
+
+        self.stats
+            .misses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         // Generate embedding
         let embedding = self.inner.embed(text)?;
-        
+
         // Cache result
         self.cache.insert(hash, embedding.clone());
-        self.stats.size.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        
+        self.stats
+            .size
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         Ok(embedding)
     }
-    
+
     fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
         let mut results = Vec::with_capacity(texts.len());
         let mut uncached: Vec<(usize, &str)> = Vec::new();
-        
+
         // Check cache for each text
         for (i, text) in texts.iter().enumerate() {
             let hash = Self::text_hash(text);
             if let Some(cached) = self.cache.get(&hash) {
-                self.stats.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.stats
+                    .hits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 results.push((i, cached));
             } else {
-                self.stats.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.stats
+                    .misses
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 uncached.push((i, *text));
             }
         }
-        
+
         // Generate embeddings for uncached texts
         if !uncached.is_empty() {
             let uncached_texts: Vec<&str> = uncached.iter().map(|(_, t)| *t).collect();
             let embeddings = self.inner.embed_batch(&uncached_texts)?;
-            
+
             for ((i, text), embedding) in uncached.iter().zip(embeddings.into_iter()) {
                 let hash = Self::text_hash(text);
                 self.cache.insert(hash, embedding.clone());
-                self.stats.size.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.stats
+                    .size
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 results.push((*i, embedding));
             }
         }
-        
+
         // Sort by original index
         results.sort_by_key(|(i, _)| *i);
         Ok(results.into_iter().map(|(_, e)| e).collect())
@@ -451,7 +467,7 @@ impl<P: EmbeddingProvider> EmbeddingProvider for CachedEmbeddingProvider<P> {
 // ============================================================================
 
 /// Local ONNX-based embedding provider
-/// 
+///
 /// This is a stub implementation. In production, this would use:
 /// - ort (ONNX Runtime) for model inference
 /// - fastembed-rs for pre-packaged models
@@ -473,7 +489,7 @@ impl LocalOnnxProvider {
             model_loaded: false,
         })
     }
-    
+
     /// Load a pre-trained model by name
     pub fn load_pretrained(model_name: &str) -> EmbeddingResult<Self> {
         let config = EmbeddingConfig::sentence_transformer(model_name);
@@ -485,15 +501,15 @@ impl EmbeddingProvider for LocalOnnxProvider {
     fn model_name(&self) -> &str {
         &self.config.model
     }
-    
+
     fn dimension(&self) -> usize {
         self.config.dimension
     }
-    
+
     fn max_length(&self) -> usize {
         self.config.max_length
     }
-    
+
     fn embed(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
         // Stub: Return mock embedding
         // In production: Run ONNX inference
@@ -507,14 +523,14 @@ impl EmbeddingProvider for LocalOnnxProvider {
 // ============================================================================
 
 /// Vector index with automatic text embedding
-pub struct EmbeddingVectorIndex<V, P> 
+pub struct EmbeddingVectorIndex<V, P>
 where
     V: crate::context_query::VectorIndex,
     P: EmbeddingProvider,
 {
     /// Underlying vector index
     index: Arc<V>,
-    
+
     /// Embedding provider
     provider: Arc<P>,
 }
@@ -528,7 +544,7 @@ where
     pub fn new(index: Arc<V>, provider: Arc<P>) -> Self {
         Self { index, provider }
     }
-    
+
     /// Search by text (automatically generates embedding)
     pub fn search_text(
         &self,
@@ -538,13 +554,13 @@ where
         min_score: Option<f32>,
     ) -> Result<Vec<crate::context_query::VectorSearchResult>, String> {
         // Generate embedding
-        let embedding = self.provider.embed(text)
-            .map_err(|e| e.to_string())?;
-        
+        let embedding = self.provider.embed(text).map_err(|e| e.to_string())?;
+
         // Search by embedding
-        self.index.search_by_embedding(collection, &embedding, k, min_score)
+        self.index
+            .search_by_embedding(collection, &embedding, k, min_score)
     }
-    
+
     /// Search by embedding (pass-through)
     pub fn search_embedding(
         &self,
@@ -561,15 +577,16 @@ where
                 embedding.len()
             ));
         }
-        
-        self.index.search_by_embedding(collection, embedding, k, min_score)
+
+        self.index
+            .search_by_embedding(collection, embedding, k, min_score)
     }
-    
+
     /// Get the embedding provider
     pub fn provider(&self) -> &Arc<P> {
         &self.provider
     }
-    
+
     /// Get the underlying index
     pub fn index(&self) -> &Arc<V> {
         &self.index
@@ -590,7 +607,7 @@ where
     ) -> Result<Vec<crate::context_query::VectorSearchResult>, String> {
         self.search_embedding(collection, embedding, k, min_score)
     }
-    
+
     fn search_by_text(
         &self,
         collection: &str,
@@ -600,7 +617,7 @@ where
     ) -> Result<Vec<crate::context_query::VectorSearchResult>, String> {
         self.search_text(collection, text, k, min_score)
     }
-    
+
     fn stats(&self, collection: &str) -> Option<crate::context_query::VectorIndexStats> {
         self.index.stats(collection)
     }
@@ -611,7 +628,10 @@ where
 // ============================================================================
 
 /// Create a cached mock embedding provider for testing
-pub fn create_mock_provider(dimension: usize, cache_size: usize) -> CachedEmbeddingProvider<MockEmbeddingProvider> {
+pub fn create_mock_provider(
+    dimension: usize,
+    cache_size: usize,
+) -> CachedEmbeddingProvider<MockEmbeddingProvider> {
     let mock = MockEmbeddingProvider::new(dimension);
     CachedEmbeddingProvider::new(mock, cache_size)
 }
@@ -632,70 +652,94 @@ pub fn create_embedding_index<V: crate::context_query::VectorIndex>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_mock_embedding_deterministic() {
         let provider = MockEmbeddingProvider::new(384);
-        
+
         let emb1 = provider.embed("hello world").unwrap();
         let emb2 = provider.embed("hello world").unwrap();
-        
+
         assert_eq!(emb1, emb2);
         assert_eq!(emb1.len(), 384);
     }
-    
+
     #[test]
     fn test_mock_embedding_different_texts() {
         let provider = MockEmbeddingProvider::new(384);
-        
+
         let emb1 = provider.embed("hello").unwrap();
         let emb2 = provider.embed("world").unwrap();
-        
+
         assert_ne!(emb1, emb2);
     }
-    
+
     #[test]
     fn test_cached_provider() {
         let mock = MockEmbeddingProvider::new(128);
         let cached = CachedEmbeddingProvider::new(mock, 100);
-        
+
         // First call - miss
         let _ = cached.embed("test text").unwrap();
-        assert_eq!(cached.stats().hits.load(std::sync::atomic::Ordering::Relaxed), 0);
-        assert_eq!(cached.stats().misses.load(std::sync::atomic::Ordering::Relaxed), 1);
-        
+        assert_eq!(
+            cached
+                .stats()
+                .hits
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            cached
+                .stats()
+                .misses
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
         // Second call - hit
         let _ = cached.embed("test text").unwrap();
-        assert_eq!(cached.stats().hits.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(cached.stats().misses.load(std::sync::atomic::Ordering::Relaxed), 1);
-        
+        assert_eq!(
+            cached
+                .stats()
+                .hits
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            cached
+                .stats()
+                .misses
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
         assert!(cached.stats().hit_rate() > 0.4);
     }
-    
+
     #[test]
     fn test_batch_embedding() {
         let mock = MockEmbeddingProvider::new(128);
         let cached = CachedEmbeddingProvider::new(mock, 100);
-        
+
         let texts = vec!["hello", "world", "test"];
         let embeddings = cached.embed_batch(&texts).unwrap();
-        
+
         assert_eq!(embeddings.len(), 3);
         for emb in &embeddings {
             assert_eq!(emb.len(), 128);
         }
     }
-    
+
     #[test]
     fn test_normalization() {
         let provider = MockEmbeddingProvider::new(3);
         let emb = provider.embed("test").unwrap();
-        
+
         // Check L2 norm is approximately 1
         let norm: f32 = emb.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5);
     }
-    
+
     #[test]
     fn test_text_too_long() {
         let config = EmbeddingConfig {
@@ -703,7 +747,7 @@ mod tests {
             ..Default::default()
         };
         let provider = MockEmbeddingProvider::with_config(config);
-        
+
         let result = provider.embed("this is a very long text that exceeds the limit");
         assert!(matches!(result, Err(EmbeddingError::TextTooLong { .. })));
     }

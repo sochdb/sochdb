@@ -135,14 +135,14 @@ impl PolymorphicValue {
             heap: None,
         }
     }
-    
+
     /// Create a boolean value
     #[inline]
     pub fn bool(v: bool) -> Self {
         let bits = ((ValueTag::Bool as u64) << TAG_SHIFT) | (v as u64);
         Self { bits, heap: None }
     }
-    
+
     /// Create an integer value
     ///
     /// Values in range [-2^55, 2^55-1] are stored inline.
@@ -150,8 +150,7 @@ impl PolymorphicValue {
     pub fn int(v: i64) -> Self {
         // Check if fits in 56 bits (signed)
         if v >= -(1i64 << 55) && v < (1i64 << 55) {
-            let bits = ((ValueTag::SmallInt as u64) << TAG_SHIFT) 
-                | ((v as u64) & INLINE_DATA_MASK);
+            let bits = ((ValueTag::SmallInt as u64) << TAG_SHIFT) | ((v as u64) & INLINE_DATA_MASK);
             Self { bits, heap: None }
         } else {
             // Fall back to heap for very large integers
@@ -159,7 +158,7 @@ impl PolymorphicValue {
             Self::heap_bytes(&bytes, ValueTag::HeapBytes)
         }
     }
-    
+
     /// Create a string value
     ///
     /// Strings ≤7 bytes are stored inline.
@@ -171,7 +170,7 @@ impl PolymorphicValue {
             Self::heap_bytes(bytes, ValueTag::HeapString)
         }
     }
-    
+
     /// Create a bytes value
     ///
     /// Bytes ≤7 are stored inline.
@@ -182,61 +181,68 @@ impl PolymorphicValue {
             Self::heap_bytes(b, ValueTag::HeapBytes)
         }
     }
-    
+
     /// Create a float value
     #[inline]
     pub fn float(v: f64) -> Self {
         // Store float bits directly (NaN normalization for comparison)
         let bits = v.to_bits();
         let packed = ((ValueTag::Float as u64) << TAG_SHIFT) | (bits & INLINE_DATA_MASK);
-        Self { bits: packed, heap: Some(Box::new(bits.to_le_bytes())) }
+        Self {
+            bits: packed,
+            heap: Some(Box::new(bits.to_le_bytes())),
+        }
     }
-    
+
     /// Create inline bytes value
     fn inline_bytes(data: &[u8], tag: ValueTag) -> Self {
         debug_assert!(data.len() <= MAX_INLINE_SIZE);
-        
+
         let mut packed = 0u64;
         for (i, &byte) in data.iter().enumerate() {
             packed |= (byte as u64) << (i * 8);
         }
-        
-        let bits = ((tag as u64) << TAG_SHIFT)
-            | ((data.len() as u64) << INLINE_LEN_SHIFT)
-            | packed;
-        
+
+        let bits = ((tag as u64) << TAG_SHIFT) | ((data.len() as u64) << INLINE_LEN_SHIFT) | packed;
+
         Self { bits, heap: None }
     }
-    
+
     /// Create heap-allocated bytes value
     fn heap_bytes(data: &[u8], tag: ValueTag) -> Self {
         let heap = data.to_vec().into_boxed_slice();
         let bits = ((tag as u64) << TAG_SHIFT) | (data.len() as u64 & 0x1FFF_FFFF);
-        Self { bits, heap: Some(heap) }
+        Self {
+            bits,
+            heap: Some(heap),
+        }
     }
-    
+
     /// Get value tag
     #[inline]
     pub fn tag(&self) -> ValueTag {
         ValueTag::from_u8((self.bits >> TAG_SHIFT) as u8 & 0x07).unwrap_or(ValueTag::Null)
     }
-    
+
     /// Check if value is null
     #[inline]
     pub fn is_null(&self) -> bool {
         self.tag() == ValueTag::Null
     }
-    
+
     /// Check if value is stored inline
     #[inline]
     pub fn is_inline(&self) -> bool {
         matches!(
             self.tag(),
-            ValueTag::Null | ValueTag::Bool | ValueTag::SmallInt 
-            | ValueTag::InlineString | ValueTag::InlineBytes
+            ValueTag::Null
+                | ValueTag::Bool
+                | ValueTag::SmallInt
+                | ValueTag::InlineString
+                | ValueTag::InlineBytes
         )
     }
-    
+
     /// Get as boolean
     #[inline]
     pub fn as_bool(&self) -> Option<bool> {
@@ -246,7 +252,7 @@ impl PolymorphicValue {
             None
         }
     }
-    
+
     /// Get as integer
     #[inline]
     pub fn as_int(&self) -> Option<i64> {
@@ -263,7 +269,7 @@ impl PolymorphicValue {
             None
         }
     }
-    
+
     /// Get as float
     pub fn as_float(&self) -> Option<f64> {
         if self.tag() == ValueTag::Float {
@@ -275,39 +281,37 @@ impl PolymorphicValue {
             None
         }
     }
-    
+
     /// Get inline string length
     #[inline]
     fn inline_len(&self) -> usize {
         ((self.bits >> INLINE_LEN_SHIFT) & INLINE_LEN_MASK) as usize
     }
-    
+
     /// Get as string (copies inline data if needed)
-    /// 
+    ///
     /// For inline strings, returns a new String. For heap strings, returns from heap.
     pub fn as_str(&self) -> Option<String> {
         match self.tag() {
-            ValueTag::InlineString => {
-                self.inline_bytes_copy()
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-            }
-            ValueTag::HeapString => {
-                self.heap.as_ref().and_then(|h| std::str::from_utf8(h).ok().map(|s| s.to_owned()))
-            }
+            ValueTag::InlineString => self
+                .inline_bytes_copy()
+                .and_then(|bytes| String::from_utf8(bytes).ok()),
+            ValueTag::HeapString => self
+                .heap
+                .as_ref()
+                .and_then(|h| std::str::from_utf8(h).ok().map(|s| s.to_owned())),
             _ => None,
         }
     }
-    
+
     /// Get heap string as reference (only works for heap strings)
     pub fn as_heap_str(&self) -> Option<&str> {
         match self.tag() {
-            ValueTag::HeapString => {
-                self.heap.as_ref().and_then(|h| std::str::from_utf8(h).ok())
-            }
+            ValueTag::HeapString => self.heap.as_ref().and_then(|h| std::str::from_utf8(h).ok()),
             _ => None,
         }
     }
-    
+
     /// Get as bytes reference (only works for heap bytes)
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self.tag() {
@@ -315,13 +319,11 @@ impl PolymorphicValue {
                 // Inline bytes can't return a reference - use inline_bytes_copy instead
                 None
             }
-            ValueTag::HeapBytes => {
-                self.heap.as_ref().map(|h| h.as_ref())
-            }
+            ValueTag::HeapBytes => self.heap.as_ref().map(|h| h.as_ref()),
             _ => None,
         }
     }
-    
+
     /// Get raw inline bytes (copies out of packed representation)
     pub fn inline_bytes_copy(&self) -> Option<Vec<u8>> {
         match self.tag() {
@@ -333,12 +335,12 @@ impl PolymorphicValue {
             _ => None,
         }
     }
-    
+
     /// Get encoded size in bytes
     pub fn encoded_size(&self) -> usize {
         8 + self.heap.as_ref().map(|h| h.len()).unwrap_or(0)
     }
-    
+
     /// Serialize to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.encoded_size());
@@ -348,16 +350,16 @@ impl PolymorphicValue {
         }
         buf
     }
-    
+
     /// Deserialize from bytes
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.len() < 8 {
             return None;
         }
-        
+
         let bits = u64::from_le_bytes(data[..8].try_into().ok()?);
         let tag = ValueTag::from_u8((bits >> TAG_SHIFT) as u8 & 0x07)?;
-        
+
         let heap = match tag {
             ValueTag::HeapString | ValueTag::HeapBytes => {
                 let len = (bits & 0x1FFF_FFFF) as usize;
@@ -375,7 +377,7 @@ impl PolymorphicValue {
             }
             _ => None,
         };
-        
+
         Some(Self { bits, heap })
     }
 }
@@ -428,7 +430,7 @@ impl AtomicPolymorphicValue {
             bits: AtomicU64::new((ValueTag::Null as u64) << TAG_SHIFT),
         }
     }
-    
+
     /// Create from a polymorphic value (must be inline)
     pub fn from_inline(v: &PolymorphicValue) -> Option<Self> {
         if v.is_inline() {
@@ -439,20 +441,23 @@ impl AtomicPolymorphicValue {
             None
         }
     }
-    
+
     /// Load the current value
     #[inline]
     pub fn load(&self, order: Ordering) -> u64 {
         self.bits.load(order)
     }
-    
+
     /// Store a new value
     #[inline]
     pub fn store(&self, value: &PolymorphicValue, order: Ordering) {
-        debug_assert!(value.is_inline(), "AtomicPolymorphicValue only supports inline values");
+        debug_assert!(
+            value.is_inline(),
+            "AtomicPolymorphicValue only supports inline values"
+        );
         self.bits.store(value.bits, order);
     }
-    
+
     /// Compare and swap
     #[inline]
     pub fn compare_exchange(
@@ -462,23 +467,27 @@ impl AtomicPolymorphicValue {
         success: Ordering,
         failure: Ordering,
     ) -> Result<u64, u64> {
-        debug_assert!(new.is_inline(), "AtomicPolymorphicValue only supports inline values");
-        self.bits.compare_exchange(current.bits, new.bits, success, failure)
+        debug_assert!(
+            new.is_inline(),
+            "AtomicPolymorphicValue only supports inline values"
+        );
+        self.bits
+            .compare_exchange(current.bits, new.bits, success, failure)
     }
-    
+
     /// Get the tag
     #[inline]
     pub fn tag(&self) -> ValueTag {
         let bits = self.bits.load(Ordering::Relaxed);
         ValueTag::from_u8((bits >> TAG_SHIFT) as u8 & 0x07).unwrap_or(ValueTag::Null)
     }
-    
+
     /// Try to get as integer (lock-free)
     #[inline]
     pub fn try_as_int(&self, order: Ordering) -> Option<i64> {
         let bits = self.bits.load(order);
         let tag = ValueTag::from_u8((bits >> TAG_SHIFT) as u8 & 0x07)?;
-        
+
         if tag == ValueTag::SmallInt {
             let raw = (bits & INLINE_DATA_MASK) as i64;
             let sign_bit = 1i64 << 55;
@@ -491,17 +500,17 @@ impl AtomicPolymorphicValue {
             None
         }
     }
-    
+
     /// Atomic increment (for integer values)
     pub fn fetch_add(&self, delta: i64, order: Ordering) -> Option<i64> {
         loop {
             let bits = self.bits.load(Ordering::Acquire);
             let tag = ValueTag::from_u8((bits >> TAG_SHIFT) as u8 & 0x07)?;
-            
+
             if tag != ValueTag::SmallInt {
                 return None;
             }
-            
+
             let current = {
                 let raw = (bits & INLINE_DATA_MASK) as i64;
                 let sign_bit = 1i64 << 55;
@@ -511,12 +520,16 @@ impl AtomicPolymorphicValue {
                     raw
                 }
             };
-            
+
             let new_value = current.wrapping_add(delta);
             let new_bits = ((ValueTag::SmallInt as u64) << TAG_SHIFT)
                 | ((new_value as u64) & INLINE_DATA_MASK);
-            
-            if self.bits.compare_exchange_weak(bits, new_bits, order, Ordering::Relaxed).is_ok() {
+
+            if self
+                .bits
+                .compare_exchange_weak(bits, new_bits, order, Ordering::Relaxed)
+                .is_ok()
+            {
                 return Some(current);
             }
         }
@@ -542,10 +555,10 @@ impl CompressedValueArray {
     pub fn from_values(values: &[PolymorphicValue]) -> Self {
         let mut data = Vec::new();
         let mut i = 0;
-        
+
         while i < values.len() {
             let value = &values[i];
-            
+
             // Count run length
             let mut run_len = 1usize;
             while i + run_len < values.len() && run_len < 255 {
@@ -555,7 +568,7 @@ impl CompressedValueArray {
                     break;
                 }
             }
-            
+
             // Write run-length encoded entry
             if run_len > 1 {
                 data.push(0xFF); // RLE marker
@@ -564,16 +577,16 @@ impl CompressedValueArray {
                 data.push(0xFE); // Single value marker
             }
             data.extend_from_slice(&value.to_bytes());
-            
+
             i += run_len;
         }
-        
+
         Self {
             data,
             len: values.len(),
         }
     }
-    
+
     /// Check if two values are equal
     fn values_equal(a: &PolymorphicValue, b: &PolymorphicValue) -> bool {
         if a.tag() != b.tag() || a.bits != b.bits {
@@ -585,31 +598,31 @@ impl CompressedValueArray {
             _ => false,
         }
     }
-    
+
     /// Get the number of values
     pub fn len(&self) -> usize {
         self.len
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-    
+
     /// Get compressed size
     pub fn compressed_size(&self) -> usize {
         self.data.len()
     }
-    
+
     /// Decompress all values
     pub fn decompress(&self) -> Vec<PolymorphicValue> {
         let mut values = Vec::with_capacity(self.len);
         let mut i = 0;
-        
+
         while i < self.data.len() {
             let marker = self.data[i];
             i += 1;
-            
+
             let (run_len, value) = if marker == 0xFF {
                 // RLE entry
                 let run_len = self.data[i] as usize;
@@ -633,12 +646,12 @@ impl CompressedValueArray {
             } else {
                 break;
             };
-            
+
             for _ in 0..run_len {
                 values.push(value.clone());
             }
         }
-        
+
         values
     }
 }
@@ -646,7 +659,7 @@ impl CompressedValueArray {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_null_value() {
         let v = PolymorphicValue::null();
@@ -654,63 +667,64 @@ mod tests {
         assert!(v.is_inline());
         assert_eq!(v.encoded_size(), 8);
     }
-    
+
     #[test]
     fn test_bool_value() {
         let t = PolymorphicValue::bool(true);
         let f = PolymorphicValue::bool(false);
-        
+
         assert_eq!(t.as_bool(), Some(true));
         assert_eq!(f.as_bool(), Some(false));
         assert!(t.is_inline());
         assert!(f.is_inline());
     }
-    
+
     #[test]
     fn test_int_value() {
         let v1 = PolymorphicValue::int(42);
         let v2 = PolymorphicValue::int(-100);
         let v3 = PolymorphicValue::int(0);
         let v4 = PolymorphicValue::int(i64::MAX >> 8); // Large but fits
-        
+
         assert_eq!(v1.as_int(), Some(42));
         assert_eq!(v2.as_int(), Some(-100));
         assert_eq!(v3.as_int(), Some(0));
         assert_eq!(v4.as_int(), Some(i64::MAX >> 8));
-        
+
         assert!(v1.is_inline());
         assert!(v2.is_inline());
     }
-    
+
     #[test]
     fn test_inline_string() {
         let v = PolymorphicValue::string("hello");
         assert!(v.is_inline());
         assert_eq!(v.tag(), ValueTag::InlineString);
-        
+
         let bytes = v.inline_bytes_copy().unwrap();
         assert_eq!(&bytes, b"hello");
     }
-    
+
     #[test]
     fn test_heap_string() {
         let long_str = "This is a string that is longer than 7 bytes";
         let v = PolymorphicValue::string(long_str);
-        
+
         assert!(!v.is_inline());
         assert_eq!(v.tag(), ValueTag::HeapString);
         assert_eq!(v.as_str(), Some(long_str.to_string()));
     }
-    
+
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14159 is arbitrary test data, not PI
     fn test_float_value() {
         let v = PolymorphicValue::float(3.14159);
         assert_eq!(v.tag(), ValueTag::Float);
-        
+
         let f = v.as_float().unwrap();
         assert!((f - 3.14159).abs() < 1e-10);
     }
-    
+
     #[test]
     fn test_serialization() {
         let values = vec![
@@ -720,28 +734,28 @@ mod tests {
             PolymorphicValue::string("hi"),
             PolymorphicValue::string("This is a longer string"),
         ];
-        
+
         for v in values {
             let bytes = v.to_bytes();
             let restored = PolymorphicValue::from_bytes(&bytes).unwrap();
-            
+
             assert_eq!(v.tag(), restored.tag());
             assert_eq!(v.bits, restored.bits);
         }
     }
-    
+
     #[test]
     fn test_atomic_value() {
         let atomic = AtomicPolymorphicValue::from_inline(&PolymorphicValue::int(0)).unwrap();
-        
+
         // Concurrent increment simulation
         let old = atomic.fetch_add(5, Ordering::SeqCst);
         assert_eq!(old, Some(0));
-        
+
         let current = atomic.try_as_int(Ordering::Acquire);
         assert_eq!(current, Some(5));
     }
-    
+
     #[test]
     fn test_compressed_array() {
         // Create array with repeated values
@@ -754,33 +768,33 @@ mod tests {
                 }
             })
             .collect();
-        
+
         let compressed = CompressedValueArray::from_values(&values);
         assert_eq!(compressed.len(), 100);
-        
+
         // Should be smaller than uncompressed
         let uncompressed_size = 100 * 8; // 8 bytes per value
         assert!(compressed.compressed_size() < uncompressed_size);
-        
+
         // Decompress and verify
         let restored = compressed.decompress();
         assert_eq!(restored.len(), 100);
-        
+
         for (i, v) in restored.iter().enumerate() {
             let expected = if i < 50 { 42 } else { i as i64 };
             assert_eq!(v.as_int(), Some(expected));
         }
     }
-    
+
     #[test]
     fn test_int_edge_cases() {
         // Test boundary values
         let max_inline = (1i64 << 55) - 1;
         let min_inline = -(1i64 << 55);
-        
+
         let v1 = PolymorphicValue::int(max_inline);
         let v2 = PolymorphicValue::int(min_inline);
-        
+
         assert_eq!(v1.as_int(), Some(max_inline));
         assert_eq!(v2.as_int(), Some(min_inline));
     }

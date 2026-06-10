@@ -5,14 +5,14 @@
 //!
 //! Run with: cargo run --example 03_hot_reload --package sochdb-kernel
 
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 use sochdb_kernel::plugin_hot_reload::{
     EpochTracker, HotReloadManager, HotReloadState, HotReloadablePlugin,
 };
 use sochdb_kernel::plugin_manifest::ManifestBuilder;
 use sochdb_kernel::wasm_runtime::{WasmInstanceConfig, WasmPluginInstance};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 fn main() {
     println!("═══════════════════════════════════════════════════════════════");
@@ -27,16 +27,25 @@ fn main() {
 
     // Simulate entering an epoch (like starting a request)
     let guard = tracker.enter();
-    println!("   After entering - epoch refs: {}", tracker.refs_for_epoch(0));
+    println!(
+        "   After entering - epoch refs: {}",
+        tracker.refs_for_epoch(0)
+    );
 
     // Advance epoch
     let new_epoch = tracker.advance();
     println!("   After advancing - current epoch: {}", new_epoch);
-    println!("   Old epoch (0) still has refs: {}", tracker.refs_for_epoch(0));
+    println!(
+        "   Old epoch (0) still has refs: {}",
+        tracker.refs_for_epoch(0)
+    );
 
     // Drop guard to release epoch
     drop(guard);
-    println!("   After dropping guard - epoch 0 refs: {}", tracker.refs_for_epoch(0));
+    println!(
+        "   After dropping guard - epoch 0 refs: {}",
+        tracker.refs_for_epoch(0)
+    );
 
     // Now draining would succeed
     let drained = tracker.wait_drain(0, Duration::from_millis(10));
@@ -75,7 +84,10 @@ fn main() {
     println!("   on_update() result: {:?}", result);
 
     let stats = plugin.stats();
-    println!("   Stats - version: {}, successful upgrades: {}", stats.version, stats.successful_upgrades);
+    println!(
+        "   Stats - version: {}, successful upgrades: {}",
+        stats.version, stats.successful_upgrades
+    );
     println!();
 
     // Step 4: Perform a Hot-Reload Upgrade
@@ -86,14 +98,16 @@ fn main() {
         .description("Demo plugin v2 with improvements")
         .export("on_insert")
         .export("on_update")
-        .export("on_delete")  // New function in v2
+        .export("on_delete") // New function in v2
         .build()
         .unwrap();
 
     println!("   State before upgrade: {:?}", plugin.state());
 
     // Prepare the upgrade
-    plugin.prepare_upgrade(b"wasm v2.0 bytes", new_manifest).unwrap();
+    plugin
+        .prepare_upgrade(b"wasm v2.0 bytes", new_manifest)
+        .unwrap();
     println!("   State after prepare: {:?}", plugin.state());
 
     // Execute the upgrade (drains in-flight, atomically swaps)
@@ -124,7 +138,9 @@ fn main() {
             .build()
             .unwrap();
 
-        manager.register(&name, Arc::new(instance), manifest).unwrap();
+        manager
+            .register(&name, Arc::new(instance), manifest)
+            .unwrap();
     }
 
     println!("   Registered plugins: {:?}", manager.list());
@@ -134,13 +150,18 @@ fn main() {
         .export("on_insert")
         .build()
         .unwrap();
-    
-    manager.upgrade("service-2", b"new wasm", new_manifest).unwrap();
+
+    manager
+        .upgrade("service-2", b"new wasm", new_manifest)
+        .unwrap();
     println!("   Upgraded service-2 to v2.0.0");
 
     // Check all stats
     for (name, stats) in manager.all_stats() {
-        println!("   {} - version: {}, upgrades: {}", name, stats.version, stats.successful_upgrades);
+        println!(
+            "   {} - version: {}, upgrades: {}",
+            name, stats.version, stats.successful_upgrades
+        );
     }
     println!();
 
@@ -186,7 +207,10 @@ fn main() {
 
     match plugin.upgrade(b"v2 bytes", new_manifest) {
         Ok(()) => println!("   ✅ Upgrade succeeded during concurrent access!"),
-        Err(e) => println!("   ⚠️  Upgrade failed (expected if threads held refs): {}", e),
+        Err(e) => println!(
+            "   ⚠️  Upgrade failed (expected if threads held refs): {}",
+            e
+        ),
     }
 
     // Wait for threads

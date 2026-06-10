@@ -96,8 +96,8 @@ fn bench_scan_iterator_vs_collect(c: &mut Criterion) {
 
     let dataset_size = 100_000;
     let scan_size = 1000;
-    let harness = DurableStorageHarness::with_config(true, false)
-        .expect("Failed to create harness");
+    let harness =
+        DurableStorageHarness::with_config(true, false).expect("Failed to create harness");
 
     let config = BenchConfig {
         dataset_size,
@@ -147,12 +147,15 @@ fn bench_scan_iterator_vs_collect(c: &mut Criterion) {
                 .storage()
                 .begin_with_mode(TransactionMode::ReadOnly)
                 .unwrap();
-            
+
             let mut count = 0;
-            for (k, v) in harness.storage().scan_range_iter(txn_id, &start_key, &end_key) {
+            for (k, v) in harness
+                .storage()
+                .scan_range_iter(txn_id, &start_key, &end_key)
+            {
                 count += k.len() + v.len();
             }
-            
+
             harness.storage().commit(txn_id).unwrap();
             black_box(count)
         });
@@ -167,8 +170,8 @@ fn bench_scan_prefix(c: &mut Criterion) {
     group.sample_size(30);
 
     let dataset_size = 100_000;
-    let harness = DurableStorageHarness::with_config(true, false)
-        .expect("Failed to create harness");
+    let harness =
+        DurableStorageHarness::with_config(true, false).expect("Failed to create harness");
 
     let config = BenchConfig {
         dataset_size,
@@ -218,8 +221,8 @@ fn bench_scan_value_sizes(c: &mut Criterion) {
     let scan_size = 100;
 
     for value_size in [100, 1_000, 10_000] {
-        let harness = DurableStorageHarness::with_config(true, false)
-            .expect("Failed to create harness");
+        let harness =
+            DurableStorageHarness::with_config(true, false).expect("Failed to create harness");
 
         let config = BenchConfig {
             dataset_size,

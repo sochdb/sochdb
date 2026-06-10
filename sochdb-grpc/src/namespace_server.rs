@@ -9,11 +9,10 @@
 
 use crate::auth_interceptor::{extract_principal, require_capability, require_namespace_access};
 use crate::proto::{
-    namespace_service_server::{NamespaceService, NamespaceServiceServer},
     CreateNamespaceRequest, CreateNamespaceResponse, DeleteNamespaceRequest,
     DeleteNamespaceResponse, GetNamespaceRequest, GetNamespaceResponse, ListNamespacesRequest,
-    ListNamespacesResponse, Namespace, NamespaceQuota, NamespaceStats, SetQuotaRequest,
-    SetQuotaResponse,
+    ListNamespacesResponse, Namespace, NamespaceStats, SetQuotaRequest, SetQuotaResponse,
+    namespace_service_server::{NamespaceService, NamespaceServiceServer},
 };
 use crate::security::Capability;
 use dashmap::DashMap;
@@ -46,9 +45,7 @@ impl NamespaceServer {
     pub fn check_collection_quota(&self, namespace: &str) -> Result<(), Status> {
         if let Some(ns) = self.namespaces.get(namespace) {
             if let (Some(quota), Some(stats)) = (&ns.quota, &ns.stats) {
-                if quota.max_collections > 0
-                    && stats.collection_count >= quota.max_collections
-                {
+                if quota.max_collections > 0 && stats.collection_count >= quota.max_collections {
                     return Err(Status::resource_exhausted(format!(
                         "Namespace '{}' collection quota exceeded ({}/{})",
                         namespace, stats.collection_count, quota.max_collections
@@ -64,9 +61,7 @@ impl NamespaceServer {
     pub fn check_vector_quota(&self, namespace: &str, additional: u64) -> Result<(), Status> {
         if let Some(ns) = self.namespaces.get(namespace) {
             if let (Some(quota), Some(stats)) = (&ns.quota, &ns.stats) {
-                if quota.max_vectors > 0
-                    && stats.vector_count + additional > quota.max_vectors
-                {
+                if quota.max_vectors > 0 && stats.vector_count + additional > quota.max_vectors {
                     return Err(Status::resource_exhausted(format!(
                         "Namespace '{}' vector quota exceeded ({} + {} > {})",
                         namespace, stats.vector_count, additional, quota.max_vectors
@@ -79,7 +74,11 @@ impl NamespaceServer {
 
     /// Check whether a namespace has capacity for additional storage bytes.
     /// Returns Ok(()) if under quota, Err(Status) if exceeded.
-    pub fn check_storage_quota(&self, namespace: &str, additional_bytes: u64) -> Result<(), Status> {
+    pub fn check_storage_quota(
+        &self,
+        namespace: &str,
+        additional_bytes: u64,
+    ) -> Result<(), Status> {
         if let Some(ns) = self.namespaces.get(namespace) {
             if let (Some(quota), Some(stats)) = (&ns.quota, &ns.stats) {
                 if quota.max_storage_bytes > 0
@@ -277,8 +276,13 @@ impl NamespaceService for NamespaceServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_server_with_ns(name: &str, max_collections: u64, max_vectors: u64, max_storage: u64) -> NamespaceServer {
+    use crate::proto::NamespaceQuota;
+    fn make_server_with_ns(
+        name: &str,
+        max_collections: u64,
+        max_vectors: u64,
+        max_storage: u64,
+    ) -> NamespaceServer {
         let server = NamespaceServer::new();
         let ns = Namespace {
             name: name.to_string(),

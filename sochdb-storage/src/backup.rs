@@ -22,11 +22,11 @@
 //! and metadata.
 
 use serde::{Deserialize, Serialize};
+use sochdb_core::{Result, SochDBError};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use sochdb_core::{Result, SochDBError};
 
 /// Metadata about a backup
 #[derive(Debug, Clone, Serialize, Deserialize)]

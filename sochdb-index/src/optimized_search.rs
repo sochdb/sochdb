@@ -29,8 +29,8 @@
 
 use crate::csr_graph::{CsrGraph, InternalSearchCandidate};
 use crate::internal_id::{IdMapper, InternalId, VisitedBitmap};
-use std::collections::BinaryHeap;
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
 /// Batch size for frontier expansion.
 /// 4-8 is optimal: balances locality gains vs extra work.
@@ -140,7 +140,9 @@ impl OptimizedSearchView {
             .into_iter()
             .take(k)
             .filter_map(|c| {
-                self.id_mapper.to_external(c.id).map(|ext| (ext, c.distance))
+                self.id_mapper
+                    .to_external(c.id)
+                    .map(|ext| (ext, c.distance))
             })
             .collect()
     }
@@ -271,7 +273,7 @@ impl OptimizedSearchView {
             neighbor_buffer.clear();
             for candidate in &batch {
                 let neighbors = self.graph.neighbors(candidate.id, layer);
-                
+
                 // Prefetch vector data for neighbors we'll likely visit
                 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
                 {
@@ -569,10 +571,9 @@ impl OptimizedSearchViewBuilder {
         );
 
         for &(layer, from, to) in edges {
-            if let (Some(from_int), Some(to_int)) = (
-                id_mapper.to_internal(from),
-                id_mapper.to_internal(to),
-            ) {
+            if let (Some(from_int), Some(to_int)) =
+                (id_mapper.to_internal(from), id_mapper.to_internal(to))
+            {
                 builder.add_edge(from_int, to_int, layer);
             }
         }
@@ -675,7 +676,7 @@ mod tests {
     fn test_memory_usage() {
         let view = create_test_view();
         let mem = view.memory_usage();
-        
+
         // Should be reasonable for 10 vectors of dimension 4
         assert!(mem > 0);
         assert!(mem < 10000); // Less than 10KB
@@ -685,13 +686,8 @@ mod tests {
     fn test_empty_search() {
         let graph = CsrGraph::new();
         let id_mapper = IdMapper::new();
-        let view = OptimizedSearchView::new(
-            graph,
-            id_mapper,
-            Vec::new(),
-            4,
-            DistanceMetric::Euclidean,
-        );
+        let view =
+            OptimizedSearchView::new(graph, id_mapper, Vec::new(), 4, DistanceMetric::Euclidean);
 
         let query = vec![0.0, 0.0, 0.0, 0.0];
         let results = view.search(&query, 5, 10);
@@ -730,7 +726,9 @@ mod tests {
             .build(&external_ids, &vectors, &edges, external_ids[50]);
 
         // Query should find reasonable results
-        let query: Vec<f32> = (0..dimension).map(|d| (50.0 * dimension as f32 + d as f32).sin()).collect();
+        let query: Vec<f32> = (0..dimension)
+            .map(|d| (50.0 * dimension as f32 + d as f32).sin())
+            .collect();
         let results = view.search(&query, 10, 50);
 
         assert_eq!(results.len(), 10);

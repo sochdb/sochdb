@@ -418,7 +418,9 @@ impl PluginManager {
     /// Get the active storage backend
     pub fn storage(&self) -> Option<Arc<dyn StorageExtension>> {
         let active = self.active_storage.read();
-        active.as_ref().and_then(|name| self.storage.read().get(name).cloned())
+        active
+            .as_ref()
+            .and_then(|name| self.storage.read().get(name).cloned())
     }
 
     // -------------------------------------------------------------------------
@@ -463,7 +465,7 @@ impl PluginManager {
     /// Multiple observability extensions can be registered (fan-out to all)
     pub fn register_observability(&self, ext: Arc<dyn ObservabilityExtension>) -> KernelResult<()> {
         self.observability.write().push(ext.clone());
-        
+
         // Also add to shutdown storage
         let mut shutdown = self.observability_shutdown.write();
         shutdown.push(Mutex::new(Arc::clone(&ext)));
@@ -611,10 +613,7 @@ impl PluginManager {
             Ok(())
         } else {
             Err(KernelError::Plugin {
-                message: format!(
-                    "shutdown errors: {}",
-                    errors.join("; ")
-                ),
+                message: format!("shutdown errors: {}", errors.join("; ")),
             })
         }
     }
@@ -711,18 +710,74 @@ pub mod dynamic {
     use libloading::{Library, Symbol};
     use std::path::Path;
 
+    /// Environment variable that opts in to native (`dlopen`) plugin loading.
+    ///
+    /// Set to `1`/`true`/`yes` to allow a default-constructed
+    /// [`DynamicPluginLoader`] to load native shared libraries. Absent or any
+    /// other value keeps native loading disabled and steers callers to the WASM
+    /// sandbox.
+    pub const ALLOW_NATIVE_ENV: &str = "SOCHDB_ALLOW_NATIVE_PLUGINS";
+
+    fn env_opts_in_to_native() -> bool {
+        std::env::var(ALLOW_NATIVE_ENV)
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                v == "1" || v == "true" || v == "yes" || v == "on"
+            })
+            .unwrap_or(false)
+    }
+
     /// Dynamic plugin loader
+    ///
+    /// Native loading is **untrusted by default**. Even with the
+    /// `dynamic-plugins` feature compiled in, a loader will refuse to `dlopen`
+    /// a shared library unless it was explicitly marked trusted — either by
+    /// constructing it with [`DynamicPluginLoader::new_trusted`] or by setting
+    /// the [`ALLOW_NATIVE_ENV`] environment variable. Untrusted extensions
+    /// should run in the WASM sandbox instead.
     pub struct DynamicPluginLoader {
         /// Loaded libraries (kept alive)
         _libraries: Vec<Library>,
+        /// Whether native `dlopen` loading is permitted for this loader.
+        trusted: bool,
     }
 
     impl DynamicPluginLoader {
-        /// Create a new dynamic plugin loader
+        /// Create a new dynamic plugin loader.
+        ///
+        /// Native loading is **disabled** unless the [`ALLOW_NATIVE_ENV`]
+        /// environment variable opts in. Use [`new_trusted`](Self::new_trusted)
+        /// to enable native loading programmatically. This safe-by-default
+        /// stance means an attacker who can drop a `.so` on disk cannot get it
+        /// loaded without an explicit operator decision.
         pub fn new() -> Self {
             Self {
                 _libraries: Vec::new(),
+                trusted: env_opts_in_to_native(),
             }
+        }
+
+        /// Create a loader that is explicitly permitted to load native
+        /// shared libraries.
+        ///
+        /// # Safety / Trust
+        ///
+        /// Calling this is an assertion by the operator that any library passed
+        /// to [`load_observability`](Self::load_observability) comes from
+        /// audited, trusted source code. Native libraries run with **no
+        /// isolation** and can execute arbitrary code in the database process
+        /// (see the module-level security warning). Prefer the WASM sandbox for
+        /// anything that is not fully trusted.
+        pub fn new_trusted() -> Self {
+            Self {
+                _libraries: Vec::new(),
+                trusted: true,
+            }
+        }
+
+        /// Whether this loader is permitted to load native libraries.
+        pub fn is_trusted(&self) -> bool {
+            self.trusted
         }
 
         /// Load an observability plugin from a shared library.
@@ -740,10 +795,29 @@ pub mod dynamic {
         /// ```c
         /// extern "C" fn create_observability_plugin() -> *mut dyn ObservabilityExtension
         /// ```
+        ///
+        /// Returns an error (without performing any `dlopen`) if this loader is
+        /// not trusted — see [`new_trusted`](Self::new_trusted) and
+        /// [`ALLOW_NATIVE_ENV`].
         pub unsafe fn load_observability(
             &mut self,
             path: &Path,
         ) -> KernelResult<Arc<dyn ObservabilityExtension>> {
+            // Untrusted-by-default gate: refuse native loading unless explicitly
+            // enabled. This check happens BEFORE any filesystem access or
+            // `dlopen`, so a malicious library is never even opened.
+            if !self.trusted {
+                return Err(KernelError::Plugin {
+                    message: format!(
+                        "native plugin loading is disabled (untrusted by default). \
+                         Load untrusted extensions via the WASM sandbox, or opt in \
+                         explicitly with DynamicPluginLoader::new_trusted() or by \
+                         setting {ALLOW_NATIVE_ENV}=1. Refused: {}",
+                        path.display()
+                    ),
+                });
+            }
+
             // Validate the path is absolute to prevent relative-path hijacking
             if !path.is_absolute() {
                 return Err(KernelError::Plugin {
@@ -781,6 +855,56 @@ pub mod dynamic {
     impl Default for DynamicPluginLoader {
         fn default() -> Self {
             Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod dynamic_tests {
+        use super::*;
+
+        #[test]
+        fn test_untrusted_loader_refuses_native_load() {
+            // Default loader (no env opt-in) must refuse to load a native lib,
+            // returning an error WITHOUT touching the filesystem.
+            let mut loader = DynamicPluginLoader::new_untrusted_for_test();
+            assert!(!loader.is_trusted());
+            let path = Path::new("/nonexistent/evil.so");
+            let result = unsafe { loader.load_observability(path) };
+            assert!(result.is_err(), "untrusted loader must refuse native load");
+            let msg = format!("{:?}", result.err().unwrap());
+            assert!(
+                msg.contains("untrusted") || msg.contains("disabled"),
+                "error should explain the untrusted-by-default policy, got: {msg}"
+            );
+        }
+
+        #[test]
+        fn test_trusted_loader_passes_gate_then_fails_on_missing_file() {
+            // A trusted loader passes the trust gate; with a missing file it
+            // fails later (canonicalize), proving the gate itself is not what
+            // rejects it.
+            let mut loader = DynamicPluginLoader::new_trusted();
+            assert!(loader.is_trusted());
+            let path = Path::new("/nonexistent/trusted.so");
+            let result = unsafe { loader.load_observability(path) };
+            assert!(result.is_err());
+            let msg = format!("{:?}", result.err().unwrap());
+            assert!(
+                !msg.contains("untrusted"),
+                "trusted loader must fail past the trust gate, got: {msg}"
+            );
+        }
+    }
+
+    impl DynamicPluginLoader {
+        /// Test-only constructor forcing the untrusted state regardless of the
+        /// ambient environment (so the env var cannot make the test flaky).
+        #[cfg(test)]
+        fn new_untrusted_for_test() -> Self {
+            Self {
+                _libraries: Vec::new(),
+                trusted: false,
+            }
         }
     }
 }
@@ -949,6 +1073,9 @@ mod tests {
 
         pm.shutdown_all().unwrap();
 
-        assert!(flag.load(Ordering::SeqCst), "shutdown should have been called");
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "shutdown should have been called"
+        );
     }
 }

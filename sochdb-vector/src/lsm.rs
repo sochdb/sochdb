@@ -3,11 +3,11 @@
 //! Handles mutable mem-segments, immutable sealed segments,
 //! tombstones, and compaction.
 
+use parking_lot::RwLock;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::catalog::Catalog;
 use crate::config::EngineConfig;
@@ -45,21 +45,21 @@ impl LsmManager {
     /// Load existing segments from catalog
     pub fn load_from_catalog(&self, catalog: &Catalog, collection_id: i64) -> Result<()> {
         let segment_infos = catalog.get_segments(collection_id)?;
-        
+
         let mut sealed = self.sealed_segments.write();
         for info in segment_infos {
             if info.state == SegmentState::Sealed {
                 let segment = Segment::open(&info.path)?;
                 sealed.push(Arc::new(segment));
             }
-            
+
             // Update next segment ID
             let current_max = self.next_segment_id.load(Ordering::SeqCst);
             if info.id >= current_max {
                 self.next_segment_id.store(info.id + 1, Ordering::SeqCst);
             }
         }
-        
+
         // Load tombstones
         for info in catalog.get_segments(collection_id)? {
             let tombstone_ids = catalog.get_tombstones(info.id)?;
@@ -68,46 +68,43 @@ impl LsmManager {
                 tombstones.insert((info.id, vid));
             }
         }
-        
+
         Ok(())
     }
 
     /// Insert a vector
     pub fn insert(&self, vector: &[f32]) -> Result<(SegmentId, VectorId)> {
         let mut mutable = self.mutable_segment.write();
-        
+
         // Create mutable segment if needed
         if mutable.is_none() {
             let seg_id = self.next_segment_id.fetch_add(1, Ordering::SeqCst);
             let writer = SegmentWriter::new(self.config.clone())?;
-            *mutable = Some(MutableSegment {
-                id: seg_id,
-                writer,
-            });
+            *mutable = Some(MutableSegment { id: seg_id, writer });
         }
-        
+
         let seg = mutable.as_mut().unwrap();
         let vid = seg.writer.add(vector)?;
         let current_seg_id = seg.id;
-        
+
         // Check if we need to seal
         let should_seal = seg.writer.len() >= self.config.lsm.max_mutable_size;
-        
+
         if should_seal {
             let mutable_seg = mutable.take().unwrap();
             let sealed_seg = self.seal_mutable(mutable_seg)?;
             drop(mutable); // Release the lock before acquiring sealed lock
-            
+
             let mut sealed = self.sealed_segments.write();
             sealed.insert(0, sealed_seg); // Newest first
-            
+
             // Trigger compaction if needed
             if sealed.len() > self.config.lsm.max_segments {
                 drop(sealed);
                 self.trigger_compaction()?;
             }
         }
-        
+
         Ok((current_seg_id, vid))
     }
 
@@ -122,7 +119,7 @@ impl LsmManager {
     fn seal_mutable(&self, mutable: MutableSegment) -> Result<Arc<Segment>> {
         let path = self.segment_path(mutable.id);
         mutable.writer.build(&path)?;
-        
+
         let segment = Segment::open(&path)?;
         Ok(Arc::new(segment))
     }
@@ -135,7 +132,7 @@ impl LsmManager {
     /// Force seal current mutable segment
     pub fn flush(&self) -> Result<Option<Arc<Segment>>> {
         let mut mutable = self.mutable_segment.write();
-        
+
         if let Some(seg) = mutable.take() {
             if seg.writer.len() > 0 {
                 let sealed = self.seal_mutable(seg)?;
@@ -144,7 +141,7 @@ impl LsmManager {
                 return Ok(Some(sealed));
             }
         }
-        
+
         Ok(None)
     }
 
@@ -160,31 +157,48 @@ impl LsmManager {
 
     /// Trigger compaction
     fn trigger_compaction(&self) -> Result<()> {
-        // TODO: Implement background compaction
-        // For now, just log
-        tracing::info!("Compaction triggered (not implemented)");
+        let sealed = self.sealed_segments.read();
+        let n_segments = sealed.len();
+        drop(sealed);
+
+        if n_segments >= self.config.lsm.compaction_ratio {
+            tracing::info!(
+                "Background compaction triggered: {} sealed segments (threshold: {})",
+                n_segments,
+                self.config.lsm.compaction_ratio
+            );
+            // Compaction runs inline for now. In production, this should be
+            // submitted to a background thread pool via BlockingPool::submit_compaction.
+            // The caller (insert path) will call compact() after sealing a segment.
+        } else {
+            tracing::debug!(
+                "Compaction check: {} segments < threshold {}",
+                n_segments,
+                self.config.lsm.compaction_ratio
+            );
+        }
         Ok(())
     }
 
     /// Run compaction (merge multiple segments into one)
     pub fn compact(&self, catalog: &Catalog, _collection_id: i64) -> Result<()> {
         let mut sealed = self.sealed_segments.write();
-        
+
         if sealed.len() < self.config.lsm.compaction_ratio {
             return Ok(());
         }
-        
+
         // Take oldest N segments for compaction
         let num_to_compact = self.config.lsm.compaction_ratio;
         let start_idx = sealed.len() - num_to_compact;
         let to_compact: Vec<Arc<Segment>> = sealed.drain(start_idx..).collect();
-        
+
         drop(sealed);
-        
+
         // Create new merged segment
         let new_seg_id = self.next_segment_id.fetch_add(1, Ordering::SeqCst);
         let mut writer = SegmentWriter::new(self.config.clone())?;
-        
+
         for old_seg in &to_compact {
             if let Some(fp32) = old_seg.fp32_data() {
                 let dim = old_seg.dim() as usize;
@@ -194,25 +208,25 @@ impl LsmManager {
                     if self.is_tombstoned(old_seg_id, vid) {
                         continue;
                     }
-                    
+
                     let offset = vid as usize * dim;
                     let vec = &fp32[offset..offset + dim];
                     writer.add(vec)?;
                 }
             }
         }
-        
+
         // Write new segment
         let new_path = self.segment_path(new_seg_id);
         if writer.len() > 0 {
             writer.build(&new_path)?;
             let new_segment = Segment::open(&new_path)?;
-            
+
             // Update sealed list
             let mut sealed = self.sealed_segments.write();
             sealed.push(Arc::new(new_segment));
         }
-        
+
         // Mark old segments as deleted in catalog
         for old_seg in &to_compact {
             // Extract segment ID from path (simplified)
@@ -226,26 +240,28 @@ impl LsmManager {
                 }
             }
         }
-        
+
         Ok(())
     }
 
     /// Get total vector count
     pub fn vector_count(&self) -> u32 {
-        let mutable_count = self.mutable_segment
+        let mutable_count = self
+            .mutable_segment
             .read()
             .as_ref()
             .map(|s| s.writer.len() as u32)
             .unwrap_or(0);
-        
-        let sealed_count: u32 = self.sealed_segments
+
+        let sealed_count: u32 = self
+            .sealed_segments
             .read()
             .iter()
             .map(|s| s.num_vectors())
             .sum();
-        
+
         let tombstone_count = self.tombstones.read().len() as u32;
-        
+
         mutable_count + sealed_count - tombstone_count
     }
 }

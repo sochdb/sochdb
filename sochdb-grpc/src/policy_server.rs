@@ -8,10 +8,10 @@
 //! Provides policy evaluation and enforcement via gRPC.
 
 use crate::proto::{
-    policy_service_server::{PolicyService, PolicyServiceServer},
     DeletePolicyRequest, DeletePolicyResponse, EvaluatePolicyRequest, EvaluatePolicyResponse,
     ListPoliciesRequest, ListPoliciesResponse, PolicyActionType, PolicyRule, PolicyTrigger,
     RegisterPolicyRequest, RegisterPolicyResponse,
+    policy_service_server::{PolicyService, PolicyServiceServer},
 };
 use dashmap::DashMap;
 use regex::Regex;

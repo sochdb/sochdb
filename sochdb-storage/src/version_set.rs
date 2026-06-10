@@ -77,12 +77,11 @@
 //! For 8 threads, expected speedup: ~6-8x on read-heavy workloads.
 
 use arc_swap::{ArcSwap, Guard};
-use crossbeam_epoch::{self as epoch, Atomic, Owned, Shared};
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // =============================================================================
 // File Metadata
@@ -225,13 +224,13 @@ impl LevelMetadata {
             // L0 is unsorted - must check all files
             self.files
                 .iter()
-                .filter(|f| {
-                    f.smallest_key.as_slice() <= key && f.largest_key.as_slice() >= key
-                })
+                .filter(|f| f.smallest_key.as_slice() <= key && f.largest_key.as_slice() >= key)
                 .collect()
         } else {
             // L1+ is sorted - binary search for overlapping files
-            let idx = self.files.partition_point(|f| f.largest_key.as_slice() < key);
+            let idx = self
+                .files
+                .partition_point(|f| f.largest_key.as_slice() < key);
             if idx < self.files.len() && self.files[idx].smallest_key.as_slice() <= key {
                 vec![&self.files[idx]]
             } else {
@@ -250,11 +249,14 @@ impl LevelMetadata {
                 .collect()
         } else {
             // L1+ is sorted - find range using binary search
-            let start_idx = self.files.partition_point(|f| f.largest_key.as_slice() < start);
+            let start_idx = self
+                .files
+                .partition_point(|f| f.largest_key.as_slice() < start);
             let end_idx = if end.is_empty() {
                 self.files.len()
             } else {
-                self.files.partition_point(|f| f.smallest_key.as_slice() <= end)
+                self.files
+                    .partition_point(|f| f.smallest_key.as_slice() <= end)
             };
             self.files[start_idx..end_idx].iter().collect()
         }
@@ -292,10 +294,10 @@ pub struct ImmutableMemTableRef {
 pub trait ImmutableMemTable: Send + Sync + std::fmt::Debug {
     /// Get a value at a specific sequence number
     fn get(&self, key: &[u8], seqno: u64) -> Option<Option<Vec<u8>>>;
-    
+
     /// Iterate over all entries
     fn iter(&self) -> Box<dyn Iterator<Item = (Vec<u8>, Option<Vec<u8>>, u64)> + '_>;
-    
+
     /// Get approximate size
     fn size(&self) -> u64;
 }
@@ -321,31 +323,31 @@ pub trait ImmutableMemTable: Send + Sync + std::fmt::Debug {
 pub struct SuperVersion {
     /// Version number (monotonically increasing)
     pub version_number: u64,
-    
+
     /// Current mutable memtable reference
     /// Note: The memtable itself may have internal synchronization,
     /// but the *reference* is immutable within a SuperVersion
     pub memtable_version: u64,
-    
+
     /// Immutable memtables (oldest first)
     pub immutable_memtables: Arc<Vec<ImmutableMemTableRef>>,
-    
+
     /// SSTable levels (L0, L1, L2, ...)
     pub levels: Arc<Vec<LevelMetadata>>,
-    
+
     /// Minimum sequence number safe to garbage collect
     /// Versions with seqno < this can be pruned during compaction
     pub min_snapshot_seqno: u64,
-    
+
     /// Current log (WAL) number for crash recovery
     pub log_number: u64,
-    
+
     /// Prev log number (for two-log protocol during flush)
     pub prev_log_number: u64,
-    
+
     /// Next file number to allocate
     pub next_file_number: u64,
-    
+
     /// Manifest file number
     pub manifest_file_number: u64,
 }
@@ -370,7 +372,7 @@ impl SuperVersion {
     pub fn with_new_immutable(&self, imm: ImmutableMemTableRef) -> Self {
         let mut new_imms = (*self.immutable_memtables).clone();
         new_imms.push(imm);
-        
+
         Self {
             version_number: self.version_number + 1,
             memtable_version: self.memtable_version + 1,
@@ -391,12 +393,13 @@ impl SuperVersion {
         new_files: Vec<(u32, Arc<FileMetadata>)>, // (level, file)
     ) -> Self {
         // Remove flushed immutable memtables
-        let new_imms: Vec<_> = self.immutable_memtables
+        let new_imms: Vec<_> = self
+            .immutable_memtables
             .iter()
             .filter(|imm| !flushed_ids.contains(&imm.id))
             .cloned()
             .collect();
-        
+
         // Add new files to levels
         let mut new_levels = (*self.levels).clone();
         for (level, file) in new_files {
@@ -405,13 +408,13 @@ impl SuperVersion {
                 let target_size = self.level_target_size(new_levels.len() as u32);
                 new_levels.push(LevelMetadata::new(new_levels.len() as u32, target_size));
             }
-            
+
             let lm = &mut new_levels[level as usize];
             lm.total_size += file.file_size;
             lm.files.push(file);
             lm.update_compaction_score();
         }
-        
+
         Self {
             version_number: self.version_number + 1,
             memtable_version: self.memtable_version,
@@ -432,7 +435,7 @@ impl SuperVersion {
         output_files: Vec<(u32, Arc<FileMetadata>)>,
     ) -> Self {
         let mut new_levels = (*self.levels).clone();
-        
+
         // Remove input files
         for (level, file_num) in input_files {
             if let Some(lm) = new_levels.get_mut(*level as usize) {
@@ -442,27 +445,29 @@ impl SuperVersion {
                 }
             }
         }
-        
+
         // Add output files
         for (level, file) in output_files {
             while new_levels.len() <= level as usize {
                 let target_size = self.level_target_size(new_levels.len() as u32);
                 new_levels.push(LevelMetadata::new(new_levels.len() as u32, target_size));
             }
-            
+
             let lm = &mut new_levels[level as usize];
             lm.total_size += file.file_size;
-            
+
             // Insert in sorted order for L1+
             if level > 0 {
-                let pos = lm.files.partition_point(|f| f.smallest_key < file.smallest_key);
+                let pos = lm
+                    .files
+                    .partition_point(|f| f.smallest_key < file.smallest_key);
                 lm.files.insert(pos, file);
             } else {
                 lm.files.push(file);
             }
             lm.update_compaction_score();
         }
-        
+
         Self {
             version_number: self.version_number + 1,
             memtable_version: self.memtable_version,
@@ -527,17 +532,17 @@ impl Default for SuperVersion {
 pub struct VersionSet {
     /// Current SuperVersion (atomically swappable)
     current: ArcSwap<SuperVersion>,
-    
+
     /// Version number counter
     version_counter: AtomicU64,
-    
+
     /// Write serialization lock
     /// Only one writer can modify the version at a time
     write_lock: Mutex<()>,
-    
+
     /// Snapshot registry - tracks active snapshots for GC
     snapshots: Mutex<BTreeMap<u64, u64>>, // seqno -> ref_count
-    
+
     /// Database directory
     db_path: PathBuf,
 }
@@ -637,20 +642,20 @@ impl VersionSet {
     /// min_snapshot_seqno if no snapshots are active.
     pub fn min_preserved_seqno(&self) -> u64 {
         let snapshots = self.snapshots.lock();
-        snapshots.keys().next().copied().unwrap_or_else(|| {
-            self.current.load().min_snapshot_seqno
-        })
+        snapshots
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or_else(|| self.current.load().min_snapshot_seqno)
     }
 
     /// Update min_snapshot_seqno based on active snapshots
     pub fn update_min_snapshot_seqno(&self) {
         let min_seqno = self.min_preserved_seqno();
-        self.with_write_lock(|current| {
-            SuperVersion {
-                min_snapshot_seqno: min_seqno,
-                version_number: current.version_number + 1,
-                ..current.clone()
-            }
+        self.with_write_lock(|current| SuperVersion {
+            min_snapshot_seqno: min_seqno,
+            version_number: current.version_number + 1,
+            ..current.clone()
         });
     }
 
@@ -775,13 +780,13 @@ mod tests {
     #[test]
     fn test_version_set_install() {
         let vs = VersionSet::new(PathBuf::from("/tmp/test"));
-        
+
         let new_sv = SuperVersion {
             version_number: 2,
             ..SuperVersion::new()
         };
         vs.install(new_sv);
-        
+
         let sv = vs.get();
         assert_eq!(sv.version_number, 2);
     }
@@ -809,22 +814,22 @@ mod tests {
     #[test]
     fn test_snapshot_registry() {
         let vs = VersionSet::new(PathBuf::from("/tmp/test"));
-        
+
         // Register snapshots
         vs.register_snapshot(100);
         vs.register_snapshot(200);
         vs.register_snapshot(100); // Duplicate
-        
+
         assert_eq!(vs.min_preserved_seqno(), 100);
-        
+
         // Release one reference to 100
         vs.release_snapshot(100);
         assert_eq!(vs.min_preserved_seqno(), 100); // Still have one ref
-        
+
         // Release second reference
         vs.release_snapshot(100);
         assert_eq!(vs.min_preserved_seqno(), 200);
-        
+
         // Release 200
         vs.release_snapshot(200);
     }
@@ -832,7 +837,7 @@ mod tests {
     #[test]
     fn test_level_binary_search() {
         let mut level = LevelMetadata::new(1, 256 * 1024 * 1024);
-        
+
         // Add files in sorted order
         for i in 0..10 {
             let file = Arc::new(FileMetadata {
@@ -850,12 +855,12 @@ mod tests {
             level.files.push(file);
             level.total_size += 1024;
         }
-        
+
         // Test point lookup
         let files = level.find_files_for_key(b"25");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].file_number, 2);
-        
+
         // Test range lookup
         let files = level.find_files_for_range(b"15", b"35");
         assert_eq!(files.len(), 3); // Files 1, 2, 3

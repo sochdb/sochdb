@@ -78,4 +78,4 @@ txn.commit()?;
 
 ## License
 
-Apache-2.0 - see [LICENSE](../LICENSE) for details.
+AGPL-3.0-or-later - see [LICENSE](../LICENSE) for details.

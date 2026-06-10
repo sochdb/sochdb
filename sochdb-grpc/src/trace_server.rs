@@ -8,10 +8,10 @@
 //! Provides trace/span management for observability via gRPC.
 
 use crate::proto::{
-    trace_service_server::{TraceService, TraceServiceServer},
     AddEventRequest, AddEventResponse, EndSpanRequest, EndSpanResponse, GetTraceRequest,
     GetTraceResponse, ListTracesRequest, ListTracesResponse, Span, SpanEvent, SpanStatus,
     StartSpanRequest, StartSpanResponse, StartTraceRequest, StartTraceResponse, Trace,
+    trace_service_server::{TraceService, TraceServiceServer},
 };
 use dashmap::DashMap;
 use std::sync::Arc;

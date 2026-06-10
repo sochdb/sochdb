@@ -166,7 +166,7 @@ fn main() {
     let total = TEST_COUNT.load(Ordering::SeqCst);
     let pass = PASS_COUNT.load(Ordering::SeqCst);
     let fail = FAIL_COUNT.load(Ordering::SeqCst);
-    
+
     println!("\n{}", "=".repeat(60));
     println!("\n📊 Test Results:");
     println!("   Total:  {}", total);

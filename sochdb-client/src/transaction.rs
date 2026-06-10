@@ -31,7 +31,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::connection::{Timestamp, SochConnection, TxnId};
+use crate::connection::{SochConnection, Timestamp, TxnId};
 use crate::error::{ClientError, Result};
 
 /// Transaction isolation levels
@@ -93,7 +93,8 @@ pub struct ClientTransaction<'a> {
 impl<'a> ClientTransaction<'a> {
     /// Begin new transaction with isolation level
     pub fn begin(conn: &'a SochConnection, isolation: IsolationLevel) -> Result<Self> {
-        let txn_id = conn.storage
+        let txn_id = conn
+            .storage
             .begin_transaction()
             .map_err(|e| ClientError::Storage(e.to_string()))?;
         let start_ts = txn_id; // DurableStorage txn_id serves as logical timestamp
@@ -199,7 +200,9 @@ impl<'a> ClientTransaction<'a> {
         }
 
         // Commit via DurableStorage (WAL + MVCC)
-        let commit_ts = self.conn.storage
+        let commit_ts = self
+            .conn
+            .storage
             .commit(self.txn_id)
             .map_err(|e| ClientError::Storage(e.to_string()))?;
 
@@ -219,7 +222,8 @@ impl<'a> ClientTransaction<'a> {
             return Err(ClientError::Transaction("Transaction not active".into()));
         }
 
-        self.conn.storage
+        self.conn
+            .storage
             .abort(self.txn_id)
             .map_err(|e| ClientError::Storage(e.to_string()))?;
         self.committed = true; // Prevent double-rollback in Drop
@@ -293,7 +297,8 @@ impl<'a> SnapshotReader<'a> {
     /// Create snapshot at current timestamp
     pub fn now(conn: &'a SochConnection) -> Result<Self> {
         // Use DurableStorage begin_transaction to get a consistent snapshot point
-        let snapshot_ts = conn.storage
+        let snapshot_ts = conn
+            .storage
             .begin_transaction()
             .map_err(|e| ClientError::Storage(e.to_string()))?;
         Ok(Self {
@@ -326,7 +331,7 @@ impl<'a> SnapshotReader<'a> {
     }
 
     /// Read a key with MVCC visibility
-    pub fn get(&mut self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn get(&mut self, _table: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
         // Use the snapshot txn_id for MVCC-consistent reads
         self.conn
             .storage
@@ -385,7 +390,9 @@ impl<'a> BatchWriter<'a> {
         }
 
         let start = std::time::Instant::now();
-        let txn_id = self.conn.storage
+        let txn_id = self
+            .conn
+            .storage
             .begin_transaction()
             .map_err(|e| ClientError::Storage(e.to_string()))?;
 
@@ -393,19 +400,23 @@ impl<'a> BatchWriter<'a> {
         for write in &self.pending_writes {
             match &write.value {
                 Some(value) => {
-                    self.conn.storage
+                    self.conn
+                        .storage
                         .write(txn_id, write.key.clone(), value.clone())
                         .map_err(|e| ClientError::Storage(e.to_string()))?;
                 }
                 None => {
-                    self.conn.storage
+                    self.conn
+                        .storage
                         .delete(txn_id, write.key.clone())
                         .map_err(|e| ClientError::Storage(e.to_string()))?;
                 }
             }
         }
 
-        let _commit_ts = self.conn.storage
+        let _commit_ts = self
+            .conn
+            .storage
             .commit(txn_id)
             .map_err(|e| ClientError::Storage(e.to_string()))?;
         let duration = start.elapsed();

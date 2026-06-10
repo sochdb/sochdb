@@ -18,11 +18,17 @@ pub struct ColumnMeta {
 
 impl ColumnMeta {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), table: None }
+        Self {
+            name: name.into(),
+            table: None,
+        }
     }
 
     pub fn qualified(table: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { name: name.into(), table: Some(table.into()) }
+        Self {
+            name: name.into(),
+            table: Some(table.into()),
+        }
     }
 }
 
@@ -58,9 +64,10 @@ impl Schema {
     /// Find column index by qualified name (table.column).
     pub fn index_of_qualified(&self, table: Option<&str>, name: &str) -> Option<usize> {
         match table {
-            Some(t) => self.columns.iter().position(|c| {
-                c.name == name && c.table.as_deref() == Some(t)
-            }),
+            Some(t) => self
+                .columns
+                .iter()
+                .position(|c| c.name == name && c.table.as_deref() == Some(t)),
             None => self.index_of(name),
         }
     }

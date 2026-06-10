@@ -192,7 +192,9 @@ impl PaxSchema {
 
     /// Check if schema has any variable-length columns
     pub fn has_variable(&self) -> bool {
-        self.columns.iter().any(|c| c.col_type == PaxColumnType::VarBinary)
+        self.columns
+            .iter()
+            .any(|c| c.col_type == PaxColumnType::VarBinary)
     }
 }
 
@@ -271,7 +273,10 @@ impl PaxBlockHeader {
     pub fn read<R: Read>(r: &mut R, _column_count: usize) -> io::Result<Self> {
         let magic = r.read_u32::<LittleEndian>()?;
         if magic != PAX_MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid PAX magic"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid PAX magic",
+            ));
         }
 
         let version = r.read_u16::<LittleEndian>()?;
@@ -367,7 +372,9 @@ impl Minipage {
 
     /// Write variable-length binary
     pub fn write_var_binary(&mut self, value: &[u8]) {
-        self.data.write_u32::<LittleEndian>(value.len() as u32).unwrap();
+        self.data
+            .write_u32::<LittleEndian>(value.len() as u32)
+            .unwrap();
         self.data.extend_from_slice(value);
         self.value_count += 1;
     }
@@ -546,19 +553,29 @@ impl<'a> PaxRowWriter<'a> {
         match self.block.schema.columns[self.col_idx].col_type {
             PaxColumnType::Bool => self.block.minipages[self.col_idx].write_bool(false),
             PaxColumnType::Int8 => self.block.minipages[self.col_idx].data.push(0),
-            PaxColumnType::Int16 => self.block.minipages[self.col_idx].data.extend_from_slice(&[0; 2]),
+            PaxColumnType::Int16 => self.block.minipages[self.col_idx]
+                .data
+                .extend_from_slice(&[0; 2]),
             PaxColumnType::Int32 | PaxColumnType::Float32 => {
-                self.block.minipages[self.col_idx].data.extend_from_slice(&[0; 4]);
+                self.block.minipages[self.col_idx]
+                    .data
+                    .extend_from_slice(&[0; 4]);
             }
             PaxColumnType::Int64 | PaxColumnType::Float64 => {
-                self.block.minipages[self.col_idx].data.extend_from_slice(&[0; 8]);
+                self.block.minipages[self.col_idx]
+                    .data
+                    .extend_from_slice(&[0; 8]);
             }
             PaxColumnType::VarBinary => {
                 self.block.minipages[self.col_idx].write_var_binary(&[]);
             }
             PaxColumnType::FixedBinary => {
-                let size = self.block.schema.columns[self.col_idx].fixed_size.unwrap_or(0) as usize;
-                self.block.minipages[self.col_idx].data.extend(std::iter::repeat(0).take(size));
+                let size = self.block.schema.columns[self.col_idx]
+                    .fixed_size
+                    .unwrap_or(0) as usize;
+                self.block.minipages[self.col_idx]
+                    .data
+                    .extend(std::iter::repeat(0).take(size));
             }
         }
         self.block.minipages[self.col_idx].value_count += 1;
@@ -751,7 +768,7 @@ impl<'a> PaxBlockIterator<'a> {
             current_row: 0,
         }
     }
-    
+
     /// Get the next row as a view
     pub fn next_row(&mut self) -> Option<PaxRowViewOwned> {
         if self.current_row >= self.block.row_count() {
@@ -925,9 +942,7 @@ mod tests {
 
     #[test]
     fn test_columnar_access() {
-        let schema = PaxSchema::new(vec![
-            PaxColumnDef::new("id", PaxColumnType::Int64),
-        ]);
+        let schema = PaxSchema::new(vec![PaxColumnDef::new("id", PaxColumnType::Int64)]);
 
         let mut writer = PaxBlockWriter::new(schema.clone(), 1000);
         for i in 0..100 {

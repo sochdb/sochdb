@@ -259,7 +259,7 @@ pub fn get_feature_support(feature: SqlFeature) -> FeatureSupport {
         // Partially supported
         AlterTable => FeatureSupport::Partial, // ADD/DROP COLUMN only
         GroupBy | Having => FeatureSupport::Partial, // Basic support
-        InnerJoin => FeatureSupport::Partial, // Two-table only
+        InnerJoin => FeatureSupport::Partial,  // Two-table only
         OnConflictDoUpdate | InsertOrReplace | OnDuplicateKeyUpdate => FeatureSupport::Partial,
         CaseWhen | Cast | Between => FeatureSupport::Partial,
         Union => FeatureSupport::Partial,
@@ -390,7 +390,10 @@ mod tests {
 
     #[test]
     fn test_dialect_detection() {
-        assert_eq!(SqlDialect::detect("SELECT * FROM users"), SqlDialect::Standard);
+        assert_eq!(
+            SqlDialect::detect("SELECT * FROM users"),
+            SqlDialect::Standard
+        );
         assert_eq!(
             SqlDialect::detect("INSERT IGNORE INTO users VALUES (1)"),
             SqlDialect::MySQL
@@ -407,7 +410,10 @@ mod tests {
 
     #[test]
     fn test_feature_support() {
-        assert_eq!(get_feature_support(SqlFeature::Select), FeatureSupport::Full);
+        assert_eq!(
+            get_feature_support(SqlFeature::Select),
+            FeatureSupport::Full
+        );
         assert_eq!(
             get_feature_support(SqlFeature::AlterTable),
             FeatureSupport::Partial

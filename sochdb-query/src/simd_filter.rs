@@ -42,7 +42,6 @@
 //! Speedup: 8× (AVX-512), 4× (AVX-256/NEON)
 //! ```
 
-
 /// Result bitmap - bit per row indicating pass/fail
 pub type FilterBitmap = Vec<u64>;
 
@@ -392,136 +391,144 @@ mod neon {
     ///
     /// Processes 2 i64 values per iteration using 128-bit vectors.
     #[target_feature(enable = "neon")]
-    pub unsafe fn filter_i64_gt_neon(data: &[i64], threshold: i64, result: &mut FilterBitmap) { unsafe {
-        let threshold_vec = vdupq_n_s64(threshold);
-        let len = data.len();
-        let chunks = len / 2;
+    pub unsafe fn filter_i64_gt_neon(data: &[i64], threshold: i64, result: &mut FilterBitmap) {
+        unsafe {
+            let threshold_vec = vdupq_n_s64(threshold);
+            let len = data.len();
+            let chunks = len / 2;
 
-        for chunk_idx in 0..chunks {
-            let offset = chunk_idx * 2;
-            let data_vec = vld1q_s64(data.as_ptr().add(offset));
+            for chunk_idx in 0..chunks {
+                let offset = chunk_idx * 2;
+                let data_vec = vld1q_s64(data.as_ptr().add(offset));
 
-            // Compare greater than (returns uint64x2_t)
-            let cmp = vcgtq_s64(data_vec, threshold_vec);
+                // Compare greater than (returns uint64x2_t)
+                let cmp = vcgtq_s64(data_vec, threshold_vec);
 
-            // Extract mask (2 bits) - cmp is already uint64x2_t
-            let mask_low = vgetq_lane_u64(cmp, 0);
-            let mask_high = vgetq_lane_u64(cmp, 1);
-            let mask = ((mask_low != 0) as u64) | (((mask_high != 0) as u64) << 1);
+                // Extract mask (2 bits) - cmp is already uint64x2_t
+                let mask_low = vgetq_lane_u64(cmp, 0);
+                let mask_high = vgetq_lane_u64(cmp, 1);
+                let mask = ((mask_low != 0) as u64) | (((mask_high != 0) as u64) << 1);
 
-            let word_idx = offset / 64;
-            let bit_offset = offset % 64;
-            if word_idx < result.len() {
-                result[word_idx] |= mask << bit_offset;
+                let word_idx = offset / 64;
+                let bit_offset = offset % 64;
+                if word_idx < result.len() {
+                    result[word_idx] |= mask << bit_offset;
+                }
+            }
+
+            // Handle remainder
+            let remainder_start = chunks * 2;
+            for idx in remainder_start..len {
+                if data[idx] > threshold {
+                    set_bit(result, idx);
+                }
             }
         }
-
-        // Handle remainder
-        let remainder_start = chunks * 2;
-        for idx in remainder_start..len {
-            if data[idx] > threshold {
-                set_bit(result, idx);
-            }
-        }
-    }}
+    }
 
     /// NEON filter: i64 < threshold
     #[target_feature(enable = "neon")]
-    pub unsafe fn filter_i64_lt_neon(data: &[i64], threshold: i64, result: &mut FilterBitmap) { unsafe {
-        let threshold_vec = vdupq_n_s64(threshold);
-        let len = data.len();
-        let chunks = len / 2;
+    pub unsafe fn filter_i64_lt_neon(data: &[i64], threshold: i64, result: &mut FilterBitmap) {
+        unsafe {
+            let threshold_vec = vdupq_n_s64(threshold);
+            let len = data.len();
+            let chunks = len / 2;
 
-        for chunk_idx in 0..chunks {
-            let offset = chunk_idx * 2;
-            let data_vec = vld1q_s64(data.as_ptr().add(offset));
+            for chunk_idx in 0..chunks {
+                let offset = chunk_idx * 2;
+                let data_vec = vld1q_s64(data.as_ptr().add(offset));
 
-            let cmp = vcltq_s64(data_vec, threshold_vec);
+                let cmp = vcltq_s64(data_vec, threshold_vec);
 
-            // cmp is already uint64x2_t
-            let mask_low = vgetq_lane_u64(cmp, 0);
-            let mask_high = vgetq_lane_u64(cmp, 1);
-            let mask = ((mask_low != 0) as u64) | (((mask_high != 0) as u64) << 1);
+                // cmp is already uint64x2_t
+                let mask_low = vgetq_lane_u64(cmp, 0);
+                let mask_high = vgetq_lane_u64(cmp, 1);
+                let mask = ((mask_low != 0) as u64) | (((mask_high != 0) as u64) << 1);
 
-            let word_idx = offset / 64;
-            let bit_offset = offset % 64;
-            if word_idx < result.len() {
-                result[word_idx] |= mask << bit_offset;
+                let word_idx = offset / 64;
+                let bit_offset = offset % 64;
+                if word_idx < result.len() {
+                    result[word_idx] |= mask << bit_offset;
+                }
+            }
+
+            let remainder_start = chunks * 2;
+            for idx in remainder_start..len {
+                if data[idx] < threshold {
+                    set_bit(result, idx);
+                }
             }
         }
-
-        let remainder_start = chunks * 2;
-        for idx in remainder_start..len {
-            if data[idx] < threshold {
-                set_bit(result, idx);
-            }
-        }
-    }}
+    }
 
     /// NEON filter: i64 == value
     #[target_feature(enable = "neon")]
-    pub unsafe fn filter_i64_eq_neon(data: &[i64], target: i64, result: &mut FilterBitmap) { unsafe {
-        let target_vec = vdupq_n_s64(target);
-        let len = data.len();
-        let chunks = len / 2;
+    pub unsafe fn filter_i64_eq_neon(data: &[i64], target: i64, result: &mut FilterBitmap) {
+        unsafe {
+            let target_vec = vdupq_n_s64(target);
+            let len = data.len();
+            let chunks = len / 2;
 
-        for chunk_idx in 0..chunks {
-            let offset = chunk_idx * 2;
-            let data_vec = vld1q_s64(data.as_ptr().add(offset));
+            for chunk_idx in 0..chunks {
+                let offset = chunk_idx * 2;
+                let data_vec = vld1q_s64(data.as_ptr().add(offset));
 
-            let cmp = vceqq_s64(data_vec, target_vec);
+                let cmp = vceqq_s64(data_vec, target_vec);
 
-            // cmp is already uint64x2_t
-            let mask_low = vgetq_lane_u64(cmp, 0);
-            let mask_high = vgetq_lane_u64(cmp, 1);
-            let mask = ((mask_low != 0) as u64) | (((mask_high != 0) as u64) << 1);
+                // cmp is already uint64x2_t
+                let mask_low = vgetq_lane_u64(cmp, 0);
+                let mask_high = vgetq_lane_u64(cmp, 1);
+                let mask = ((mask_low != 0) as u64) | (((mask_high != 0) as u64) << 1);
 
-            let word_idx = offset / 64;
-            let bit_offset = offset % 64;
-            if word_idx < result.len() {
-                result[word_idx] |= mask << bit_offset;
+                let word_idx = offset / 64;
+                let bit_offset = offset % 64;
+                if word_idx < result.len() {
+                    result[word_idx] |= mask << bit_offset;
+                }
+            }
+
+            let remainder_start = chunks * 2;
+            for idx in remainder_start..len {
+                if data[idx] == target {
+                    set_bit(result, idx);
+                }
             }
         }
-
-        let remainder_start = chunks * 2;
-        for idx in remainder_start..len {
-            if data[idx] == target {
-                set_bit(result, idx);
-            }
-        }
-    }}
+    }
 
     /// NEON filter: f64 > threshold
     #[target_feature(enable = "neon")]
-    pub unsafe fn filter_f64_gt_neon(data: &[f64], threshold: f64, result: &mut FilterBitmap) { unsafe {
-        let threshold_vec = vdupq_n_f64(threshold);
-        let len = data.len();
-        let chunks = len / 2;
+    pub unsafe fn filter_f64_gt_neon(data: &[f64], threshold: f64, result: &mut FilterBitmap) {
+        unsafe {
+            let threshold_vec = vdupq_n_f64(threshold);
+            let len = data.len();
+            let chunks = len / 2;
 
-        for chunk_idx in 0..chunks {
-            let offset = chunk_idx * 2;
-            let data_vec = vld1q_f64(data.as_ptr().add(offset));
+            for chunk_idx in 0..chunks {
+                let offset = chunk_idx * 2;
+                let data_vec = vld1q_f64(data.as_ptr().add(offset));
 
-            let cmp = vcgtq_f64(data_vec, threshold_vec);
+                let cmp = vcgtq_f64(data_vec, threshold_vec);
 
-            let mask_low = vgetq_lane_u64(cmp, 0);
-            let mask_high = vgetq_lane_u64(cmp, 1);
-            let mask = ((mask_low != 0) as u64) | (((mask_high != 0) as u64) << 1);
+                let mask_low = vgetq_lane_u64(cmp, 0);
+                let mask_high = vgetq_lane_u64(cmp, 1);
+                let mask = ((mask_low != 0) as u64) | (((mask_high != 0) as u64) << 1);
 
-            let word_idx = offset / 64;
-            let bit_offset = offset % 64;
-            if word_idx < result.len() {
-                result[word_idx] |= mask << bit_offset;
+                let word_idx = offset / 64;
+                let bit_offset = offset % 64;
+                if word_idx < result.len() {
+                    result[word_idx] |= mask << bit_offset;
+                }
+            }
+
+            let remainder_start = chunks * 2;
+            for idx in remainder_start..len {
+                if data[idx] > threshold {
+                    set_bit(result, idx);
+                }
             }
         }
-
-        let remainder_start = chunks * 2;
-        for idx in remainder_start..len {
-            if data[idx] > threshold {
-                set_bit(result, idx);
-            }
-        }
-    }}
+    }
 }
 
 // =============================================================================

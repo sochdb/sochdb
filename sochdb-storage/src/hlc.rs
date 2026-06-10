@@ -183,7 +183,12 @@ impl HybridLogicalClock {
                 let capped = (physical + MAX_DRIFT_US) << LOGICAL_BITS;
                 if self
                     .last_ts
-                    .compare_exchange_weak(last, capped.max(last + 1), Ordering::AcqRel, Ordering::Acquire)
+                    .compare_exchange_weak(
+                        last,
+                        capped.max(last + 1),
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
                     .is_ok()
                 {
                     return;

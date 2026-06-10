@@ -795,7 +795,7 @@ impl<'a> Parser<'a> {
         let mut columns = Vec::new();
         loop {
             let col_name = self.expect_identifier("Expected column name")?;
-            
+
             // Optional ASC/DESC
             let asc = if self.match_token(&TokenKind::Desc) {
                 false
@@ -1345,7 +1345,10 @@ impl<'a> Parser<'a> {
     /// Parse DEFINE TABLE <name> PERMISSIONS FOR <op> WHERE <expr> [, ...]
     fn parse_define_table_permissions(&mut self) -> Result<Statement, ParseError> {
         let table = self.parse_object_name()?;
-        self.expect(&TokenKind::Permissions, "Expected PERMISSIONS after table name")?;
+        self.expect(
+            &TokenKind::Permissions,
+            "Expected PERMISSIONS after table name",
+        )?;
 
         let mut permissions = Vec::new();
         loop {
@@ -1363,22 +1366,37 @@ impl<'a> Parser<'a> {
             });
         }
 
-        Ok(Statement::DefineTablePermissions(DefineTablePermissionsStmt {
-            table,
-            permissions,
-        }))
+        Ok(Statement::DefineTablePermissions(
+            DefineTablePermissionsStmt { table, permissions },
+        ))
     }
 
     /// Parse permission operation: select | create | insert | update | delete
     fn parse_permission_op(&mut self) -> Result<PermissionOp, ParseError> {
         match &self.peek().kind {
-            TokenKind::Select => { self.advance(); Ok(PermissionOp::Select) }
-            TokenKind::Insert => { self.advance(); Ok(PermissionOp::Create) }
-            TokenKind::Update => { self.advance(); Ok(PermissionOp::Update) }
-            TokenKind::Delete => { self.advance(); Ok(PermissionOp::Delete) }
-            TokenKind::Create => { self.advance(); Ok(PermissionOp::Create) }
+            TokenKind::Select => {
+                self.advance();
+                Ok(PermissionOp::Select)
+            }
+            TokenKind::Insert => {
+                self.advance();
+                Ok(PermissionOp::Create)
+            }
+            TokenKind::Update => {
+                self.advance();
+                Ok(PermissionOp::Update)
+            }
+            TokenKind::Delete => {
+                self.advance();
+                Ok(PermissionOp::Delete)
+            }
+            TokenKind::Create => {
+                self.advance();
+                Ok(PermissionOp::Create)
+            }
             TokenKind::Identifier(s) if s.eq_ignore_ascii_case("CREATE") => {
-                self.advance(); Ok(PermissionOp::Create)
+                self.advance();
+                Ok(PermissionOp::Create)
             }
             _ => Err(ParseError::new(
                 "Expected SELECT, CREATE, INSERT, UPDATE, or DELETE after FOR",
@@ -2329,7 +2347,10 @@ mod tests {
         if let Statement::Insert(insert) = stmt {
             assert!(insert.on_conflict.is_some());
             let on_conflict = insert.on_conflict.unwrap();
-            assert!(matches!(on_conflict.target, Some(ConflictTarget::Columns(_))));
+            assert!(matches!(
+                on_conflict.target,
+                Some(ConflictTarget::Columns(_))
+            ));
             assert!(matches!(on_conflict.action, ConflictAction::DoUpdate(_)));
         } else {
             panic!("Expected INSERT statement");
@@ -2338,7 +2359,8 @@ mod tests {
 
     #[test]
     fn test_insert_ignore_mysql() {
-        let stmt = Parser::parse("INSERT IGNORE INTO users (id, name) VALUES (1, 'Alice')").unwrap();
+        let stmt =
+            Parser::parse("INSERT IGNORE INTO users (id, name) VALUES (1, 'Alice')").unwrap();
         if let Statement::Insert(insert) = stmt {
             assert!(insert.on_conflict.is_some());
             let on_conflict = insert.on_conflict.unwrap();
@@ -2470,10 +2492,9 @@ mod tests {
 
     #[test]
     fn test_insert_returning() {
-        let stmt = Parser::parse(
-            "INSERT INTO users (id, name) VALUES (1, 'Alice') RETURNING id, name",
-        )
-        .unwrap();
+        let stmt =
+            Parser::parse("INSERT INTO users (id, name) VALUES (1, 'Alice') RETURNING id, name")
+                .unwrap();
         if let Statement::Insert(insert) = stmt {
             assert!(insert.returning.is_some());
             let returning = insert.returning.unwrap();
@@ -2485,10 +2506,8 @@ mod tests {
 
     #[test]
     fn test_define_scope() {
-        let stmt = Parser::parse(
-            "DEFINE SCOPE user_scope SESSION 86400 SIGNIN (1) SIGNUP (2)",
-        )
-        .unwrap();
+        let stmt =
+            Parser::parse("DEFINE SCOPE user_scope SESSION 86400 SIGNIN (1) SIGNUP (2)").unwrap();
         if let Statement::DefineScope(scope) = stmt {
             assert_eq!(scope.name, "user_scope");
             assert_eq!(scope.session_duration_secs, Some(86400));
@@ -2501,17 +2520,19 @@ mod tests {
 
     #[test]
     fn test_define_table_permissions() {
-        let stmt = Parser::parse(
-            "DEFINE TABLE post PERMISSIONS FOR select WHERE 1 FOR delete WHERE 0",
-        )
-        .unwrap();
+        let stmt =
+            Parser::parse("DEFINE TABLE post PERMISSIONS FOR select WHERE 1 FOR delete WHERE 0")
+                .unwrap();
         if let Statement::DefineTablePermissions(def) = stmt {
             assert_eq!(def.table.to_string(), "post");
             assert_eq!(def.permissions.len(), 2);
             assert_eq!(def.permissions[0].operation, PermissionOp::Select);
             assert_eq!(def.permissions[1].operation, PermissionOp::Delete);
         } else {
-            panic!("Expected DEFINE TABLE PERMISSIONS statement, got {:?}", stmt);
+            panic!(
+                "Expected DEFINE TABLE PERMISSIONS statement, got {:?}",
+                stmt
+            );
         }
     }
 
@@ -2639,9 +2660,8 @@ mod tests {
 
     #[test]
     fn test_relate_statement() {
-        let stmt = Parser::parse(
-            "RELATE person:1 -> knows -> person:2 SET since = '2024-01-01'"
-        ).unwrap();
+        let stmt =
+            Parser::parse("RELATE person:1 -> knows -> person:2 SET since = '2024-01-01'").unwrap();
         if let Statement::Relate(relate) = stmt {
             assert_eq!(relate.edge.to_string(), "knows");
             if let Expr::RecordId { table, .. } = &relate.from {
@@ -2663,9 +2683,7 @@ mod tests {
 
     #[test]
     fn test_relate_with_content() {
-        let stmt = Parser::parse(
-            "RELATE user:1 -> follows -> user:2 CONTENT 'data'"
-        ).unwrap();
+        let stmt = Parser::parse("RELATE user:1 -> follows -> user:2 CONTENT 'data'").unwrap();
         if let Statement::Relate(relate) = stmt {
             assert_eq!(relate.edge.to_string(), "follows");
             assert!(relate.content.is_some());
@@ -2700,9 +2718,7 @@ mod tests {
 
     #[test]
     fn test_define_event() {
-        let stmt = Parser::parse(
-            "DEFINE EVENT notify ON TABLE user WHEN 1 THEN 2"
-        ).unwrap();
+        let stmt = Parser::parse("DEFINE EVENT notify ON TABLE user WHEN 1 THEN 2").unwrap();
         if let Statement::DefineEvent(event) = stmt {
             assert_eq!(event.name, "notify");
             assert_eq!(event.table.to_string(), "user");

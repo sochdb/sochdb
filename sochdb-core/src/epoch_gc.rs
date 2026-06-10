@@ -520,7 +520,11 @@ where
         let mut chains_scanned = 0;
 
         // Collect keys to scan (DashMap doesn't need a global lock)
-        let keys: Vec<K> = self.chains.iter().map(|entry| entry.key().clone()).collect();
+        let keys: Vec<K> = self
+            .chains
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
 
         for key in keys {
             if chains_scanned >= self.config.max_versions_per_cycle {
@@ -765,10 +769,10 @@ mod tests {
 
         // With strict < semantics: version_at(N) sees versions with epoch < N
         // v=100 at epoch 0, v=200 at epoch 1, v=300 at epoch 2
-        assert_eq!(gc.get_at_epoch(&"key1".to_string(), 1), Some(100));  // epoch 0 < 1
-        assert_eq!(gc.get_at_epoch(&"key1".to_string(), 2), Some(200));  // epoch 1 < 2
-        assert_eq!(gc.get_at_epoch(&"key1".to_string(), 3), Some(300));  // epoch 2 < 3
-        assert_eq!(gc.get_at_epoch(&"key1".to_string(), 0), None);       // no epoch < 0
+        assert_eq!(gc.get_at_epoch(&"key1".to_string(), 1), Some(100)); // epoch 0 < 1
+        assert_eq!(gc.get_at_epoch(&"key1".to_string(), 2), Some(200)); // epoch 1 < 2
+        assert_eq!(gc.get_at_epoch(&"key1".to_string(), 3), Some(300)); // epoch 2 < 3
+        assert_eq!(gc.get_at_epoch(&"key1".to_string(), 0), None); // no epoch < 0
     }
 
     #[test]

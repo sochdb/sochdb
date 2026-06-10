@@ -36,6 +36,8 @@ pub mod table;
 
 pub use block::{BlockBuilder, BlockHandle, BlockIterator, BlockType};
 pub use builder::{SSTableBuilder, SSTableBuilderOptions, SSTableBuilderResult};
-pub use filter::{FilterPolicy, BloomFilterPolicy, RibbonFilterPolicy, XorFilterPolicy, FilterReader};
-pub use format::{SSTableFormat, Section, SectionType, TableMagic, Header, Footer, HEADER_SIZE};
-pub use table::{SSTable, SSTableIterator, TableMetadata, ReadOptions, BlockCache, CachedBlock};
+pub use filter::{
+    BloomFilterPolicy, FilterPolicy, FilterReader, RibbonFilterPolicy, XorFilterPolicy,
+};
+pub use format::{Footer, HEADER_SIZE, Header, SSTableFormat, Section, SectionType, TableMagic};
+pub use table::{BlockCache, CachedBlock, ReadOptions, SSTable, SSTableIterator, TableMetadata};

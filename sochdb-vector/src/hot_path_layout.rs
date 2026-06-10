@@ -42,7 +42,7 @@
 //! 3. **Prefetching**: Neighbor lookups prefetch next block
 //! 4. **Contiguous**: Avoid pointer chasing in hot path
 
-use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::mem::size_of;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -98,7 +98,7 @@ impl EmbeddingBlockHeader {
         let vector_size = dim as usize * size_of::<f32>();
         let stride = align_up(vector_size, SIMD_ALIGNMENT);
         let data_offset = size_of::<Self>();
-        
+
         Self {
             magic: EMBEDDING_MAGIC,
             version: 1,
@@ -110,12 +110,12 @@ impl EmbeddingBlockHeader {
             reserved: [0; 9],
         }
     }
-    
+
     /// Validate header
     pub fn is_valid(&self) -> bool {
         self.magic == EMBEDDING_MAGIC && self.version <= 1
     }
-    
+
     /// Get total block size
     pub fn block_size(&self) -> usize {
         self.data_offset as usize + (self.count as usize * self.stride as usize)
@@ -150,7 +150,7 @@ impl NeighborBlockHeader {
         let list_size = max_edges as usize * size_of::<u32>();
         let stride = align_up(list_size, CACHE_LINE_SIZE);
         let data_offset = size_of::<Self>();
-        
+
         Self {
             magic: NEIGHBOR_MAGIC,
             version: 1,
@@ -162,12 +162,12 @@ impl NeighborBlockHeader {
             reserved: [0; 9],
         }
     }
-    
+
     /// Validate header
     pub fn is_valid(&self) -> bool {
         self.magic == NEIGHBOR_MAGIC && self.version <= 1
     }
-    
+
     /// Get total block size
     pub fn block_size(&self) -> usize {
         self.data_offset as usize + (self.node_count as usize * self.stride as usize)
@@ -195,9 +195,9 @@ pub fn alloc_aligned(size: usize, alignment: usize) -> Option<NonNull<u8>> {
     if size == 0 {
         return None;
     }
-    
+
     let layout = Layout::from_size_align(size, alignment).ok()?;
-    
+
     unsafe {
         let ptr = alloc_zeroed(layout);
         NonNull::new(ptr)
@@ -208,7 +208,9 @@ pub fn alloc_aligned(size: usize, alignment: usize) -> Option<NonNull<u8>> {
 pub unsafe fn free_aligned(ptr: NonNull<u8>, size: usize, alignment: usize) {
     if let Ok(layout) = Layout::from_size_align(size, alignment) {
         // SAFETY: layout was created from valid size/align, ptr was allocated with alloc_zeroed
-        unsafe { dealloc(ptr.as_ptr(), layout); }
+        unsafe {
+            dealloc(ptr.as_ptr(), layout);
+        }
     }
 }
 
@@ -231,48 +233,51 @@ impl EmbeddingStorage {
     pub fn new(capacity: usize, dim: usize) -> Option<Self> {
         let header = EmbeddingBlockHeader::new(capacity as u32, dim as u32);
         let size = align_up(header.block_size(), BLOCK_ALIGNMENT);
-        
+
         let data = alloc_aligned(size, BLOCK_ALIGNMENT)?;
-        
+
         // Write header
         unsafe {
             let header_ptr = data.as_ptr() as *mut EmbeddingBlockHeader;
             header_ptr.write(header.clone());
         }
-        
+
         Some(Self { data, size, header })
     }
-    
+
     /// Get vector by index
     #[inline]
     pub fn get(&self, index: usize) -> Option<&[f32]> {
         if index >= self.header.count as usize {
             return None;
         }
-        
+
         let offset = self.header.data_offset as usize + index * self.header.stride as usize;
-        
+
         unsafe {
             let ptr = self.data.as_ptr().add(offset) as *const f32;
             Some(std::slice::from_raw_parts(ptr, self.header.dim as usize))
         }
     }
-    
+
     /// Get mutable vector by index
     #[inline]
     pub fn get_mut(&mut self, index: usize) -> Option<&mut [f32]> {
         if index >= self.header.count as usize {
             return None;
         }
-        
+
         let offset = self.header.data_offset as usize + index * self.header.stride as usize;
-        
+
         unsafe {
             let ptr = self.data.as_ptr().add(offset) as *mut f32;
-            Some(std::slice::from_raw_parts_mut(ptr, self.header.dim as usize))
+            Some(std::slice::from_raw_parts_mut(
+                ptr,
+                self.header.dim as usize,
+            ))
         }
     }
-    
+
     /// Set vector at index
     #[inline]
     pub fn set(&mut self, index: usize, vector: &[f32]) -> bool {
@@ -284,22 +289,22 @@ impl EmbeddingStorage {
         }
         false
     }
-    
+
     /// Prefetch vector for upcoming access
     #[inline]
     pub fn prefetch(&self, index: usize) {
         if index < self.header.count as usize {
             let offset = self.header.data_offset as usize + index * self.header.stride as usize;
-            
+
             unsafe {
                 let ptr = self.data.as_ptr().add(offset);
-                
+
                 #[cfg(target_arch = "x86_64")]
                 {
                     use std::arch::x86_64::_mm_prefetch;
-                    _mm_prefetch::<{std::arch::x86_64::_MM_HINT_T0}>(ptr as *const i8);
+                    _mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(ptr as *const i8);
                 }
-                
+
                 #[cfg(target_arch = "aarch64")]
                 {
                     // No stable prefetch intrinsic on aarch64 yet; intentionally no-op.
@@ -308,36 +313,32 @@ impl EmbeddingStorage {
             }
         }
     }
-    
+
     /// Get dimension
     pub fn dim(&self) -> usize {
         self.header.dim as usize
     }
-    
+
     /// Get capacity
     pub fn capacity(&self) -> usize {
         self.header.count as usize
     }
-    
+
     /// Get stride (bytes between vectors)
     pub fn stride(&self) -> usize {
         self.header.stride as usize
     }
-    
+
     /// Get raw pointer for SIMD operations
     #[inline]
     pub fn as_ptr(&self) -> *const f32 {
-        unsafe {
-            self.data.as_ptr().add(self.header.data_offset as usize) as *const f32
-        }
+        unsafe { self.data.as_ptr().add(self.header.data_offset as usize) as *const f32 }
     }
-    
+
     /// Get raw mutable pointer
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut f32 {
-        unsafe {
-            self.data.as_ptr().add(self.header.data_offset as usize) as *mut f32
-        }
+        unsafe { self.data.as_ptr().add(self.header.data_offset as usize) as *mut f32 }
     }
 }
 
@@ -374,20 +375,18 @@ impl NeighborStorage {
     pub fn new(node_count: usize, max_edges: usize) -> Option<Self> {
         let header = NeighborBlockHeader::new(node_count as u32, max_edges as u32);
         let size = align_up(header.block_size(), BLOCK_ALIGNMENT);
-        
+
         let data = alloc_aligned(size, BLOCK_ALIGNMENT)?;
-        
+
         // Write header
         unsafe {
             let header_ptr = data.as_ptr() as *mut NeighborBlockHeader;
             header_ptr.write(header.clone());
         }
-        
+
         // Initialize edge counts
-        let edge_counts: Vec<AtomicU32> = (0..node_count)
-            .map(|_| AtomicU32::new(0))
-            .collect();
-        
+        let edge_counts: Vec<AtomicU32> = (0..node_count).map(|_| AtomicU32::new(0)).collect();
+
         Some(Self {
             data,
             size,
@@ -401,54 +400,60 @@ impl NeighborStorage {
         if node >= self.header.node_count as usize {
             return None;
         }
-        
+
         let offset = self.header.data_offset as usize + node * self.header.stride as usize;
         let count = self.edge_counts[node].load(Ordering::Relaxed) as usize;
-        
+
         unsafe {
             let ptr = self.data.as_ptr().add(offset) as *const u32;
-            Some(std::slice::from_raw_parts(ptr, count.min(self.header.max_edges as usize)))
+            Some(std::slice::from_raw_parts(
+                ptr,
+                count.min(self.header.max_edges as usize),
+            ))
         }
     }
-    
+
     /// Get mutable neighbor list
     #[inline]
     fn get_neighbors_mut(&mut self, node: usize) -> Option<&mut [u32]> {
         if node >= self.header.node_count as usize {
             return None;
         }
-        
+
         let offset = self.header.data_offset as usize + node * self.header.stride as usize;
-        
+
         unsafe {
             let ptr = self.data.as_ptr().add(offset) as *mut u32;
-            Some(std::slice::from_raw_parts_mut(ptr, self.header.max_edges as usize))
+            Some(std::slice::from_raw_parts_mut(
+                ptr,
+                self.header.max_edges as usize,
+            ))
         }
     }
-    
+
     /// Add neighbor to node (thread-safe)
     pub fn add_neighbor(&self, node: usize, neighbor: u32) -> bool {
         if node >= self.header.node_count as usize {
             return false;
         }
-        
+
         let current = self.edge_counts[node].fetch_add(1, Ordering::AcqRel);
-        
+
         if current >= self.header.max_edges {
             self.edge_counts[node].fetch_sub(1, Ordering::Release);
             return false;
         }
-        
+
         let offset = self.header.data_offset as usize + node * self.header.stride as usize;
-        
+
         unsafe {
             let ptr = self.data.as_ptr().add(offset) as *mut u32;
             ptr.add(current as usize).write(neighbor);
         }
-        
+
         true
     }
-    
+
     /// Set all neighbors for a node (replaces existing)
     pub fn set_neighbors(&mut self, node: usize, neighbors: &[u32]) -> bool {
         let max_edges = self.header.max_edges as usize;
@@ -461,22 +466,22 @@ impl NeighborStorage {
             false
         }
     }
-    
+
     /// Prefetch neighbor list for upcoming traversal
     #[inline]
     pub fn prefetch(&self, node: usize) {
         if node < self.header.node_count as usize {
             let offset = self.header.data_offset as usize + node * self.header.stride as usize;
-            
+
             unsafe {
                 let ptr = self.data.as_ptr().add(offset);
-                
+
                 #[cfg(target_arch = "x86_64")]
                 {
                     use std::arch::x86_64::_mm_prefetch;
-                    _mm_prefetch::<{std::arch::x86_64::_MM_HINT_T0}>(ptr as *const i8);
+                    _mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(ptr as *const i8);
                 }
-                
+
                 #[cfg(target_arch = "aarch64")]
                 {
                     // No stable prefetch intrinsic on aarch64 yet; intentionally no-op.
@@ -485,7 +490,7 @@ impl NeighborStorage {
             }
         }
     }
-    
+
     /// Prefetch neighbors of neighbors (two-hop prefetch)
     pub fn prefetch_neighbors(&self, embeddings: &EmbeddingStorage, node: usize) {
         if let Some(neighbors) = self.get_neighbors(node) {
@@ -495,7 +500,7 @@ impl NeighborStorage {
             }
         }
     }
-    
+
     /// Get edge count for node
     pub fn edge_count(&self, node: usize) -> usize {
         if node < self.edge_counts.len() {
@@ -504,12 +509,12 @@ impl NeighborStorage {
             0
         }
     }
-    
+
     /// Get max edges per node
     pub fn max_edges(&self) -> usize {
         self.header.max_edges as usize
     }
-    
+
     /// Get node count
     pub fn node_count(&self) -> usize {
         self.header.node_count as usize
@@ -547,12 +552,12 @@ impl HotPathVectorStore {
     /// Create new store
     pub fn new(capacity: usize, dim: usize, num_layers: usize, max_edges: usize) -> Option<Self> {
         let embeddings = EmbeddingStorage::new(capacity, dim)?;
-        
+
         let mut neighbors = Vec::with_capacity(num_layers);
         for _ in 0..num_layers {
             neighbors.push(NeighborStorage::new(capacity, max_edges)?);
         }
-        
+
         Some(Self {
             embeddings,
             neighbors,
@@ -560,24 +565,24 @@ impl HotPathVectorStore {
             num_layers,
         })
     }
-    
+
     /// Get embedding
     #[inline]
     pub fn get_embedding(&self, id: usize) -> Option<&[f32]> {
         self.embeddings.get(id)
     }
-    
+
     /// Set embedding
     pub fn set_embedding(&mut self, id: usize, vector: &[f32]) -> bool {
         self.embeddings.set(id, vector)
     }
-    
+
     /// Get neighbors at layer
     #[inline]
     pub fn get_neighbors(&self, id: usize, layer: usize) -> Option<&[u32]> {
         self.neighbors.get(layer)?.get_neighbors(id)
     }
-    
+
     /// Add neighbor at layer
     pub fn add_neighbor(&self, id: usize, layer: usize, neighbor: u32) -> bool {
         if let Some(storage) = self.neighbors.get(layer) {
@@ -586,7 +591,7 @@ impl HotPathVectorStore {
             false
         }
     }
-    
+
     /// Prefetch for traversal (embedding + neighbors)
     #[inline]
     pub fn prefetch_node(&self, id: usize, layer: usize) {
@@ -595,27 +600,27 @@ impl HotPathVectorStore {
             neighbors.prefetch(id);
         }
     }
-    
+
     /// Get entry point
     pub fn entry_point(&self) -> u32 {
         self.entry_point.load(Ordering::Relaxed)
     }
-    
+
     /// Set entry point
     pub fn set_entry_point(&self, id: u32) {
         self.entry_point.store(id, Ordering::Release);
     }
-    
+
     /// Get dimension
     pub fn dim(&self) -> usize {
         self.embeddings.dim()
     }
-    
+
     /// Get capacity
     pub fn capacity(&self) -> usize {
         self.embeddings.capacity()
     }
-    
+
     /// Get number of layers
     pub fn num_layers(&self) -> usize {
         self.num_layers
@@ -637,27 +642,29 @@ impl<'a> BatchDistanceComputer<'a> {
     pub fn new(store: &'a HotPathVectorStore, query: &'a [f32]) -> Self {
         Self { store, query }
     }
-    
+
     /// Compute distances to batch of candidates with prefetching
     pub fn compute_batch(&self, candidates: &[u32]) -> Vec<(u32, f32)> {
         let mut results = Vec::with_capacity(candidates.len());
-        
+
         // Prefetch ahead
         const PREFETCH_DISTANCE: usize = 4;
-        
+
         for (i, &id) in candidates.iter().enumerate() {
             // Prefetch future candidates
             if i + PREFETCH_DISTANCE < candidates.len() {
-                self.store.embeddings.prefetch(candidates[i + PREFETCH_DISTANCE] as usize);
+                self.store
+                    .embeddings
+                    .prefetch(candidates[i + PREFETCH_DISTANCE] as usize);
             }
-            
+
             // Compute distance
             if let Some(vector) = self.store.get_embedding(id as usize) {
                 let dist = l2_distance(self.query, vector);
                 results.push((id, dist));
             }
         }
-        
+
         results
     }
 }
@@ -666,17 +673,14 @@ impl<'a> BatchDistanceComputer<'a> {
 #[inline]
 fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
-    
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y) * (x - y))
-        .sum()
+
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_alignment() {
         assert_eq!(align_up(100, 32), 128);
@@ -684,77 +688,77 @@ mod tests {
         assert_eq!(align_up(129, 32), 160);
         assert_eq!(align_down(100, 32), 96);
     }
-    
+
     #[test]
     fn test_embedding_storage() {
         let mut storage = EmbeddingStorage::new(100, 128).unwrap();
-        
+
         // Set and get vector
         let vector: Vec<f32> = (0..128).map(|i| i as f32).collect();
         assert!(storage.set(0, &vector));
-        
+
         let retrieved = storage.get(0).unwrap();
         assert_eq!(retrieved, vector.as_slice());
-        
+
         // Check alignment
         let ptr = storage.as_ptr();
         assert_eq!(ptr as usize % SIMD_ALIGNMENT, 0);
     }
-    
+
     #[test]
     fn test_neighbor_storage() {
         let mut storage = NeighborStorage::new(100, 32).unwrap();
-        
+
         // Add neighbors
         assert!(storage.add_neighbor(0, 1));
         assert!(storage.add_neighbor(0, 5));
         assert!(storage.add_neighbor(0, 10));
-        
+
         let neighbors = storage.get_neighbors(0).unwrap();
         assert_eq!(neighbors, &[1, 5, 10]);
-        
+
         // Set neighbors
         storage.set_neighbors(1, &[2, 4, 6, 8]);
         let neighbors = storage.get_neighbors(1).unwrap();
         assert_eq!(neighbors, &[2, 4, 6, 8]);
     }
-    
+
     #[test]
     fn test_hot_path_store() {
         let mut store = HotPathVectorStore::new(100, 64, 3, 16).unwrap();
-        
+
         // Set embedding
         let vector: Vec<f32> = (0..64).map(|i| i as f32).collect();
         assert!(store.set_embedding(0, &vector));
-        
+
         // Set entry point
         store.set_entry_point(0);
         assert_eq!(store.entry_point(), 0);
-        
+
         // Add neighbors
         assert!(store.add_neighbor(0, 0, 1));
         assert!(store.add_neighbor(0, 0, 2));
-        
+
         let neighbors = store.get_neighbors(0, 0).unwrap();
         assert_eq!(neighbors, &[1, 2]);
     }
-    
+
     #[test]
     fn test_batch_distance() {
         let mut store = HotPathVectorStore::new(10, 4, 1, 8).unwrap();
-        
+
         // Set some vectors
         for i in 0..10 {
             let vector: Vec<f32> = (0..4).map(|j| (i + j) as f32).collect();
             store.set_embedding(i, &vector);
         }
-        
+
         let query = vec![0.0, 1.0, 2.0, 3.0];
         let computer = BatchDistanceComputer::new(&store, &query);
-        
+
         let candidates: Vec<u32> = (0..5).collect();
         let results = computer.compute_batch(&candidates);
-        
+
         assert_eq!(results.len(), 5);
         assert_eq!(results[0].0, 0); // First candidate
     }

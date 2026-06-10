@@ -14,6 +14,9 @@ Optional environment:
     CREWAI_MODEL=gpt-4o-mini
 """
 
+# Copyright 2025 Sushanth (https://github.com/sushanthpy)
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 from __future__ import annotations
 
 import hashlib

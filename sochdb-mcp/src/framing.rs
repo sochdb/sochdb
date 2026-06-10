@@ -77,8 +77,14 @@ pub fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<(Vec<u8>, W
         // Unknown format, treat as error
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Unknown message format, expected Content-Length or JSON, got: {}", 
-                    if trimmed.len() > 50 { &trimmed[..50] } else { trimmed })
+            format!(
+                "Unknown message format, expected Content-Length or JSON, got: {}",
+                if trimmed.len() > 50 {
+                    &trimmed[..50]
+                } else {
+                    trimmed
+                }
+            ),
         ))
     }
 }

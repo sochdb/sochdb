@@ -31,8 +31,8 @@
 //! 4. **Low Overhead**: < 2% CPU impact at 99th percentile
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
@@ -76,9 +76,9 @@ impl LabelSet {
 
     /// Compute cardinality fingerprint
     fn fingerprint(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
-        
+        use std::hash::{Hash, Hasher};
+
         let mut hasher = DefaultHasher::new();
         self.labels.hash(&mut hasher);
         hasher.finish()
@@ -122,7 +122,7 @@ impl CardinalityBudget {
     /// Check if we can record this label combination
     pub fn check(&self, metric: &str, labels: &LabelSet) -> bool {
         let fingerprint = labels.fingerprint();
-        
+
         // Fast path: already seen
         {
             let seen = self.seen.read();
@@ -136,8 +136,9 @@ impl CardinalityBudget {
         // Slow path: check budget and insert
         let mut seen = self.seen.write();
         let set = seen.entry(metric.to_string()).or_default();
-        
-        let budget = self.budgets
+
+        let budget = self
+            .budgets
             .read()
             .get(metric)
             .copied()
@@ -154,11 +155,7 @@ impl CardinalityBudget {
 
     /// Get number of unique label combinations for a metric
     pub fn cardinality(&self, metric: &str) -> usize {
-        self.seen
-            .read()
-            .get(metric)
-            .map(|s| s.len())
-            .unwrap_or(0)
+        self.seen.read().get(metric).map(|s| s.len()).unwrap_or(0)
     }
 
     /// Get total dropped metrics
@@ -313,7 +310,9 @@ impl SliHistogram {
     /// Create a histogram with default buckets for latency SLIs
     pub fn latency_histogram() -> Self {
         // Buckets: 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 5s
-        let boundaries = [1000, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000, 5000000];
+        let boundaries = [
+            1000, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000, 5000000,
+        ];
         Self::with_buckets(&boundaries)
     }
 
@@ -354,7 +353,7 @@ impl SliHistogram {
         }
 
         let target = (total as f64 * p / 100.0) as u64;
-        
+
         for bucket in &self.buckets {
             if bucket.count.load(Ordering::Relaxed) >= target {
                 return bucket.le;
@@ -444,7 +443,8 @@ impl SloTracker {
     pub fn is_meeting_slo(&self) -> bool {
         match self.definition.sli_type {
             SliType::Latency => {
-                if let (Some(hist), Some(p)) = (self.histogram.as_ref(), self.definition.percentile) {
+                if let (Some(hist), Some(p)) = (self.histogram.as_ref(), self.definition.percentile)
+                {
                     hist.percentile(p) <= self.definition.target as u64
                 } else {
                     true
@@ -476,7 +476,8 @@ impl SloTracker {
     pub fn current_value(&self) -> f64 {
         match self.definition.sli_type {
             SliType::Latency => {
-                if let (Some(hist), Some(p)) = (self.histogram.as_ref(), self.definition.percentile) {
+                if let (Some(hist), Some(p)) = (self.histogram.as_ref(), self.definition.percentile)
+                {
                     hist.percentile(p) as f64
                 } else {
                     0.0
@@ -486,21 +487,13 @@ impl SloTracker {
                 let successes = self.successes.load(Ordering::Relaxed) as f64;
                 let failures = self.failures.load(Ordering::Relaxed) as f64;
                 let total = successes + failures;
-                if total == 0.0 {
-                    1.0
-                } else {
-                    successes / total
-                }
+                if total == 0.0 { 1.0 } else { successes / total }
             }
             SliType::ErrorRate => {
                 let successes = self.successes.load(Ordering::Relaxed) as f64;
                 let failures = self.failures.load(Ordering::Relaxed) as f64;
                 let total = successes + failures;
-                if total == 0.0 {
-                    0.0
-                } else {
-                    failures / total
-                }
+                if total == 0.0 { 0.0 } else { failures / total }
             }
             _ => 0.0,
         }
@@ -536,7 +529,7 @@ impl SloTracker {
 
     /// Reset window (typically called periodically)
     pub fn reset_window(&self) {
-        if let Some(ref hist) = self.histogram {
+        if self.histogram.is_some() {
             // Histograms don't support atomic reset, so this is best-effort
             // In production, use a proper histogram library with windowing
         }
@@ -600,13 +593,15 @@ impl DbSpanBuilder {
 
     /// Set database system
     pub fn db_system(mut self, system: &str) -> Self {
-        self.attributes.insert("db.system".to_string(), system.into());
+        self.attributes
+            .insert("db.system".to_string(), system.into());
         self
     }
 
     /// Set operation name
     pub fn db_operation(mut self, op: &str) -> Self {
-        self.attributes.insert("db.operation".to_string(), op.into());
+        self.attributes
+            .insert("db.operation".to_string(), op.into());
         self
     }
 
@@ -623,31 +618,36 @@ impl DbSpanBuilder {
         } else {
             stmt.to_string()
         };
-        self.attributes.insert("db.statement".to_string(), truncated.into());
+        self.attributes
+            .insert("db.statement".to_string(), truncated.into());
         self
     }
 
     /// Set table name
     pub fn db_table(mut self, table: &str) -> Self {
-        self.attributes.insert("db.sql.table".to_string(), table.into());
+        self.attributes
+            .insert("db.sql.table".to_string(), table.into());
         self
     }
 
     /// Set rows affected
     pub fn db_rows_affected(mut self, rows: i64) -> Self {
-        self.attributes.insert("db.rows_affected".to_string(), rows.into());
+        self.attributes
+            .insert("db.rows_affected".to_string(), rows.into());
         self
     }
 
     /// Set transaction ID
     pub fn transaction_id(mut self, txn_id: i64) -> Self {
-        self.attributes.insert("sochdb.txn_id".to_string(), txn_id.into());
+        self.attributes
+            .insert("sochdb.txn_id".to_string(), txn_id.into());
         self
     }
 
     /// Set namespace
     pub fn namespace(mut self, ns: &str) -> Self {
-        self.attributes.insert("sochdb.namespace".to_string(), ns.into());
+        self.attributes
+            .insert("sochdb.namespace".to_string(), ns.into());
         self
     }
 
@@ -700,10 +700,7 @@ impl ObservabilityService {
     pub fn new(config: ObservabilityConfig) -> Self {
         Self {
             cardinality: CardinalityBudget::new(config.cardinality_budget),
-            slow_queries: SlowQueryLog::new(
-                config.slow_query_threshold,
-                1000,
-            ),
+            slow_queries: SlowQueryLog::new(config.slow_query_threshold, 1000),
             slo_trackers: RwLock::new(HashMap::new()),
             config,
         }
@@ -712,7 +709,9 @@ impl ObservabilityService {
     /// Register an SLO tracker
     pub fn register_slo(&self, name: &str, definition: SloDefinition) -> Arc<SloTracker> {
         let tracker = Arc::new(SloTracker::new(definition));
-        self.slo_trackers.write().insert(name.to_string(), Arc::clone(&tracker));
+        self.slo_trackers
+            .write()
+            .insert(name.to_string(), Arc::clone(&tracker));
         tracker
     }
 
@@ -727,7 +726,11 @@ impl ObservabilityService {
             .read()
             .iter()
             .map(|(name, tracker)| {
-                (name.clone(), tracker.is_meeting_slo(), tracker.error_budget_remaining())
+                (
+                    name.clone(),
+                    tracker.is_meeting_slo(),
+                    tracker.error_budget_remaining(),
+                )
             })
             .collect()
     }
@@ -746,7 +749,7 @@ mod tests {
     #[test]
     fn test_cardinality_budget() {
         let budget = CardinalityBudget::new(3);
-        
+
         let labels1 = LabelSet::new().add("tenant", "a");
         let labels2 = LabelSet::new().add("tenant", "b");
         let labels3 = LabelSet::new().add("tenant", "c");
@@ -755,7 +758,7 @@ mod tests {
         assert!(budget.check("requests", &labels1));
         assert!(budget.check("requests", &labels2));
         assert!(budget.check("requests", &labels3));
-        
+
         // Should fail - over budget
         assert!(!budget.check("requests", &labels4));
         assert_eq!(budget.dropped_count(), 1);
@@ -807,14 +810,14 @@ mod tests {
         let hist = SliHistogram::latency_histogram();
 
         // Add some observations
-        hist.observe(500);   // 0.5ms
-        hist.observe(1500);  // 1.5ms
-        hist.observe(5000);  // 5ms
+        hist.observe(500); // 0.5ms
+        hist.observe(1500); // 1.5ms
+        hist.observe(5000); // 5ms
         hist.observe(50000); // 50ms
 
         // p50 should be around 5ms bucket (5000)
         assert!(hist.percentile(50.0) <= 5000);
-        
+
         // p99 should be around 50ms bucket
         assert!(hist.percentile(99.0) >= 25000);
     }

@@ -183,8 +183,18 @@ message SearchResult {
   // Vector ID
   uint64 id = 1;
   
-  // Distance to query vector
+  // Distance to query vector.
+  //
+  // The interpretation of this value depends on `metric` (see below). For
+  // L2/Cosine, lower means more similar. For DotProduct, the raw inner product
+  // is negated before return, so lower (more negative) also means more similar;
+  // recover the raw dot product as `-distance`.
   float distance = 2;
+  
+  // Distance metric the index was configured with, so callers can interpret
+  // `distance` without external knowledge. One of:
+  // "cosine" | "euclidean" | "dot_product" | "unspecified".
+  string metric = 3;
 }
 
 message SearchBatchRequest {
@@ -611,6 +621,9 @@ message DeletePolicyResponse {
 service ContextService {
   // Execute a context query
   rpc Query(ContextQueryRequest) returns (ContextQueryResponse);
+
+  // Ingest an episode into agent memory (write-time lexical index)
+  rpc WriteEpisode(WriteEpisodeRequest) returns (WriteEpisodeResponse);
   
   // Estimate tokens for content
   rpc EstimateTokens(EstimateTokensRequest) returns (EstimateTokensResponse);
@@ -679,6 +692,22 @@ message FormatContextRequest {
 
 message FormatContextResponse {
   string formatted = 1;
+}
+
+message WriteEpisodeRequest {
+  string namespace = 1;
+  string text = 2;
+  optional uint64 t_valid_from = 3;
+  string metadata_json = 4;  // Optional JSON object
+}
+
+message WriteEpisodeResponse {
+  uint64 episode_id = 1;
+  uint64 t_created = 2;
+  bool lexical_indexed = 3;
+  uint64 ingestion_lag_us = 4;
+  bool enrichment_queued = 5;
+  string error = 6;
 }
 
 // =============================================================================

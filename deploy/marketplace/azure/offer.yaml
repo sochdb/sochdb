@@ -1,0 +1,74 @@
+# Azure Marketplace — AKS Kubernetes Application Offer
+#
+# SochDB is published as a Kubernetes Application for Azure Kubernetes Service (AKS).
+# Docker container image offers were retired; new container offers are published
+# as Kubernetes Applications per Microsoft documentation.
+#
+# Reference: https://learn.microsoft.com/en-us/partner-center/marketplace/azure-container-offer-setup
+
+# === Prerequisites ===
+# 1. Microsoft Partner Center account
+# 2. Azure Container Registry (ACR) with published images
+# 3. Helm chart packaged as a CNAB bundle
+
+# === Image Publishing ===
+# Push to ACR (linked to Partner Center):
+#   az acr login --name sochdbregistry
+#   docker tag sochdb/sochdb-grpc:latest sochdbregistry.azurecr.io/sochdb-grpc:2.0.3
+#   docker push sochdbregistry.azurecr.io/sochdb-grpc:2.0.3
+
+# === CNAB Bundle Structure ===
+# The Helm chart at deploy/helm/sochdb/ is packaged as a CNAB bundle:
+#
+#   helm package deploy/helm/sochdb/ -d deploy/marketplace/azure/
+#
+# The resulting .tgz is uploaded to Partner Center as a plan artifact.
+
+# === Listing Details ===
+offer_id: sochdb-aks
+display_name: "SochDB — LLM-Optimized Database for Kubernetes"
+publisher: sochdb
+categories:
+  - databases
+  - ai-machine-learning
+summary: >
+  Token-aware embedded database with native vector search, designed for
+  LLM agent memory and RAG pipelines. Deploys on AKS with gRPC API,
+  Prometheus metrics, and persistent storage.
+
+description: |
+  SochDB is an LLM-optimized embedded database that provides:
+  - HNSW vector similarity search with metadata filtering
+  - Context Queries with automatic token budgeting (TOON format)
+  - Key-value, graph, and SQL interfaces via gRPC
+  - Prometheus /metrics endpoint for observability
+  - Helm chart with StatefulSet, PDB, NetworkPolicy, Ingress
+  - Non-root container, read-only rootfs, mTLS support
+
+  Deploy on any AKS cluster with:
+    helm install sochdb oci://sochdbregistry.azurecr.io/helm/sochdb --version 2.0.3
+
+plans:
+  - plan_id: free
+    display_name: "Free Tier"
+    description: "Single node, 1M vectors, community support"
+    pricing: free
+
+  - plan_id: professional
+    display_name: "Professional"
+    description: "Up to 3 nodes, 50M vectors, email support"
+    pricing: byol
+
+  - plan_id: enterprise
+    display_name: "Enterprise"
+    description: "Unlimited nodes, 1B+ vectors, dedicated support, SLA"
+    pricing: per-core-metered
+
+support:
+  email: support@sochdb.dev
+  url: https://sochdb.dev/support
+  phone: ""
+
+legal:
+  privacy_url: https://sochdb.dev/privacy
+  terms_url: https://sochdb.dev/terms

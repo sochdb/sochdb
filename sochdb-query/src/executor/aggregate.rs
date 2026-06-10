@@ -4,11 +4,11 @@
 //!
 //! Supports: COUNT, SUM, AVG, MIN, MAX, COUNT(DISTINCT ...)
 
+use super::eval::{compare_values, eval_expr};
+use super::node::PlanNode;
+use super::types::{ColumnMeta, Row, Schema};
 use crate::soch_ql::SochValue;
 use crate::sql::ast::Expr;
-use super::eval::{eval_expr, compare_values};
-use super::node::PlanNode;
-use super::types::{Row, Schema, ColumnMeta};
 use sochdb_core::Result;
 use std::collections::HashMap;
 
@@ -82,9 +82,9 @@ impl Accumulator {
             }
             AggFunc::CountDistinct => {
                 if let Some(set) = &mut self.distinct_set {
-                    let already = set.iter().any(|v| {
-                        compare_values(v, val) == Some(std::cmp::Ordering::Equal)
-                    });
+                    let already = set
+                        .iter()
+                        .any(|v| compare_values(v, val) == Some(std::cmp::Ordering::Equal));
                     if !already {
                         set.push(val.clone());
                     }
@@ -129,9 +129,7 @@ impl Accumulator {
             AggFunc::Min => {
                 let update = match &self.min_val {
                     None => true,
-                    Some(current) => {
-                        compare_values(val, current) == Some(std::cmp::Ordering::Less)
-                    }
+                    Some(current) => compare_values(val, current) == Some(std::cmp::Ordering::Less),
                 };
                 if update {
                     self.min_val = Some(val.clone());
@@ -155,9 +153,7 @@ impl Accumulator {
         match self.func {
             AggFunc::Count => SochValue::Int(self.count as i64),
             AggFunc::CountDistinct => {
-                SochValue::Int(
-                    self.distinct_set.as_ref().map_or(0, |s| s.len()) as i64,
-                )
+                SochValue::Int(self.distinct_set.as_ref().map_or(0, |s| s.len()) as i64)
             }
             AggFunc::Sum => {
                 if self.count == 0 {
@@ -236,11 +232,7 @@ pub struct HashAggregateNode {
 }
 
 impl HashAggregateNode {
-    pub fn new(
-        input: Box<dyn PlanNode>,
-        group_by_exprs: Vec<Expr>,
-        agg_defs: Vec<AggDef>,
-    ) -> Self {
+    pub fn new(input: Box<dyn PlanNode>, group_by_exprs: Vec<Expr>, agg_defs: Vec<AggDef>) -> Self {
         let is_global = group_by_exprs.is_empty();
 
         // Build output schema: group-by columns + aggregate columns
@@ -280,9 +272,11 @@ impl HashAggregateNode {
         let mut group_order: Vec<GroupKey> = Vec::new(); // Preserve insertion order
 
         // Count(*) tracking
-        let has_count_star: Vec<bool> = self.agg_defs.iter().map(|ad| {
-            matches!(ad.func, AggFunc::Count) && ad.expr.is_none()
-        }).collect();
+        let has_count_star: Vec<bool> = self
+            .agg_defs
+            .iter()
+            .map(|ad| matches!(ad.func, AggFunc::Count) && ad.expr.is_none())
+            .collect();
 
         while let Some(row) = self.input.next()? {
             // Evaluate group-by keys

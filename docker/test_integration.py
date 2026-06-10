@@ -10,7 +10,7 @@ Tests the complete gRPC server functionality including:
 - Performance benchmarks
 
 Copyright 2025 Sushanth (https://github.com/sushanthpy)
-Licensed under the Apache License, Version 2.0
+SPDX-License-Identifier: AGPL-3.0-or-later
 """
 
 import os

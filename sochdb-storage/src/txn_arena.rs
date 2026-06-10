@@ -66,8 +66,8 @@
 //! - Memory locality: All transaction data in contiguous region
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Default arena capacity: 64KB (handles ~1000 typical writes)
 const DEFAULT_ARENA_CAPACITY: usize = 64 * 1024;
@@ -116,14 +116,22 @@ impl BytesRef {
     #[inline]
     pub fn from_arena(offset: u32, len: u32, hash: u64) -> Self {
         debug_assert!(offset & Self::INLINE_FLAG == 0, "offset too large");
-        Self { offset_or_inline: offset, len, hash }
+        Self {
+            offset_or_inline: offset,
+            len,
+            hash,
+        }
     }
 
     /// Create an inline BytesRef for small keys (avoids arena allocation)
     /// Not implemented here - see InlineBytes for that pattern
     #[inline]
     pub fn null() -> Self {
-        Self { offset_or_inline: 0, len: 0, hash: 0 }
+        Self {
+            offset_or_inline: 0,
+            len: 0,
+            hash: 0,
+        }
     }
 
     /// Check if this is a null/empty reference
@@ -151,7 +159,7 @@ impl BytesRef {
     }
 
     /// Get 128-bit fingerprint for MVCC write-set tracking
-    /// 
+    ///
     /// Uses the pre-computed hash and length to create a 128-bit fingerprint.
     /// Collision probability for 10^5 keys: ~2^-128 (astronomically small)
     #[inline]
@@ -200,9 +208,10 @@ impl PartialOrd for BytesRef {
 
 impl Ord for BytesRef {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // For ordering, we need to compare by hash (approximate) 
+        // For ordering, we need to compare by hash (approximate)
         // or the actual bytes if hashes match
-        self.hash.cmp(&other.hash)
+        self.hash
+            .cmp(&other.hash)
             .then_with(|| self.len.cmp(&other.len))
     }
 }
@@ -232,10 +241,12 @@ impl KeyFingerprint {
         // Use blake3 for high-quality 128-bit hash
         let hash = blake3::hash(key);
         let bytes = hash.as_bytes();
-        let upper = u64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], 
-                                         bytes[4], bytes[5], bytes[6], bytes[7]]);
-        let lower = u64::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11], 
-                                         bytes[12], bytes[13], bytes[14], bytes[15]]);
+        let upper = u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]);
+        let lower = u64::from_le_bytes([
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ]);
         Self(((upper as u128) << 64) | (lower as u128))
     }
 
@@ -351,18 +362,18 @@ impl TxnArena {
 
         // Get current offset and reserve space atomically
         let offset = self.offset.fetch_add(len as u32, Ordering::Relaxed);
-        
+
         // Safety: We're the only writer to this offset range
         let vec = unsafe { &mut *self.data.get() };
-        
+
         // Ensure capacity
         if vec.len() < (offset as usize + len) {
             vec.resize(offset as usize + len, 0);
         }
-        
+
         // Copy data
         vec[offset as usize..offset as usize + len].copy_from_slice(data);
-        
+
         (offset, len)
     }
 
@@ -602,10 +613,10 @@ impl TxnWriteBuffer {
     pub fn put(&mut self, key: &[u8], value: &[u8]) {
         let key_ref = self.arena.alloc_key(key);
         let val_ref = self.arena.alloc_value(value);
-        
+
         // Track in write set using fingerprint
         self.write_set.insert(KeyFingerprint::from_bytes(key));
-        
+
         self.ops.push(WriteOp {
             key: key_ref,
             value: val_ref,
@@ -617,10 +628,10 @@ impl TxnWriteBuffer {
     #[inline]
     pub fn delete(&mut self, key: &[u8]) {
         let key_ref = self.arena.alloc_key(key);
-        
+
         // Track in write set using fingerprint
         self.write_set.insert(KeyFingerprint::from_bytes(key));
-        
+
         self.ops.push(WriteOp {
             key: key_ref,
             value: BytesRef::null(),
@@ -709,10 +720,10 @@ mod tests {
     #[test]
     fn test_txn_arena_basic() {
         let arena = TxnArena::new(1);
-        
+
         let key_ref = arena.alloc_key(b"users/12345");
         let val_ref = arena.alloc_value(b"Alice");
-        
+
         assert_eq!(key_ref.resolve(&arena), b"users/12345");
         assert_eq!(val_ref.resolve(&arena), b"Alice");
         assert_eq!(arena.key_count(), 1);
@@ -722,11 +733,11 @@ mod tests {
     #[test]
     fn test_bytes_ref_hash() {
         let arena = TxnArena::new(1);
-        
+
         let key1 = arena.alloc_key(b"test_key");
         let key2 = arena.alloc_key(b"test_key");
         let key3 = arena.alloc_key(b"other_key");
-        
+
         assert_eq!(key1.hash(), key2.hash());
         assert_ne!(key1.hash(), key3.hash());
     }
@@ -736,7 +747,7 @@ mod tests {
         let fp1 = KeyFingerprint::from_bytes(b"test_key");
         let fp2 = KeyFingerprint::from_bytes(b"test_key");
         let fp3 = KeyFingerprint::from_bytes(b"other_key");
-        
+
         assert_eq!(fp1, fp2);
         assert_ne!(fp1, fp3);
     }
@@ -745,15 +756,15 @@ mod tests {
     fn test_arena_write_set() {
         let mut ws1 = ArenaWriteSet::new();
         let mut ws2 = ArenaWriteSet::new();
-        
+
         ws1.insert_bytes(b"key1");
         ws1.insert_bytes(b"key2");
-        
+
         ws2.insert_bytes(b"key3");
         ws2.insert_bytes(b"key4");
-        
+
         assert!(ws1.is_disjoint(&ws2));
-        
+
         ws2.insert_bytes(b"key1");
         assert!(!ws1.is_disjoint(&ws2));
     }
@@ -761,35 +772,41 @@ mod tests {
     #[test]
     fn test_txn_write_buffer() {
         let mut buffer = TxnWriteBuffer::new(42);
-        
+
         buffer.put(b"key1", b"value1");
         buffer.put(b"key2", b"value2");
         buffer.delete(b"key3");
-        
+
         assert_eq!(buffer.len(), 3);
         assert_eq!(buffer.write_set().len(), 3);
-        
+
         let ops: Vec<_> = buffer.iter_resolved().collect();
-        assert_eq!(ops[0], (b"key1".as_slice(), Some(b"value1".as_slice()), false));
-        assert_eq!(ops[1], (b"key2".as_slice(), Some(b"value2".as_slice()), false));
+        assert_eq!(
+            ops[0],
+            (b"key1".as_slice(), Some(b"value1".as_slice()), false)
+        );
+        assert_eq!(
+            ops[1],
+            (b"key2".as_slice(), Some(b"value2".as_slice()), false)
+        );
         assert_eq!(ops[2], (b"key3".as_slice(), None, true));
     }
 
     #[test]
     fn test_arena_reset() {
         let arena = TxnArena::new(1);
-        
+
         for i in 0..100 {
             let key = format!("key_{}", i);
             arena.alloc_key(key.as_bytes());
         }
-        
+
         assert_eq!(arena.key_count(), 100);
         let used_before = arena.bytes_used();
         assert!(used_before > 0);
-        
+
         arena.reset();
-        
+
         assert_eq!(arena.key_count(), 0);
         assert_eq!(arena.bytes_used(), 0);
     }

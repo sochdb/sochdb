@@ -98,25 +98,25 @@ use std::thread::JoinHandle;
 pub struct LsmConfig {
     /// Vector dimension
     pub dim: usize,
-    
+
     /// Mutable segment capacity (vectors)
     pub mutable_capacity: usize,
-    
+
     /// WAL directory path
     pub wal_path: PathBuf,
-    
+
     /// Sync WAL on every write
     pub sync_wal: bool,
-    
+
     /// WAL batch size before sync
     pub wal_batch_size: usize,
-    
+
     /// Background worker threads
     pub build_threads: usize,
-    
+
     /// Enable auto-compaction
     pub auto_compact: bool,
-    
+
     /// Compaction threshold (number of sealed segments)
     pub compact_threshold: usize,
 }
@@ -152,7 +152,7 @@ pub type VectorKey = u64;
 ///   Compaction     = 4
 mod wal_record_compat {
     use sochdb_core::txn::WalRecordType;
-    
+
     /// Map canonical WalRecordType to on-disk byte (vector WAL format).
     pub(super) fn to_disk_byte(rt: WalRecordType) -> u8 {
         match rt {
@@ -160,7 +160,7 @@ mod wal_record_compat {
             WalRecordType::Delete => 2,     // Delete
             WalRecordType::Flush => 3,      // SealStart
             WalRecordType::Compaction => 4, // SealComplete
-            _ => 0xFF, // Unknown — should not appear in vector WAL
+            _ => 0xFF,                      // Unknown — should not appear in vector WAL
         }
     }
 }
@@ -179,16 +179,16 @@ struct WalHeader {
 pub struct WriteAheadLog {
     /// Log file writer
     writer: BufWriter<File>,
-    
+
     /// Current file position
     position: u64,
-    
+
     /// Pending writes before sync
     pending: usize,
-    
+
     /// Configuration
     sync_interval: usize,
-    
+
     /// Statistics
     writes: AtomicU64,
     syncs: AtomicU64,
@@ -202,10 +202,10 @@ impl WriteAheadLog {
             .write(true)
             .append(true)
             .open(path)?;
-        
+
         let position = file.metadata()?.len();
         let writer = BufWriter::with_capacity(64 * 1024, file);
-        
+
         Ok(Self {
             writer,
             position,
@@ -220,7 +220,7 @@ impl WriteAheadLog {
     pub fn write_insert(&mut self, key: VectorKey, vector: &[f32]) -> std::io::Result<()> {
         let dim = vector.len() as u32;
         let checksum = self.compute_checksum(key, vector);
-        
+
         // Write header
         let header = WalHeader {
             record_type: wal_record_compat::to_disk_byte(WalRecordType::Data),
@@ -228,7 +228,7 @@ impl WriteAheadLog {
             dim,
             checksum,
         };
-        
+
         let header_bytes = unsafe {
             std::slice::from_raw_parts(
                 &header as *const WalHeader as *const u8,
@@ -236,7 +236,7 @@ impl WriteAheadLog {
             )
         };
         self.writer.write_all(header_bytes)?;
-        
+
         // Write vector data
         let vector_bytes = unsafe {
             std::slice::from_raw_parts(
@@ -245,16 +245,16 @@ impl WriteAheadLog {
             )
         };
         self.writer.write_all(vector_bytes)?;
-        
+
         self.position += header_bytes.len() as u64 + vector_bytes.len() as u64;
         self.pending += 1;
         self.writes.fetch_add(1, Ordering::Relaxed);
-        
+
         // Sync if needed
         if self.pending >= self.sync_interval {
             self.sync()?;
         }
-        
+
         Ok(())
     }
 
@@ -266,7 +266,7 @@ impl WriteAheadLog {
             dim: 0,
             checksum: 0,
         };
-        
+
         let header_bytes = unsafe {
             std::slice::from_raw_parts(
                 &header as *const WalHeader as *const u8,
@@ -275,7 +275,7 @@ impl WriteAheadLog {
         };
         self.writer.write_all(header_bytes)?;
         self.sync()?;
-        
+
         Ok(())
     }
 
@@ -287,7 +287,7 @@ impl WriteAheadLog {
             dim: 0,
             checksum: 0,
         };
-        
+
         let header_bytes = unsafe {
             std::slice::from_raw_parts(
                 &header as *const WalHeader as *const u8,
@@ -296,7 +296,7 @@ impl WriteAheadLog {
         };
         self.writer.write_all(header_bytes)?;
         self.sync()?;
-        
+
         Ok(())
     }
 
@@ -344,14 +344,14 @@ pub struct WalStats {
 pub struct MutableSegment {
     /// Vector storage: key -> (index, vector)
     vectors: HashMap<VectorKey, (u32, Vec<f32>)>,
-    
+
     /// Ordered keys for iteration
     keys: Vec<VectorKey>,
-    
+
     /// Vector dimension
     #[allow(dead_code)]
     dim: usize,
-    
+
     /// Capacity
     capacity: usize,
 }
@@ -372,7 +372,7 @@ impl MutableSegment {
         if self.vectors.len() >= self.capacity {
             return false;
         }
-        
+
         let index = self.keys.len() as u32;
         self.vectors.insert(key, (index, vector));
         self.keys.push(key);
@@ -401,11 +401,10 @@ impl MutableSegment {
 
     /// Drain all vectors for sealing
     pub fn drain(&mut self) -> Vec<(VectorKey, Vec<f32>)> {
-        let result: Vec<_> = self.keys
+        let result: Vec<_> = self
+            .keys
             .drain(..)
-            .filter_map(|k| {
-                self.vectors.remove(&k).map(|(_, v)| (k, v))
-            })
+            .filter_map(|k| self.vectors.remove(&k).map(|(_, v)| (k, v)))
             .collect();
         result
     }
@@ -419,19 +418,19 @@ impl MutableSegment {
 pub struct SealedSegment {
     /// Segment ID
     pub id: u64,
-    
+
     /// Vector data (contiguous)
     pub data: Vec<f32>,
-    
+
     /// Key to index mapping
     pub key_to_index: HashMap<VectorKey, u32>,
-    
+
     /// Index to key mapping
     pub index_to_key: Vec<VectorKey>,
-    
+
     /// Dimension
     pub dim: usize,
-    
+
     /// Build time (nanoseconds)
     pub build_time_ns: u64,
 }
@@ -474,10 +473,10 @@ impl SealedSegment {
 struct BuildTask {
     /// Segment ID
     segment_id: u64,
-    
+
     /// Vectors to seal
     vectors: Vec<(VectorKey, Vec<f32>)>,
-    
+
     /// Dimension
     #[allow(dead_code)]
     dim: usize,
@@ -497,28 +496,28 @@ struct BuildResult {
 pub struct AsyncLsmManager {
     /// Configuration
     config: LsmConfig,
-    
+
     /// Write-ahead log
     wal: Mutex<WriteAheadLog>,
-    
+
     /// Current mutable segment
     mutable: RwLock<MutableSegment>,
-    
+
     /// Sealed segments
     sealed: RwLock<Vec<Arc<SealedSegment>>>,
-    
+
     /// Pending build tasks
     pending_builds: Mutex<Vec<BuildTask>>,
-    
+
     /// Background worker handles
     workers: Mutex<Vec<JoinHandle<()>>>,
-    
+
     /// Shutdown flag
     shutdown: Arc<AtomicBool>,
-    
+
     /// Segment ID counter
     segment_counter: AtomicU64,
-    
+
     /// Statistics
     stats: LsmStats,
 }
@@ -528,14 +527,14 @@ impl AsyncLsmManager {
     pub fn new(config: LsmConfig) -> std::io::Result<Self> {
         // Create WAL directory
         std::fs::create_dir_all(&config.wal_path)?;
-        
+
         let wal_file = config.wal_path.join("wal.log");
         let wal = WriteAheadLog::open(&wal_file, config.wal_batch_size)?;
-        
+
         let mutable = MutableSegment::new(config.dim, config.mutable_capacity);
-        
+
         let shutdown = Arc::new(AtomicBool::new(false));
-        
+
         Ok(Self {
             config,
             wal: Mutex::new(wal),
@@ -556,25 +555,25 @@ impl AsyncLsmManager {
             let mut wal = self.wal.lock().unwrap();
             wal.write_insert(key, &vector)?;
         }
-        
+
         // Then write to mutable segment
         {
             let mut mutable = self.mutable.write().unwrap();
-            
+
             if mutable.is_full() {
                 // Need to seal first
                 drop(mutable);
                 self.seal_async()?;
                 mutable = self.mutable.write().unwrap();
             }
-            
+
             if !mutable.insert(key, vector) {
                 return Err(LsmError::SegmentFull);
             }
         }
-        
+
         self.stats.inserts.fetch_add(1, Ordering::Relaxed);
-        
+
         Ok(())
     }
 
@@ -588,10 +587,10 @@ impl AsyncLsmManager {
             }
             wal.sync()?;
         }
-        
+
         // Then write to mutable segment
         let mut mutable = self.mutable.write().unwrap();
-        
+
         for (key, vector) in items {
             if mutable.is_full() {
                 // Seal and continue
@@ -599,103 +598,103 @@ impl AsyncLsmManager {
                 self.seal_async()?;
                 mutable = self.mutable.write().unwrap();
             }
-            
+
             mutable.insert(key, vector);
             self.stats.inserts.fetch_add(1, Ordering::Relaxed);
         }
-        
+
         Ok(())
     }
 
     /// Non-blocking seal - returns immediately
     pub fn seal_async(&self) -> Result<u64, LsmError> {
         let segment_id = self.segment_counter.fetch_add(1, Ordering::Relaxed);
-        
+
         // Mark seal start in WAL
         {
             let mut wal = self.wal.lock().unwrap();
             wal.write_seal_start(segment_id)?;
         }
-        
+
         // Drain mutable segment
         let vectors = {
             let mut mutable = self.mutable.write().unwrap();
             let vectors = mutable.drain();
-            
+
             // Create new mutable segment
             *mutable = MutableSegment::new(self.config.dim, self.config.mutable_capacity);
-            
+
             vectors
         };
-        
+
         if vectors.is_empty() {
             return Ok(segment_id);
         }
-        
+
         // Queue build task
         let task = BuildTask {
             segment_id,
             vectors,
             dim: self.config.dim,
         };
-        
+
         {
             let mut pending = self.pending_builds.lock().unwrap();
             pending.push(task);
         }
-        
+
         // Start background build if needed
         self.ensure_worker_running();
-        
+
         self.stats.seals.fetch_add(1, Ordering::Relaxed);
-        
+
         Ok(segment_id)
     }
 
     /// Blocking seal - waits for completion
     pub fn seal_blocking(&self) -> Result<Arc<SealedSegment>, LsmError> {
         let segment_id = self.segment_counter.fetch_add(1, Ordering::Relaxed);
-        
+
         // Drain mutable segment
         let vectors = {
             let mut mutable = self.mutable.write().unwrap();
             let vectors = mutable.drain();
-            
+
             // Create new mutable segment
             *mutable = MutableSegment::new(self.config.dim, self.config.mutable_capacity);
-            
+
             vectors
         };
-        
+
         if vectors.is_empty() {
             return Err(LsmError::EmptySegment);
         }
-        
+
         // Build synchronously
         let segment = self.build_segment(segment_id, vectors);
         let segment = Arc::new(segment);
-        
+
         // Add to sealed list
         {
             let mut sealed = self.sealed.write().unwrap();
             sealed.push(Arc::clone(&segment));
         }
-        
+
         // Mark seal complete in WAL
         {
             let mut wal = self.wal.lock().unwrap();
             wal.write_seal_complete(segment_id)?;
         }
-        
+
         self.stats.seals.fetch_add(1, Ordering::Relaxed);
-        
+
         Ok(segment)
     }
 
     /// Search across all segments
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(VectorKey, f32)> {
         let mut results = Vec::new();
-        
+
         // Search mutable segment
         {
             let mutable = self.mutable.read().unwrap();
@@ -706,7 +705,7 @@ impl AsyncLsmManager {
                 }
             }
         }
-        
+
         // Search sealed segments
         {
             let sealed = self.sealed.read().unwrap();
@@ -719,11 +718,11 @@ impl AsyncLsmManager {
                 }
             }
         }
-        
+
         // Sort by distance and take top k
         results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         results.truncate(k);
-        
+
         results
     }
 
@@ -736,7 +735,7 @@ impl AsyncLsmManager {
                 return Some(v.to_vec());
             }
         }
-        
+
         // Check sealed segments (newest first)
         {
             let sealed = self.sealed.read().unwrap();
@@ -746,7 +745,7 @@ impl AsyncLsmManager {
                 }
             }
         }
-        
+
         None
     }
 
@@ -758,26 +757,26 @@ impl AsyncLsmManager {
                 let mut pending = self.pending_builds.lock().unwrap();
                 pending.pop()
             };
-            
+
             match task {
                 Some(task) => {
                     let segment = self.build_segment(task.segment_id, task.vectors);
                     let segment = Arc::new(segment);
-                    
+
                     let mut sealed = self.sealed.write().unwrap();
                     sealed.push(segment);
-                    
+
                     let mut wal = self.wal.lock().unwrap();
                     wal.write_seal_complete(task.segment_id)?;
                 }
                 None => break,
             }
         }
-        
+
         // Sync WAL
         let mut wal = self.wal.lock().unwrap();
         wal.sync()?;
-        
+
         Ok(())
     }
 
@@ -786,7 +785,7 @@ impl AsyncLsmManager {
         let mutable_len = self.mutable.read().unwrap().len();
         let sealed_count = self.sealed.read().unwrap().len();
         let pending = self.pending_builds.lock().unwrap().len();
-        
+
         LsmManagerStats {
             inserts: self.stats.inserts.load(Ordering::Relaxed),
             seals: self.stats.seals.load(Ordering::Relaxed),
@@ -799,17 +798,17 @@ impl AsyncLsmManager {
     fn build_segment(&self, segment_id: u64, vectors: Vec<(VectorKey, Vec<f32>)>) -> SealedSegment {
         let start = std::time::Instant::now();
         let dim = self.config.dim;
-        
+
         let mut data = Vec::with_capacity(vectors.len() * dim);
         let mut key_to_index = HashMap::with_capacity(vectors.len());
         let mut index_to_key = Vec::with_capacity(vectors.len());
-        
+
         for (i, (key, vector)) in vectors.into_iter().enumerate() {
             data.extend_from_slice(&vector);
             key_to_index.insert(key, i as u32);
             index_to_key.push(key);
         }
-        
+
         SealedSegment {
             id: segment_id,
             data,
@@ -829,10 +828,10 @@ impl AsyncLsmManager {
 impl Drop for AsyncLsmManager {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        
+
         // Flush pending work
         let _ = self.flush();
-        
+
         // Join workers
         let mut workers = self.workers.lock().unwrap();
         for handle in workers.drain(..) {
@@ -914,13 +913,13 @@ mod tests {
     fn test_wal_basic() {
         let dir = tempdir().unwrap();
         let wal_path = dir.path().join("wal.log");
-        
+
         let mut wal = WriteAheadLog::open(&wal_path, 10).unwrap();
-        
+
         let vector = vec![1.0, 2.0, 3.0, 4.0];
         wal.write_insert(42, &vector).unwrap();
         wal.sync().unwrap();
-        
+
         let stats = wal.stats();
         assert_eq!(stats.writes, 1);
         assert!(stats.position > 0);
@@ -929,13 +928,13 @@ mod tests {
     #[test]
     fn test_mutable_segment() {
         let mut segment = MutableSegment::new(4, 10);
-        
+
         segment.insert(1, vec![1.0, 2.0, 3.0, 4.0]);
         segment.insert(2, vec![5.0, 6.0, 7.0, 8.0]);
-        
+
         assert_eq!(segment.len(), 2);
         assert_eq!(segment.get(1).unwrap(), &[1.0, 2.0, 3.0, 4.0]);
-        
+
         let drained = segment.drain();
         assert_eq!(drained.len(), 2);
         assert!(segment.is_empty());
@@ -944,22 +943,22 @@ mod tests {
     #[test]
     fn test_lsm_manager_basic() {
         let dir = tempdir().unwrap();
-        
+
         let config = LsmConfig {
             dim: 4,
             mutable_capacity: 10,
             wal_path: dir.path().to_path_buf(),
             ..Default::default()
         };
-        
+
         let manager = AsyncLsmManager::new(config).unwrap();
-        
+
         manager.insert(1, vec![1.0, 2.0, 3.0, 4.0]).unwrap();
         manager.insert(2, vec![5.0, 6.0, 7.0, 8.0]).unwrap();
-        
+
         let v1 = manager.get(1).unwrap();
         assert_eq!(v1, vec![1.0, 2.0, 3.0, 4.0]);
-        
+
         let stats = manager.stats();
         assert_eq!(stats.inserts, 2);
         assert_eq!(stats.mutable_vectors, 2);
@@ -968,24 +967,24 @@ mod tests {
     #[test]
     fn test_lsm_seal_blocking() {
         let dir = tempdir().unwrap();
-        
+
         let config = LsmConfig {
             dim: 4,
             mutable_capacity: 10,
             wal_path: dir.path().to_path_buf(),
             ..Default::default()
         };
-        
+
         let manager = AsyncLsmManager::new(config).unwrap();
-        
+
         manager.insert(1, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
         manager.insert(2, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
-        
+
         let segment = manager.seal_blocking().unwrap();
-        
+
         assert_eq!(segment.len(), 2);
         assert!(manager.get(1).is_some());
-        
+
         let stats = manager.stats();
         assert_eq!(stats.seals, 1);
         assert_eq!(stats.sealed_segments, 1);
@@ -995,25 +994,25 @@ mod tests {
     #[test]
     fn test_lsm_search() {
         let dir = tempdir().unwrap();
-        
+
         let config = LsmConfig {
             dim: 4,
             mutable_capacity: 100,
             wal_path: dir.path().to_path_buf(),
             ..Default::default()
         };
-        
+
         let manager = AsyncLsmManager::new(config).unwrap();
-        
+
         // Insert some vectors
         manager.insert(1, vec![1.0, 0.0, 0.0, 0.0]).unwrap();
         manager.insert(2, vec![0.0, 1.0, 0.0, 0.0]).unwrap();
         manager.insert(3, vec![0.5, 0.5, 0.0, 0.0]).unwrap();
-        
+
         // Search for nearest to [1, 0, 0, 0]
         let query = vec![1.0, 0.0, 0.0, 0.0];
         let results = manager.search(&query, 2);
-        
+
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, 1); // Exact match should be first
         assert!(results[0].1 < 0.01); // Distance should be ~0
@@ -1022,25 +1021,23 @@ mod tests {
     #[test]
     fn test_lsm_batch_insert() {
         let dir = tempdir().unwrap();
-        
+
         let config = LsmConfig {
             dim: 4,
             mutable_capacity: 100,
             wal_path: dir.path().to_path_buf(),
             ..Default::default()
         };
-        
+
         let manager = AsyncLsmManager::new(config).unwrap();
-        
-        let batch: Vec<_> = (0..10)
-            .map(|i| (i as u64, vec![i as f32; 4]))
-            .collect();
-        
+
+        let batch: Vec<_> = (0..10).map(|i| (i as u64, vec![i as f32; 4])).collect();
+
         manager.insert_batch(batch).unwrap();
-        
+
         let stats = manager.stats();
         assert_eq!(stats.inserts, 10);
-        
+
         // Verify all vectors are retrievable
         for i in 0..10 {
             let v = manager.get(i as u64).unwrap();

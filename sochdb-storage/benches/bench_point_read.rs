@@ -44,7 +44,7 @@ fn bench_point_read_sizes(c: &mut Criterion) {
 
     for size in [1_000, 10_000, 100_000] {
         let harness = DurableStorageHarness::new().expect("Failed to create harness");
-        
+
         let config = BenchConfig {
             dataset_size: size,
             measurement_ops: 1000,
@@ -237,8 +237,13 @@ fn bench_point_read_value_sizes(c: &mut Criterion) {
                 let mut seq = 0;
 
                 b.iter(|| {
-                    let idx =
-                        next_key_index(&mut rng, Distribution::Zipfian, Some(&zipf), dataset_size, &mut seq);
+                    let idx = next_key_index(
+                        &mut rng,
+                        Distribution::Zipfian,
+                        Some(&zipf),
+                        dataset_size,
+                        &mut seq,
+                    );
                     let key = generate_key(idx, config.key_size);
 
                     let txn_id = harness

@@ -319,17 +319,8 @@ impl VirtualFilter {
     }
 
     fn match_like(s: &str, pattern: &str) -> bool {
-        // Simple LIKE implementation
-        if pattern.starts_with('%') && pattern.ends_with('%') {
-            let inner = &pattern[1..pattern.len() - 1];
-            s.contains(inner)
-        } else if let Some(suffix) = pattern.strip_prefix('%') {
-            s.ends_with(suffix)
-        } else if let Some(prefix) = pattern.strip_suffix('%') {
-            s.starts_with(prefix)
-        } else {
-            s == pattern
-        }
+        // Canonical LIKE matcher (shared with scan / filter pushdown / eval paths).
+        crate::like::like_match(s, pattern)
     }
 }
 

@@ -40,10 +40,10 @@
 
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
+use sochdb_storage::{DurableStorage, TransactionMode};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use sochdb_storage::{DurableStorage, TransactionMode};
 
 // ============================================================================
 // Configuration
@@ -253,8 +253,7 @@ impl ZipfianGenerator {
             return 1;
         }
 
-        let result =
-            (self.n as f64 * (self.eta * u - self.eta + 1.0).powf(self.alpha)) as usize;
+        let result = (self.n as f64 * (self.eta * u - self.eta + 1.0).powf(self.alpha)) as usize;
         result.min(self.n - 1)
     }
 }
@@ -409,7 +408,10 @@ impl BenchStats {
         samples.sort();
 
         // Convert to microseconds
-        let samples_us: Vec<f64> = samples.iter().map(|d| d.as_secs_f64() * 1_000_000.0).collect();
+        let samples_us: Vec<f64> = samples
+            .iter()
+            .map(|d| d.as_secs_f64() * 1_000_000.0)
+            .collect();
 
         let latency = LatencyStats::from_sorted(&samples_us);
         let throughput = if total_time.as_secs_f64() > 0.0 {
@@ -480,10 +482,16 @@ impl DurableStorageHarness {
     /// # Arguments
     /// * `enable_ordered_index` - Enable ordered index for O(log N) scans
     /// * `enable_group_commit` - Enable group commit for higher throughput
-    pub fn with_config(enable_ordered_index: bool, enable_group_commit: bool) -> anyhow::Result<Self> {
+    pub fn with_config(
+        enable_ordered_index: bool,
+        enable_group_commit: bool,
+    ) -> anyhow::Result<Self> {
         let temp_dir = tempfile::tempdir()?;
         let storage = if enable_group_commit {
-            DurableStorage::open_with_group_commit_and_config(temp_dir.path(), enable_ordered_index)?
+            DurableStorage::open_with_group_commit_and_config(
+                temp_dir.path(),
+                enable_ordered_index,
+            )?
         } else {
             DurableStorage::open_with_config(temp_dir.path(), enable_ordered_index)?
         };
@@ -522,7 +530,11 @@ impl DurableStorageHarness {
                 let new_txn = self.storage.begin_with_mode(TransactionMode::WriteOnly)?;
                 // Note: The original txn_id is no longer valid, but we reuse the variable
                 // This is a simplification - in production you'd handle this differently
-                self.storage.write(new_txn, generate_key(i + 1, config.key_size), generate_value(i + 1, config.value_size, 42))?;
+                self.storage.write(
+                    new_txn,
+                    generate_key(i + 1, config.key_size),
+                    generate_value(i + 1, config.value_size, 42),
+                )?;
             }
         }
 
@@ -534,7 +546,10 @@ impl DurableStorageHarness {
     pub fn run_point_reads(&self, config: &BenchConfig) -> anyhow::Result<BenchStats> {
         let mut rng = rand::thread_rng();
         let zipf = if config.distribution == Distribution::Zipfian {
-            Some(ZipfianGenerator::new(config.dataset_size, config.zipf_theta))
+            Some(ZipfianGenerator::new(
+                config.dataset_size,
+                config.zipf_theta,
+            ))
         } else {
             None
         };
@@ -577,7 +592,12 @@ impl DurableStorageHarness {
         }
         let total_time = start.elapsed();
 
-        Ok(BenchStats::new("point_read", config.clone(), &mut samples, total_time))
+        Ok(BenchStats::new(
+            "point_read",
+            config.clone(),
+            &mut samples,
+            total_time,
+        ))
     }
 
     /// Run write benchmark
@@ -610,7 +630,12 @@ impl DurableStorageHarness {
         }
         let total_time = start.elapsed();
 
-        Ok(BenchStats::new("write", config.clone(), &mut samples, total_time))
+        Ok(BenchStats::new(
+            "write",
+            config.clone(),
+            &mut samples,
+            total_time,
+        ))
     }
 
     /// Run range scan benchmark

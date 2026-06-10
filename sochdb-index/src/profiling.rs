@@ -43,10 +43,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Once};
 use std::time::Instant;
-use std::io::Write;
 
 // ============================================================================
 // Configuration
@@ -69,7 +69,7 @@ pub fn is_profiling_enabled() -> bool {
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false);
         PROFILING_PER_THREAD.store(per_thread, Ordering::Relaxed);
-        
+
         if enabled {
             eprintln!("[SOCHDB] Profiling enabled. Output: {}", get_profile_path());
         }
@@ -83,8 +83,7 @@ fn is_per_thread_enabled() -> bool {
 }
 
 fn get_profile_path() -> String {
-    std::env::var("SOCHDB_PROFILE_FILE")
-        .unwrap_or_else(|_| "/tmp/sochdb_profile.json".to_string())
+    std::env::var("SOCHDB_PROFILE_FILE").unwrap_or_else(|_| "/tmp/sochdb_profile.json".to_string())
 }
 
 // ============================================================================
@@ -117,13 +116,13 @@ impl Timer {
             name,
         }
     }
-    
+
     /// Stop timer and record elapsed time in nanoseconds
     #[inline]
     pub fn stop(self) -> u64 {
         self.stop_with_count(1)
     }
-    
+
     /// Stop timer and record with count (for batch operations)
     #[inline]
     pub fn stop_with_count(self, count: usize) -> u64 {
@@ -203,7 +202,7 @@ pub struct OpStats {
     pub total_exclusive_ns: u64,
     pub min_ns: u64,
     pub max_ns: u64,
-    pub item_count: u64,  // For batch operations
+    pub item_count: u64, // For batch operations
 }
 
 impl OpStats {
@@ -212,7 +211,7 @@ impl OpStats {
         self.total_inclusive_ns += inclusive_ns;
         self.total_exclusive_ns += exclusive_ns;
         self.item_count += count as u64;
-        
+
         if self.min_ns == 0 || inclusive_ns < self.min_ns {
             self.min_ns = inclusive_ns;
         }
@@ -220,7 +219,7 @@ impl OpStats {
             self.max_ns = inclusive_ns;
         }
     }
-    
+
     pub fn mean_ns(&self) -> f64 {
         if self.count == 0 {
             0.0
@@ -236,7 +235,7 @@ impl OpStats {
             self.total_exclusive_ns as f64 / self.count as f64
         }
     }
-    
+
     pub fn per_item_ns(&self) -> f64 {
         if self.item_count == 0 {
             self.mean_ns()
@@ -261,12 +260,12 @@ impl ProfileCollector {
             start_time: Instant::now(),
         }
     }
-    
+
     /// Record a timing
     pub fn record(&self, name: &str, elapsed_ns: u64) {
         self.record_span_with_count(name, elapsed_ns, elapsed_ns, 1);
     }
-    
+
     /// Record a timing with item count
     pub fn record_with_count(&self, name: &str, elapsed_ns: u64, count: usize) {
         self.record_span_with_count(name, elapsed_ns, elapsed_ns, count);
@@ -280,7 +279,8 @@ impl ProfileCollector {
         count: usize,
     ) {
         if let Ok(mut stats) = self.stats.lock() {
-            stats.entry(name.to_string())
+            stats
+                .entry(name.to_string())
                 .or_default()
                 .record(inclusive_ns, exclusive_ns, count);
         }
@@ -289,14 +289,15 @@ impl ProfileCollector {
             let thread_id = format!("{:?}", std::thread::current().id());
             if let Ok(mut stats) = self.per_thread_stats.lock() {
                 let thread_stats = stats.entry(thread_id).or_insert_with(HashMap::new);
-                thread_stats
-                    .entry(name.to_string())
-                    .or_default()
-                    .record(inclusive_ns, exclusive_ns, count);
+                thread_stats.entry(name.to_string()).or_default().record(
+                    inclusive_ns,
+                    exclusive_ns,
+                    count,
+                );
             }
         }
     }
-    
+
     /// Increment a counter (no timing)
     pub fn increment(&self, name: &str, count: u64) {
         if let Ok(mut stats) = self.stats.lock() {
@@ -305,12 +306,10 @@ impl ProfileCollector {
             entry.item_count += count;
         }
     }
-    
+
     /// Get all stats
     pub fn get_stats(&self) -> HashMap<String, OpStats> {
-        self.stats.lock()
-            .map(|s| s.clone())
-            .unwrap_or_default()
+        self.stats.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
     pub fn get_per_thread_stats(&self) -> HashMap<String, HashMap<String, OpStats>> {
@@ -319,7 +318,7 @@ impl ProfileCollector {
             .map(|s| s.clone())
             .unwrap_or_default()
     }
-    
+
     /// Write profile to JSON file
     pub fn write_profile(&self) -> std::io::Result<()> {
         let stats = self.get_stats();
@@ -329,36 +328,56 @@ impl ProfileCollector {
         } else {
             None
         };
-        
+
         let path = get_profile_path();
         let mut file = std::fs::File::create(&path)?;
-        
+
         writeln!(file, "{{")?;
-        writeln!(file, "  \"total_elapsed_ms\": {:.2},", elapsed_total.as_secs_f64() * 1000.0)?;
+        writeln!(
+            file,
+            "  \"total_elapsed_ms\": {:.2},",
+            elapsed_total.as_secs_f64() * 1000.0
+        )?;
         writeln!(file, "  \"operations\": {{")?;
-        
+
         let mut entries: Vec<_> = stats.iter().collect();
         entries.sort_by(|a, b| b.1.total_inclusive_ns.cmp(&a.1.total_inclusive_ns));
-        
+
         for (i, (name, op)) in entries.iter().enumerate() {
             let comma = if i < entries.len() - 1 { "," } else { "" };
             writeln!(file, "    \"{}\": {{", name)?;
             writeln!(file, "      \"count\": {},", op.count)?;
-            writeln!(file, "      \"total_ms\": {:.3},", op.total_inclusive_ns as f64 / 1_000_000.0)?;
-            writeln!(file, "      \"self_ms\": {:.3},", op.total_exclusive_ns as f64 / 1_000_000.0)?;
+            writeln!(
+                file,
+                "      \"total_ms\": {:.3},",
+                op.total_inclusive_ns as f64 / 1_000_000.0
+            )?;
+            writeln!(
+                file,
+                "      \"self_ms\": {:.3},",
+                op.total_exclusive_ns as f64 / 1_000_000.0
+            )?;
             writeln!(file, "      \"mean_us\": {:.2},", op.mean_ns() / 1_000.0)?;
-            writeln!(file, "      \"mean_self_us\": {:.2},", op.mean_exclusive_ns() / 1_000.0)?;
+            writeln!(
+                file,
+                "      \"mean_self_us\": {:.2},",
+                op.mean_exclusive_ns() / 1_000.0
+            )?;
             writeln!(file, "      \"min_us\": {:.2},", op.min_ns as f64 / 1_000.0)?;
             writeln!(file, "      \"max_us\": {:.2},", op.max_ns as f64 / 1_000.0)?;
             if op.item_count > 0 && op.item_count != op.count {
                 writeln!(file, "      \"item_count\": {},", op.item_count)?;
-                writeln!(file, "      \"per_item_us\": {:.2}", op.per_item_ns() / 1_000.0)?;
+                writeln!(
+                    file,
+                    "      \"per_item_us\": {:.2}",
+                    op.per_item_ns() / 1_000.0
+                )?;
             } else {
                 writeln!(file, "      \"item_count\": {}", op.item_count)?;
             }
             writeln!(file, "    }}{}", comma)?;
         }
-        
+
         writeln!(file, "  }}")?;
 
         if let Some(per_thread) = per_thread {
@@ -367,7 +386,11 @@ impl ProfileCollector {
             thread_entries.sort_by(|a, b| a.0.cmp(b.0));
 
             for (t_index, (thread_id, stats)) in thread_entries.iter().enumerate() {
-                let thread_comma = if t_index < thread_entries.len() - 1 { "," } else { "" };
+                let thread_comma = if t_index < thread_entries.len() - 1 {
+                    ","
+                } else {
+                    ""
+                };
                 writeln!(file, "    \"{}\": {{", thread_id)?;
 
                 let mut op_entries: Vec<_> = stats.iter().collect();
@@ -376,15 +399,39 @@ impl ProfileCollector {
                     let comma = if i < op_entries.len() - 1 { "," } else { "" };
                     writeln!(file, "      \"{}\": {{", name)?;
                     writeln!(file, "        \"count\": {},", op.count)?;
-                    writeln!(file, "        \"total_ms\": {:.3},", op.total_inclusive_ns as f64 / 1_000_000.0)?;
-                    writeln!(file, "        \"self_ms\": {:.3},", op.total_exclusive_ns as f64 / 1_000_000.0)?;
+                    writeln!(
+                        file,
+                        "        \"total_ms\": {:.3},",
+                        op.total_inclusive_ns as f64 / 1_000_000.0
+                    )?;
+                    writeln!(
+                        file,
+                        "        \"self_ms\": {:.3},",
+                        op.total_exclusive_ns as f64 / 1_000_000.0
+                    )?;
                     writeln!(file, "        \"mean_us\": {:.2},", op.mean_ns() / 1_000.0)?;
-                    writeln!(file, "        \"mean_self_us\": {:.2},", op.mean_exclusive_ns() / 1_000.0)?;
-                    writeln!(file, "        \"min_us\": {:.2},", op.min_ns as f64 / 1_000.0)?;
-                    writeln!(file, "        \"max_us\": {:.2},", op.max_ns as f64 / 1_000.0)?;
+                    writeln!(
+                        file,
+                        "        \"mean_self_us\": {:.2},",
+                        op.mean_exclusive_ns() / 1_000.0
+                    )?;
+                    writeln!(
+                        file,
+                        "        \"min_us\": {:.2},",
+                        op.min_ns as f64 / 1_000.0
+                    )?;
+                    writeln!(
+                        file,
+                        "        \"max_us\": {:.2},",
+                        op.max_ns as f64 / 1_000.0
+                    )?;
                     if op.item_count > 0 && op.item_count != op.count {
                         writeln!(file, "        \"item_count\": {},", op.item_count)?;
-                        writeln!(file, "        \"per_item_us\": {:.2}", op.per_item_ns() / 1_000.0)?;
+                        writeln!(
+                            file,
+                            "        \"per_item_us\": {:.2}",
+                            op.per_item_ns() / 1_000.0
+                        )?;
                     } else {
                         writeln!(file, "        \"item_count\": {}", op.item_count)?;
                     }
@@ -398,42 +445,46 @@ impl ProfileCollector {
         } else {
             writeln!(file, "}}")?;
         }
-        
+
         eprintln!("[SOCHDB] Profile written to: {}", path);
         Ok(())
     }
-    
+
     /// Print summary to stderr
     pub fn print_summary(&self) {
         let stats = self.get_stats();
         let elapsed_total = self.start_time.elapsed();
-        
+
         eprintln!("\n╔══════════════════════════════════════════════════════════════════════════╗");
         eprintln!("║                     SochDB HNSW Profiling Summary                        ║");
         eprintln!("╠══════════════════════════════════════════════════════════════════════════╣");
-        eprintln!("║ Total elapsed: {:>8.2} ms                                              ║", 
-                  elapsed_total.as_secs_f64() * 1000.0);
+        eprintln!(
+            "║ Total elapsed: {:>8.2} ms                                              ║",
+            elapsed_total.as_secs_f64() * 1000.0
+        );
         eprintln!("╠════════════════════════════════╦═════════╦══════════╦══════════╦══════════╣");
         eprintln!("║ Operation                      ║  Count  ║ Total ms ║  Self ms ║ Items    ║");
         eprintln!("╠════════════════════════════════╬═════════╬══════════╬══════════╬══════════╣");
-        
+
         let mut entries: Vec<_> = stats.iter().collect();
         entries.sort_by(|a, b| b.1.total_inclusive_ns.cmp(&a.1.total_inclusive_ns));
-        
+
         for (name, op) in entries.iter().take(15) {
             let name_truncated: String = if name.len() > 30 {
                 format!("{}...", &name[..27])
             } else {
                 name.to_string()
             };
-            eprintln!("║ {:30} ║ {:>7} ║ {:>8.2} ║ {:>7.1} ║ {:>8} ║",
-                     name_truncated,
-                     op.count,
-                     op.total_inclusive_ns as f64 / 1_000_000.0,
-                     op.total_exclusive_ns as f64 / 1_000_000.0,
-                     op.item_count);
+            eprintln!(
+                "║ {:30} ║ {:>7} ║ {:>8.2} ║ {:>7.1} ║ {:>8} ║",
+                name_truncated,
+                op.count,
+                op.total_inclusive_ns as f64 / 1_000_000.0,
+                op.total_exclusive_ns as f64 / 1_000_000.0,
+                op.item_count
+            );
         }
-        
+
         eprintln!("╚════════════════════════════════╩═════════╩══════════╩═════════╩══════════╝\n");
     }
 }
@@ -450,40 +501,52 @@ lazy_static::lazy_static! {
 /// Enable profiling programmatically
 #[unsafe(no_mangle)]
 pub extern "C" fn sochdb_profiling_enable() {
-    PROFILING_ENABLED.store(true, Ordering::Relaxed);
+    ffi_guard!({
+        PROFILING_ENABLED.store(true, Ordering::Relaxed);
+    })
 }
 
 /// Disable profiling
 #[unsafe(no_mangle)]
 pub extern "C" fn sochdb_profiling_disable() {
-    PROFILING_ENABLED.store(false, Ordering::Relaxed);
+    ffi_guard!({
+        PROFILING_ENABLED.store(false, Ordering::Relaxed);
+    })
 }
 
 /// Write profile to file and print summary
 #[unsafe(no_mangle)]
 pub extern "C" fn sochdb_profiling_dump() {
-    if is_profiling_enabled() {
-        PROFILE_COLLECTOR.print_summary();
-        let _ = PROFILE_COLLECTOR.write_profile();
-    }
+    ffi_guard!({
+        if is_profiling_enabled() {
+            PROFILE_COLLECTOR.print_summary();
+            let _ = PROFILE_COLLECTOR.write_profile();
+        }
+    })
 }
 
 /// Record a custom timing (for external profiling)
+///
+/// # Safety
+/// `name` must be null or a valid, NUL-terminated C string pointer that stays
+/// valid for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn sochdb_profiling_record(
+pub unsafe extern "C" fn sochdb_profiling_record(
     name: *const std::os::raw::c_char,
     elapsed_ns: u64,
     count: usize,
 ) {
-    if !is_profiling_enabled() || name.is_null() {
-        return;
-    }
-    
-    unsafe {
-        if let Ok(name_str) = std::ffi::CStr::from_ptr(name).to_str() {
-            PROFILE_COLLECTOR.record_with_count(name_str, elapsed_ns, count);
+    ffi_guard!({
+        if !is_profiling_enabled() || name.is_null() {
+            return;
         }
-    }
+
+        unsafe {
+            if let Ok(name_str) = std::ffi::CStr::from_ptr(name).to_str() {
+                PROFILE_COLLECTOR.record_with_count(name_str, elapsed_ns, count);
+            }
+        }
+    })
 }
 
 // ============================================================================
@@ -575,12 +638,12 @@ pub fn profile_distance<T>(f: impl FnOnce() -> T) -> T {
 /// Profile graph operations
 pub mod graph {
     use super::*;
-    
+
     #[inline]
     pub fn layer_assignment<T>(f: impl FnOnce() -> T) -> T {
         profile_hnsw("graph.layer_assignment", f)
     }
-    
+
     #[inline]
     pub fn neighbor_selection<T>(layer: usize, f: impl FnOnce() -> T) -> T {
         if is_profiling_enabled() {
@@ -592,12 +655,12 @@ pub mod graph {
             f()
         }
     }
-    
+
     #[inline]
     pub fn add_connection<T>(f: impl FnOnce() -> T) -> T {
         profile_hnsw("graph.add_connection", f)
     }
-    
+
     #[inline]
     pub fn update_entry_point<T>(f: impl FnOnce() -> T) -> T {
         profile_hnsw("graph.update_entry_point", f)
@@ -607,7 +670,7 @@ pub mod graph {
 /// Profile search operations
 pub mod search {
     use super::*;
-    
+
     #[inline]
     pub fn layer_search<T>(layer: usize, f: impl FnOnce() -> T) -> T {
         if is_profiling_enabled() {
@@ -619,12 +682,12 @@ pub mod search {
             f()
         }
     }
-    
+
     #[inline]
     pub fn candidate_selection<T>(f: impl FnOnce() -> T) -> T {
         profile_hnsw("search.candidate_selection", f)
     }
-    
+
     #[inline]
     pub fn result_collection<T>(f: impl FnOnce() -> T) -> T {
         profile_hnsw("search.result_collection", f)
@@ -638,24 +701,24 @@ pub mod search {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_timer() {
         let timer = Timer::start("test_op");
         std::thread::sleep(std::time::Duration::from_millis(10));
         let elapsed = timer.stop();
-        
+
         // Should be at least 10ms = 10_000_000 ns
         assert!(elapsed >= 9_000_000, "Expected >= 9ms, got {}ns", elapsed);
     }
-    
+
     #[test]
     fn test_op_stats() {
         let mut stats = OpStats::default();
         stats.record(1000, 800, 1);
         stats.record(2000, 1600, 1);
         stats.record(3000, 2400, 1);
-        
+
         assert_eq!(stats.count, 3);
         assert_eq!(stats.total_inclusive_ns, 6000);
         assert_eq!(stats.total_exclusive_ns, 4800);
@@ -663,14 +726,14 @@ mod tests {
         assert_eq!(stats.max_ns, 3000);
         assert!((stats.mean_ns() - 2000.0).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_batch_stats() {
         let mut stats = OpStats::default();
-        stats.record(10_000, 8_000, 100);  // 10µs for 100 items
-        
+        stats.record(10_000, 8_000, 100); // 10µs for 100 items
+
         assert_eq!(stats.count, 1);
         assert_eq!(stats.item_count, 100);
-        assert!((stats.per_item_ns() - 100.0).abs() < 0.01);  // 100ns per item
+        assert!((stats.per_item_ns() - 100.0).abs() < 0.01); // 100ns per item
     }
 }

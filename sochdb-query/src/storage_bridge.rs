@@ -98,9 +98,7 @@ pub fn convert_core_to_query(value: &CoreSochValue) -> QuerySochValue {
                 Err(_) => QuerySochValue::Text(format!("{:?}", map)),
             }
         }
-        CoreSochValue::Ref { table, id } => {
-            QuerySochValue::Text(format!("{}/{}", table, id))
-        }
+        CoreSochValue::Ref { table, id } => QuerySochValue::Text(format!("{}/{}", table, id)),
     }
 }
 
@@ -461,10 +459,17 @@ impl DatabaseSqlConnection {
                 let val = self.eval_expr(inner, row, params)?;
                 Some(eval_unary_op(op, &val))
             }
-            Expr::IsNull { expr: inner, negated } => {
+            Expr::IsNull {
+                expr: inner,
+                negated,
+            } => {
                 let val = self.eval_expr(inner, row, params)?;
                 let is_null = matches!(val, CoreSochValue::Null);
-                Some(CoreSochValue::Bool(if *negated { !is_null } else { is_null }))
+                Some(CoreSochValue::Bool(if *negated {
+                    !is_null
+                } else {
+                    is_null
+                }))
             }
             Expr::Between {
                 expr: inner,
@@ -504,7 +509,11 @@ impl DatabaseSqlConnection {
                 let pat = self.eval_expr(pattern, row, params)?;
                 if let (CoreSochValue::Text(s), CoreSochValue::Text(p)) = (&val, &pat) {
                     let matched = sql_like_match(s, p);
-                    Some(CoreSochValue::Bool(if *negated { !matched } else { matched }))
+                    Some(CoreSochValue::Bool(if *negated {
+                        !matched
+                    } else {
+                        matched
+                    }))
                 } else {
                     Some(CoreSochValue::Bool(false))
                 }
@@ -513,7 +522,10 @@ impl DatabaseSqlConnection {
                 let func_name = func_call.name.name().to_uppercase();
                 match func_name.as_str() {
                     "UPPER" => {
-                        let val = func_call.args.first().and_then(|a| self.eval_expr(a, row, params))?;
+                        let val = func_call
+                            .args
+                            .first()
+                            .and_then(|a| self.eval_expr(a, row, params))?;
                         if let CoreSochValue::Text(s) = val {
                             Some(CoreSochValue::Text(s.to_uppercase()))
                         } else {
@@ -521,7 +533,10 @@ impl DatabaseSqlConnection {
                         }
                     }
                     "LOWER" => {
-                        let val = func_call.args.first().and_then(|a| self.eval_expr(a, row, params))?;
+                        let val = func_call
+                            .args
+                            .first()
+                            .and_then(|a| self.eval_expr(a, row, params))?;
                         if let CoreSochValue::Text(s) = val {
                             Some(CoreSochValue::Text(s.to_lowercase()))
                         } else {
@@ -529,7 +544,10 @@ impl DatabaseSqlConnection {
                         }
                     }
                     "LENGTH" | "LEN" => {
-                        let val = func_call.args.first().and_then(|a| self.eval_expr(a, row, params))?;
+                        let val = func_call
+                            .args
+                            .first()
+                            .and_then(|a| self.eval_expr(a, row, params))?;
                         if let CoreSochValue::Text(s) = val {
                             Some(CoreSochValue::Int(s.len() as i64))
                         } else {
@@ -547,12 +565,10 @@ impl DatabaseSqlConnection {
                         Some(CoreSochValue::Null)
                     }
                     // Aggregate functions pass through for row-level evaluation
-                    _ => {
-                        func_call
-                            .args
-                            .first()
-                            .and_then(|a| self.eval_expr(a, row, params))
-                    }
+                    _ => func_call
+                        .args
+                        .first()
+                        .and_then(|a| self.eval_expr(a, row, params)),
                 }
             }
             _ => None,
@@ -845,7 +861,10 @@ impl SqlConnection for DatabaseSqlConnection {
             .iter()
             .map(|col| {
                 let col_type = sql_type_to_db_type(&col.data_type);
-                let nullable = !col.constraints.iter().any(|c| matches!(c, ColumnConstraint::NotNull));
+                let nullable = !col
+                    .constraints
+                    .iter()
+                    .any(|c| matches!(c, ColumnConstraint::NotNull));
                 DbColumnDef {
                     name: col.name.clone(),
                     col_type,
@@ -894,7 +913,7 @@ impl SqlConnection for DatabaseSqlConnection {
     }
 
     fn alter_table(&mut self, stmt: &AlterTableStmt) -> SqlResult<ExecutionResult> {
-        use sochdb_storage::{DbColumnDef, DbColumnType};
+        use sochdb_storage::DbColumnDef;
 
         let table_name = stmt.name.name().to_string();
         let mut schema = self
@@ -1156,11 +1175,7 @@ fn literal_to_core(lit: &Literal) -> CoreSochValue {
 }
 
 /// Evaluate a binary operation on two `CoreSochValue`s.
-fn eval_binary_op(
-    lhs: &CoreSochValue,
-    op: &BinaryOperator,
-    rhs: &CoreSochValue,
-) -> CoreSochValue {
+fn eval_binary_op(lhs: &CoreSochValue, op: &BinaryOperator, rhs: &CoreSochValue) -> CoreSochValue {
     match op {
         BinaryOperator::Eq => CoreSochValue::Bool(lhs == rhs),
         BinaryOperator::Ne => CoreSochValue::Bool(lhs != rhs),
@@ -1303,10 +1318,7 @@ fn extract_order_by_column(expr: &Expr) -> String {
 }
 
 /// Check if two rows have the same values.
-fn rows_equal(
-    a: &HashMap<String, CoreSochValue>,
-    b: &HashMap<String, CoreSochValue>,
-) -> bool {
+fn rows_equal(a: &HashMap<String, CoreSochValue>, b: &HashMap<String, CoreSochValue>) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -1328,28 +1340,10 @@ fn value_to_string(v: &CoreSochValue) -> String {
 
 /// SQL LIKE pattern matching.
 ///
-/// Converts SQL LIKE patterns (`%`, `_`) to regex equivalents.
+/// Delegates to the canonical [`crate::like::like_match`] so that `LIKE`
+/// behaves identically across every query path.
 fn sql_like_match(s: &str, pattern: &str) -> bool {
-    // Escape regex special chars first, then convert LIKE wildcards
-    let mut regex_pattern = String::with_capacity(pattern.len() * 2 + 2);
-    regex_pattern.push('^');
-    for ch in pattern.chars() {
-        match ch {
-            '%' => regex_pattern.push_str(".*"),
-            '_' => regex_pattern.push('.'),
-            '.' | '(' | ')' | '[' | ']' | '{' | '}' | '+' | '*' | '?' | '^' | '$' | '|'
-            | '\\' => {
-                regex_pattern.push('\\');
-                regex_pattern.push(ch);
-            }
-            _ => regex_pattern.push(ch),
-        }
-    }
-    regex_pattern.push('$');
-
-    regex::Regex::new(&regex_pattern)
-        .map(|re| re.is_match(s))
-        .unwrap_or(false)
+    crate::like::like_match(s, pattern)
 }
 
 /// Convert SQL data type to storage column type.
@@ -1441,7 +1435,15 @@ impl<C: SqlConnection> SqlConnection for NamespacedSqlConnection<C> {
         offset: Option<usize>,
         params: &[CoreSochValue],
     ) -> SqlResult<ExecutionResult> {
-        self.inner.select(&self.prefix_table(table), columns, where_clause, order_by, limit, offset, params)
+        self.inner.select(
+            &self.prefix_table(table),
+            columns,
+            where_clause,
+            order_by,
+            limit,
+            offset,
+            params,
+        )
     }
 
     fn insert(
@@ -1452,7 +1454,13 @@ impl<C: SqlConnection> SqlConnection for NamespacedSqlConnection<C> {
         on_conflict: Option<&OnConflict>,
         params: &[CoreSochValue],
     ) -> SqlResult<ExecutionResult> {
-        self.inner.insert(&self.prefix_table(table), columns, rows, on_conflict, params)
+        self.inner.insert(
+            &self.prefix_table(table),
+            columns,
+            rows,
+            on_conflict,
+            params,
+        )
     }
 
     fn update(
@@ -1462,7 +1470,8 @@ impl<C: SqlConnection> SqlConnection for NamespacedSqlConnection<C> {
         where_clause: Option<&Expr>,
         params: &[CoreSochValue],
     ) -> SqlResult<ExecutionResult> {
-        self.inner.update(&self.prefix_table(table), assignments, where_clause, params)
+        self.inner
+            .update(&self.prefix_table(table), assignments, where_clause, params)
     }
 
     fn delete(
@@ -1471,7 +1480,8 @@ impl<C: SqlConnection> SqlConnection for NamespacedSqlConnection<C> {
         where_clause: Option<&Expr>,
         params: &[CoreSochValue],
     ) -> SqlResult<ExecutionResult> {
-        self.inner.delete(&self.prefix_table(table), where_clause, params)
+        self.inner
+            .delete(&self.prefix_table(table), where_clause, params)
     }
 
     fn create_table(&mut self, stmt: &CreateTableStmt) -> SqlResult<ExecutionResult> {
@@ -1484,7 +1494,9 @@ impl<C: SqlConnection> SqlConnection for NamespacedSqlConnection<C> {
 
     fn drop_table(&mut self, stmt: &DropTableStmt) -> SqlResult<ExecutionResult> {
         let mut prefixed = stmt.clone();
-        prefixed.names = stmt.names.iter()
+        prefixed.names = stmt
+            .names
+            .iter()
             .map(|n| ObjectName::new(self.prefix_table(n.name())))
             .collect();
         self.inner.drop_table(&prefixed)
@@ -1552,6 +1564,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is arbitrary test data, not PI
     fn test_convert_core_to_query_basic_types() {
         assert_eq!(
             convert_core_to_query(&CoreSochValue::Null),
@@ -1656,6 +1669,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is arbitrary test data, not PI
     fn test_literal_to_core() {
         assert_eq!(
             literal_to_core(&Literal::Integer(42)),
@@ -1748,14 +1762,8 @@ mod tests {
         use sochdb_storage::DbColumnType;
         assert_eq!(sql_type_to_db_type(&DataType::Int), DbColumnType::Int64);
         assert_eq!(sql_type_to_db_type(&DataType::BigInt), DbColumnType::Int64);
-        assert_eq!(
-            sql_type_to_db_type(&DataType::Float),
-            DbColumnType::Float64
-        );
-        assert_eq!(
-            sql_type_to_db_type(&DataType::Boolean),
-            DbColumnType::Bool
-        );
+        assert_eq!(sql_type_to_db_type(&DataType::Float), DbColumnType::Float64);
+        assert_eq!(sql_type_to_db_type(&DataType::Boolean), DbColumnType::Bool);
         assert_eq!(sql_type_to_db_type(&DataType::Blob), DbColumnType::Binary);
         assert_eq!(sql_type_to_db_type(&DataType::Text), DbColumnType::Text);
         assert_eq!(
@@ -1783,9 +1791,21 @@ mod tests {
         db.register_table(DbTableSchema {
             name: "users".into(),
             columns: vec![
-                DbColumnDef { name: "id".into(), col_type: DbColumnType::Int64, nullable: false },
-                DbColumnDef { name: "name".into(), col_type: DbColumnType::Text, nullable: false },
-                DbColumnDef { name: "age".into(), col_type: DbColumnType::Int64, nullable: true },
+                DbColumnDef {
+                    name: "id".into(),
+                    col_type: DbColumnType::Int64,
+                    nullable: false,
+                },
+                DbColumnDef {
+                    name: "name".into(),
+                    col_type: DbColumnType::Text,
+                    nullable: false,
+                },
+                DbColumnDef {
+                    name: "age".into(),
+                    col_type: DbColumnType::Int64,
+                    nullable: true,
+                },
             ],
         })
         .expect("register table");
@@ -1832,8 +1852,16 @@ mod tests {
         db.register_table(DbTableSchema {
             name: "items".into(),
             columns: vec![
-                DbColumnDef { name: "id".into(), col_type: DbColumnType::Int64, nullable: false },
-                DbColumnDef { name: "label".into(), col_type: DbColumnType::Text, nullable: false },
+                DbColumnDef {
+                    name: "id".into(),
+                    col_type: DbColumnType::Int64,
+                    nullable: false,
+                },
+                DbColumnDef {
+                    name: "label".into(),
+                    col_type: DbColumnType::Text,
+                    nullable: false,
+                },
             ],
         })
         .expect("register");
@@ -1859,17 +1887,29 @@ mod tests {
 
     #[test]
     fn test_integration_sochql_executor_reads_storage() {
-        use sochdb_storage::{DbColumnDef, DbColumnType, DbTableSchema};
         use sochdb_core::{Catalog, SochSchema, SochType};
+        use sochdb_storage::{DbColumnDef, DbColumnType, DbTableSchema};
         let (db, _tmp) = setup_test_db();
 
         // Register table in storage
         db.register_table(DbTableSchema {
             name: "events".into(),
             columns: vec![
-                DbColumnDef { name: "id".into(), col_type: DbColumnType::Int64, nullable: false },
-                DbColumnDef { name: "kind".into(), col_type: DbColumnType::Text, nullable: false },
-                DbColumnDef { name: "score".into(), col_type: DbColumnType::Float64, nullable: true },
+                DbColumnDef {
+                    name: "id".into(),
+                    col_type: DbColumnType::Int64,
+                    nullable: false,
+                },
+                DbColumnDef {
+                    name: "kind".into(),
+                    col_type: DbColumnType::Text,
+                    nullable: false,
+                },
+                DbColumnDef {
+                    name: "score".into(),
+                    col_type: DbColumnType::Float64,
+                    nullable: true,
+                },
             ],
         })
         .expect("register events");
@@ -1890,9 +1930,24 @@ mod tests {
         let schema = SochSchema {
             name: "events".into(),
             fields: vec![
-                sochdb_core::SochField { name: "id".into(), field_type: SochType::Int, nullable: false, default: None },
-                sochdb_core::SochField { name: "kind".into(), field_type: SochType::Text, nullable: false, default: None },
-                sochdb_core::SochField { name: "score".into(), field_type: SochType::Float, nullable: true, default: None },
+                sochdb_core::SochField {
+                    name: "id".into(),
+                    field_type: SochType::Int,
+                    nullable: false,
+                    default: None,
+                },
+                sochdb_core::SochField {
+                    name: "kind".into(),
+                    field_type: SochType::Text,
+                    nullable: false,
+                    default: None,
+                },
+                sochdb_core::SochField {
+                    name: "score".into(),
+                    field_type: SochType::Float,
+                    nullable: true,
+                    default: None,
+                },
             ],
             primary_key: None,
             indexes: vec![],
@@ -1907,7 +1962,12 @@ mod tests {
             .expect("select *");
 
         // Phase 0 success: we actually get rows from storage!
-        assert_eq!(result.rows.len(), 5, "Expected 5 rows from storage, got {}", result.rows.len());
+        assert_eq!(
+            result.rows.len(),
+            5,
+            "Expected 5 rows from storage, got {}",
+            result.rows.len()
+        );
         assert_eq!(result.columns, vec!["id", "kind", "score"]);
 
         // Verify data integrity
@@ -1957,7 +2017,10 @@ mod tests {
             read_only: false,
         };
         let result = conn.begin(&begin_stmt).expect("begin");
-        assert!(matches!(result, crate::sql::bridge::ExecutionResult::TransactionOk));
+        assert!(matches!(
+            result,
+            crate::sql::bridge::ExecutionResult::TransactionOk
+        ));
 
         // INSERT via decomposed SqlConnection::insert
         let values = vec![vec![
@@ -1976,7 +2039,10 @@ mod tests {
 
         // COMMIT
         let result = conn.commit().expect("commit");
-        assert!(matches!(result, crate::sql::bridge::ExecutionResult::TransactionOk));
+        assert!(matches!(
+            result,
+            crate::sql::bridge::ExecutionResult::TransactionOk
+        ));
 
         // SELECT via decomposed SqlConnection::select
         let columns = vec!["name".into()];
@@ -2006,8 +2072,16 @@ mod tests {
         db.register_table(DbTableSchema {
             name: "metrics".into(),
             columns: vec![
-                DbColumnDef { name: "ts".into(), col_type: DbColumnType::UInt64, nullable: false },
-                DbColumnDef { name: "val".into(), col_type: DbColumnType::Float64, nullable: false },
+                DbColumnDef {
+                    name: "ts".into(),
+                    col_type: DbColumnType::UInt64,
+                    nullable: false,
+                },
+                DbColumnDef {
+                    name: "val".into(),
+                    col_type: DbColumnType::Float64,
+                    nullable: false,
+                },
             ],
         })
         .expect("register");
@@ -2037,17 +2111,23 @@ mod tests {
         let mut bridge = crate::sql::bridge::SqlBridge::new(conn);
 
         // CREATE TABLE via raw SQL
-        let r = bridge.execute("CREATE TABLE cities (id INT, name TEXT, pop FLOAT)").unwrap();
+        let r = bridge
+            .execute("CREATE TABLE cities (id INT, name TEXT, pop FLOAT)")
+            .unwrap();
         assert!(matches!(r, crate::sql::bridge::ExecutionResult::Ok));
 
         // INSERT via raw SQL
-        let r = bridge.execute("INSERT INTO cities (id, name, pop) VALUES (1, 'Tokyo', 13.96)").unwrap();
+        let r = bridge
+            .execute("INSERT INTO cities (id, name, pop) VALUES (1, 'Tokyo', 13.96)")
+            .unwrap();
         match &r {
             crate::sql::bridge::ExecutionResult::RowsAffected(n) => assert_eq!(*n, 1),
             other => panic!("Expected RowsAffected, got {:?}", other),
         }
 
-        let r = bridge.execute("INSERT INTO cities (id, name, pop) VALUES (2, 'Delhi', 11.03)").unwrap();
+        let r = bridge
+            .execute("INSERT INTO cities (id, name, pop) VALUES (2, 'Delhi', 11.03)")
+            .unwrap();
         match &r {
             crate::sql::bridge::ExecutionResult::RowsAffected(n) => assert_eq!(*n, 1),
             other => panic!("Expected RowsAffected, got {:?}", other),
@@ -2070,13 +2150,23 @@ mod tests {
         let conn = DatabaseSqlConnection::new(db.clone());
         let mut bridge = crate::sql::bridge::SqlBridge::new(conn);
 
-        bridge.execute("CREATE TABLE items (id INT, qty INT)").unwrap();
-        bridge.execute("INSERT INTO items (id, qty) VALUES (1, 10)").unwrap();
-        bridge.execute("INSERT INTO items (id, qty) VALUES (2, 20)").unwrap();
-        bridge.execute("INSERT INTO items (id, qty) VALUES (3, 30)").unwrap();
+        bridge
+            .execute("CREATE TABLE items (id INT, qty INT)")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO items (id, qty) VALUES (1, 10)")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO items (id, qty) VALUES (2, 20)")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO items (id, qty) VALUES (3, 30)")
+            .unwrap();
 
         // UPDATE
-        let r = bridge.execute("UPDATE items SET qty = 99 WHERE id = 2").unwrap();
+        let r = bridge
+            .execute("UPDATE items SET qty = 99 WHERE id = 2")
+            .unwrap();
         match &r {
             crate::sql::bridge::ExecutionResult::RowsAffected(n) => assert_eq!(*n, 1),
             other => panic!("Expected RowsAffected for UPDATE, got {:?}", other),
@@ -2105,16 +2195,26 @@ mod tests {
         let conn = DatabaseSqlConnection::new(db.clone());
         let mut bridge = crate::sql::bridge::SqlBridge::new(conn);
 
-        bridge.execute("CREATE TABLE txtest (id INT, val TEXT)").unwrap();
+        bridge
+            .execute("CREATE TABLE txtest (id INT, val TEXT)")
+            .unwrap();
 
         // BEGIN / INSERT / COMMIT
         let r = bridge.execute("BEGIN").unwrap();
-        assert!(matches!(r, crate::sql::bridge::ExecutionResult::TransactionOk));
+        assert!(matches!(
+            r,
+            crate::sql::bridge::ExecutionResult::TransactionOk
+        ));
 
-        bridge.execute("INSERT INTO txtest (id, val) VALUES (1, 'committed')").unwrap();
+        bridge
+            .execute("INSERT INTO txtest (id, val) VALUES (1, 'committed')")
+            .unwrap();
 
         let r = bridge.execute("COMMIT").unwrap();
-        assert!(matches!(r, crate::sql::bridge::ExecutionResult::TransactionOk));
+        assert!(matches!(
+            r,
+            crate::sql::bridge::ExecutionResult::TransactionOk
+        ));
 
         // Data should be visible
         let r = bridge.execute("SELECT val FROM txtest").unwrap();
@@ -2149,7 +2249,9 @@ mod tests {
 
         bridge.execute("CREATE TABLE dup (id INT)").unwrap();
         // Should not error with IF NOT EXISTS
-        let r = bridge.execute("CREATE TABLE IF NOT EXISTS dup (id INT)").unwrap();
+        let r = bridge
+            .execute("CREATE TABLE IF NOT EXISTS dup (id INT)")
+            .unwrap();
         assert!(matches!(r, crate::sql::bridge::ExecutionResult::Ok));
     }
 
@@ -2219,9 +2321,7 @@ mod tests {
         let conn = DatabaseSqlConnection::new(db.clone());
         let mut bridge = crate::sql::bridge::SqlBridge::new(conn);
 
-        bridge
-            .execute("CREATE TABLE old_name (id INT)")
-            .unwrap();
+        bridge.execute("CREATE TABLE old_name (id INT)").unwrap();
 
         let r = bridge
             .execute("ALTER TABLE old_name RENAME TO new_name")
@@ -2282,15 +2382,31 @@ mod tests {
 
     /// Helper: set up two tables for join testing (users + orders)
     fn setup_join_tables(bridge: &mut crate::sql::bridge::SqlBridge<DatabaseSqlConnection>) {
-        bridge.execute("CREATE TABLE users (id INT, name TEXT, dept TEXT)").unwrap();
-        bridge.execute("INSERT INTO users (id, name, dept) VALUES (1, 'Alice', 'eng')").unwrap();
-        bridge.execute("INSERT INTO users (id, name, dept) VALUES (2, 'Bob', 'sales')").unwrap();
-        bridge.execute("INSERT INTO users (id, name, dept) VALUES (3, 'Carol', 'eng')").unwrap();
+        bridge
+            .execute("CREATE TABLE users (id INT, name TEXT, dept TEXT)")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO users (id, name, dept) VALUES (1, 'Alice', 'eng')")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO users (id, name, dept) VALUES (2, 'Bob', 'sales')")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO users (id, name, dept) VALUES (3, 'Carol', 'eng')")
+            .unwrap();
 
-        bridge.execute("CREATE TABLE orders (oid INT, user_id INT, amount FLOAT)").unwrap();
-        bridge.execute("INSERT INTO orders (oid, user_id, amount) VALUES (10, 1, 99.50)").unwrap();
-        bridge.execute("INSERT INTO orders (oid, user_id, amount) VALUES (11, 1, 45.00)").unwrap();
-        bridge.execute("INSERT INTO orders (oid, user_id, amount) VALUES (12, 2, 200.00)").unwrap();
+        bridge
+            .execute("CREATE TABLE orders (oid INT, user_id INT, amount FLOAT)")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO orders (oid, user_id, amount) VALUES (10, 1, 99.50)")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO orders (oid, user_id, amount) VALUES (11, 1, 45.00)")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO orders (oid, user_id, amount) VALUES (12, 2, 200.00)")
+            .unwrap();
         // Note: Carol (id=3) has no orders; order 12 belongs to Bob (id=2)
     }
 
@@ -2309,19 +2425,22 @@ mod tests {
         assert_eq!(rows.len(), 3); // Alice×2, Bob×1
 
         // Verify Alice appears twice
-        let alice_rows: Vec<_> = rows.iter()
+        let alice_rows: Vec<_> = rows
+            .iter()
             .filter(|r| r.get("name") == Some(&CoreSochValue::Text("Alice".into())))
             .collect();
         assert_eq!(alice_rows.len(), 2);
 
         // Verify Bob appears once
-        let bob_rows: Vec<_> = rows.iter()
+        let bob_rows: Vec<_> = rows
+            .iter()
             .filter(|r| r.get("name") == Some(&CoreSochValue::Text("Bob".into())))
             .collect();
         assert_eq!(bob_rows.len(), 1);
 
         // Carol should NOT appear (no matching orders)
-        let carol_rows: Vec<_> = rows.iter()
+        let carol_rows: Vec<_> = rows
+            .iter()
             .filter(|r| r.get("name") == Some(&CoreSochValue::Text("Carol".into())))
             .collect();
         assert_eq!(carol_rows.len(), 0);
@@ -2342,7 +2461,8 @@ mod tests {
         assert_eq!(rows.len(), 4); // Alice×2, Bob×1, Carol×1(NULL)
 
         // Carol appears with NULL amount
-        let carol_rows: Vec<_> = rows.iter()
+        let carol_rows: Vec<_> = rows
+            .iter()
             .filter(|r| r.get("name") == Some(&CoreSochValue::Text("Carol".into())))
             .collect();
         assert_eq!(carol_rows.len(), 1);
@@ -2372,9 +2492,9 @@ mod tests {
         let mut bridge = crate::sql::bridge::SqlBridge::new(conn);
         setup_join_tables(&mut bridge);
 
-        let r = bridge.execute(
-            "SELECT users.name, orders.oid FROM users CROSS JOIN orders"
-        ).unwrap();
+        let r = bridge
+            .execute("SELECT users.name, orders.oid FROM users CROSS JOIN orders")
+            .unwrap();
 
         let rows = r.rows().unwrap();
         assert_eq!(rows.len(), 9); // 3 users × 3 orders = 9
@@ -2402,9 +2522,9 @@ mod tests {
         let mut bridge = crate::sql::bridge::SqlBridge::new(conn);
         setup_join_tables(&mut bridge);
 
-        let r = bridge.execute(
-            "SELECT u.name, o.amount FROM users u INNER JOIN orders o ON u.id = o.user_id"
-        ).unwrap();
+        let r = bridge
+            .execute("SELECT u.name, o.amount FROM users u INNER JOIN orders o ON u.id = o.user_id")
+            .unwrap();
 
         let rows = r.rows().unwrap();
         assert_eq!(rows.len(), 3);
@@ -2433,9 +2553,15 @@ mod tests {
         setup_join_tables(&mut bridge);
 
         // Add a departments table
-        bridge.execute("CREATE TABLE departments (code TEXT, dname TEXT)").unwrap();
-        bridge.execute("INSERT INTO departments (code, dname) VALUES ('eng', 'Engineering')").unwrap();
-        bridge.execute("INSERT INTO departments (code, dname) VALUES ('sales', 'Sales')").unwrap();
+        bridge
+            .execute("CREATE TABLE departments (code TEXT, dname TEXT)")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO departments (code, dname) VALUES ('eng', 'Engineering')")
+            .unwrap();
+        bridge
+            .execute("INSERT INTO departments (code, dname) VALUES ('sales', 'Sales')")
+            .unwrap();
 
         let r = bridge.execute(
             "SELECT users.name, departments.dname FROM users INNER JOIN departments ON users.dept = departments.code"
@@ -2447,11 +2573,7 @@ mod tests {
 
     #[test]
     fn test_namespaced_connection_prefixes_tables() {
-        let ns_conn = NamespacedSqlConnection::new(
-            MockConn::default(),
-            "prod",
-            "app",
-        );
+        let ns_conn = NamespacedSqlConnection::new(MockConn::default(), "prod", "app");
         assert_eq!(ns_conn.prefix_table("users"), "prod:app:users");
         assert_eq!(ns_conn.prefix_table("posts"), "prod:app:posts");
         assert_eq!(ns_conn.namespace(), "prod");
@@ -2463,27 +2585,29 @@ mod tests {
         let (db, _tmp) = setup_test_db();
 
         // Create two namespaced connections to the same underlying DB
-        let conn_a = NamespacedSqlConnection::new(
-            DatabaseSqlConnection::new(db.clone()),
-            "tenant_a",
-            "db1",
-        );
-        let conn_b = NamespacedSqlConnection::new(
-            DatabaseSqlConnection::new(db.clone()),
-            "tenant_b",
-            "db1",
-        );
+        let conn_a =
+            NamespacedSqlConnection::new(DatabaseSqlConnection::new(db.clone()), "tenant_a", "db1");
+        let conn_b =
+            NamespacedSqlConnection::new(DatabaseSqlConnection::new(db.clone()), "tenant_b", "db1");
 
         let mut bridge_a = crate::sql::bridge::SqlBridge::new(conn_a);
         let mut bridge_b = crate::sql::bridge::SqlBridge::new(conn_b);
 
         // Tenant A creates a table and inserts data
-        bridge_a.execute("CREATE TABLE users (name TEXT, age INTEGER)").unwrap();
-        bridge_a.execute("INSERT INTO users (name, age) VALUES ('Alice', 30)").unwrap();
+        bridge_a
+            .execute("CREATE TABLE users (name TEXT, age INTEGER)")
+            .unwrap();
+        bridge_a
+            .execute("INSERT INTO users (name, age) VALUES ('Alice', 30)")
+            .unwrap();
 
         // Tenant B creates the same table name and inserts different data
-        bridge_b.execute("CREATE TABLE users (name TEXT, age INTEGER)").unwrap();
-        bridge_b.execute("INSERT INTO users (name, age) VALUES ('Bob', 25)").unwrap();
+        bridge_b
+            .execute("CREATE TABLE users (name TEXT, age INTEGER)")
+            .unwrap();
+        bridge_b
+            .execute("INSERT INTO users (name, age) VALUES ('Bob', 25)")
+            .unwrap();
 
         // Tenant A can only see their own data
         let result_a = bridge_a.execute("SELECT * FROM users").unwrap();
@@ -2500,29 +2624,92 @@ mod tests {
     #[derive(Default)]
     struct MockConn;
     impl crate::sql::bridge::SqlConnection for MockConn {
-        fn select(&self, _: &str, _: &[String], _: Option<&Expr>, _: &[OrderByItem], _: Option<usize>, _: Option<usize>, _: &[CoreSochValue]) -> SqlResult<ExecutionResult> {
-            Ok(ExecutionResult::Rows { columns: vec![], rows: vec![] })
+        fn select(
+            &self,
+            _: &str,
+            _: &[String],
+            _: Option<&Expr>,
+            _: &[OrderByItem],
+            _: Option<usize>,
+            _: Option<usize>,
+            _: &[CoreSochValue],
+        ) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Rows {
+                columns: vec![],
+                rows: vec![],
+            })
         }
-        fn insert(&mut self, _: &str, _: Option<&[String]>, _: &[Vec<Expr>], _: Option<&OnConflict>, _: &[CoreSochValue]) -> SqlResult<ExecutionResult> {
+        fn insert(
+            &mut self,
+            _: &str,
+            _: Option<&[String]>,
+            _: &[Vec<Expr>],
+            _: Option<&OnConflict>,
+            _: &[CoreSochValue],
+        ) -> SqlResult<ExecutionResult> {
             Ok(ExecutionResult::RowsAffected(0))
         }
-        fn update(&mut self, _: &str, _: &[Assignment], _: Option<&Expr>, _: &[CoreSochValue]) -> SqlResult<ExecutionResult> {
+        fn update(
+            &mut self,
+            _: &str,
+            _: &[Assignment],
+            _: Option<&Expr>,
+            _: &[CoreSochValue],
+        ) -> SqlResult<ExecutionResult> {
             Ok(ExecutionResult::RowsAffected(0))
         }
-        fn delete(&mut self, _: &str, _: Option<&Expr>, _: &[CoreSochValue]) -> SqlResult<ExecutionResult> {
+        fn delete(
+            &mut self,
+            _: &str,
+            _: Option<&Expr>,
+            _: &[CoreSochValue],
+        ) -> SqlResult<ExecutionResult> {
             Ok(ExecutionResult::RowsAffected(0))
         }
-        fn create_table(&mut self, _: &CreateTableStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn drop_table(&mut self, _: &DropTableStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn create_index(&mut self, _: &CreateIndexStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn drop_index(&mut self, _: &DropIndexStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn alter_table(&mut self, _: &AlterTableStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn begin(&mut self, _: &BeginStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::TransactionOk) }
-        fn commit(&mut self) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::TransactionOk) }
-        fn rollback(&mut self, _: Option<&str>) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::TransactionOk) }
-        fn table_exists(&self, _: &str) -> SqlResult<bool> { Ok(false) }
-        fn index_exists(&self, _: &str) -> SqlResult<bool> { Ok(false) }
-        fn scan_all(&self, _: &str, _: &[String]) -> SqlResult<Vec<HashMap<String, CoreSochValue>>> { Ok(vec![]) }
-        fn eval_join_predicate(&self, _: &Expr, _: &HashMap<String, CoreSochValue>, _: &[CoreSochValue]) -> Option<bool> { Some(true) }
+        fn create_table(&mut self, _: &CreateTableStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn drop_table(&mut self, _: &DropTableStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn create_index(&mut self, _: &CreateIndexStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn drop_index(&mut self, _: &DropIndexStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn alter_table(&mut self, _: &AlterTableStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn begin(&mut self, _: &BeginStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::TransactionOk)
+        }
+        fn commit(&mut self) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::TransactionOk)
+        }
+        fn rollback(&mut self, _: Option<&str>) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::TransactionOk)
+        }
+        fn table_exists(&self, _: &str) -> SqlResult<bool> {
+            Ok(false)
+        }
+        fn index_exists(&self, _: &str) -> SqlResult<bool> {
+            Ok(false)
+        }
+        fn scan_all(
+            &self,
+            _: &str,
+            _: &[String],
+        ) -> SqlResult<Vec<HashMap<String, CoreSochValue>>> {
+            Ok(vec![])
+        }
+        fn eval_join_predicate(
+            &self,
+            _: &Expr,
+            _: &HashMap<String, CoreSochValue>,
+            _: &[CoreSochValue],
+        ) -> Option<bool> {
+            Some(true)
+        }
     }
 }

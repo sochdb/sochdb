@@ -67,8 +67,8 @@
 //! ```
 
 use std::hash::Hash;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -433,7 +433,7 @@ impl ClockProCache {
     /// Insert a page into cache
     pub fn insert(&self, page_id: PageId, data: Vec<u8>) -> Arc<CachedPage> {
         let page = Arc::new(CachedPage::new(page_id, data));
-        
+
         // Evict if necessary
         self.make_room();
 
@@ -551,14 +551,14 @@ impl ClockProCache {
     fn adapt_increase_hot(&self) {
         let current = self.hot_target.load(Ordering::Relaxed);
         let max_hot = (self.capacity as f64 * MAX_HOT_RATIO) as usize;
-        
+
         if current < max_hot {
             let new_hot = (current + 1).min(max_hot);
             self.hot_target.store(new_hot, Ordering::Relaxed);
-            
+
             let mut hot = self.hot_ring.write();
             hot.set_capacity(new_hot);
-            
+
             let mut cold = self.cold_ring.write();
             cold.set_capacity(self.capacity - new_hot);
         }
@@ -569,14 +569,14 @@ impl ClockProCache {
     fn adapt_decrease_hot(&self) {
         let current = self.hot_target.load(Ordering::Relaxed);
         let min_hot = (self.capacity as f64 * MIN_HOT_RATIO) as usize;
-        
+
         if current > min_hot {
             let new_hot = current.saturating_sub(1).max(min_hot);
             self.hot_target.store(new_hot, Ordering::Relaxed);
-            
+
             let mut hot = self.hot_ring.write();
             hot.set_capacity(new_hot);
-            
+
             let mut cold = self.cold_ring.write();
             cold.set_capacity(self.capacity - new_hot);
         }
@@ -629,12 +629,12 @@ mod tests {
     #[test]
     fn test_page_cache_basic() {
         let cache = ClockProCache::new(100);
-        
+
         let page_id = PageId::new(1, 0);
         let data = vec![0u8; 1024];
-        
+
         cache.insert(page_id, data.clone());
-        
+
         let page = cache.get(&page_id).unwrap();
         assert_eq!(page.data(), data.as_slice());
     }
@@ -642,20 +642,20 @@ mod tests {
     #[test]
     fn test_page_cache_miss() {
         let cache = ClockProCache::new(100);
-        
+
         let page_id = PageId::new(1, 0);
         assert!(cache.get(&page_id).is_none());
-        
+
         assert_eq!(cache.stats().misses.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn test_page_cache_promotion() {
         let cache = ClockProCache::new(100);
-        
+
         let page_id = PageId::new(1, 0);
         cache.insert(page_id, vec![0u8; 1024]);
-        
+
         // First access - cold
         let page = cache.get(&page_id).unwrap();
         assert_eq!(page.state(), PageState::Hot); // Promoted on access
@@ -664,13 +664,13 @@ mod tests {
     #[test]
     fn test_page_cache_eviction() {
         let cache = ClockProCache::new(10);
-        
+
         // Fill cache
         for i in 0..15 {
             let page_id = PageId::new(1, i);
             cache.insert(page_id, vec![0u8; 64]);
         }
-        
+
         // Should have evicted some pages
         assert!(cache.len() <= 10);
         assert!(cache.stats().evictions.load(Ordering::Relaxed) > 0);
@@ -679,12 +679,12 @@ mod tests {
     #[test]
     fn test_page_cache_pinned() {
         let cache = ClockProCache::new(10);
-        
+
         let page_id = PageId::new(1, 0);
         let page = cache.insert_pinned(page_id, vec![0u8; 64]);
-        
+
         assert!(page.is_pinned());
-        
+
         page.unpin();
         assert!(!page.is_pinned());
     }
@@ -692,10 +692,10 @@ mod tests {
     #[test]
     fn test_page_cache_dirty() {
         let cache = ClockProCache::new(10);
-        
+
         let page_id = PageId::new(1, 0);
         cache.insert(page_id, vec![0u8; 64]);
-        
+
         if let Some(page) = cache.get(&page_id) {
             assert!(!page.is_dirty());
         }
@@ -704,14 +704,14 @@ mod tests {
     #[test]
     fn test_cache_stats() {
         let cache = ClockProCache::new(100);
-        
+
         let page_id = PageId::new(1, 0);
         cache.insert(page_id, vec![0u8; 1024]);
-        
+
         // Access twice
         cache.get(&page_id);
         cache.get(&page_id);
-        
+
         assert_eq!(cache.stats().hits.load(Ordering::Relaxed), 2);
         assert!(cache.stats().hit_rate() > 0.0);
     }
@@ -719,14 +719,14 @@ mod tests {
     #[test]
     fn test_adaptive_hot_ratio() {
         let cache = ClockProCache::new(100);
-        
+
         let initial_ratio = cache.hot_ratio();
-        
+
         // Simulate test hits to increase hot space
         for _ in 0..10 {
             cache.adapt_increase_hot();
         }
-        
+
         assert!(cache.hot_ratio() > initial_ratio);
     }
 }

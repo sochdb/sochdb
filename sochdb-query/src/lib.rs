@@ -58,14 +58,17 @@ pub mod bm25_filtered; // Task 6: BM25 filter pushdown via posting-set intersect
 pub mod calc;
 pub mod candidate_gate; // Task 4: Unified candidate gate interface
 pub mod capability_token; // Task 8: Capability tokens + ACLs
+pub mod context_compiler;
 pub mod context_query;
 pub mod cost_optimizer; // Cost-based query optimizer (Task 6)
 pub mod embedding_provider; // Task 2: Automatic embedding generation
 pub mod exact_token_counter; // Task 6: BPE-accurate token counting
-pub mod executor; // v1.0: Unified Volcano query executor
+#[cfg(feature = "experimental")]
+pub mod executor; // v1.0 Volcano query executor [quarantined: unwired, not on live SQL path]
 pub mod filter_ir; // Task 1: Canonical Filter IR (CNF/DNF)
 pub mod filtered_vector_search; // Task 5: Filter-aware vector search with selectivity fallback
-pub mod hybrid_retrieval; // Task 3: Vector + BM25 + RRF fusion
+pub mod grep_executor; // Task 5: Grep lane (trigram-accelerated regex search)
+pub mod like; // Canonical SQL LIKE matcher (single source of truth across all query paths)
 pub mod memory_compaction; // Task 5: Hierarchical memory compaction
 pub mod metadata_index; // Task 3: Metadata index primitives (bitmap + range)
 pub mod namespace; // Task 2: Namespace-scoped query API
@@ -74,14 +77,15 @@ pub mod plugin_table;
 pub mod query_optimizer;
 pub mod semantic_triggers; // Task 7: Vector percolator triggers
 pub mod simd_filter; // SIMD vectorized query filters (mm.md Task 5.3)
+pub mod soch_ql;
+pub mod soch_ql_executor;
 pub mod sql; // SQL-92 compatible query engine with SochDB extensions
 pub mod storage_bridge; // Phase 0: Wire SQL execution to real storage
 pub mod streaming_context; // Task 1: Streaming context generation
 pub mod temporal_decay; // Task 4: Recency-biased scoring
 pub mod token_budget;
-pub mod soch_ql;
-pub mod soch_ql_executor;
 pub mod topk_executor; // Streaming Top-K for ORDER BY + LIMIT (Task: Fix ORDER BY Semantics)
+pub mod trigram_index; // Task 5: Trigram candidate index for the grep lane
 pub mod unified_fusion; // Task 7: Hybrid fusion that never post-filters
 
 pub use agent_context::{
@@ -93,6 +97,10 @@ pub use calc::{
     BinaryOp, CalcError, Evaluator, Expr, Parser as CalcParser, RowContext, UnaryOp, calculate,
     parse_expr,
 };
+pub use context_compiler::{
+    CompiledContext, CompiledFact, ContextCandidate, ContextCompiler, ContextSpec, ContextTemplate,
+};
+
 pub use context_query::{
     ContextQueryError, ContextQueryParser, ContextQueryResult, ContextSection, ContextSelectQuery,
     HnswVectorIndex, SectionPriority, SectionResult, SimpleVectorIndex, VectorIndex,
@@ -106,42 +114,41 @@ pub use plugin_table::{
     PluginVirtualTable, VirtualColumnDef, VirtualColumnType, VirtualFilter, VirtualRow,
     VirtualTable, VirtualTableError, VirtualTableRegistry, VirtualTableSchema, VirtualTableStats,
 };
+pub use soch_ql::{
+    ColumnDef, ColumnType, ComparisonOp, Condition, CreateTableQuery, InsertQuery, LogicalOp,
+    OrderBy, ParseError, SelectQuery, SochQlParser, SochQuery, SochResult, SochValue,
+    SortDirection, WhereClause,
+};
+pub use soch_ql_executor::{
+    KeyRange, Predicate, PredicateCondition, QueryPlan, SochQlExecutor, TokenReductionStats,
+    estimate_token_reduction, execute_sochql,
+};
 pub use sql::{
     BinaryOperator, ColumnDef as SqlColumnDef, CreateTableStmt, DeleteStmt, DropTableStmt,
     Expr as SqlExpr, InsertStmt, JoinType, Lexer, OrderByItem as SqlOrderBy, Parser as SqlParser,
     SelectStmt, Span, SqlError, SqlResult, Statement, Token, TokenKind, UnaryOperator, UpdateStmt,
 };
+pub use storage_bridge::{
+    DatabaseSqlConnection, DatabaseStorageBackend, convert_core_to_query, convert_query_to_core,
+};
 pub use token_budget::{
     BudgetAllocation, BudgetSection, TokenBudgetConfig, TokenBudgetEnforcer, TokenEstimator,
     TokenEstimatorConfig, truncate_rows, truncate_to_tokens,
 };
-pub use soch_ql::{
-    ColumnDef, ColumnType, ComparisonOp, Condition, CreateTableQuery, InsertQuery, LogicalOp,
-    OrderBy, ParseError, SelectQuery, SortDirection, SochQlParser, SochQuery, SochResult,
-    SochValue, WhereClause,
-};
-pub use soch_ql_executor::{
-    KeyRange, Predicate, PredicateCondition, QueryPlan, TokenReductionStats, SochQlExecutor,
-    estimate_token_reduction, execute_sochql,
-};
-pub use storage_bridge::{
-    DatabaseStorageBackend, DatabaseSqlConnection,
-    convert_core_to_query, convert_query_to_core,
-};
 
-// v1.0: Unified Volcano query executor
+// v1.0 Volcano query executor [quarantined behind `experimental`: not on live SQL path]
+#[cfg(feature = "experimental")]
 pub use executor::{
-    Row, Schema, ColumnMeta, PlanNode,
-    SeqScanNode, IndexSeekNode, FilterNode, ProjectNode, SortNode, LimitNode,
-    HashJoinNode, NestedLoopJoinNode, MergeJoinNode, HashAggregateNode,
-    ExplainNode, QueryPlanner,
-    execute_sql, execute_statement, ExecutorConfig,
+    ColumnMeta, ExecutorConfig, ExplainNode, FilterNode, HashAggregateNode, HashJoinNode,
+    IndexSeekNode, LimitNode, MergeJoinNode, NestedLoopJoinNode, PlanNode, ProjectNode,
+    QueryPlanner, Row, Schema, SeqScanNode, SortNode, execute_sql, execute_statement,
 };
 
 // Streaming Top-K for ORDER BY + LIMIT (Task: Fix ORDER BY Semantics)
 pub use topk_executor::{
-    ColumnRef, ExecutionStrategy as TopKExecutionStrategy, IndexAwareTopK, OrderByColumn, OrderByLimitExecutor,
-    OrderByLimitStats, OrderBySpec, SingleColumnTopK, SortDirection as TopKSortDirection, TopKHeap,
+    ColumnRef, ExecutionStrategy as TopKExecutionStrategy, IndexAwareTopK, OrderByColumn,
+    OrderByLimitExecutor, OrderByLimitStats, OrderBySpec, SingleColumnTopK,
+    SortDirection as TopKSortDirection, TopKHeap,
 };
 
 // Task 1: Streaming context generation
@@ -155,11 +162,6 @@ pub use embedding_provider::{
     MockEmbeddingProvider,
 };
 
-// Task 3: Hybrid retrieval pipeline
-pub use hybrid_retrieval::{
-    FusionMethod, HybridQuery, HybridQueryExecutor, LexicalIndex, MetadataFilter,
-};
-
 // Task 4: Temporal decay scoring
 pub use temporal_decay::{
     DecayCurve, TemporalDecayConfig, TemporalScorer, TemporallyDecayedResult,
@@ -167,13 +169,14 @@ pub use temporal_decay::{
 
 // Task 5: Memory compaction
 pub use memory_compaction::{
-    Abstraction, CompactionStats, Episode, ExtractiveSummarizer, HierarchicalMemory, Summary,
-    Summarizer,
+    Abstraction, CompactionStats, Episode, ExtractiveSummarizer, HierarchicalMemory, Summarizer,
+    Summary,
 };
 
 // Task 6: Exact token counting
 pub use exact_token_counter::{
-    ExactBudgetEnforcer, ExactTokenCounter, HeuristicTokenCounter, TokenCounter,
+    count_tokens_exact, count_tokens_heuristic, ExactBudgetEnforcer, ExactTokenCounter,
+    HeuristicTokenCounter, TokenCounter,
 };
 
 // Task 7: Semantic triggers
@@ -193,9 +196,7 @@ pub use filter_ir::{
 };
 
 // Task 2: Namespace-Scoped Query API (mandatory namespace)
-pub use namespace::{
-    Namespace, NamespaceError, NamespaceScope, QueryRequest, ScopedQuery,
-};
+pub use namespace::{Namespace, NamespaceError, NamespaceScope, QueryRequest, ScopedQuery};
 
 // Task 3: Metadata Index Primitives (bitmap + range accessors)
 pub use metadata_index::{
@@ -203,9 +204,7 @@ pub use metadata_index::{
 };
 
 // Task 4: Unified Candidate Gate Interface
-pub use candidate_gate::{
-    AllowedBitmap, AllowedSet, CandidateGate, ExecutionStrategy,
-};
+pub use candidate_gate::{AllowedBitmap, AllowedSet, CandidateGate, ExecutionStrategy};
 
 // Task 5: Filter-Aware Vector Search with selectivity-driven fallback
 pub use filtered_vector_search::{
@@ -221,10 +220,17 @@ pub use bm25_filtered::{
 
 // Task 7: Hybrid Fusion That Never Post-Filters
 pub use unified_fusion::{
-    Bm25Executor, Bm25QuerySpec, FilteredCandidates, FusionConfig, FusionEngine,
-    FusionMethod as UnifiedFusionMethod, FusionResult, Modality, UnifiedHybridExecutor,
-    UnifiedHybridQuery, VectorExecutor, VectorQuerySpec,
+    Bm25Executor, Bm25QuerySpec, DocId, FilteredCandidates, FusionConfig, FusionEngine,
+    FusionMethod as UnifiedFusionMethod, FusionResult, GrepLaneExecutor, GrepQuerySpec, Modality,
+    RankedList, UnifiedHybridExecutor, UnifiedHybridQuery, VectorExecutor, VectorQuerySpec,
+    WeightedLane, fuse_rrf_weighted,
 };
+
+// Task 5: Grep lane (trigram-accelerated regex search)
+pub use grep_executor::{
+    DEFAULT_MAX_SCAN, GrepError, GrepExecutor, GrepHit, GrepMode, GrepResults, required_trigrams,
+};
+pub use trigram_index::{Trigram, TrigramIndex, trigrams_of};
 
 // Task 8: Capability Tokens + ACLs
 pub use capability_token::{

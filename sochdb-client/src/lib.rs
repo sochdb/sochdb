@@ -96,9 +96,9 @@ pub mod transaction;
 pub mod vectors;
 
 // Task implementations for SQL and WAL
-pub mod sql_entry;        // Task 12: Unified SQL entry point
-pub mod wal_atomic;       // Task 14: WAL-disciplined atomic writes
-pub mod intent_recovery;  // Task 15: Intent recovery + GC
+pub mod intent_recovery;
+pub mod sql_entry; // Task 12: Unified SQL entry point
+pub mod wal_atomic; // Task 14: WAL-disciplined atomic writes // Task 15: Intent recovery + GC
 
 use crate::error::Result;
 
@@ -109,13 +109,13 @@ use crate::error::Result;
 pub trait ConnectionTrait {
     /// Put a key-value pair
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()>;
-    
+
     /// Get a value by key
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
-    
+
     /// Delete a key
     fn delete(&self, key: &[u8]) -> Result<()>;
-    
+
     /// Scan keys with a prefix
     fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
 }
@@ -139,23 +139,33 @@ pub use column_access::{ColumnView, TypedColumn};
 #[cfg(feature = "embedded")]
 pub use connection::EmbeddedConnection;
 pub use connection::{
-    ConnectionConfig, ConnectionModeClient, DurableStats, 
-    ReadOnlyConnection, ReadableConnection, RecoveryResult, 
-    SyncModeClient, WritableConnection
+    ConnectionConfig, ConnectionModeClient, Durability, DurableStats, ReadOnlyConnection,
+    ReadableConnection, RecoveryResult, SyncModeClient, WritableConnection,
 };
 pub use context_query::{ContextQueryBuilder, ContextQueryResult, SectionBuilder, SectionContent};
 pub use crud::{DeleteResult, InsertResult, RowBuilder, UpdateResult};
-pub use format::{CanonicalFormat, ContextFormat, FormatCapabilities, FormatConversionError, WireFormat};
+pub use format::{
+    CanonicalFormat, ContextFormat, FormatCapabilities, FormatConversionError, WireFormat,
+};
 pub use path_query::PathQuery;
 pub use result::{ResultMetrics, SochResult};
 pub use schema::{SchemaBuilder, TableDescription};
 pub use transaction::{ClientTransaction, IsolationLevel, SnapshotReader};
 pub use vectors::{SearchResult, VectorCollection};
+// Recency-biased relevance scoring (temporal decay) lives in sochdb-query.
+// Re-export it through the client façade so SDK consumers can blend semantic
+// and recency signals without taking a direct dependency on sochdb-query.
+pub use sochdb_query::temporal_decay::{
+    DecayStage, TemporalDecayConfig, TemporalScorer, TemporallyDecayedResult,
+};
 // Re-export new modules
 pub use atomic_memory::{AtomicMemoryWriter, AtomicWriteResult, MemoryOp, MemoryWriteBuilder};
-pub use checkpoint::{Checkpoint, CheckpointMeta, CheckpointStore, DefaultCheckpointStore, RunMetadata, RunStatus, WorkflowEvent};
-pub use trace::{TraceRun, TraceSpan, TraceStore, TraceValue, SpanKind, SpanStatusCode};
+pub use checkpoint::{
+    Checkpoint, CheckpointMeta, CheckpointStore, DefaultCheckpointStore, RunMetadata, RunStatus,
+    WorkflowEvent,
+};
 pub use policy::{CompiledPolicySet, EvaluationResult, PolicyOutcome, PolicyRule};
+pub use trace::{SpanKind, SpanStatusCode, TraceRun, TraceSpan, TraceStore, TraceValue};
 // Re-export deprecated GroupCommitBuffer with warning
 #[allow(deprecated)]
 pub use batch::{GroupCommitBuffer, GroupCommitConfig};
@@ -231,10 +241,7 @@ impl SochClient {
     }
 
     /// Open with custom configuration
-    pub fn open_with_config(
-        path: impl AsRef<Path>,
-        config: ClientConfig,
-    ) -> Result<Self> {
+    pub fn open_with_config(path: impl AsRef<Path>, config: ClientConfig) -> Result<Self> {
         let connection = SochConnection::open(path)?;
         Ok(Self {
             connection: Arc::new(connection),
@@ -265,10 +272,7 @@ impl SochClient {
     }
 
     /// Begin transaction with specified isolation level
-    pub fn begin_with_isolation(
-        &self,
-        isolation: IsolationLevel,
-    ) -> Result<ClientTransaction<'_>> {
+    pub fn begin_with_isolation(&self, isolation: IsolationLevel) -> Result<ClientTransaction<'_>> {
         ClientTransaction::begin(&self.connection, isolation)
     }
 
@@ -460,17 +464,17 @@ pub mod prelude {
         SchemaBuilder,
         SearchResult,
         SnapshotReader,
-        TableDescription,
         SochClient,
         SochResult,
+        TableDescription,
         UpdateResult,
         VectorCollection,
     };
     pub use sochdb_core::soch::{SochType, SochValue};
-    
+
     // Queue API re-exports
     pub use crate::queue::{
-        DequeueResult, MultiColumnTopK, OrderByLimitStrategy, PriorityQueue, QueueConfig,
-        QueueKey, QueueStats, StreamingTopK, Task, TaskState,
+        DequeueResult, MultiColumnTopK, OrderByLimitStrategy, PriorityQueue, QueueConfig, QueueKey,
+        QueueStats, StreamingTopK, Task, TaskState,
     };
 }

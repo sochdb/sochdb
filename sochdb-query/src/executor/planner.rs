@@ -16,8 +16,6 @@
 //!   → LIMIT/OFFSET → Limit
 //! ```
 
-use crate::optimizer_integration::StorageBackend;
-use crate::sql::ast::*;
 use super::aggregate::{AggDef, AggFunc, HashAggregateNode};
 use super::filter::FilterNode;
 use super::join::{HashJoinNode, NestedLoopJoinNode};
@@ -27,6 +25,8 @@ use super::project::{ProjectExpr, ProjectNode};
 use super::scan::{EmptyNode, SeqScanNode};
 use super::sort::{SortKey, SortNode};
 use super::types::Schema;
+use crate::optimizer_integration::StorageBackend;
+use crate::sql::ast::*;
 use sochdb_core::Result;
 use std::sync::Arc;
 
@@ -196,20 +196,29 @@ impl QueryPlanner {
                     )))
                 } else {
                     Ok(Box::new(NestedLoopJoinNode::new(
-                        left, right, None, JoinType::Cross,
+                        left,
+                        right,
+                        None,
+                        JoinType::Cross,
                     )))
                 }
             }
             Some(JoinCondition::Natural) | None => {
                 if join_type == JoinType::Cross {
                     Ok(Box::new(NestedLoopJoinNode::new(
-                        left, right, None, JoinType::Cross,
+                        left,
+                        right,
+                        None,
+                        JoinType::Cross,
                     )))
                 } else {
                     // Natural join — would need schema introspection to find common columns
                     // For now, fall back to cross join
                     Ok(Box::new(NestedLoopJoinNode::new(
-                        left, right, None, JoinType::Cross,
+                        left,
+                        right,
+                        None,
+                        JoinType::Cross,
                     )))
                 }
             }
@@ -297,10 +306,7 @@ impl QueryPlanner {
         match expr {
             Expr::Function(func) => {
                 let name = func.name.name().to_uppercase();
-                matches!(
-                    name.as_str(),
-                    "COUNT" | "SUM" | "AVG" | "MIN" | "MAX"
-                )
+                matches!(name.as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX")
             }
             Expr::BinaryOp { left, right, .. } => {
                 self.expr_has_aggregate(left) || self.expr_has_aggregate(right)
@@ -329,11 +335,7 @@ impl QueryPlanner {
         Ok((agg_defs, group_by.to_vec()))
     }
 
-    fn try_extract_agg(
-        &self,
-        expr: &Expr,
-        alias: &Option<String>,
-    ) -> Result<Option<AggDef>> {
+    fn try_extract_agg(&self, expr: &Expr, alias: &Option<String>) -> Result<Option<AggDef>> {
         match expr {
             Expr::Function(func) => {
                 let name = func.name.name().to_uppercase();
@@ -456,22 +458,28 @@ pub fn explain_select(select: &SelectStmt, _storage: &Arc<dyn StorageBackend>) -
         lines.push("  HashAggregate [global]".to_string());
     }
 
-    let col_names: Vec<String> = select.columns.iter().map(|item| {
-        match item {
+    let col_names: Vec<String> = select
+        .columns
+        .iter()
+        .map(|item| match item {
             SelectItem::Wildcard => "*".to_string(),
             SelectItem::QualifiedWildcard(t) => format!("{}.*", t),
             SelectItem::Expr { expr, alias } => {
                 alias.clone().unwrap_or_else(|| format!("{:?}", expr))
             }
-        }
-    }).collect();
+        })
+        .collect();
     lines.push(format!("  Project [{}]", col_names.join(", ")));
 
     if !select.order_by.is_empty() {
-        let orders: Vec<String> = select.order_by.iter().map(|o| {
-            let dir = if o.asc { "ASC" } else { "DESC" };
-            format!("{:?} {}", o.expr, dir)
-        }).collect();
+        let orders: Vec<String> = select
+            .order_by
+            .iter()
+            .map(|o| {
+                let dir = if o.asc { "ASC" } else { "DESC" };
+                format!("{:?} {}", o.expr, dir)
+            })
+            .collect();
         lines.push(format!("  Sort [{}]", orders.join(", ")));
     }
 
@@ -489,7 +497,9 @@ fn explain_table_ref(table_ref: &TableRef, lines: &mut Vec<String>, depth: usize
     let indent = "  ".repeat(depth);
     match table_ref {
         TableRef::Table { name, alias } => {
-            let alias_str = alias.as_ref().map_or(String::new(), |a| format!(" AS {}", a));
+            let alias_str = alias
+                .as_ref()
+                .map_or(String::new(), |a| format!(" AS {}", a));
             lines.push(format!("{}SeqScan [table={}{}]", indent, name, alias_str));
         }
         TableRef::Join {

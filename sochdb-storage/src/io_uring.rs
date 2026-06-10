@@ -453,11 +453,17 @@ impl LinuxIoUringBackend {
         // Try to initialize real io_uring
         let (uring, uring_available) = match IoUring::new(config.sq_entries) {
             Ok(uring) => {
-                eprintln!("io_uring initialized successfully with {} entries", config.sq_entries);
+                eprintln!(
+                    "io_uring initialized successfully with {} entries",
+                    config.sq_entries
+                );
                 (Some(uring), true)
-            },
+            }
             Err(e) => {
-                eprintln!("io_uring initialization failed: {}. Falling back to sync I/O", e);
+                eprintln!(
+                    "io_uring initialization failed: {}. Falling back to sync I/O",
+                    e
+                );
                 (None, false)
             }
         };
@@ -501,51 +507,59 @@ impl LinuxIoUringBackend {
     fn submit_to_uring(&mut self, op: IoOp) -> io::Result<()> {
         if let Some(ref mut uring) = self.uring {
             let mut sq = uring.submission();
-            
+
             let sqe = match op.op_type {
-                IoOpType::Read => {
-                    opcode::Read::new(types::Fd(op.fd), op.buffer.as_ptr() as *mut u8, op.len as u32)
-                        .offset(op.offset)
-                        .build()
-                        .user_data(op.user_data)
-                }
+                IoOpType::Read => opcode::Read::new(
+                    types::Fd(op.fd),
+                    op.buffer.as_ptr() as *mut u8,
+                    op.len as u32,
+                )
+                .offset(op.offset)
+                .build()
+                .user_data(op.user_data),
                 IoOpType::Write => {
                     opcode::Write::new(types::Fd(op.fd), op.buffer.as_ptr(), op.len as u32)
                         .offset(op.offset)
                         .build()
                         .user_data(op.user_data)
                 }
-                IoOpType::Fsync => {
-                    opcode::Fsync::new(types::Fd(op.fd))
-                        .build()
-                        .user_data(op.user_data)
+                IoOpType::Fsync => opcode::Fsync::new(types::Fd(op.fd))
+                    .build()
+                    .user_data(op.user_data),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "Operation not supported",
+                    ));
                 }
-                _ => return Err(io::Error::new(io::ErrorKind::Unsupported, "Operation not supported")),
             };
 
             // SAFETY: We submit to the ring and will wait for completion
             unsafe {
-                sq.push(&sqe).map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to push to submission queue"))?;
+                sq.push(&sqe).map_err(|_| {
+                    io::Error::new(io::ErrorKind::Other, "Failed to push to submission queue")
+                })?;
             }
-            
+
             sq.sync();
             drop(sq);
-            
+
             // Submit and wait for completion
             uring.submit_and_wait(1)?;
-            
+
             // Process completion
             let mut cq = uring.completion();
             while let Some(cqe) = cq.next() {
                 let completion = if cqe.result() >= 0 {
-                    self.stats.record_completion(op.op_type, cqe.result() as u64);
+                    self.stats
+                        .record_completion(op.op_type, cqe.result() as u64);
                     IoCompletion::success(cqe.user_data(), cqe.result())
                 } else {
                     IoCompletion::failure(cqe.user_data(), cqe.result())
                 };
                 self.completions.lock().push_back(completion);
             }
-            
+
             Ok(())
         } else {
             // Fallback to synchronous I/O
@@ -602,27 +616,27 @@ impl AsyncIoBackend for LinuxIoUringBackend {
 
         if let Some(ref mut uring) = self.uring {
             let mut sq = uring.submission();
-            
+
             // Submit all operations
             for op in ops {
                 let sqe = match op.op_type {
-                    IoOpType::Read => {
-                        opcode::Read::new(types::Fd(op.fd), op.buffer.as_ptr() as *mut u8, op.len as u32)
-                            .offset(op.offset)
-                            .build()
-                            .user_data(op.user_data)
-                    }
+                    IoOpType::Read => opcode::Read::new(
+                        types::Fd(op.fd),
+                        op.buffer.as_ptr() as *mut u8,
+                        op.len as u32,
+                    )
+                    .offset(op.offset)
+                    .build()
+                    .user_data(op.user_data),
                     IoOpType::Write => {
                         opcode::Write::new(types::Fd(op.fd), op.buffer.as_ptr(), op.len as u32)
                             .offset(op.offset)
                             .build()
                             .user_data(op.user_data)
                     }
-                    IoOpType::Fsync => {
-                        opcode::Fsync::new(types::Fd(op.fd))
-                            .build()
-                            .user_data(op.user_data)
-                    }
+                    IoOpType::Fsync => opcode::Fsync::new(types::Fd(op.fd))
+                        .build()
+                        .user_data(op.user_data),
                     _ => continue, // Skip unsupported operations
                 };
 
@@ -633,13 +647,13 @@ impl AsyncIoBackend for LinuxIoUringBackend {
                     }
                 }
             }
-            
+
             sq.sync();
             drop(sq);
-            
+
             // Submit batch
             uring.submit()?;
-            
+
             Ok(())
         } else {
             // Fallback to synchronous I/O

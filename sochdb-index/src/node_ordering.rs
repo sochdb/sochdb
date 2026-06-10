@@ -108,11 +108,11 @@ impl NodePermutation {
     pub fn compose(&self, other: &NodePermutation) -> NodePermutation {
         let n = self.len();
         assert_eq!(n, other.len());
-        
+
         let forward: Vec<u32> = (0..n)
             .map(|i| other.forward[self.forward[i] as usize])
             .collect();
-        
+
         NodePermutation::from_forward(forward)
     }
 
@@ -329,9 +329,7 @@ impl NodeOrderer {
         F: Fn(u32) -> Vec<u32>,
     {
         // Compute node degrees
-        let degrees: Vec<usize> = (0..n as u32)
-            .map(|id| neighbors_fn(id).len())
-            .collect();
+        let degrees: Vec<usize> = (0..n as u32).map(|id| neighbors_fn(id).len()).collect();
 
         // High-degree nodes should be spread out to avoid hotspots
         // Low-degree nodes can be grouped for sequential access
@@ -339,7 +337,7 @@ impl NodeOrderer {
             .map(|id| {
                 let degree = degrees[id as usize] as f64;
                 let max_deg = degrees.iter().max().copied().unwrap_or(1) as f64;
-                
+
                 // Score: prioritize low-degree nodes (they chain better)
                 // but also consider connectivity
                 let score = (1.0 - degree / max_deg) * 100.0 + (id as f64 * 0.001);
@@ -439,34 +437,34 @@ pub fn reorder_csr_graph(
     perm: &NodePermutation,
 ) -> (Vec<u32>, Vec<u32>) {
     let n = offsets.len().saturating_sub(1);
-    
+
     // For each new node, collect its neighbors in new ID space
     let mut new_adj: Vec<Vec<u32>> = vec![Vec::new(); n];
-    
+
     for old_id in 0..n as u32 {
         let new_id = perm.map(InternalId(old_id)).0 as usize;
         let start = offsets[old_id as usize] as usize;
         let end = offsets[old_id as usize + 1] as usize;
-        
+
         for &old_neighbor in &neighbors[start..end] {
             let new_neighbor = perm.map(InternalId(old_neighbor)).0;
             new_adj[new_id].push(new_neighbor);
         }
-        
+
         // Sort neighbors for better cache behavior
         new_adj[new_id].sort_unstable();
     }
-    
+
     // Build new CSR
     let mut new_offsets = Vec::with_capacity(n + 1);
     let mut new_neighbors = Vec::new();
-    
+
     new_offsets.push(0);
     for adj in &new_adj {
         new_neighbors.extend_from_slice(adj);
         new_offsets.push(new_neighbors.len() as u32);
     }
-    
+
     (new_offsets, new_neighbors)
 }
 
@@ -491,7 +489,7 @@ mod tests {
     #[test]
     fn test_identity_permutation() {
         let perm = NodePermutation::identity(10);
-        
+
         assert_eq!(perm.len(), 10);
         for i in 0..10 {
             assert_eq!(perm.map(InternalId(i)).0, i);
@@ -503,11 +501,11 @@ mod tests {
     fn test_bfs_ordering() {
         let orderer = NodeOrderer::new(OrderingStrategy::BFS);
         let graph = create_test_graph();
-        
+
         let perm = orderer.compute_ordering(10, &graph, None);
-        
+
         assert_eq!(perm.len(), 10);
-        
+
         // Verify it's a valid permutation
         let mut seen = vec![false; 10];
         for i in 0..10 {
@@ -521,11 +519,11 @@ mod tests {
     fn test_rcm_ordering() {
         let orderer = NodeOrderer::new(OrderingStrategy::RCM);
         let graph = create_test_graph();
-        
+
         let perm = orderer.compute_ordering(10, &graph, None);
-        
+
         assert_eq!(perm.len(), 10);
-        
+
         // RCM should have good bandwidth
         let stats = OrderingStats::compute(&perm, &graph);
         assert!(stats.bandwidth <= 9, "RCM bandwidth should be reasonable");
@@ -534,7 +532,7 @@ mod tests {
     #[test]
     fn test_hilbert_ordering() {
         let orderer = NodeOrderer::new(OrderingStrategy::Hilbert);
-        
+
         // Create points in 3D space
         let coords: Vec<[f32; 3]> = (0..100)
             .map(|i| {
@@ -544,7 +542,7 @@ mod tests {
                 [x, y, z]
             })
             .collect();
-        
+
         let graph = |id: u32| {
             let mut neighbors = Vec::new();
             if id > 0 {
@@ -555,9 +553,9 @@ mod tests {
             }
             neighbors
         };
-        
+
         let perm = orderer.compute_ordering(100, &graph, Some(&coords));
-        
+
         assert_eq!(perm.len(), 100);
     }
 
@@ -565,9 +563,9 @@ mod tests {
     fn test_permutation_compose() {
         let perm1 = NodePermutation::from_forward(vec![1, 2, 0]); // rotate left
         let perm2 = NodePermutation::from_forward(vec![1, 2, 0]); // rotate left again
-        
+
         let composed = perm1.compose(&perm2);
-        
+
         // Two left rotations = 2, 0, 1
         assert_eq!(composed.map(InternalId(0)).0, 2);
         assert_eq!(composed.map(InternalId(1)).0, 0);
@@ -578,10 +576,10 @@ mod tests {
     fn test_ordering_stats() {
         let orderer = NodeOrderer::new(OrderingStrategy::RCM);
         let graph = create_test_graph();
-        
+
         let perm = orderer.compute_ordering(10, &graph, None);
         let stats = OrderingStats::compute(&perm, &graph);
-        
+
         assert!(stats.bandwidth > 0);
         assert!(stats.avg_neighbor_distance > 0.0);
         assert!(stats.cache_efficiency >= 0.0 && stats.cache_efficiency <= 1.0);
@@ -592,25 +590,28 @@ mod tests {
         // Simple graph: 0 -> [1, 2], 1 -> [0], 2 -> [0]
         let offsets = vec![0, 2, 3, 4];
         let neighbors = vec![1, 2, 0, 0];
-        
+
         // Permutation: 0 -> 2, 1 -> 0, 2 -> 1
         let perm = NodePermutation::from_forward(vec![2, 0, 1]);
-        
+
         let (new_offsets, new_neighbors) = reorder_csr_graph(&offsets, &neighbors, &perm);
-        
+
         // New node 0 (old 1) has neighbor old 0 = new 2
         // New node 1 (old 2) has neighbor old 0 = new 2
         // New node 2 (old 0) has neighbors old 1 = new 0, old 2 = new 1
-        
+
         assert_eq!(new_offsets.len(), 4);
-        assert_eq!(new_offsets[new_offsets.len() - 1] as usize, new_neighbors.len());
+        assert_eq!(
+            new_offsets[new_offsets.len() - 1] as usize,
+            new_neighbors.len()
+        );
     }
 
     #[test]
     fn test_empty_graph() {
         let orderer = NodeOrderer::new(OrderingStrategy::RCM);
         let graph = |_: u32| Vec::new();
-        
+
         let perm = orderer.compute_ordering(0, &graph, None);
         assert!(perm.is_empty());
     }
@@ -627,13 +628,13 @@ mod tests {
             5 => vec![4],
             _ => vec![],
         };
-        
+
         let orderer = NodeOrderer::new(OrderingStrategy::BFS);
         let perm = orderer.compute_ordering(6, &graph, None);
-        
+
         // All nodes should be mapped
         assert_eq!(perm.len(), 6);
-        
+
         let mut seen = vec![false; 6];
         for i in 0..6 {
             let new_id = perm.map(InternalId(i)).0 as usize;

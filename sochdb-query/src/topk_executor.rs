@@ -145,20 +145,23 @@ impl OrderBySpec {
 
     /// Create a comparator function for rows
     pub fn comparator(&self, column_names: &[String]) -> impl Fn(&SochRow, &SochRow) -> Ordering {
-        let resolved: Vec<_> = self.columns
+        let resolved: Vec<_> = self
+            .columns
             .iter()
             .filter_map(|col| {
-                col.column.resolve(column_names).map(|idx| (idx, col.direction, col.nulls_first))
+                col.column
+                    .resolve(column_names)
+                    .map(|idx| (idx, col.direction, col.nulls_first))
             })
             .collect();
-        
+
         move |a: &SochRow, b: &SochRow| {
             for &(idx, direction, nulls_first) in &resolved {
                 let val_a = a.values.get(idx);
                 let val_b = b.values.get(idx);
-                
+
                 let ordering = compare_values(val_a, val_b, nulls_first);
-                
+
                 if ordering != Ordering::Equal {
                     return match direction {
                         SortDirection::Ascending => ordering,
@@ -176,12 +179,15 @@ impl OrderBySpec {
             return false;
         }
 
-        self.columns.iter().zip(index_columns.iter()).all(|(col, (idx_col, idx_dir))| {
-            match &col.column {
-                ColumnRef::Name(name) => name == idx_col && col.direction == *idx_dir,
-                ColumnRef::Index(_) => false, // Can't match by index
-            }
-        })
+        self.columns
+            .iter()
+            .zip(index_columns.iter())
+            .all(|(col, (idx_col, idx_dir))| {
+                match &col.column {
+                    ColumnRef::Name(name) => name == idx_col && col.direction == *idx_dir,
+                    ColumnRef::Index(_) => false, // Can't match by index
+                }
+            })
     }
 }
 
@@ -189,11 +195,35 @@ impl OrderBySpec {
 fn compare_values(a: Option<&SochValue>, b: Option<&SochValue>, nulls_first: bool) -> Ordering {
     match (a, b) {
         (None, None) => Ordering::Equal,
-        (None, Some(_)) => if nulls_first { Ordering::Less } else { Ordering::Greater },
-        (Some(_), None) => if nulls_first { Ordering::Greater } else { Ordering::Less },
+        (None, Some(_)) => {
+            if nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (Some(_), None) => {
+            if nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
         (Some(SochValue::Null), Some(SochValue::Null)) => Ordering::Equal,
-        (Some(SochValue::Null), Some(_)) => if nulls_first { Ordering::Less } else { Ordering::Greater },
-        (Some(_), Some(SochValue::Null)) => if nulls_first { Ordering::Greater } else { Ordering::Less },
+        (Some(SochValue::Null), Some(_)) => {
+            if nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (Some(_), Some(SochValue::Null)) => {
+            if nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
         (Some(a), Some(b)) => compare_soch_values(a, b),
     }
 }
@@ -279,7 +309,7 @@ where
         // Safety: comparator pointer is valid for heap lifetime
         let cmp = unsafe { &*self.comparator };
         let result = cmp(&self.value, &other.value);
-        
+
         if self.inverted {
             result.reverse()
         } else {
@@ -395,11 +425,7 @@ pub enum ExecutionStrategy {
 
 impl ExecutionStrategy {
     /// Choose the optimal strategy
-    pub fn choose(
-        has_matching_index: bool,
-        estimated_rows: Option<usize>,
-        limit: usize,
-    ) -> Self {
+    pub fn choose(has_matching_index: bool, estimated_rows: Option<usize>, limit: usize) -> Self {
         // If we have a matching index, always use pushdown
         if has_matching_index {
             return ExecutionStrategy::IndexPushdown;
@@ -414,7 +440,7 @@ impl ExecutionStrategy {
         // Heuristic: streaming is better when K < sqrt(N) or K is "small"
         // Break-even is approximately when K * log(K) < N, but we use simpler heuristic
         let k = limit;
-        
+
         if k <= 100 {
             // Small K: streaming is almost always better
             ExecutionStrategy::StreamingTopK
@@ -432,7 +458,12 @@ impl ExecutionStrategy {
     pub fn complexity(&self, n: usize, k: usize) -> String {
         match self {
             ExecutionStrategy::IndexPushdown => {
-                format!("O(log {} + {}) = O({})", n, k, (n as f64).log2() as usize + k)
+                format!(
+                    "O(log {} + {}) = O({})",
+                    n,
+                    k,
+                    (n as f64).log2() as usize + k
+                )
             }
             ExecutionStrategy::StreamingTopK => {
                 let log_k = (k as f64).log2().max(1.0) as usize;
@@ -492,8 +523,9 @@ impl OrderByLimitExecutor {
     ) -> Self {
         // For OFFSET, we need to fetch limit + offset rows
         let effective_limit = limit.saturating_add(offset);
-        let strategy = ExecutionStrategy::choose(has_matching_index, estimated_rows, effective_limit);
-        
+        let strategy =
+            ExecutionStrategy::choose(has_matching_index, estimated_rows, effective_limit);
+
         Self {
             order_by,
             limit,
@@ -524,7 +556,7 @@ impl OrderByLimitExecutor {
         };
 
         let effective_limit = self.limit.saturating_add(self.offset);
-        
+
         let result = match self.strategy {
             ExecutionStrategy::IndexPushdown => {
                 // With index, just take the first limit+offset rows
@@ -547,28 +579,23 @@ impl OrderByLimitExecutor {
             .skip(self.offset)
             .take(self.limit)
             .collect();
-        
+
         stats.offset_skipped = self.offset.min(stats.input_rows);
         stats.output_rows = final_result.len();
-        
+
         (final_result, stats)
     }
 
     /// Execute using streaming top-K algorithm
-    fn execute_streaming<I>(
-        &self,
-        rows: I,
-        k: usize,
-        stats: &mut OrderByLimitStats,
-    ) -> Vec<SochRow>
+    fn execute_streaming<I>(&self, rows: I, k: usize, stats: &mut OrderByLimitStats) -> Vec<SochRow>
     where
         I: Iterator<Item = SochRow>,
     {
         let comparator = self.order_by.comparator(&self.column_names);
-        
+
         // We want the K smallest according to the comparator
         let mut heap = TopKHeap::new(k, comparator, true);
-        
+
         for row in rows {
             stats.input_rows += 1;
             stats.heap_operations += 1;
@@ -579,22 +606,17 @@ impl OrderByLimitExecutor {
     }
 
     /// Execute using full sort
-    fn execute_full_sort<I>(
-        &self,
-        rows: I,
-        k: usize,
-        stats: &mut OrderByLimitStats,
-    ) -> Vec<SochRow>
+    fn execute_full_sort<I>(&self, rows: I, k: usize, stats: &mut OrderByLimitStats) -> Vec<SochRow>
     where
         I: Iterator<Item = SochRow>,
     {
         let comparator = self.order_by.comparator(&self.column_names);
-        
+
         let mut all_rows: Vec<_> = rows.collect();
         stats.input_rows = all_rows.len();
-        
+
         all_rows.sort_by(&comparator);
-        
+
         all_rows.truncate(k);
         all_rows
     }
@@ -645,7 +667,7 @@ where
         if !same_index_key_as_previous {
             self.finalize_batch();
         }
-        
+
         self.current_batch.push(item);
     }
 
@@ -661,7 +683,7 @@ where
         // Take as many as we need
         let remaining = self.k.saturating_sub(self.result.len());
         let to_take = remaining.min(self.current_batch.len());
-        
+
         self.result.extend(self.current_batch.drain(..to_take));
         self.current_batch.clear();
     }
@@ -776,14 +798,10 @@ impl PartialOrd for SingleColEntry {
 impl Ord for SingleColEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         let base = self.key.cmp(&other.key);
-        
+
         // For ascending + max-heap, we want to evict the largest,
         // so we don't invert. For descending, we invert.
-        if self.ascending {
-            base
-        } else {
-            base.reverse()
-        }
+        if self.ascending { base } else { base.reverse() }
     }
 }
 
@@ -804,7 +822,8 @@ impl SingleColumnTopK {
             return;
         }
 
-        let key = row.values
+        let key = row
+            .values
             .get(self.col_idx)
             .map(OrderableValue::from)
             .unwrap_or(OrderableValue::Null);
@@ -834,12 +853,12 @@ impl SingleColumnTopK {
     /// Drain into sorted vector
     pub fn into_sorted_vec(self) -> Vec<SochRow> {
         let mut entries: Vec<_> = self.heap.into_iter().collect();
-        
+
         entries.sort_by(|a, b| {
             let base = a.key.cmp(&b.key);
             if self.ascending { base } else { base.reverse() }
         });
-        
+
         entries.into_iter().map(|e| e.row).collect()
     }
 
@@ -886,7 +905,7 @@ mod tests {
             ExecutionStrategy::choose(false, Some(1000), 500),
             ExecutionStrategy::FullSort
         );
-        
+
         // K <= 100: always streaming even if K > sqrt(N)
         assert_eq!(
             ExecutionStrategy::choose(false, Some(100), 90),
@@ -900,10 +919,10 @@ mod tests {
             ColumnRef::Name("priority".to_string()),
             SortDirection::Ascending,
         );
-        
+
         let columns = vec!["id".to_string(), "priority".to_string(), "name".to_string()];
         let cmp = spec.comparator(&columns);
-        
+
         let row1 = make_row(vec![
             SochValue::Int(1),
             SochValue::Int(5),
@@ -914,7 +933,7 @@ mod tests {
             SochValue::Int(3),
             SochValue::Text("B".to_string()),
         ]);
-        
+
         // row2 has lower priority, should come first in ASC
         assert_eq!(cmp(&row2, &row1), Ordering::Less);
     }
@@ -923,11 +942,11 @@ mod tests {
     fn test_topk_heap_ascending() {
         let cmp = |a: &i32, b: &i32| a.cmp(b);
         let mut heap = TopKHeap::new(3, cmp, true);
-        
+
         for i in [5, 2, 8, 1, 9, 3, 7, 4, 6] {
             heap.push(i);
         }
-        
+
         let result = heap.into_sorted_vec();
         assert_eq!(result, vec![1, 2, 3]);
     }
@@ -936,11 +955,11 @@ mod tests {
     fn test_topk_heap_descending() {
         let cmp = |a: &i32, b: &i32| a.cmp(b);
         let mut heap = TopKHeap::new(3, cmp, false);
-        
+
         for i in [5, 2, 8, 1, 9, 3, 7, 4, 6] {
             heap.push(i);
         }
-        
+
         let result = heap.into_sorted_vec();
         // Descending order
         assert_eq!(result, vec![9, 8, 7]);
@@ -953,16 +972,16 @@ mod tests {
             ColumnRef::Name("priority".to_string()),
             SortDirection::Ascending,
         );
-        
+
         let executor = OrderByLimitExecutor::new(
             order_by,
-            3,      // limit
-            0,      // offset
+            3, // limit
+            0, // offset
             columns.clone(),
-            false,  // no index
+            false, // no index
             Some(10),
         );
-        
+
         // Create rows with priorities: 5, 3, 1, 4, 2
         let rows = vec![
             make_row(vec![SochValue::Int(5), SochValue::Text("E".to_string())]),
@@ -971,15 +990,15 @@ mod tests {
             make_row(vec![SochValue::Int(4), SochValue::Text("D".to_string())]),
             make_row(vec![SochValue::Int(2), SochValue::Text("B".to_string())]),
         ];
-        
+
         let (result, stats) = executor.execute(rows.into_iter());
-        
+
         // Should get priorities 1, 2, 3 (the 3 smallest)
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].values[0], SochValue::Int(1));
         assert_eq!(result[1].values[0], SochValue::Int(2));
         assert_eq!(result[2].values[0], SochValue::Int(3));
-        
+
         assert_eq!(stats.input_rows, 5);
         assert_eq!(stats.output_rows, 3);
     }
@@ -991,16 +1010,16 @@ mod tests {
             ColumnRef::Name("priority".to_string()),
             SortDirection::Ascending,
         );
-        
+
         let executor = OrderByLimitExecutor::new(
             order_by,
-            2,      // limit
-            2,      // offset
+            2, // limit
+            2, // offset
             columns,
             false,
             Some(10),
         );
-        
+
         // Priorities: 5, 3, 1, 4, 2 → sorted: 1, 2, 3, 4, 5
         // With offset 2, limit 2: should get 3, 4
         let rows = vec![
@@ -1010,9 +1029,9 @@ mod tests {
             make_row(vec![SochValue::Int(4)]),
             make_row(vec![SochValue::Int(2)]),
         ];
-        
+
         let (result, _) = executor.execute(rows.into_iter());
-        
+
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].values[0], SochValue::Int(3));
         assert_eq!(result[1].values[0], SochValue::Int(4));
@@ -1021,15 +1040,15 @@ mod tests {
     #[test]
     fn test_single_column_topk() {
         let mut topk = SingleColumnTopK::new(3, 0, true); // Column 0, ascending
-        
+
         topk.push(make_row(vec![SochValue::Int(5)]));
         topk.push(make_row(vec![SochValue::Int(3)]));
         topk.push(make_row(vec![SochValue::Int(1)]));
         topk.push(make_row(vec![SochValue::Int(4)]));
         topk.push(make_row(vec![SochValue::Int(2)]));
-        
+
         let result = topk.into_sorted_vec();
-        
+
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].values[0], SochValue::Int(1));
         assert_eq!(result[1].values[0], SochValue::Int(2));
@@ -1044,29 +1063,22 @@ mod tests {
             ColumnRef::Name("priority".to_string()),
             SortDirection::Ascending,
         );
-        
+
         // Rows in scan order: [5, 2, 8, 1, 9, 3]
         let rows: Vec<_> = [5, 2, 8, 1, 9, 3]
             .iter()
             .map(|&p| make_row(vec![SochValue::Int(p)]))
             .collect();
-        
+
         // BUGGY: collect first 3, then sort
         let buggy: Vec<_> = rows.iter().take(3).cloned().collect();
         // buggy contains: [5, 2, 8] → sorted: [2, 5, 8]
         // Bug: would return priority 2 as "smallest" but actual min is 1!
-        
+
         // CORRECT: streaming top-K
-        let executor = OrderByLimitExecutor::new(
-            order_by,
-            3,
-            0,
-            columns,
-            false,
-            Some(6),
-        );
+        let executor = OrderByLimitExecutor::new(order_by, 3, 0, columns, false, Some(6));
         let (correct, _) = executor.execute(rows.into_iter());
-        
+
         // Correct result: [1, 2, 3]
         assert_eq!(correct[0].values[0], SochValue::Int(1));
         assert_eq!(correct[1].values[0], SochValue::Int(2));
@@ -1076,24 +1088,18 @@ mod tests {
     #[test]
     fn test_multi_column_order_by() {
         let columns = vec!["priority".to_string(), "created_at".to_string()];
-        
+
         let order_by = OrderBySpec::single(
             ColumnRef::Name("priority".to_string()),
             SortDirection::Ascending,
-        ).then_by(
+        )
+        .then_by(
             ColumnRef::Name("created_at".to_string()),
             SortDirection::Descending,
         );
-        
-        let executor = OrderByLimitExecutor::new(
-            order_by,
-            3,
-            0,
-            columns,
-            false,
-            Some(5),
-        );
-        
+
+        let executor = OrderByLimitExecutor::new(order_by, 3, 0, columns, false, Some(5));
+
         // Rows: (priority, created_at)
         let rows = vec![
             make_row(vec![SochValue::Int(1), SochValue::Int(100)]),
@@ -1102,9 +1108,9 @@ mod tests {
             make_row(vec![SochValue::Int(1), SochValue::Int(150)]),
             make_row(vec![SochValue::Int(3), SochValue::Int(100)]),
         ];
-        
+
         let (result, _) = executor.execute(rows.into_iter());
-        
+
         // Should be: priority=1 rows ordered by created_at DESC
         // So: (1, 200), (1, 150), (1, 100)
         assert_eq!(result.len(), 3);

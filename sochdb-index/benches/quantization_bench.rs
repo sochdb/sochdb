@@ -124,7 +124,7 @@ fn bench_quantization_memory(c: &mut Criterion) {
                 }
 
                 b.iter(|| {
-                    let stats = index.memory_stats();
+                    let stats = index.stats();
                     black_box(stats);
                 });
             },

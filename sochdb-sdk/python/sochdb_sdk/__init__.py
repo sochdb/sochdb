@@ -11,7 +11,7 @@ from .client import (
     NamespaceClient,
 )
 
-__version__ = "2.0.0"
+__version__ = "2.0.3"
 __all__ = [
     "SochDB",
     "VectorClient",

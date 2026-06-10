@@ -8,10 +8,10 @@
 //! Provides semantic caching for LLM queries via gRPC.
 
 use crate::proto::{
-    semantic_cache_service_server::{SemanticCacheService, SemanticCacheServiceServer},
     SemanticCacheGetRequest, SemanticCacheGetResponse, SemanticCacheInvalidateRequest,
     SemanticCacheInvalidateResponse, SemanticCachePutRequest, SemanticCachePutResponse,
     SemanticCacheStatsRequest, SemanticCacheStatsResponse,
+    semantic_cache_service_server::{SemanticCacheService, SemanticCacheServiceServer},
 };
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,7 +66,10 @@ impl SemanticCacheServer {
         SemanticCacheServiceServer::new(self)
     }
 
-    fn get_or_create_cache(&self, name: &str) -> dashmap::mapref::one::Ref<'_, String, CacheInstance> {
+    fn get_or_create_cache(
+        &self,
+        name: &str,
+    ) -> dashmap::mapref::one::Ref<'_, String, CacheInstance> {
         if !self.caches.contains_key(name) {
             self.caches.insert(name.to_string(), CacheInstance::new());
         }
@@ -173,7 +176,8 @@ impl SemanticCacheService for SemanticCacheServer {
         let req = request.into_inner();
 
         if !self.caches.contains_key(&req.cache_name) {
-            self.caches.insert(req.cache_name.clone(), CacheInstance::new());
+            self.caches
+                .insert(req.cache_name.clone(), CacheInstance::new());
         }
 
         let cache = self.caches.get(&req.cache_name).unwrap();

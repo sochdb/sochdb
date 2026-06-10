@@ -102,7 +102,7 @@ impl<'a> RowBuilder<'a> {
             for row in &self.rows {
                 let id = tch.insert_row(&self.table, row);
                 last_id = Some(id);
-                
+
                 // Persist to storage backend for durability
                 // Key format: {table}:{row_id}
                 // Value: bincode serialized row data
@@ -169,15 +169,30 @@ impl<'a> UpdateBuilder<'a> {
     }
 
     /// Execute update
-    /// 
-    /// Note: Updates are persisted to TCH in-memory store. 
-    /// The MutationResult contains affected row IDs for storage-level operations.
+    ///
+    /// Applies the update to the in-memory TCH and writes the affected rows
+    /// through to the durable storage backend (WAL-logged via
+    /// [`SochConnection::put`]), keeping the TCH and `DurableStorage`
+    /// consistent and the mutation crash-safe.
     pub fn execute(self) -> Result<UpdateResult> {
         let mut tch = self.conn.tch.write();
-        let mutation_result = tch.update_rows(&self.table, &self.updates, self.where_clause.as_ref());
+        let mutation_result =
+            tch.update_rows(&self.table, &self.updates, self.where_clause.as_ref());
 
-        // TODO: Wire mutation_result.affected_row_ids to storage backend for WAL/index/CDC
-        Ok(UpdateResult { rows_updated: mutation_result.affected_count })
+        // Write-through: persist each updated row under the same key scheme as
+        // inserts ({table}:{row_id}) so reads-after-recovery stay consistent.
+        for &row_id in &mutation_result.affected_row_ids {
+            if let Some(row) = tch.get_row_by_id(&self.table, row_id)
+                && let Ok(value) = bincode::serialize(&row)
+            {
+                let key = format!("{}:{}", self.table, row_id);
+                let _ = self.conn.put(key.into_bytes(), value);
+            }
+        }
+
+        Ok(UpdateResult {
+            rows_updated: mutation_result.affected_count,
+        })
     }
 }
 
@@ -219,15 +234,25 @@ impl<'a> DeleteBuilder<'a> {
     }
 
     /// Execute delete
-    /// 
-    /// Note: Deletes are persisted to TCH in-memory store.
-    /// The MutationResult contains affected row IDs for storage-level operations.
+    ///
+    /// Applies the delete to the in-memory TCH and removes the affected rows
+    /// from the durable storage backend (WAL-logged via
+    /// [`SochConnection::delete`]), keeping the TCH and `DurableStorage`
+    /// consistent and the mutation crash-safe.
     pub fn execute(self) -> Result<DeleteResult> {
         let mut tch = self.conn.tch.write();
         let mutation_result = tch.delete_rows(&self.table, self.where_clause.as_ref());
 
-        // TODO: Wire mutation_result.affected_row_ids to storage backend for WAL/index/CDC
-        Ok(DeleteResult { rows_deleted: mutation_result.affected_count })
+        // Write-through: remove each deleted row from durable storage under the
+        // same key scheme as inserts ({table}:{row_id}).
+        for &row_id in &mutation_result.affected_row_ids {
+            let key = format!("{}:{}", self.table, row_id);
+            let _ = self.conn.delete(key.as_bytes());
+        }
+
+        Ok(DeleteResult {
+            rows_deleted: mutation_result.affected_count,
+        })
     }
 }
 
@@ -491,7 +516,16 @@ impl<'a> ClientTransaction<'a> {
             value: value.into(),
         };
         let mutation_result = tch.update_rows(table, &updates, Some(&where_clause));
-        // TODO: Wire mutation_result.affected_row_ids to transaction WAL
+        // Write-through: persist updated rows so the transaction's mutations are
+        // durable and consistent with DurableStorage.
+        for &row_id in &mutation_result.affected_row_ids {
+            if let Some(row) = tch.get_row_by_id(table, row_id)
+                && let Ok(value) = bincode::serialize(&row)
+            {
+                let key = format!("{}:{}", table, row_id);
+                let _ = self.conn.put(key.into_bytes(), value);
+            }
+        }
         Ok(mutation_result.affected_count)
     }
 
@@ -509,7 +543,11 @@ impl<'a> ClientTransaction<'a> {
             value: value.into(),
         };
         let mutation_result = tch.delete_rows(table, Some(&where_clause));
-        // TODO: Wire mutation_result.affected_row_ids to transaction WAL
+        // Write-through: remove deleted rows from durable storage.
+        for &row_id in &mutation_result.affected_row_ids {
+            let key = format!("{}:{}", table, row_id);
+            let _ = self.conn.delete(key.as_bytes());
+        }
         Ok(mutation_result.affected_count)
     }
 }
@@ -530,6 +568,63 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.rows_inserted, 1);
+    }
+
+    #[test]
+    fn test_update_delete_write_through_to_storage() {
+        use crate::connection::FieldType;
+
+        let conn = SochConnection::open("./test_write_through").unwrap();
+        conn.register_table(
+            "users",
+            &[
+                ("id".to_string(), FieldType::UInt64),
+                ("name".to_string(), FieldType::Text),
+            ],
+        )
+        .unwrap();
+
+        // Insert a row through the builder (which persists to durable storage).
+        let inserted = conn
+            .insert_into("users")
+            .set("id", SochValue::UInt(1))
+            .set("name", SochValue::Text("Alice".to_string()))
+            .execute()
+            .unwrap();
+        let row_id = inserted.last_id.expect("insert returns a row id");
+        let key = format!("users:{}", row_id);
+
+        // Update the row and confirm the durable storage value reflects it.
+        let updated = conn
+            .update("users")
+            .set("name", SochValue::Text("Alice Updated".to_string()))
+            .where_eq("id", SochValue::UInt(1))
+            .execute()
+            .unwrap();
+        assert_eq!(updated.rows_updated, 1);
+
+        let raw = conn
+            .get(key.as_bytes())
+            .unwrap()
+            .expect("updated row is persisted to storage");
+        let stored: HashMap<String, SochValue> = bincode::deserialize(&raw).unwrap();
+        assert_eq!(
+            stored.get("name"),
+            Some(&SochValue::Text("Alice Updated".to_string())),
+            "durable storage must reflect the update, not the original value"
+        );
+
+        // Delete the row and confirm it is removed from durable storage.
+        let deleted = conn
+            .delete_from("users")
+            .where_eq("id", SochValue::UInt(1))
+            .execute()
+            .unwrap();
+        assert_eq!(deleted.rows_deleted, 1);
+        assert!(
+            conn.get(key.as_bytes()).unwrap().is_none(),
+            "deleted row must be removed from durable storage"
+        );
     }
 
     #[test]

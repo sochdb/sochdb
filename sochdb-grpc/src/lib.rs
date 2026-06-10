@@ -54,35 +54,37 @@ pub mod proto {
     tonic::include_proto!("sochdb.v1");
 }
 
-pub mod server;
 pub mod error;
+pub mod server;
 
 // Production hardening modules (Tasks 1-3, 8-9)
+pub mod auth_interceptor; // gRPC authentication interceptor (Task 7)
 pub mod blocking_pool; // Async boundary hardening with bounded pools
 pub mod health_service; // Probe semantics + degraded mode + watchdog
-pub mod observability; // Observability hardening: cardinality, slow query, SLOs
-pub mod auth_interceptor; // gRPC authentication interceptor (Task 7)
 pub mod metrics_server; // Prometheus /metrics HTTP endpoint (Task 8)
+pub mod observability; // Observability hardening: cardinality, slow query, SLOs
 pub mod security; // Security baseline: mTLS, AuthZ, audit, rate limiting
 
 // Service implementations
-pub mod graph_server;
-pub mod policy_server;
-pub mod context_server;
-pub mod collection_server;
-pub mod namespace_server;
-pub mod semantic_cache_server;
-pub mod trace_server;
 pub mod checkpoint_server;
-pub mod mcp_server;
+pub mod collection_server;
+pub mod context_server;
+pub mod memory_backend;
+pub mod graph_server;
 pub mod kv_server;
+pub mod mcp_server;
+pub mod namespace_server;
+pub mod pg_wire;
+pub mod policy_server;
+pub mod semantic_cache_server;
 pub mod subscription_server;
-pub mod ws_server; // WebSocket gateway (Task 4)
-pub mod pg_wire; // PostgreSQL wire protocol (Task 5)
+pub mod trace_server;
+pub mod ws_server; // WebSocket gateway (Task 4) // PostgreSQL wire protocol (Task 5)
 
-pub use server::VectorIndexServer;
-pub use error::GrpcError;
 pub use blocking_pool::{BlockingPool, BlockingPoolConfig, BlockingPoolManager, PoolType};
-pub use health_service::{HealthService, HealthServiceConfig, HealthCheckResult, DegradedCondition};
-pub use security::{SecurityService, SecurityConfig, Principal, Capability, AuthError};
-
+pub use error::GrpcError;
+pub use health_service::{
+    DegradedCondition, HealthCheckResult, HealthService, HealthServiceConfig,
+};
+pub use security::{AuthError, Capability, Principal, SecurityConfig, SecurityService};
+pub use server::VectorIndexServer;

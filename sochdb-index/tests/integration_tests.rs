@@ -23,9 +23,9 @@
 //! - High-dimensional embeddings
 //! - RAG-like document retrieval
 
-use std::collections::HashMap;
 use sochdb_index::hnsw::{HnswConfig, HnswIndex};
 use sochdb_index::vector_quantized::Precision;
+use std::collections::HashMap;
 
 /// Generate normalized embedding-like vectors
 fn generate_embedding(id: u64, dim: usize, cluster_id: usize) -> Vec<f32> {

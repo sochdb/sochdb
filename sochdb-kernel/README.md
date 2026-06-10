@@ -179,4 +179,4 @@ To ensure auditability, the kernel maintains a strict code budget:
 
 ## License
 
-Apache-2.0 OR MIT
+AGPL-3.0-or-later

@@ -128,10 +128,7 @@ pub mod avx2 {
             // Prefetch next iteration's data
             if i + PREFETCH_DISTANCE < chunks {
                 let prefetch_d = (i + PREFETCH_DISTANCE) * 8;
-                _mm_prefetch(
-                    query_ptr.add(prefetch_d) as *const i8,
-                    _MM_HINT_T0,
-                );
+                _mm_prefetch(query_ptr.add(prefetch_d) as *const i8, _MM_HINT_T0);
                 for c in candidates {
                     _mm_prefetch(c.as_ptr().add(prefetch_d) as *const i8, _MM_HINT_T0);
                 }
@@ -616,11 +613,7 @@ impl BatchDistanceCalculator {
             .map(|(dot, candidate)| {
                 let candidate_norm = l2_norm_single(candidate);
                 let denom = query_norm * candidate_norm;
-                if denom > 1e-10 {
-                    dot / denom
-                } else {
-                    0.0
-                }
+                if denom > 1e-10 { dot / denom } else { 0.0 }
             })
             .collect()
     }
@@ -822,18 +815,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 0.7071... is arbitrary test data, not FRAC_1_SQRT_2
     fn test_cosine_similarity() {
         let dim = 4;
         // Unit vectors
         let query = vec![1.0, 0.0, 0.0, 0.0];
         let c1 = vec![1.0, 0.0, 0.0, 0.0]; // cosine = 1
         let c2 = vec![0.0, 1.0, 0.0, 0.0]; // cosine = 0
-        let c3 = vec![
-            0.7071067811865476,
-            0.7071067811865476,
-            0.0,
-            0.0,
-        ]; // cosine ≈ 0.707
+        let c3 = vec![0.7071067811865476, 0.7071067811865476, 0.0, 0.0]; // cosine ≈ 0.707
 
         let candidates: Vec<&[f32]> = vec![&c1, &c2, &c3];
 

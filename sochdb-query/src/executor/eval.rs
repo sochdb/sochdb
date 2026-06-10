@@ -6,9 +6,9 @@
 //! producing [`SochValue`] results. Used by Filter, Project, Sort, and
 //! Join operators for predicate and expression evaluation.
 
+use super::types::{Row, Schema};
 use crate::soch_ql::SochValue;
 use crate::sql::ast::{BinaryOperator, ColumnRef, Expr, FunctionCall, Literal, UnaryOperator};
-use super::types::{Row, Schema};
 use sochdb_core::Result;
 
 /// Evaluate an expression against a row, producing a scalar value.
@@ -49,13 +49,21 @@ pub fn eval_expr(expr: &Expr, row: &Row, schema: &Schema) -> Result<SochValue> {
 
         Expr::Function(func) => eval_function(func, row, schema),
 
-        Expr::IsNull { expr: inner, negated } => {
+        Expr::IsNull {
+            expr: inner,
+            negated,
+        } => {
             let v = eval_expr(inner, row, schema)?;
             let is_null = matches!(v, SochValue::Null);
             Ok(SochValue::Bool(if *negated { !is_null } else { is_null }))
         }
 
-        Expr::Between { expr: inner, low, high, negated } => {
+        Expr::Between {
+            expr: inner,
+            low,
+            high,
+            negated,
+        } => {
             let v = eval_expr(inner, row, schema)?;
             let lo = eval_expr(low, row, schema)?;
             let hi = eval_expr(high, row, schema)?;
@@ -64,7 +72,11 @@ pub fn eval_expr(expr: &Expr, row: &Row, schema: &Schema) -> Result<SochValue> {
             Ok(SochValue::Bool(if *negated { !in_range } else { in_range }))
         }
 
-        Expr::InList { expr: inner, list, negated } => {
+        Expr::InList {
+            expr: inner,
+            list,
+            negated,
+        } => {
             let v = eval_expr(inner, row, schema)?;
             let mut found = false;
             for item in list {
@@ -77,7 +89,12 @@ pub fn eval_expr(expr: &Expr, row: &Row, schema: &Schema) -> Result<SochValue> {
             Ok(SochValue::Bool(if *negated { !found } else { found }))
         }
 
-        Expr::Like { expr: inner, pattern, negated, .. } => {
+        Expr::Like {
+            expr: inner,
+            pattern,
+            negated,
+            ..
+        } => {
             let v = eval_expr(inner, row, schema)?;
             let p = eval_expr(pattern, row, schema)?;
             let matched = match (&v, &p) {
@@ -87,11 +104,22 @@ pub fn eval_expr(expr: &Expr, row: &Row, schema: &Schema) -> Result<SochValue> {
             Ok(SochValue::Bool(if *negated { !matched } else { matched }))
         }
 
-        Expr::Case { operand, conditions, else_result } => {
-            eval_case(operand.as_deref(), conditions, else_result.as_deref(), row, schema)
-        }
+        Expr::Case {
+            operand,
+            conditions,
+            else_result,
+        } => eval_case(
+            operand.as_deref(),
+            conditions,
+            else_result.as_deref(),
+            row,
+            schema,
+        ),
 
-        Expr::Cast { expr: inner, data_type: _ } => {
+        Expr::Cast {
+            expr: inner,
+            data_type: _,
+        } => {
             // Simplified: just evaluate the inner expression
             // Full type coercion can be added later
             eval_expr(inner, row, schema)
@@ -119,11 +147,9 @@ pub fn eval_expr(expr: &Expr, row: &Row, schema: &Schema) -> Result<SochValue> {
         )),
 
         // Vector literal
-        Expr::Vector(floats) => {
-            Ok(SochValue::Array(
-                floats.iter().map(|f| SochValue::Float(*f as f64)).collect(),
-            ))
-        }
+        Expr::Vector(floats) => Ok(SochValue::Array(
+            floats.iter().map(|f| SochValue::Float(*f as f64)).collect(),
+        )),
 
         // Not yet supported in executor
         Expr::Subquery(_)
@@ -133,9 +159,10 @@ pub fn eval_expr(expr: &Expr, row: &Row, schema: &Schema) -> Result<SochValue> {
         | Expr::JsonAccess { .. }
         | Expr::ContextWindow { .. }
         | Expr::Subscript { .. }
-        | Expr::RecordId { .. } => Err(sochdb_core::SochDBError::Internal(
-            format!("Expression type not yet supported in executor: {:?}", std::mem::discriminant(expr)),
-        )),
+        | Expr::RecordId { .. } => Err(sochdb_core::SochDBError::Internal(format!(
+            "Expression type not yet supported in executor: {:?}",
+            std::mem::discriminant(expr)
+        ))),
     }
 }
 
@@ -177,8 +204,12 @@ fn eval_binary_op(lv: &SochValue, op: BinaryOperator, rv: &SochValue) -> Result<
     // NULL propagation for most ops
     if matches!(lv, SochValue::Null) || matches!(rv, SochValue::Null) {
         match op {
-            BinaryOperator::Eq | BinaryOperator::Ne | BinaryOperator::Lt
-            | BinaryOperator::Le | BinaryOperator::Gt | BinaryOperator::Ge => {
+            BinaryOperator::Eq
+            | BinaryOperator::Ne
+            | BinaryOperator::Lt
+            | BinaryOperator::Le
+            | BinaryOperator::Gt
+            | BinaryOperator::Ge => {
                 // NULL compared to anything is NULL (SQL three-valued logic)
                 return Ok(SochValue::Null);
             }
@@ -215,10 +246,14 @@ fn eval_binary_op(lv: &SochValue, op: BinaryOperator, rv: &SochValue) -> Result<
             // Division by zero check
             match rv {
                 SochValue::Int(0) | SochValue::UInt(0) => {
-                    return Err(sochdb_core::SochDBError::Internal("Division by zero".into()));
+                    return Err(sochdb_core::SochDBError::Internal(
+                        "Division by zero".into(),
+                    ));
                 }
                 SochValue::Float(f) if *f == 0.0 => {
-                    return Err(sochdb_core::SochDBError::Internal("Division by zero".into()));
+                    return Err(sochdb_core::SochDBError::Internal(
+                        "Division by zero".into(),
+                    ));
                 }
                 _ => {}
             }
@@ -227,7 +262,9 @@ fn eval_binary_op(lv: &SochValue, op: BinaryOperator, rv: &SochValue) -> Result<
         BinaryOperator::Modulo => {
             match rv {
                 SochValue::Int(0) | SochValue::UInt(0) => {
-                    return Err(sochdb_core::SochDBError::Internal("Division by zero".into()));
+                    return Err(sochdb_core::SochDBError::Internal(
+                        "Division by zero".into(),
+                    ));
                 }
                 _ => {}
             }
@@ -242,14 +279,10 @@ fn eval_binary_op(lv: &SochValue, op: BinaryOperator, rv: &SochValue) -> Result<
         }
 
         // LIKE handled separately above in eval_expr
-        BinaryOperator::Like => {
-            match (lv, rv) {
-                (SochValue::Text(s), SochValue::Text(p)) => {
-                    Ok(SochValue::Bool(like_match(s, p)))
-                }
-                _ => Ok(SochValue::Bool(false)),
-            }
-        }
+        BinaryOperator::Like => match (lv, rv) {
+            (SochValue::Text(s), SochValue::Text(p)) => Ok(SochValue::Bool(like_match(s, p))),
+            _ => Ok(SochValue::Bool(false)),
+        },
 
         // Bitwise ops
         BinaryOperator::BitAnd => eval_bitwise(lv, rv, |a, b| a & b),
@@ -264,7 +297,8 @@ fn eval_binary_op(lv: &SochValue, op: BinaryOperator, rv: &SochValue) -> Result<
         // Graph traversal — requires graph execution engine (not yet implemented)
         BinaryOperator::GraphRight | BinaryOperator::GraphLeft | BinaryOperator::GraphBi => {
             Err(sochdb_core::SochDBError::Internal(
-                "Graph traversal operators (-> <- <->) not yet supported in scalar evaluation".into(),
+                "Graph traversal operators (-> <- <->) not yet supported in scalar evaluation"
+                    .into(),
             ))
         }
     }
@@ -276,14 +310,18 @@ fn eval_unary_op(op: UnaryOperator, v: &SochValue) -> Result<SochValue> {
             SochValue::Int(i) => Ok(SochValue::Int(-i)),
             SochValue::Float(f) => Ok(SochValue::Float(-f)),
             SochValue::Null => Ok(SochValue::Null),
-            _ => Err(sochdb_core::SochDBError::Internal("Cannot negate non-numeric value".into())),
+            _ => Err(sochdb_core::SochDBError::Internal(
+                "Cannot negate non-numeric value".into(),
+            )),
         },
         UnaryOperator::Plus => Ok(v.clone()),
         UnaryOperator::Not => Ok(SochValue::Bool(!value_is_truthy(v))),
         UnaryOperator::BitNot => match v {
             SochValue::Int(i) => Ok(SochValue::Int(!i)),
             SochValue::Null => Ok(SochValue::Null),
-            _ => Err(sochdb_core::SochDBError::Internal("Cannot bitwise-NOT non-integer".into())),
+            _ => Err(sochdb_core::SochDBError::Internal(
+                "Cannot bitwise-NOT non-integer".into(),
+            )),
         },
     }
 }
@@ -308,7 +346,9 @@ fn eval_function(func: &FunctionCall, row: &Row, schema: &Schema) -> Result<Soch
             Ok(SochValue::Null)
         }
         "NULLIF" => {
-            if args.len() == 2 && compare_values(&args[0], &args[1]) == Some(std::cmp::Ordering::Equal) {
+            if args.len() == 2
+                && compare_values(&args[0], &args[1]) == Some(std::cmp::Ordering::Equal)
+            {
                 Ok(SochValue::Null)
             } else {
                 Ok(args.into_iter().next().unwrap_or(SochValue::Null))
@@ -352,28 +392,28 @@ fn eval_function(func: &FunctionCall, row: &Row, schema: &Schema) -> Result<Soch
             }
         }
         "CONCAT" => {
-            let s: String = args.iter().map(value_to_string).collect::<Vec<_>>().join("");
+            let s: String = args
+                .iter()
+                .map(value_to_string)
+                .collect::<Vec<_>>()
+                .join("");
             Ok(SochValue::Text(s))
         }
-        "REPLACE" => {
-            match (args.get(0), args.get(1), args.get(2)) {
-                (Some(SochValue::Text(s)), Some(SochValue::Text(from)), Some(SochValue::Text(to))) => {
-                    Ok(SochValue::Text(s.replace(from.as_str(), to.as_str())))
-                }
-                _ => Ok(SochValue::Null),
+        "REPLACE" => match (args.get(0), args.get(1), args.get(2)) {
+            (Some(SochValue::Text(s)), Some(SochValue::Text(from)), Some(SochValue::Text(to))) => {
+                Ok(SochValue::Text(s.replace(from.as_str(), to.as_str())))
             }
-        }
-        "ROUND" => {
-            match (args.get(0), args.get(1)) {
-                (Some(SochValue::Float(f)), Some(SochValue::Int(digits))) => {
-                    let factor = 10f64.powi(*digits as i32);
-                    Ok(SochValue::Float((f * factor).round() / factor))
-                }
-                (Some(SochValue::Float(f)), None) => Ok(SochValue::Float(f.round())),
-                (Some(SochValue::Int(i)), _) => Ok(SochValue::Int(*i)),
-                _ => Ok(SochValue::Null),
+            _ => Ok(SochValue::Null),
+        },
+        "ROUND" => match (args.get(0), args.get(1)) {
+            (Some(SochValue::Float(f)), Some(SochValue::Int(digits))) => {
+                let factor = 10f64.powi(*digits as i32);
+                Ok(SochValue::Float((f * factor).round() / factor))
             }
-        }
+            (Some(SochValue::Float(f)), None) => Ok(SochValue::Float(f.round())),
+            (Some(SochValue::Int(i)), _) => Ok(SochValue::Int(*i)),
+            _ => Ok(SochValue::Null),
+        },
         "FLOOR" => match args.first() {
             Some(SochValue::Float(f)) => Ok(SochValue::Float(f.floor())),
             Some(v @ SochValue::Int(_)) => Ok(v.clone()),
@@ -387,7 +427,9 @@ fn eval_function(func: &FunctionCall, row: &Row, schema: &Schema) -> Result<Soch
         "GREATEST" => {
             let mut best: Option<SochValue> = None;
             for a in &args {
-                if matches!(a, SochValue::Null) { continue; }
+                if matches!(a, SochValue::Null) {
+                    continue;
+                }
                 best = Some(match &best {
                     None => a.clone(),
                     Some(b) => {
@@ -404,7 +446,9 @@ fn eval_function(func: &FunctionCall, row: &Row, schema: &Schema) -> Result<Soch
         "LEAST" => {
             let mut best: Option<SochValue> = None;
             for a in &args {
-                if matches!(a, SochValue::Null) { continue; }
+                if matches!(a, SochValue::Null) {
+                    continue;
+                }
                 best = Some(match &best {
                     None => a.clone(),
                     Some(b) => {
@@ -493,36 +537,11 @@ pub fn compare_values(a: &SochValue, b: &SochValue) -> Option<std::cmp::Ordering
 }
 
 /// SQL LIKE pattern matching (% and _ wildcards).
+///
+/// Delegates to the canonical [`crate::like::like_match`] so that `LIKE`
+/// behaves identically across every query path.
 fn like_match(s: &str, pattern: &str) -> bool {
-    let s_chars: Vec<char> = s.chars().collect();
-    let p_chars: Vec<char> = pattern.chars().collect();
-    like_match_impl(&s_chars, &p_chars, 0, 0)
-}
-
-fn like_match_impl(s: &[char], p: &[char], si: usize, pi: usize) -> bool {
-    if pi == p.len() {
-        return si == s.len();
-    }
-    match p[pi] {
-        '%' => {
-            // % matches zero or more characters
-            for i in si..=s.len() {
-                if like_match_impl(s, p, i, pi + 1) {
-                    return true;
-                }
-            }
-            false
-        }
-        '_' => {
-            // _ matches exactly one character
-            si < s.len() && like_match_impl(s, p, si + 1, pi + 1)
-        }
-        c => {
-            si < s.len()
-                && (s[si] == c || s[si].to_lowercase().eq(c.to_lowercase()))
-                && like_match_impl(s, p, si + 1, pi + 1)
-        }
-    }
+    crate::like::like_match(s, pattern)
 }
 
 /// Check if a value is truthy (for predicate evaluation).
@@ -548,11 +567,19 @@ fn value_to_string(v: &SochValue) -> String {
         SochValue::Float(f) => f.to_string(),
         SochValue::Text(s) => s.clone(),
         SochValue::Binary(b) => format!("0x{}", hex::encode(b)),
-        SochValue::Array(a) => format!("[{}]", a.iter().map(value_to_string).collect::<Vec<_>>().join(",")),
+        SochValue::Array(a) => format!(
+            "[{}]",
+            a.iter().map(value_to_string).collect::<Vec<_>>().join(",")
+        ),
     }
 }
 
-fn eval_arithmetic<F, G>(lv: &SochValue, rv: &SochValue, int_op: F, float_op: G) -> Result<SochValue>
+fn eval_arithmetic<F, G>(
+    lv: &SochValue,
+    rv: &SochValue,
+    int_op: F,
+    float_op: G,
+) -> Result<SochValue>
 where
     F: Fn(i64, i64) -> i64,
     G: Fn(f64, f64) -> f64,
@@ -562,7 +589,9 @@ where
         (SochValue::Float(a), SochValue::Float(b)) => Ok(SochValue::Float(float_op(*a, *b))),
         (SochValue::Int(a), SochValue::Float(b)) => Ok(SochValue::Float(float_op(*a as f64, *b))),
         (SochValue::Float(a), SochValue::Int(b)) => Ok(SochValue::Float(float_op(*a, *b as f64))),
-        (SochValue::UInt(a), SochValue::UInt(b)) => Ok(SochValue::Int(int_op(*a as i64, *b as i64))),
+        (SochValue::UInt(a), SochValue::UInt(b)) => {
+            Ok(SochValue::Int(int_op(*a as i64, *b as i64)))
+        }
         (SochValue::Int(a), SochValue::UInt(b)) => Ok(SochValue::Int(int_op(*a, *b as i64))),
         (SochValue::UInt(a), SochValue::Int(b)) => Ok(SochValue::Int(int_op(*a as i64, *b))),
         (SochValue::UInt(a), SochValue::Float(b)) => Ok(SochValue::Float(float_op(*a as f64, *b))),
@@ -582,7 +611,9 @@ where
     match (lv, rv) {
         (SochValue::Int(a), SochValue::Int(b)) => Ok(SochValue::Int(op(*a, *b))),
         (SochValue::UInt(a), SochValue::UInt(b)) => Ok(SochValue::Int(op(*a as i64, *b as i64))),
-        _ => Err(sochdb_core::SochDBError::Internal("Bitwise ops require integer operands".into())),
+        _ => Err(sochdb_core::SochDBError::Internal(
+            "Bitwise ops require integer operands".into(),
+        )),
     }
 }
 

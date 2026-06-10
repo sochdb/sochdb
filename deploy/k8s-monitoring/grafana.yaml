@@ -1,0 +1,272 @@
+# =============================================================================
+# Grafana Deployment for SochDB Monitoring
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: sochdb-monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  namespace: sochdb-monitoring
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: SochDB
+        orgId: 1
+        folder: SochDB
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-overview
+  namespace: sochdb-monitoring
+data:
+  sochdb-overview.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "liveNow": false,
+      "panels": [
+        {
+          "title": "gRPC Request Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(sochdb_grpc_requests_total[5m])) by (method)",
+              "legendFormat": "{{method}}"
+            }
+          ]
+        },
+        {
+          "title": "gRPC Error Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(sochdb_grpc_errors_total[5m])) by (method, code)",
+              "legendFormat": "{{method}} {{code}}"
+            }
+          ]
+        },
+        {
+          "title": "Request Latency (P50/P95/P99)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, rate(sochdb_grpc_request_duration_seconds_bucket[5m]))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, rate(sochdb_grpc_request_duration_seconds_bucket[5m]))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, rate(sochdb_grpc_request_duration_seconds_bucket[5m]))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "title": "HNSW Search Latency",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, rate(hnsw_search_duration_seconds_bucket[5m]))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, rate(hnsw_search_duration_seconds_bucket[5m]))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, rate(hnsw_search_duration_seconds_bucket[5m]))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "title": "Vector Insertions / sec",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+          "targets": [
+            { "expr": "rate(hnsw_insert_total[5m])" }
+          ]
+        },
+        {
+          "title": "Total Vectors",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 },
+          "targets": [
+            { "expr": "sochdb_total_vectors" }
+          ]
+        },
+        {
+          "title": "Memory Usage",
+          "type": "gauge",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 },
+          "targets": [
+            {
+              "expr": "container_memory_working_set_bytes{container=\"sochdb\"} / container_spec_memory_limit_bytes{container=\"sochdb\"}"
+            }
+          ]
+        },
+        {
+          "title": "Disk Usage",
+          "type": "gauge",
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 16 },
+          "targets": [
+            {
+              "expr": "sochdb_storage_used_bytes / sochdb_storage_total_bytes"
+            }
+          ]
+        },
+        {
+          "title": "Active gRPC Connections",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "targets": [
+            { "expr": "sochdb_grpc_active_connections" }
+          ]
+        },
+        {
+          "title": "WAL Size",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "targets": [
+            { "expr": "sochdb_wal_pending_bytes" }
+          ]
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["sochdb"],
+      "templating": {
+        "list": [
+          {
+            "name": "pod",
+            "type": "query",
+            "query": "label_values(sochdb_grpc_requests_total, pod)",
+            "datasource": "Prometheus",
+            "includeAll": true,
+            "multi": true
+          }
+        ]
+      },
+      "time": { "from": "now-1h", "to": "now" },
+      "title": "SochDB Overview",
+      "uid": "sochdb-overview"
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: sochdb-monitoring
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      securityContext:
+        fsGroup: 472
+        runAsUser: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.1.0
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: password
+                  optional: true
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "false"
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+            - name: data
+              mountPath: /var/lib/grafana
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboard-overview
+        - name: data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: sochdb-monitoring
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+      name: http
+  selector:
+    app: grafana

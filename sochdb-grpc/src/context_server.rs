@@ -5,31 +5,92 @@
 
 //! Context Service gRPC Implementation
 //!
-//! Provides LLM context assembly with token budgets via gRPC.
+//! Wires LLM context assembly to `sochdb-memory` (write-time lexical recall)
+//! and `sochdb-query::ContextCompiler` (exact-BPE budget packing).
 
+use crate::memory_backend::{ContextOutputFormat, MemoryBackend};
 use crate::proto::{
-    context_service_server::{ContextService, ContextServiceServer},
     ContextQueryRequest, ContextQueryResponse, ContextSectionType, EstimateTokensRequest,
     EstimateTokensResponse, FormatContextRequest, FormatContextResponse, OutputFormat,
-    SectionResult,
+    SectionResult, WriteEpisodeRequest, WriteEpisodeResponse,
+    context_service_server::{ContextService, ContextServiceServer},
 };
+use sochdb_memory::{LifecycleConfig, MemoryLifecycleDaemon, MemoryStore};
+use sochdb_query::ContextTemplate;
+use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-/// Simple token estimator (approximately 4 chars per token)
-fn estimate_tokens(text: &str) -> u32 {
-    (text.len() / 4) as u32
+fn proto_format(fmt: i32) -> ContextOutputFormat {
+    match fmt {
+        x if x == OutputFormat::Json as i32 => ContextOutputFormat::Json,
+        x if x == OutputFormat::Markdown as i32 => ContextOutputFormat::Markdown,
+        x if x == OutputFormat::Text as i32 => ContextOutputFormat::Text,
+        _ => ContextOutputFormat::Toon,
+    }
 }
 
-/// Context gRPC Server
-pub struct ContextServer;
+fn compiler_template(fmt: ContextOutputFormat) -> ContextTemplate {
+    match fmt {
+        ContextOutputFormat::Markdown => ContextTemplate::Markdown,
+        ContextOutputFormat::Text => ContextTemplate::Plain,
+        _ => ContextTemplate::Toon,
+    }
+}
+
+use std::collections::HashMap;
+
+fn section_namespace(session_id: &str, options: &HashMap<String, String>) -> String {
+    options
+        .get("namespace")
+        .cloned()
+        .unwrap_or_else(|| session_id.to_string())
+}
+
+/// Context gRPC Server backed by sochdb-memory + ContextCompiler.
+pub struct ContextServer {
+    backend: MemoryBackend,
+    lifecycle: Option<MemoryLifecycleDaemon>,
+}
 
 impl ContextServer {
     pub fn new() -> Self {
-        Self
+        Self::with_memory_store(Arc::new(MemoryStore::with_defaults()))
+    }
+
+    pub fn with_memory_store(store: Arc<MemoryStore>) -> Self {
+        Self::with_memory_store_and_lifecycle(store, true)
+    }
+
+    /// Share a `MemoryStore` across the process; optionally start the lifecycle daemon.
+    pub fn with_memory_store_and_lifecycle(store: Arc<MemoryStore>, start_lifecycle: bool) -> Self {
+        let lifecycle = if start_lifecycle {
+            let config = LifecycleConfig::default();
+            let daemon = MemoryLifecycleDaemon::new(Arc::clone(&store), config.clone());
+            daemon.start(&config);
+            Some(daemon)
+        } else {
+            None
+        };
+        Self {
+            backend: MemoryBackend::new(store),
+            lifecycle,
+        }
+    }
+
+    pub fn memory_store(&self) -> Arc<MemoryStore> {
+        Arc::clone(self.backend.store())
     }
 
     pub fn into_service(self) -> ContextServiceServer<Self> {
         ContextServiceServer::new(self)
+    }
+}
+
+impl Drop for ContextServer {
+    fn drop(&mut self) {
+        if let Some(daemon) = self.lifecycle.take() {
+            daemon.stop();
+        }
     }
 }
 
@@ -46,13 +107,14 @@ impl ContextService for ContextServer {
         request: Request<ContextQueryRequest>,
     ) -> Result<Response<ContextQueryResponse>, Status> {
         let req = request.into_inner();
-        let token_limit = req.token_limit as usize;
+        let token_limit = req.token_limit.max(1) as usize;
+        let output_fmt = proto_format(req.format);
+        let template = compiler_template(output_fmt);
 
         let mut section_results = Vec::new();
         let mut total_tokens = 0u32;
         let mut context_parts = Vec::new();
 
-        // Sort sections by priority (lower = higher priority)
         let mut sections = req.sections;
         sections.sort_by_key(|s| s.priority);
 
@@ -62,71 +124,114 @@ impl ContextService for ContextServer {
                 break;
             }
 
-            // Generate section content based on type
-            let content = match section.section_type {
+            let ns = section_namespace(&req.session_id, &section.options);
+            let ns = ns.as_str();
+
+            let (final_content, tokens_used, truncated) = match section.section_type {
+                x if x == ContextSectionType::ContextSectionSearch as i32 => {
+                    let lanes = MemoryBackend::parse_lanes(&section.options);
+                    match self.backend.search_and_compile(
+                        ns,
+                        &section.query,
+                        remaining_budget,
+                        lanes,
+                        template,
+                    ) {
+                        Ok(compiled) => {
+                            let truncated = compiled.truncated || compiled.exact_tokens > remaining_budget;
+                            let content = MemoryBackend::format_compiled(&compiled, output_fmt);
+                            let tokens = compiled.exact_tokens as u32;
+                            (content, tokens, truncated)
+                        }
+                        Err(e) => (
+                            format!("# {} (error)\n{}\n", section.name, e),
+                            0,
+                            true,
+                        ),
+                    }
+                }
                 x if x == ContextSectionType::ContextSectionGet as i32 => {
-                    format!("# {}\n[Data from: {}]\n", section.name, section.query)
+                    if let Some(text) = section.options.get("episode_text") {
+                        match self.backend.write_episode(ns, text, None, None) {
+                            Ok(wr) => {
+                                let content = format!(
+                                    "# {} (ingested)\nepisode_id={} lag_us={} lexical={}\n",
+                                    section.name,
+                                    wr.episode_id.0,
+                                    wr.ingestion_lag_us,
+                                    wr.lexical_indexed
+                                );
+                                let tokens = MemoryBackend::estimate_tokens_exact(&content);
+                                (content, tokens, false)
+                            }
+                            Err(e) => (format!("# {} (write error)\n{}\n", section.name, e), 0, true),
+                        }
+                    } else if let Some(doc_id) = section
+                        .options
+                        .get("doc_id")
+                        .and_then(|s| s.parse::<u64>().ok())
+                    {
+                        let text = self
+                            .backend
+                            .get_episode_text(ns, doc_id)
+                            .unwrap_or_else(|| format!("[episode {doc_id} not found]"));
+                        let content = format!("# {}\n{}\n", section.name, text);
+                        let tokens = MemoryBackend::estimate_tokens_exact(&content);
+                        (content, tokens, false)
+                    } else {
+                        let content = format!(
+                            "# {}\n[path: {}]\n",
+                            section.name,
+                            section.query
+                        );
+                        let tokens = MemoryBackend::estimate_tokens_exact(&content);
+                        (content, tokens, false)
+                    }
                 }
                 x if x == ContextSectionType::ContextSectionLast as i32 => {
-                    format!("# {} (Recent)\n[Last entries from: {}]\n", section.name, section.query)
-                }
-                x if x == ContextSectionType::ContextSectionSearch as i32 => {
-                    format!("# {} (Search Results)\n[Search: {}]\n", section.name, section.query)
+                    let count = self.backend.store().episode_count(ns);
+                    let content = format!(
+                        "# {} (Recent)\nnamespace={} episodes={}\n",
+                        section.name, ns, count
+                    );
+                    let tokens = MemoryBackend::estimate_tokens_exact(&content);
+                    (content, tokens, false)
                 }
                 x if x == ContextSectionType::ContextSectionSelect as i32 => {
-                    format!("# {} (Query)\n[SQL: {}]\n", section.name, section.query)
+                    let content = format!("# {} (Query)\n[SQL: {}]\n", section.name, section.query);
+                    let tokens = MemoryBackend::estimate_tokens_exact(&content);
+                    (content, tokens, false)
                 }
-                _ => format!("# {}\n", section.name),
+                _ => {
+                    let content = format!("# {}\n", section.name);
+                    let tokens = MemoryBackend::estimate_tokens_exact(&content);
+                    (content, tokens, false)
+                }
             };
 
-            let section_tokens = estimate_tokens(&content);
-            let truncated = section_tokens as usize > remaining_budget;
-
-            let final_content = if truncated {
-                // Truncate to fit budget
-                let char_limit = remaining_budget * 4;
-                content.chars().take(char_limit).collect::<String>()
-            } else {
-                content
-            };
-
-            let tokens_used = estimate_tokens(&final_content);
             total_tokens += tokens_used;
-
+            context_parts.push(final_content.clone());
             section_results.push(SectionResult {
                 name: section.name,
                 tokens_used,
                 truncated,
-                content: final_content.clone(),
+                content: final_content,
             });
-
-            context_parts.push(final_content);
         }
 
-        // Format output
-        let context = match req.format {
-            x if x == OutputFormat::Json as i32 => {
-                serde_json::json!({
-                    "session_id": req.session_id,
-                    "sections": context_parts,
-                    "total_tokens": total_tokens
-                })
-                .to_string()
-            }
-            x if x == OutputFormat::Markdown as i32 => {
-                context_parts.join("\n---\n")
-            }
-            x if x == OutputFormat::Text as i32 => {
-                context_parts.join("\n\n")
-            }
-            _ => {
-                // TOON format (default)
-                format!(
-                    "<context session=\"{}\">\n{}\n</context>",
-                    req.session_id,
-                    context_parts.join("\n")
-                )
-            }
+        let context = if context_parts.len() == 1 {
+            context_parts.into_iter().next().unwrap_or_default()
+        } else {
+            MemoryBackend::format_compiled(
+                &sochdb_query::CompiledContext {
+                    body: context_parts.join("\n---\n"),
+                    exact_tokens: total_tokens as usize,
+                    budget: token_limit,
+                    facts: vec![],
+                    truncated: total_tokens as usize >= token_limit,
+                },
+                output_fmt,
+            )
         };
 
         Ok(Response::new(ContextQueryResponse {
@@ -137,12 +242,59 @@ impl ContextService for ContextServer {
         }))
     }
 
+    async fn write_episode(
+        &self,
+        request: Request<WriteEpisodeRequest>,
+    ) -> Result<Response<WriteEpisodeResponse>, Status> {
+        let req = request.into_inner();
+        if req.text.is_empty() {
+            return Ok(Response::new(WriteEpisodeResponse {
+                error: "text must not be empty".into(),
+                ..Default::default()
+            }));
+        }
+
+        let metadata = if req.metadata_json.is_empty() {
+            None
+        } else {
+            match serde_json::from_str(&req.metadata_json) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    return Ok(Response::new(WriteEpisodeResponse {
+                        error: format!("invalid metadata_json: {e}"),
+                        ..Default::default()
+                    }));
+                }
+            }
+        };
+
+        match self.backend.write_episode(
+            &req.namespace,
+            &req.text,
+            req.t_valid_from,
+            metadata,
+        ) {
+            Ok(wr) => Ok(Response::new(WriteEpisodeResponse {
+                episode_id: wr.episode_id.0,
+                t_created: wr.t_created,
+                lexical_indexed: wr.lexical_indexed,
+                ingestion_lag_us: wr.ingestion_lag_us,
+                enrichment_queued: wr.enrichment_queued,
+                error: String::new(),
+            })),
+            Err(e) => Ok(Response::new(WriteEpisodeResponse {
+                error: e,
+                ..Default::default()
+            })),
+        }
+    }
+
     async fn estimate_tokens(
         &self,
         request: Request<EstimateTokensRequest>,
     ) -> Result<Response<EstimateTokensResponse>, Status> {
         let req = request.into_inner();
-        let token_count = estimate_tokens(&req.content);
+        let token_count = MemoryBackend::estimate_tokens_exact(&req.content);
 
         Ok(Response::new(EstimateTokensResponse { token_count }))
     }
@@ -152,16 +304,17 @@ impl ContextService for ContextServer {
         request: Request<FormatContextRequest>,
     ) -> Result<Response<FormatContextResponse>, Status> {
         let req = request.into_inner();
+        let fmt = proto_format(req.format);
 
-        let formatted = match req.format {
-            x if x == OutputFormat::Json as i32 => {
+        let formatted = match fmt {
+            ContextOutputFormat::Json => {
                 serde_json::json!({ "content": req.content }).to_string()
             }
-            x if x == OutputFormat::Markdown as i32 => {
+            ContextOutputFormat::Markdown => {
                 format!("```\n{}\n```", req.content)
             }
-            x if x == OutputFormat::Text as i32 => req.content,
-            _ => format!("<toon>{}</toon>", req.content),
+            ContextOutputFormat::Text => req.content,
+            ContextOutputFormat::Toon => format!("<toon>{}</toon>", req.content),
         };
 
         Ok(Response::new(FormatContextResponse { formatted }))

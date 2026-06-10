@@ -53,8 +53,8 @@
 //! - Read latency reduced by 2.1× (1 cache miss vs 4)
 //! - Expected throughput: 800K-1.2M inserts/sec
 
-use std::collections::HashMap;
 use sochdb_core::{Result, SochDBError, SochValue};
+use std::collections::HashMap;
 
 /// Column type enumeration for packed row decoding
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

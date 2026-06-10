@@ -57,8 +57,8 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 
@@ -160,7 +160,9 @@ impl FrameHeader {
     /// Deserialize header from bytes
     pub fn from_bytes(buf: &[u8; Self::SIZE]) -> Result<Self, IpcError> {
         let length = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let id = u64::from_le_bytes([buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]]);
+        let id = u64::from_le_bytes([
+            buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11],
+        ]);
         let msg_type = MessageType::try_from(buf[12])?;
         let flags = buf[13];
 
@@ -700,11 +702,11 @@ impl<H: RequestHandler> IpcServer<H> {
 
             match frame.header.msg_type {
                 MessageType::Request => {
-                    let response = match self.handler.handle_request(frame.header.id, &frame.payload)
-                    {
-                        Ok(data) => Frame::response(frame.header.id, data),
-                        Err(e) => Frame::error(frame.header.id, 1, &e.to_string()),
-                    };
+                    let response =
+                        match self.handler.handle_request(frame.header.id, &frame.payload) {
+                            Ok(data) => Frame::response(frame.header.id, data),
+                            Err(e) => Frame::error(frame.header.id, 1, &e.to_string()),
+                        };
                     writer.lock().write_frame(&response)?;
                 }
                 MessageType::StreamStart => {

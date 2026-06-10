@@ -29,7 +29,7 @@ use std::path::Path;
 
 use super::block::{BlockBuilder, BlockHandle, BlockType, DEFAULT_RESTART_INTERVAL};
 use super::filter::{BloomFilterPolicy, FilterBuilder, FilterPolicy};
-use super::format::{Footer, Header, Section, SectionType, SSTableFormat, HEADER_SIZE};
+use super::format::{Footer, HEADER_SIZE, Header, Section, SectionType};
 
 /// Default block size (4KB - matches typical filesystem block)
 pub const DEFAULT_BLOCK_SIZE: usize = 4 * 1024;
@@ -124,16 +124,16 @@ impl SSTableBuilder {
     pub fn new<P: AsRef<Path>>(path: P, options: SSTableBuilderOptions) -> std::io::Result<Self> {
         let file = File::create(path)?;
         let mut writer = BufWriter::new(file);
-        
+
         // Reserve space for header
         writer.seek(SeekFrom::Start(HEADER_SIZE as u64))?;
-        
+
         let data_block = if options.use_block_hash_index {
             BlockBuilder::with_hash_index(options.restart_interval)
         } else {
             BlockBuilder::new(options.restart_interval)
         };
-        
+
         Ok(Self {
             options,
             file: writer,
@@ -155,7 +155,7 @@ impl SSTableBuilder {
     /// Set estimated number of keys (for filter sizing)
     pub fn set_estimated_keys(&mut self, count: usize) {
         self.estimated_keys = count;
-        
+
         // Initialize filter builder with proper size
         if let Some(ref policy) = self.options.filter_policy {
             self.filter_builder = Some(policy.create_builder(count));
@@ -168,10 +168,7 @@ impl SSTableBuilder {
     pub fn add(&mut self, key: &[u8], value: &[u8]) -> std::io::Result<()> {
         // Verify sorted order
         if let Some(ref last) = self.last_key {
-            debug_assert!(
-                key > last.as_slice(),
-                "Keys must be added in sorted order"
-            );
+            debug_assert!(key > last.as_slice(), "Keys must be added in sorted order");
         }
 
         // Handle pending index entry from previous block
@@ -220,7 +217,7 @@ impl SSTableBuilder {
         // Write block
         let block_offset = self.offset;
         self.file.write_all(&compressed_data)?;
-        
+
         // Write block trailer (type + checksum)
         self.file.write_all(&[block_type as u8])?;
         let checksum = crc32fast::hash(&compressed_data);
@@ -263,7 +260,9 @@ impl SSTableBuilder {
             BlockType::Zstd => {
                 // Use Zstd compression
                 match zstd::encode_all(data, 3) {
-                    Ok(compressed) if compressed.len() < data.len() => (compressed, BlockType::Zstd),
+                    Ok(compressed) if compressed.len() < data.len() => {
+                        (compressed, BlockType::Zstd)
+                    }
                     _ => (data.to_vec(), BlockType::Uncompressed),
                 }
             }
@@ -275,7 +274,7 @@ impl SSTableBuilder {
     }
 
     /// Add index entry
-    fn add_index_entry(&mut self, largest_key: &[u8]) -> std::io::Result<()> {
+    fn add_index_entry(&mut self, _largest_key: &[u8]) -> std::io::Result<()> {
         // Index entries are already added in flush_data_block
         // This is for any additional processing
         Ok(())

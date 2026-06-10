@@ -1,0 +1,412 @@
+{
+  "source": "SochDB release-quality checklist — storage engine / SDK release gate",
+  "gates": [
+    {
+      "id": "storage_crash_recovery",
+      "category": "storage_correctness",
+      "priority": "blocker",
+      "title": "Crash recovery tests pass",
+      "description": "WAL crash scenarios: uncommitted rollback, commit atomicity, torn writes",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage --test crash_tests",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "storage_wal_uncommitted_rollback",
+      "category": "storage_correctness",
+      "priority": "blocker",
+      "title": "Uncommitted transaction rollback after crash",
+      "description": "Begin txn → write → crash before commit → data not visible",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage --test crash_tests test_uncommitted_transaction_rollback",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "storage_wal_commit_atomicity",
+      "category": "storage_correctness",
+      "priority": "blocker",
+      "title": "Committed transaction survives crash",
+      "description": "Commit → crash immediately → committed data exists",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage --test crash_tests test_committed_transaction_survives",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "storage_wal_torn_write",
+      "category": "storage_correctness",
+      "priority": "blocker",
+      "title": "Torn-write detection",
+      "description": "Truncate/corrupt WAL bytes → recovery stops safely",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage --test crash_tests test_torn",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "storage_wal_checksum",
+      "category": "storage_correctness",
+      "priority": "blocker",
+      "title": "Checksum corruption rejected",
+      "description": "Corrupt checksum → bad record rejected on replay",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage --test crash_tests corrupt",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "storage_checkpoint_recovery",
+      "category": "storage_correctness",
+      "priority": "blocker",
+      "title": "Checkpoint + WAL truncation recovery",
+      "description": "Checkpoint → truncate WAL → reopen → data correct",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage checkpoint",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "storage_future_version_reject",
+      "category": "backward_compatibility",
+      "priority": "blocker",
+      "title": "Future WAL segment version rejected",
+      "description": "Never silently open unknown future format",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage test_segment_header_rejects_future_version",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "storage_upgrade_contract",
+      "category": "backward_compatibility",
+      "priority": "blocker",
+      "title": "Upgrade contract rejects incompatible future version",
+      "description": "Old DB open + future version fail-fast",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage test_validate_rejects_incompatible_future_version",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "storage_durability_contract",
+      "category": "storage_correctness",
+      "priority": "blocker",
+      "title": "Durability contract tests",
+      "description": "ACID durability modes: fsync, group commit, torn-write detection",
+      "kind": "live_test",
+      "command": "cargo test -p sochdb-storage durability",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "concurrency_loom_mvcc",
+      "category": "concurrency_mvcc",
+      "priority": "blocker",
+      "title": "Loom MVCC concurrency model",
+      "description": "Lock-free reader-slot CAS + HLC timestamp advance",
+      "kind": "loom_test",
+      "command": "RUSTFLAGS=\"--cfg loom\" cargo test -p sochdb-storage --test loom_concurrency",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "concurrency_storage_lib",
+      "category": "concurrency_mvcc",
+      "priority": "blocker",
+      "title": "Storage library tests (release)",
+      "description": "MVCC, epoch, concurrent access under release build",
+      "kind": "live_test",
+      "command": "cargo test --release -p sochdb-storage --lib",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "concurrency_index_vector",
+      "category": "concurrency_mvcc",
+      "priority": "blocker",
+      "title": "Concurrent vector insert/search tests",
+      "description": "HNSW + index layer concurrency",
+      "kind": "live_test",
+      "command": "cargo test --release -p sochdb-index --lib concurrent",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "concurrency_stress_ignored",
+      "category": "concurrency_mvcc",
+      "priority": "warning",
+      "title": "Long stress tests (--ignored)",
+      "description": "Multi-reader/multi-writer, long transactions, compaction under read",
+      "kind": "live_test",
+      "command": "cargo test --release -p sochdb-storage -- --ignored",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "ffi_panic_firewall_exists",
+      "category": "ffi_safety",
+      "priority": "blocker",
+      "title": "FFI panic firewall module present",
+      "description": "catch_unwind boundary for extern C functions",
+      "kind": "static_file",
+      "path": "sochdb-index/src/ffi_firewall.rs",
+      "expected": "file_exists"
+    },
+    {
+      "id": "ffi_storage_exports_guarded",
+      "category": "ffi_safety",
+      "priority": "blocker",
+      "title": "Storage FFI uses panic firewall",
+      "description": "sochdb-storage/src/ffi.rs wraps extern C with ffi_guard!",
+      "kind": "static_grep",
+      "path": "sochdb-storage/src/ffi.rs",
+      "pattern": "ffi_guard!",
+      "min_matches": 1,
+      "expected": "pattern_found"
+    },
+    {
+      "id": "ffi_index_exports_guarded",
+      "category": "ffi_safety",
+      "priority": "blocker",
+      "title": "Index FFI uses panic firewall",
+      "description": "sochdb-index/src/ffi.rs wraps extern C with ffi_guard!",
+      "kind": "static_grep",
+      "path": "sochdb-index/src/ffi.rs",
+      "pattern": "ffi_guard!",
+      "min_matches": 1,
+      "expected": "pattern_found"
+    },
+    {
+      "id": "packaging_workspace_version",
+      "category": "packaging",
+      "priority": "blocker",
+      "title": "Workspace version defined",
+      "description": "Cargo.toml [workspace.package] version is set",
+      "kind": "static_grep",
+      "path": "Cargo.toml",
+      "pattern": "version = \"",
+      "min_matches": 1,
+      "expected": "pattern_found"
+    },
+    {
+      "id": "packaging_license_present",
+      "category": "packaging",
+      "priority": "blocker",
+      "title": "AGPL license file present",
+      "description": "LICENSE must ship with all artifacts",
+      "kind": "static_file",
+      "path": "LICENSE",
+      "expected": "file_exists"
+    },
+    {
+      "id": "packaging_deny_toml",
+      "category": "packaging",
+      "priority": "blocker",
+      "title": "cargo-deny configuration present",
+      "description": "deny.toml for license/advisory/ban checks",
+      "kind": "static_file",
+      "path": "deny.toml",
+      "expected": "file_exists"
+    },
+    {
+      "id": "packaging_python_sdk",
+      "category": "packaging",
+      "priority": "warning",
+      "title": "Python SDK package defined",
+      "description": "sochdb-python/pyproject.toml exists",
+      "kind": "static_file",
+      "path": "sochdb-python/pyproject.toml",
+      "expected": "file_exists"
+    },
+    {
+      "id": "packaging_node_sdk",
+      "category": "packaging",
+      "priority": "warning",
+      "title": "Node.js SDK package defined",
+      "description": "sochdb-sdk/node/package.json exists",
+      "kind": "static_file",
+      "path": "sochdb-sdk/node/package.json",
+      "expected": "file_exists"
+    },
+    {
+      "id": "ci_rustfmt",
+      "category": "ci_quality",
+      "priority": "blocker",
+      "title": "Rust formatting check",
+      "description": "cargo fmt --all -- --check",
+      "kind": "live_command",
+      "command": "cargo fmt --all -- --check",
+      "expected": "exit_zero"
+    },
+    {
+      "id": "ci_clippy_release",
+      "category": "ci_quality",
+      "priority": "blocker",
+      "title": "Clippy with -D warnings (release gate)",
+      "description": "Stricter than PR CI — no warnings allowed",
+      "kind": "live_command",
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "expected": "exit_zero"
+    },
+    {
+      "id": "ci_workspace_tests",
+      "category": "ci_quality",
+      "priority": "blocker",
+      "title": "Workspace release tests",
+      "description": "cargo test --release --workspace --lib",
+      "kind": "live_test",
+      "command": "cargo test --release --workspace --lib",
+      "expected": "all_tests_pass"
+    },
+    {
+      "id": "perf_no_regression_standalone",
+      "category": "performance",
+      "priority": "blocker",
+      "title": "Standalone perf targets (10K scale)",
+      "description": "No >10% regression vs sochdb-bench baseline",
+      "kind": "simulated",
+      "scenario": "standalone_full",
+      "expected": "scorecard_pass"
+    },
+    {
+      "id": "perf_no_regression_distributed",
+      "category": "performance",
+      "priority": "blocker",
+      "title": "Distributed gRPC perf targets",
+      "description": "HNSW search, vector insert within benchmark tolerance",
+      "kind": "simulated",
+      "scenario": "distributed_grpc",
+      "expected": "scorecard_pass"
+    },
+    {
+      "id": "perf_vector_recall_stable",
+      "category": "performance",
+      "priority": "blocker",
+      "title": "Vector recall@5 stable (SciFact)",
+      "description": "Recall@5 must not drop below 0.76 (5% below 0.8037 baseline)",
+      "kind": "simulated",
+      "scenario": "retrieval_quality",
+      "expected": "scorecard_pass"
+    },
+    {
+      "id": "perf_mixed_workload_slo",
+      "category": "performance",
+      "priority": "blocker",
+      "title": "Mixed 80r/20w SLO target",
+      "description": "831K ops/s at 10K scale",
+      "kind": "simulated",
+      "scenario": "mixed_80r_20w",
+      "expected": "scorecard_pass"
+    },
+    {
+      "id": "security_cargo_audit",
+      "category": "security",
+      "priority": "warning",
+      "title": "cargo audit — no known vulnerabilities",
+      "description": "Dependency vulnerability scan",
+      "kind": "live_command",
+      "command": "cargo audit",
+      "expected": "exit_zero"
+    },
+    {
+      "id": "security_cargo_deny",
+      "category": "security",
+      "priority": "blocker",
+      "title": "cargo deny — license + advisory + ban",
+      "description": "deny.toml policy enforcement",
+      "kind": "live_command",
+      "command": "cargo deny check",
+      "expected": "exit_zero"
+    },
+    {
+      "id": "security_no_secrets_in_repo",
+      "category": "security",
+      "priority": "blocker",
+      "title": "No hardcoded secrets in source",
+      "description": "Scan for API tokens / passwords in tracked files",
+      "kind": "static_grep_absence",
+      "path": ".",
+      "pattern": "PYPI_API_TOKEN|CRATES_IO_TOKEN|NPM_TOKEN|sk-[a-zA-Z0-9]{20}",
+      "expected": "pattern_absent"
+    },
+    {
+      "id": "compat_wal_acid_guarantees",
+      "category": "backward_compatibility",
+      "priority": "blocker",
+      "title": "WAL ACID guarantees documented in code",
+      "description": "TxnWal documents atomicity, durability, torn-write, rollback",
+      "kind": "static_grep",
+      "path": "sochdb-storage/src/txn_wal.rs",
+      "pattern": "checksum|fsync|atomic",
+      "min_matches": 1,
+      "expected": "pattern_found"
+    },
+    {
+      "id": "sdk_python_importable",
+      "category": "ffi_safety",
+      "priority": "warning",
+      "title": "Python SDK import structure",
+      "description": "sochdb-python package __init__.py exists",
+      "kind": "static_file",
+      "path": "sochdb-python/python/sochdb/__init__.py",
+      "expected": "file_exists"
+    },
+    {
+      "id": "release_notes_template",
+      "category": "release_ops",
+      "priority": "advisory",
+      "title": "Release notes cover compatibility",
+      "description": "Manual: WAL/index/API/migration/rollback sections in release notes",
+      "kind": "manual",
+      "expected": "human_verified"
+    },
+    {
+      "id": "release_version_sync",
+      "category": "release_ops",
+      "priority": "blocker",
+      "title": "Version sync across SDKs",
+      "description": "Rust/Python/npm/Go versions must match at release",
+      "kind": "manual",
+      "expected": "human_verified"
+    },
+    {
+      "id": "release_artifact_checksums",
+      "category": "release_ops",
+      "priority": "warning",
+      "title": "Release artifacts have checksums",
+      "description": "SHA256 checksums published with wheels/npm/crates",
+      "kind": "manual",
+      "expected": "human_verified"
+    },
+    {
+      "id": "release_dry_run",
+      "category": "release_ops",
+      "priority": "blocker",
+      "title": "Publish dry-run completed",
+      "description": "TestPyPI / npm pack / crates.io dry-run before real publish",
+      "kind": "manual",
+      "expected": "human_verified"
+    },
+    {
+      "id": "fusion_pipeline_zero_copy",
+      "category": "performance",
+      "priority": "warning",
+      "title": "Fusion pipeline design validated",
+      "description": "Candidate masks flow without serialization between ART/HNSW/CSR",
+      "kind": "static_grep",
+      "path": "sochdb-fusion/src/pipeline.rs",
+      "pattern": "CandidateMask|pipeline",
+      "min_matches": 1,
+      "expected": "pattern_found"
+    },
+    {
+      "id": "workspace_crates_complete",
+      "category": "packaging",
+      "priority": "blocker",
+      "title": "Core workspace crates present",
+      "description": "core/storage/index/query/fusion/client/vector/tools/grpc",
+      "kind": "static_multi_file",
+      "paths": [
+        "sochdb-core/Cargo.toml",
+        "sochdb-storage/Cargo.toml",
+        "sochdb-index/Cargo.toml",
+        "sochdb-query/Cargo.toml",
+        "sochdb-fusion/Cargo.toml",
+        "sochdb-client/Cargo.toml",
+        "sochdb-vector/Cargo.toml",
+        "sochdb-tools/Cargo.toml",
+        "sochdb-grpc/Cargo.toml"
+      ],
+      "expected": "all_files_exist"
+    }
+  ]
+}

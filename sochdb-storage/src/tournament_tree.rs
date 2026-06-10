@@ -76,7 +76,7 @@ impl Default for LoserNode {
 ///     vec![3, 6, 9].into_iter().peekable(),
 /// ];
 /// let mut tree = TournamentTree::new(iters);
-/// 
+///
 /// while let Some((source_idx, value)) = tree.pop() {
 ///     println!("Source {}: {}", source_idx, value);
 /// }
@@ -149,7 +149,7 @@ where
         // Simple approach: find the source with minimum first element
         // This is O(K) initialization instead of O(K log K) for a proper loser tree
         // but works well for small K (typical: 4-16 sorted runs)
-        
+
         // First pass: find all valid sources
         let mut valid_sources: Vec<usize> = Vec::with_capacity(self.k);
         for idx in 0..self.k {
@@ -157,15 +157,15 @@ where
                 valid_sources.push(idx);
             }
         }
-        
+
         if valid_sources.is_empty() {
             self.winner = usize::MAX;
             return;
         }
-        
+
         // Find minimum among valid sources using index-based comparison
         let mut winner = valid_sources[0];
-        
+
         for &idx in &valid_sources[1..] {
             // Compare using a helper that doesn't hold borrows
             if self.compare_sources(idx, winner) == std::cmp::Ordering::Less {
@@ -192,7 +192,7 @@ where
 
         self.winner = winner;
     }
-    
+
     /// Compare two sources by their first element
     /// Returns Ordering::Less if source_a < source_b
     fn compare_sources(&mut self, source_a: usize, source_b: usize) -> std::cmp::Ordering {
@@ -200,7 +200,7 @@ where
         let key_a = self.iters[source_a].peek().cloned();
         // Get first element of source_b
         let key_b = self.iters[source_b].peek().cloned();
-        
+
         match (key_a, key_b) {
             (None, None) => std::cmp::Ordering::Equal,
             (None, Some(_)) => std::cmp::Ordering::Greater, // Exhausted sources sort last
@@ -216,7 +216,7 @@ where
         if self.k == 0 {
             return;
         }
-        
+
         // Compute which internal node this affects
         // For a proper loser tree, node index = (K + source_idx) / 2
         let node_idx = (self.k + loser_idx) / 2;
@@ -261,7 +261,7 @@ where
 
         // Check if changed source is exhausted
         let changed_exhausted = self.iters[changed_idx].peek().is_none();
-        
+
         if changed_exhausted {
             // Need to find new winner from remaining sources
             self.rebuild();
@@ -271,12 +271,12 @@ where
         // Simplified replay: compare changed source with all other active sources
         // This is O(K) but correct. A proper loser tree would be O(log K).
         let mut winner = changed_idx;
-        
+
         for idx in 0..self.k {
             if idx == winner {
                 continue;
             }
-            
+
             if self.compare_sources(idx, winner) == std::cmp::Ordering::Less {
                 winner = idx;
             }
@@ -350,7 +350,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let (source, value) = self.tree.pop()?;
-            
+
             if self.deduplicate {
                 // Skip if same as last key
                 if let Some(ref last) = self.last_key {
@@ -360,7 +360,7 @@ where
                 }
                 self.last_key = Some(value.clone());
             }
-            
+
             return Some((source, value));
         }
     }
@@ -416,7 +416,12 @@ impl HotEntryMerger {
     pub fn new(sources: Vec<Vec<HotEntry>>) -> Self {
         let iters: Vec<_> = sources
             .into_iter()
-            .map(|v| v.into_iter().map(|e| KeyedEntry { entry: e }).collect::<Vec<_>>().into_iter())
+            .map(|v| {
+                v.into_iter()
+                    .map(|e| KeyedEntry { entry: e })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            })
             .collect();
 
         Self {
@@ -429,14 +434,14 @@ impl HotEntryMerger {
     pub fn next_unique(&mut self) -> Option<(usize, HotEntry)> {
         loop {
             let (source, keyed) = self.tree.pop()?;
-            
+
             // Deduplicate: skip if same key as last
             if let Some(ref last) = self.last_key {
                 if keyed.entry.key.as_slice() == last.as_slice() {
                     continue;
                 }
             }
-            
+
             self.last_key = Some(keyed.entry.key.to_vec());
             return Some((source, keyed.entry));
         }
@@ -461,11 +466,7 @@ mod tests {
 
     #[test]
     fn test_tournament_tree_basic() {
-        let sources: Vec<Vec<i32>> = vec![
-            vec![1, 4, 7, 10],
-            vec![2, 5, 8, 11],
-            vec![3, 6, 9, 12],
-        ];
+        let sources: Vec<Vec<i32>> = vec![vec![1, 4, 7, 10], vec![2, 5, 8, 11], vec![3, 6, 9, 12]];
 
         let iters = sources.into_iter().map(|v| v.into_iter());
         let mut tree = TournamentTree::new(iters.collect());
@@ -480,11 +481,7 @@ mod tests {
 
     #[test]
     fn test_tournament_tree_uneven() {
-        let sources: Vec<Vec<i32>> = vec![
-            vec![1, 10],
-            vec![2, 3, 4, 5],
-            vec![6],
-        ];
+        let sources: Vec<Vec<i32>> = vec![vec![1, 10], vec![2, 3, 4, 5], vec![6]];
 
         let iters = sources.into_iter().map(|v| v.into_iter());
         let mut tree = TournamentTree::new(iters.collect());
@@ -499,9 +496,7 @@ mod tests {
 
     #[test]
     fn test_tournament_tree_single() {
-        let sources: Vec<Vec<i32>> = vec![
-            vec![1, 2, 3],
-        ];
+        let sources: Vec<Vec<i32>> = vec![vec![1, 2, 3]];
 
         let iters = sources.into_iter().map(|v| v.into_iter());
         let mut tree = TournamentTree::new(iters.collect());
@@ -528,8 +523,8 @@ mod tests {
     fn test_tournament_tree_with_duplicates() {
         let sources: Vec<Vec<i32>> = vec![
             vec![1, 3, 5],
-            vec![1, 2, 4],  // Duplicate 1
-            vec![2, 3, 6],  // Duplicates 2, 3
+            vec![1, 2, 4], // Duplicate 1
+            vec![2, 3, 6], // Duplicates 2, 3
         ];
 
         let iters = sources.into_iter().map(|v| v.into_iter());
@@ -547,11 +542,7 @@ mod tests {
 
     #[test]
     fn test_merge_iterator_deduplicate() {
-        let sources: Vec<Vec<i32>> = vec![
-            vec![1, 3, 5],
-            vec![1, 2, 4],
-            vec![2, 3, 6],
-        ];
+        let sources: Vec<Vec<i32>> = vec![vec![1, 3, 5], vec![1, 2, 4], vec![2, 3, 6]];
 
         let iters: Vec<_> = sources.into_iter().map(|v| v.into_iter()).collect();
         let merge_iter = MergeIterator::new(iters, true);
@@ -562,11 +553,7 @@ mod tests {
 
     #[test]
     fn test_source_tracking() {
-        let sources: Vec<Vec<i32>> = vec![
-            vec![2, 5],
-            vec![1, 4],
-            vec![3, 6],
-        ];
+        let sources: Vec<Vec<i32>> = vec![vec![2, 5], vec![1, 4], vec![3, 6]];
 
         let iters: Vec<_> = sources.into_iter().map(|v| v.into_iter()).collect();
         let mut tree = TournamentTree::new(iters);
@@ -577,17 +564,14 @@ mod tests {
         }
 
         // Verify sources are tracked correctly
-        assert_eq!(results[0], (1, 1));  // 1 from source 1
-        assert_eq!(results[1], (0, 2));  // 2 from source 0
-        assert_eq!(results[2], (2, 3));  // 3 from source 2
+        assert_eq!(results[0], (1, 1)); // 1 from source 1
+        assert_eq!(results[1], (0, 2)); // 2 from source 0
+        assert_eq!(results[2], (2, 3)); // 3 from source 2
     }
 
     #[test]
     fn test_peek() {
-        let sources: Vec<Vec<i32>> = vec![
-            vec![2, 4],
-            vec![1, 3],
-        ];
+        let sources: Vec<Vec<i32>> = vec![vec![2, 4], vec![1, 3]];
 
         let iters: Vec<_> = sources.into_iter().map(|v| v.into_iter()).collect();
         let mut tree = TournamentTree::new(iters);

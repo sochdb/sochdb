@@ -32,8 +32,8 @@
 //! The overhead is negligible compared to disk I/O.
 
 use aes_gcm_siv::{
-    aead::{Aead, KeyInit, OsRng},
     Aes256GcmSiv, Nonce,
+    aead::{Aead, KeyInit, OsRng},
 };
 use rand::RngCore;
 use zeroize::Zeroize;
@@ -61,8 +61,8 @@ impl EncryptionEngine {
     /// The key must be exactly 32 bytes. Typically loaded from
     /// Kubernetes Secrets or the `SOCHDB_ENCRYPTION_KEY` env var.
     pub fn new(key: &[u8; 32]) -> Self {
-        let cipher = Aes256GcmSiv::new_from_slice(key)
-            .expect("AES-256-GCM-SIV key must be 32 bytes");
+        let cipher =
+            Aes256GcmSiv::new_from_slice(key).expect("AES-256-GCM-SIV key must be 32 bytes");
         Self {
             cipher,
             enabled: true,
@@ -75,8 +75,8 @@ impl EncryptionEngine {
     pub fn disabled() -> Self {
         // Use a dummy key — cipher is never called when disabled
         let key = [0u8; 32];
-        let cipher = Aes256GcmSiv::new_from_slice(&key)
-            .expect("AES-256-GCM-SIV key must be 32 bytes");
+        let cipher =
+            Aes256GcmSiv::new_from_slice(&key).expect("AES-256-GCM-SIV key must be 32 bytes");
         Self {
             cipher,
             enabled: false,

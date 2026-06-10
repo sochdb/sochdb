@@ -54,8 +54,8 @@
 //!
 //! B-tree provides consistent 450ns vs DashMap's 45-500ns variance.
 
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use parking_lot::RwLock;
 
@@ -150,12 +150,10 @@ impl<K: Clone + Ord, V: Clone> Node<K, V> {
     /// Search for key in leaf node - O(log n) binary search
     pub fn search(&self, key: &K) -> SearchResult<K, V> {
         match self {
-            Node::Leaf(leaf) => {
-                match leaf.entries.binary_search_by(|e| e.key.cmp(key)) {
-                    Ok(idx) => SearchResult::Found(leaf.entries[idx].value.clone()),
-                    Err(idx) => SearchResult::NotFound(idx),
-                }
-            }
+            Node::Leaf(leaf) => match leaf.entries.binary_search_by(|e| e.key.cmp(key)) {
+                Ok(idx) => SearchResult::Found(leaf.entries[idx].value.clone()),
+                Err(idx) => SearchResult::NotFound(idx),
+            },
             Node::Interior(interior) => {
                 // Find child to descend into
                 // For keys [k1, k2, ..., kn] and children [c0, c1, ..., cn]:
@@ -262,10 +260,7 @@ impl<K: Clone + Ord + std::fmt::Debug, V: Clone + std::fmt::Debug> CowBTree<K, V
 
         if let Some((split_key, right_child)) = split {
             // Root was split, create new root
-            let new_interior = Node::new_interior(
-                vec![split_key],
-                vec![new_root, right_child],
-            );
+            let new_interior = Node::new_interior(vec![split_key], vec![new_root, right_child]);
             *root = Arc::new(new_interior);
         } else {
             *root = new_root;
@@ -432,7 +427,9 @@ impl<K: Clone + Ord + std::fmt::Debug, V: Clone + std::fmt::Debug> CowBTree<K, V
         match node.as_ref() {
             Node::Leaf(_) => 1,
             Node::Interior(interior) => {
-                1 + interior.children.first()
+                1 + interior
+                    .children
+                    .first()
                     .map(|c| self.node_depth(c))
                     .unwrap_or(0)
             }
@@ -447,13 +444,7 @@ impl<K: Clone + Ord + std::fmt::Debug, V: Clone + std::fmt::Debug> CowBTree<K, V
         results
     }
 
-    fn range_search(
-        &self,
-        node: &Arc<Node<K, V>>,
-        start: &K,
-        end: &K,
-        results: &mut Vec<(K, V)>,
-    ) {
+    fn range_search(&self, node: &Arc<Node<K, V>>, start: &K, end: &K, results: &mut Vec<(K, V)>) {
         match node.as_ref() {
             Node::Leaf(leaf) => {
                 for entry in &leaf.entries {

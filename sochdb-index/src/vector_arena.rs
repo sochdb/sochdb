@@ -69,14 +69,15 @@ impl VectorArena {
     pub fn with_capacity(capacity: usize, dimension: usize) -> Self {
         // Align to cache lines for optimal prefetching
         let floats_per_line = CACHE_LINE_SIZE / std::mem::size_of::<f32>();
-        let aligned_dimension = ((dimension + floats_per_line - 1) / floats_per_line) * floats_per_line;
-        
+        let aligned_dimension =
+            ((dimension + floats_per_line - 1) / floats_per_line) * floats_per_line;
+
         let total_floats = capacity * aligned_dimension;
         let mut data = Vec::with_capacity(total_floats);
-        
+
         // Zero-initialize to ensure clean memory
         data.resize(total_floats, 0.0);
-        
+
         Self {
             data,
             count: AtomicUsize::new(0),
@@ -102,7 +103,8 @@ impl VectorArena {
 
         // Calculate aligned offset
         let floats_per_line = CACHE_LINE_SIZE / std::mem::size_of::<f32>();
-        let aligned_dimension = ((self.dimension + floats_per_line - 1) / floats_per_line) * floats_per_line;
+        let aligned_dimension =
+            ((self.dimension + floats_per_line - 1) / floats_per_line) * floats_per_line;
         let offset = index * aligned_dimension;
 
         // Copy vector data
@@ -125,7 +127,8 @@ impl VectorArena {
         }
 
         let floats_per_line = CACHE_LINE_SIZE / std::mem::size_of::<f32>();
-        let aligned_dimension = ((self.dimension + floats_per_line - 1) / floats_per_line) * floats_per_line;
+        let aligned_dimension =
+            ((self.dimension + floats_per_line - 1) / floats_per_line) * floats_per_line;
         let start = index * aligned_dimension;
 
         Some(&self.data[start..start + self.dimension])
@@ -172,7 +175,8 @@ impl VectorArena {
         }
 
         let floats_per_line = CACHE_LINE_SIZE / std::mem::size_of::<f32>();
-        let aligned_dimension = ((self.dimension + floats_per_line - 1) / floats_per_line) * floats_per_line;
+        let aligned_dimension =
+            ((self.dimension + floats_per_line - 1) / floats_per_line) * floats_per_line;
 
         // Copy each vector to its aligned slot
         for i in 0..num_vectors {
@@ -202,7 +206,7 @@ mod tests {
     #[test]
     fn test_arena_basic() {
         let arena = VectorArena::with_capacity(100, 128);
-        
+
         assert_eq!(arena.len(), 0);
         assert_eq!(arena.dimension(), 128);
         assert_eq!(arena.capacity(), 100);
@@ -211,20 +215,20 @@ mod tests {
     #[test]
     fn test_arena_push_get() {
         let arena = VectorArena::with_capacity(10, 4);
-        
+
         let vec1 = vec![1.0, 2.0, 3.0, 4.0];
         let vec2 = vec![5.0, 6.0, 7.0, 8.0];
-        
+
         let offset1 = arena.push(&vec1).unwrap();
         let offset2 = arena.push(&vec2).unwrap();
-        
+
         assert_eq!(offset1, 0);
         assert_eq!(offset2, 1);
         assert_eq!(arena.len(), 2);
-        
+
         let retrieved1 = arena.get(offset1).unwrap();
         let retrieved2 = arena.get(offset2).unwrap();
-        
+
         assert_eq!(retrieved1, &vec1[..]);
         assert_eq!(retrieved2, &vec2[..]);
     }
@@ -232,16 +236,16 @@ mod tests {
     #[test]
     fn test_arena_batch() {
         let arena = VectorArena::with_capacity(100, 4);
-        
+
         // Create batch of 10 vectors
         let batch: Vec<f32> = (0..40).map(|i| i as f32).collect();
-        
+
         let (start, count) = arena.push_batch(&batch, 10).unwrap();
-        
+
         assert_eq!(start, 0);
         assert_eq!(count, 10);
         assert_eq!(arena.len(), 10);
-        
+
         // Verify each vector
         for i in 0..10 {
             let vec = arena.get(i as u32).unwrap();
@@ -253,9 +257,9 @@ mod tests {
     #[test]
     fn test_arena_capacity_limit() {
         let arena = VectorArena::with_capacity(2, 4);
-        
+
         let vec = vec![1.0, 2.0, 3.0, 4.0];
-        
+
         assert!(arena.push(&vec).is_some());
         assert!(arena.push(&vec).is_some());
         assert!(arena.push(&vec).is_none()); // Should fail, arena full
@@ -264,16 +268,16 @@ mod tests {
     #[test]
     fn test_arena_dimension_mismatch() {
         let arena = VectorArena::with_capacity(10, 4);
-        
+
         let wrong_dim = vec![1.0, 2.0, 3.0]; // Only 3 elements, need 4
-        
+
         assert!(arena.push(&wrong_dim).is_none());
     }
 
     #[test]
     fn test_arena_memory_usage() {
         let arena = VectorArena::with_capacity(1000, 768);
-        
+
         // Should pre-allocate for 1000 vectors × 768 dimensions (with alignment)
         let expected_min = 1000 * 768 * 4; // At least this much
         assert!(arena.memory_usage() >= expected_min);

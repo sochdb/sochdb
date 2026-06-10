@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing::{Level, info, error};
+use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
 use sochdb_storage::database::Database;
@@ -79,16 +79,11 @@ fn main() {
         _ => Level::INFO,
     };
 
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(level)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber");
+    let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber");
 
     // Determine socket path
-    let socket_path = args.socket.unwrap_or_else(|| {
-        args.db.join("sochdb.sock")
-    });
+    let socket_path = args.socket.unwrap_or_else(|| args.db.join("sochdb.sock"));
 
     // Ensure database directory exists
     if !args.db.exists() {
@@ -126,7 +121,8 @@ fn main() {
             let _ = std::fs::remove_file(&socket_path);
         }
         std::process::exit(0);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     // Start the server (blocks) - use run() not start() which is non-blocking
     info!("SochDB server ready, accepting connections");

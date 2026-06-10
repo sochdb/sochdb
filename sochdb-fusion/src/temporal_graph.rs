@@ -199,12 +199,7 @@ impl TemporalCsrGraph {
     /// `max_hops` hops, optionally filtered by time.
     ///
     /// Returns: `Vec<(node_id, hop_distance, path_weight)>`
-    pub fn bfs(
-        &self,
-        source: u32,
-        max_hops: u32,
-        valid_time: Option<u64>,
-    ) -> Vec<(u32, u32, f32)> {
+    pub fn bfs(&self, source: u32, max_hops: u32, valid_time: Option<u64>) -> Vec<(u32, u32, f32)> {
         let mut visited = vec![false; self.num_nodes];
         let mut results = Vec::new();
         let mut queue = std::collections::VecDeque::new();

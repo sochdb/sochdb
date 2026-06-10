@@ -53,6 +53,44 @@
 //! - Writers: Serialize through WAL, use MVCC for conflict detection
 //! - Readers: Lock-free reads at snapshot timestamp
 //! - Commits: Batched through GroupCommit for throughput
+//!
+//! ## Isolation Contract
+//!
+//! The live write path (`MvccManager`, used by `DurableStorage`) provides
+//! **Serializable Snapshot Isolation (SSI)**, which is strictly stronger than
+//! plain Snapshot Isolation (SI):
+//!
+//! - **Snapshot reads.** Every transaction reads from a consistent snapshot
+//!   fixed at `begin_transaction()` (its `snapshot_ts`). Concurrent commits are
+//!   invisible to it — see `test_snapshot_isolation`. This alone is SI and is
+//!   vulnerable to **write skew** (two transactions each read a set the other
+//!   writes, both commit, and no serial order reproduces the result).
+//! - **Write-skew prevention.** On commit, `MvccManager::validate_ssi` inspects
+//!   recently-committed concurrent transactions for rw-antidependency edges:
+//!   an inbound edge (another txn wrote a key we read, `T_other →rw→ T_me`) and
+//!   an outbound edge (we wrote a key another txn read, `T_me →rw→ T_other`).
+//!   When a transaction sits on **both** an inbound and an outbound rw-edge it
+//!   is the pivot of a potential dependency cycle (Cahill/Fekete "dangerous
+//!   structure"), so it is aborted. This is the conservative safe subset of the
+//!   SSI test: it may abort some serializable schedules (false positives) but
+//!   **never admits a non-serializable one** (no false negatives), so the
+//!   externally observable isolation level is Serializable.
+//! - **Read-only transactions** (`begin_read_only`) skip read-set tracking and
+//!   never participate in validation; they always observe a serializable
+//!   snapshot and never abort.
+//!
+//! ### MVCC garbage collection is snapshot-safe
+//!
+//! Old versions are pruned by `DurableStorage::gc()`, which feeds the
+//! **low-water-mark** `MvccManager::min_active_snapshot()` — the minimum
+//! `snapshot_ts` across all still-active transactions — into
+//! `MvccMemTable::gc()` and then `BinarySearchChain::gc_by_ts()`. The chain
+//! retains every version with `commit_ts > min_active_ts` **plus one anchor
+//! version at or below the watermark**, so any in-flight reader can still
+//! resolve the correct version for its snapshot. A version is only freed once
+//! **no active snapshot can observe it**. The watermark is recomputed on every
+//! `begin`/`commit`/`abort`, so it is monotonic with respect to the oldest live
+//! reader. See `test_gc_preserves_versions_for_active_snapshot`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -64,15 +102,14 @@ use smallvec::SmallVec;
 
 use crossbeam_skiplist::SkipMap;
 
-use crate::deferred_index::{DeferredSortedIndex, DeferredIndexConfig};
+use crate::deferred_index::{DeferredIndexConfig, DeferredSortedIndex};
 use crate::group_commit::EventDrivenGroupCommit;
 use crate::txn_wal::{TxnWal, TxnWalBuffer, TxnWalEntry};
-use sochdb_core::{Result, SochDBError};
 use sochdb_core::version_chain::{
-    BinarySearchChain, ChainEntry,
-    MvccVersionChain, MvccVersionChainMut, WriteConflictDetection,
-    VisibilityContext, TxnId, Timestamp,
+    BinarySearchChain, ChainEntry, MvccVersionChain, MvccVersionChainMut, Timestamp, TxnId,
+    VisibilityContext, WriteConflictDetection,
 };
+use sochdb_core::{Result, SochDBError};
 
 // =============================================================================
 // SSI Bloom Filter - Fast Conflict Pre-Filtering
@@ -269,9 +306,18 @@ pub struct Version {
 
 // Rec 11: Implement ChainEntry so BinarySearchChain<Version> works
 impl ChainEntry for Version {
-    #[inline] fn commit_ts(&self) -> u64 { self.commit_ts }
-    #[inline] fn txn_id(&self) -> u64 { self.txn_id }
-    #[inline] fn set_commit_ts(&mut self, ts: u64) { self.commit_ts = ts; }
+    #[inline]
+    fn commit_ts(&self) -> u64 {
+        self.commit_ts
+    }
+    #[inline]
+    fn txn_id(&self) -> u64 {
+        self.txn_id
+    }
+    #[inline]
+    fn set_commit_ts(&mut self, ts: u64) {
+        self.commit_ts = ts;
+    }
 }
 
 // ============================================================================
@@ -282,7 +328,7 @@ impl ChainEntry for Version {
 ///
 /// ## Optimization: Binary Search with Sorted Commit Ordering
 ///
-/// Separates committed versions (sorted descending by commit_ts) from 
+/// Separates committed versions (sorted descending by commit_ts) from
 /// uncommitted version (single optional slot per transaction).
 ///
 /// **Before:** O(v) linear scan + O(v) max computation = O(v)
@@ -305,12 +351,14 @@ impl VersionChain {
     /// Create a new empty version chain
     #[inline]
     pub fn new() -> Self {
-        Self { inner: BinarySearchChain::new() }
+        Self {
+            inner: BinarySearchChain::new(),
+        }
     }
 
     /// Add a new uncommitted version
     /// If there's already an uncommitted version from this txn, update it in place
-    /// 
+    ///
     /// O(1) - just updates the uncommitted slot
     #[inline]
     pub fn add_uncommitted(&mut self, value: Option<Vec<u8>>, txn_id: u64) {
@@ -331,7 +379,7 @@ impl VersionChain {
     }
 
     /// Commit a version - moves from uncommitted slot to sorted committed list
-    /// 
+    ///
     /// O(log v) - inserts into sorted position using binary search
     #[inline]
     pub fn commit(&mut self, txn_id: u64, commit_ts: u64) -> bool {
@@ -339,7 +387,7 @@ impl VersionChain {
     }
 
     /// Abort a version (remove uncommitted version for txn)
-    /// 
+    ///
     /// O(1) - just clears the uncommitted slot if it matches
     #[inline]
     pub fn abort(&mut self, txn_id: u64) {
@@ -355,7 +403,7 @@ impl VersionChain {
     }
 
     /// Check if there's an uncommitted version by another transaction
-    /// 
+    ///
     /// O(1) - just checks the uncommitted slot
     #[inline]
     pub fn has_write_conflict(&self, my_txn_id: u64) -> bool {
@@ -393,7 +441,8 @@ impl MvccVersionChain for VersionChain {
 
     fn get_visible(&self, ctx: &VisibilityContext) -> Option<&Self::Value> {
         // Delegate to BinarySearchChain, then project to value field
-        self.inner.read_at(ctx.snapshot_ts, Some(ctx.reader_txn_id))
+        self.inner
+            .read_at(ctx.snapshot_ts, Some(ctx.reader_txn_id))
             .map(|v| &v.value)
     }
 
@@ -474,14 +523,14 @@ pub struct MvccTransaction {
 
 impl MvccTransaction {
     /// Create a new transaction with pre-sized collections
-    /// 
+    ///
     /// This avoids HashSet resize overhead during the transaction
     /// which was causing +11% regression on write_set.insert().
     #[inline]
     pub fn new(txn_id: u64, snapshot_ts: u64) -> Self {
         Self::with_mode(txn_id, snapshot_ts, TransactionMode::ReadWrite)
     }
-    
+
     /// Create a read-only transaction (SSI bypass - 2.6x faster)
     ///
     /// Read-only transactions skip all SSI tracking:
@@ -490,13 +539,13 @@ impl MvccTransaction {
     /// - No commit validation
     ///
     /// ## Performance
-    /// 
+    ///
     /// For N=100 reads: 8350ns → 3230ns (2.6× improvement)
     #[inline]
     pub fn read_only(txn_id: u64, snapshot_ts: u64) -> Self {
         Self::with_mode(txn_id, snapshot_ts, TransactionMode::ReadOnly)
     }
-    
+
     /// Create a write-only transaction (partial SSI bypass)
     ///
     /// Write-only transactions skip read tracking:
@@ -507,13 +556,13 @@ impl MvccTransaction {
     pub fn write_only(txn_id: u64, snapshot_ts: u64) -> Self {
         Self::with_mode(txn_id, snapshot_ts, TransactionMode::WriteOnly)
     }
-    
+
     /// Create transaction with specific mode
     #[inline]
     pub fn with_mode(txn_id: u64, snapshot_ts: u64, mode: TransactionMode) -> Self {
         // Optimize allocation based on mode
         let (write_capacity, read_capacity) = match mode {
-            TransactionMode::ReadOnly => (0, 0),  // No tracking needed
+            TransactionMode::ReadOnly => (0, 0), // No tracking needed
             TransactionMode::WriteOnly => (WRITE_SET_INITIAL_CAPACITY, 0),
             TransactionMode::ReadWrite => (WRITE_SET_INITIAL_CAPACITY, READ_SET_INITIAL_CAPACITY),
         };
@@ -521,7 +570,7 @@ impl MvccTransaction {
     }
 
     /// Create with custom capacities for expected workload
-    /// 
+    ///
     /// Use this when you know the transaction will write many keys
     /// to avoid resize overhead entirely.
     #[inline]
@@ -598,12 +647,12 @@ pub enum TransactionMode {
     /// Cannot form rw-antidependency cycles (no writes to create outgoing edges)
     /// Safe to skip read_set, read_bloom, and commit validation entirely
     ReadOnly,
-    
+
     /// Write-only transaction - skips read tracking
     /// Cannot form incoming rw-edges (no reads from concurrent writers)
     /// Only needs write_set and write_bloom tracking
     WriteOnly,
-    
+
     /// Full read-write transaction (default) - complete SSI tracking
     /// May form both incoming and outgoing rw-edges
     /// Requires full validation at commit time
@@ -617,13 +666,16 @@ impl TransactionMode {
     pub fn tracks_reads(&self) -> bool {
         matches!(self, TransactionMode::ReadWrite)
     }
-    
+
     /// Check if this mode requires write tracking
     #[inline]
     pub fn tracks_writes(&self) -> bool {
-        matches!(self, TransactionMode::WriteOnly | TransactionMode::ReadWrite)
+        matches!(
+            self,
+            TransactionMode::WriteOnly | TransactionMode::ReadWrite
+        )
     }
-    
+
     /// Check if commit needs SSI validation
     #[inline]
     pub fn needs_ssi_validation(&self) -> bool {
@@ -699,12 +751,12 @@ impl MvccManager {
     }
 
     /// Begin a new transaction with snapshot isolation
-    /// 
+    ///
     /// Uses pre-sized HashSets to avoid resize overhead (+11% regression fix)
     pub fn begin(&self, txn_id: u64) -> MvccTransaction {
         self.begin_with_mode(txn_id, TransactionMode::ReadWrite)
     }
-    
+
     /// Begin a read-only transaction (SSI bypass - 2.6x faster)
     ///
     /// Read-only transactions skip all SSI tracking, reducing
@@ -719,7 +771,7 @@ impl MvccManager {
     pub fn begin_read_only(&self, txn_id: u64) -> MvccTransaction {
         self.begin_with_mode(txn_id, TransactionMode::ReadOnly)
     }
-    
+
     /// Begin a write-only transaction (partial SSI bypass)
     ///
     /// Write-only transactions skip read tracking, reducing overhead
@@ -728,7 +780,7 @@ impl MvccManager {
     pub fn begin_write_only(&self, txn_id: u64) -> MvccTransaction {
         self.begin_with_mode(txn_id, TransactionMode::WriteOnly)
     }
-    
+
     /// Begin a transaction with specific mode
     ///
     /// This is the core transaction creation method that all other
@@ -773,7 +825,7 @@ impl MvccManager {
             if !txn.mode.tracks_reads() {
                 return;
             }
-            
+
             // Only track reads if within reasonable bounds
             if txn.read_set.len() < 10000 {
                 txn.read_set.insert(SmallVec::from_slice(key));
@@ -831,14 +883,14 @@ impl MvccManager {
 
         // OPTIMIZATION: Only track ReadWrite transactions for SSI
         // ReadOnly/WriteOnly can't form complete rw-antidependency cycles
-        let needs_ssi_tracking = removed_txn.mode == TransactionMode::ReadWrite 
-            && !removed_txn.read_set.is_empty() 
+        let needs_ssi_tracking = removed_txn.mode == TransactionMode::ReadWrite
+            && !removed_txn.read_set.is_empty()
             && !removed_txn.write_set.is_empty();
-        
+
         if needs_ssi_tracking {
             // Need to clone write_set since we return it AND track it
             let write_set_for_return = removed_txn.write_set.clone();
-            
+
             self.track_commit_owned(
                 txn_id,
                 commit_ts,
@@ -922,16 +974,24 @@ impl MvccManager {
         let mut any_may_intersect = false;
         for entry in self.recent_commits.iter() {
             let (_, (other_commit_ts, other_read_bloom, other_write_bloom, _, _)) = entry.pair();
-            
-            // Only check concurrent transactions
-            if *other_commit_ts <= my_snapshot {
+
+            // Only check concurrent transactions.
+            //
+            // A committed transaction is *concurrent* with us iff its writes are
+            // invisible to our snapshot. Read visibility is strict
+            // (`commit_ts < snapshot_ts`), so a transaction with
+            // `commit_ts >= my_snapshot` is invisible and must be validated
+            // against. Using `<` here (not `<=`) keeps this window consistent
+            // with `read_at`; a `<=` would skip a boundary transaction whose
+            // `commit_ts == my_snapshot` and miss a genuine write-skew.
+            if *other_commit_ts < my_snapshot {
                 continue;
             }
 
             // Check bloom filter intersection (O(m/64) per filter)
             // If our writes may intersect their reads OR their writes may intersect our reads
-            if txn.write_bloom.may_intersect(other_read_bloom) 
-                || other_write_bloom.may_intersect(&txn.read_bloom) 
+            if txn.write_bloom.may_intersect(other_read_bloom)
+                || other_write_bloom.may_intersect(&txn.read_bloom)
             {
                 any_may_intersect = true;
                 break;
@@ -966,9 +1026,11 @@ impl MvccManager {
                 ),
             ) = entry.pair();
 
-            // Only consider transactions that committed after our snapshot started
-            // (concurrent transactions)
-            if *other_commit_ts <= my_snapshot {
+            // Only consider transactions concurrent with us: those whose writes
+            // are invisible to our snapshot. Read visibility is strict
+            // (`commit_ts < snapshot_ts`), so `commit_ts >= my_snapshot` means
+            // concurrent. `<` (not `<=`) keeps this consistent with `read_at`.
+            if *other_commit_ts < my_snapshot {
                 continue;
             }
 
@@ -1052,13 +1114,7 @@ impl MvccManager {
         // No cloning needed - we take ownership
         self.recent_commits.insert(
             txn_id,
-            (
-                commit_ts,
-                read_bloom,
-                write_bloom,
-                read_set,
-                write_set,
-            ),
+            (commit_ts, read_bloom, write_bloom, read_set, write_set),
         );
 
         // Lazy pruning: only prune when we're significantly over capacity
@@ -1194,7 +1250,7 @@ impl EpochDirtyList {
 // ============================================================================
 
 /// Streaming iterator for range scans
-/// 
+///
 /// Yields results one at a time without materializing the full result set.
 /// This enables processing of very large result sets with O(1) memory per
 /// iteration instead of O(N) for the entire result set.
@@ -1213,12 +1269,12 @@ struct ScanRangeIterator<'a> {
 
 impl<'a> Iterator for ScanRangeIterator<'a> {
     type Item = (Vec<u8>, Vec<u8>);
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         // Lazy initialization on first call
         if !self.initialized {
             self.initialized = true;
-            
+
             if self.use_ordered {
                 // Try deferred index first (after compaction, it uses a SkipMap internally)
                 if let Some(ref def_idx) = self.memtable.deferred_index {
@@ -1227,27 +1283,25 @@ impl<'a> Iterator for ScanRangeIterator<'a> {
                     let snapshot_ts = self.snapshot_ts;
                     let current_txn_id = self.current_txn_id;
                     let data = &self.memtable.data;
-                    
+
                     // Collect keys from deferred index (already sorted after compact)
                     let keys: Vec<Vec<u8>> = if end.is_empty() {
                         def_idx.range_from(&start).collect()
                     } else {
                         def_idx.range(&start, &end).collect()
                     };
-                    
-                    let iter: Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> = Box::new(
-                        keys.into_iter()
-                            .filter_map(move |key| {
-                                if let Some(chain) = data.get(&key)
-                                    && let Some(v) = chain.read_at(snapshot_ts, current_txn_id)
-                                    && let Some(value) = &v.value
-                                {
-                                    Some((key, value.clone()))
-                                } else {
-                                    None
-                                }
-                            })
-                    );
+
+                    let iter: Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> =
+                        Box::new(keys.into_iter().filter_map(move |key| {
+                            if let Some(chain) = data.get(&key)
+                                && let Some(v) = chain.read_at(snapshot_ts, current_txn_id)
+                                && let Some(value) = &v.value
+                            {
+                                Some((key, value.clone()))
+                            } else {
+                                None
+                            }
+                        }));
                     self.ordered_iter = Some(iter);
                 } else if let Some(ref idx) = self.memtable.ordered_index {
                     let start = self.start.clone();
@@ -1255,37 +1309,32 @@ impl<'a> Iterator for ScanRangeIterator<'a> {
                     let snapshot_ts = self.snapshot_ts;
                     let current_txn_id = self.current_txn_id;
                     let data = &self.memtable.data;
-                    
-                    let iter: Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> = if end.is_empty() {
-                        Box::new(
-                            idx.range(start..)
-                                .filter_map(move |entry| {
-                                    let key = entry.key();
-                                    if let Some(chain) = data.get(key)
-                                        && let Some(v) = chain.read_at(snapshot_ts, current_txn_id)
-                                        && let Some(value) = &v.value
-                                    {
-                                        Some((key.clone(), value.clone()))
-                                    } else {
-                                        None
-                                    }
-                                })
-                        )
+
+                    let iter: Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> = if end.is_empty()
+                    {
+                        Box::new(idx.range(start..).filter_map(move |entry| {
+                            let key = entry.key();
+                            if let Some(chain) = data.get(key)
+                                && let Some(v) = chain.read_at(snapshot_ts, current_txn_id)
+                                && let Some(value) = &v.value
+                            {
+                                Some((key.clone(), value.clone()))
+                            } else {
+                                None
+                            }
+                        }))
                     } else {
-                        Box::new(
-                            idx.range(start..end)
-                                .filter_map(move |entry| {
-                                    let key = entry.key();
-                                    if let Some(chain) = data.get(key)
-                                        && let Some(v) = chain.read_at(snapshot_ts, current_txn_id)
-                                        && let Some(value) = &v.value
-                                    {
-                                        Some((key.clone(), value.clone()))
-                                    } else {
-                                        None
-                                    }
-                                })
-                        )
+                        Box::new(idx.range(start..end).filter_map(move |entry| {
+                            let key = entry.key();
+                            if let Some(chain) = data.get(key)
+                                && let Some(v) = chain.read_at(snapshot_ts, current_txn_id)
+                                && let Some(value) = &v.value
+                            {
+                                Some((key.clone(), value.clone()))
+                            } else {
+                                None
+                            }
+                        }))
                     };
                     self.ordered_iter = Some(iter);
                 }
@@ -1295,32 +1344,30 @@ impl<'a> Iterator for ScanRangeIterator<'a> {
                 let end = self.end.clone();
                 let snapshot_ts = self.snapshot_ts;
                 let current_txn_id = self.current_txn_id;
-                
-                let iter: Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> = Box::new(
-                    self.memtable.data.iter()
-                        .filter_map(move |entry| {
-                            let key = entry.key();
-                            
-                            if key.as_slice() < start.as_slice() {
-                                return None;
-                            }
-                            if !end.is_empty() && key.as_slice() >= end.as_slice() {
-                                return None;
-                            }
-                            
-                            if let Some(v) = entry.value().read_at(snapshot_ts, current_txn_id)
-                                && let Some(value) = &v.value
-                            {
-                                Some((key.clone(), value.clone()))
-                            } else {
-                                None
-                            }
-                        })
-                );
+
+                let iter: Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> =
+                    Box::new(self.memtable.data.iter().filter_map(move |entry| {
+                        let key = entry.key();
+
+                        if key.as_slice() < start.as_slice() {
+                            return None;
+                        }
+                        if !end.is_empty() && key.as_slice() >= end.as_slice() {
+                            return None;
+                        }
+
+                        if let Some(v) = entry.value().read_at(snapshot_ts, current_txn_id)
+                            && let Some(value) = &v.value
+                        {
+                            Some((key.clone(), value.clone()))
+                        } else {
+                            None
+                        }
+                    }));
                 self.unordered_iter = Some(iter);
             }
         }
-        
+
         // Get next from appropriate iterator
         if let Some(ref mut iter) = self.ordered_iter {
             iter.next()
@@ -1452,7 +1499,8 @@ impl MvccMemTable {
         let mut total_size = 0u64;
 
         // Rec 3: Batch MVCC tracking - single lock acquire for all keys
-        self.dirty_list.record_versions_batch(writes.iter().map(|(k, _)| k.clone()));
+        self.dirty_list
+            .record_versions_batch(writes.iter().map(|(k, _)| k.clone()));
 
         for (key, value) in writes {
             // Insert into ordered index (if enabled)
@@ -1531,9 +1579,9 @@ impl MvccMemTable {
     /// - O(K) to iterate matching keys
     ///
     /// When ordered_index is disabled: O(N) full DashMap scan (fallback)
-    /// 
+    ///
     /// ## Optimizations Applied
-    /// 
+    ///
     /// - Pre-allocates result vector based on expected output size
     /// - Uses batch-friendly iteration patterns
     /// - Minimizes allocations during iteration
@@ -1602,7 +1650,7 @@ impl MvccMemTable {
     }
 
     /// Optimized full scan with batch allocation
-    /// 
+    ///
     /// For use when scanning entire tables/namespaces.
     /// Pre-allocates based on actual data size.
     pub fn scan_all(
@@ -1624,7 +1672,7 @@ impl MvccMemTable {
     }
 
     /// Streaming scan iterator for very large datasets
-    /// 
+    ///
     /// Returns an iterator that yields (key, value) pairs without
     /// materializing the entire result set in memory.
     pub fn scan_prefix_iter<'a>(
@@ -1727,21 +1775,21 @@ impl MvccMemTable {
     }
 
     /// Streaming range scan iterator for very large datasets
-    /// 
+    ///
     /// Returns an iterator that yields (key, value) pairs without
     /// materializing the entire result set in memory. Uses the ordered
     /// index when available for O(log N + K) complexity.
-    /// 
+    ///
     /// ## Zero-Allocation Design
-    /// 
+    ///
     /// While the iterator itself cannot avoid allocations for returned
     /// values (since the caller needs ownership), it avoids:
     /// - Pre-materializing all results
     /// - Intermediate buffers
     /// - Repeated key comparisons for already-visited entries
-    /// 
+    ///
     /// ## Usage
-    /// 
+    ///
     /// ```ignore
     /// for (key, value) in memtable.scan_range_iter(b"start", b"end", ts, txn) {
     ///     // Process each result as it arrives
@@ -1759,10 +1807,10 @@ impl MvccMemTable {
         if let Some(ref idx) = self.deferred_index {
             idx.compact();
         }
-        
+
         // Use either ordered index or full scan
         let use_ordered = self.ordered_index.is_some() || self.deferred_index.is_some();
-        
+
         // Create iterator based on availability of ordered index
         ScanRangeIterator {
             memtable: self,
@@ -2282,7 +2330,7 @@ impl MemTableKind {
                 if let Some(ref idx) = m.ordered_index {
                     let start_handle = ArenaKeyHandle::new(start);
                     let end_handle = ArenaKeyHandle::new(end);
-                    
+
                     if end.is_empty() {
                         for entry in idx.range(start_handle..) {
                             let key = entry.key();
@@ -2486,8 +2534,7 @@ impl DurableStorage {
     /// // temp directory cleaned up when `handle` drops
     /// ```
     pub fn open_ephemeral() -> Result<EphemeralHandle> {
-        let tmp = tempfile::tempdir()
-            .map_err(|e| SochDBError::Io(e))?;
+        let tmp = tempfile::tempdir().map_err(|e| SochDBError::Io(e))?;
         let storage = Self::open_with_full_config_internal(
             tmp.path(),
             true,
@@ -2504,14 +2551,9 @@ impl DurableStorage {
     ///
     /// Same as `open_ephemeral()` but with group commit for higher throughput.
     pub fn open_ephemeral_with_group_commit() -> Result<EphemeralHandle> {
-        let tmp = tempfile::tempdir()
-            .map_err(|e| SochDBError::Io(e))?;
-        let mut storage = Self::open_with_full_config_internal(
-            tmp.path(),
-            true,
-            MemTableType::Standard,
-            false,
-        )?;
+        let tmp = tempfile::tempdir().map_err(|e| SochDBError::Io(e))?;
+        let mut storage =
+            Self::open_with_full_config_internal(tmp.path(), true, MemTableType::Standard, false)?;
 
         let wal = storage.wal.clone();
         let gc = EventDrivenGroupCommit::new(move |txn_ids: &[u64]| {
@@ -2545,8 +2587,10 @@ impl DurableStorage {
 
         // Acquire exclusive lock on database directory (unless disabled for testing)
         let db_lock = if acquire_lock {
-            Some(crate::lock::DatabaseLock::acquire(&path)
-                .map_err(|e| SochDBError::LockError(e.to_string()))?)
+            Some(
+                crate::lock::DatabaseLock::acquire(&path)
+                    .map_err(|e| SochDBError::LockError(e.to_string()))?,
+            )
         } else {
             None
         };
@@ -2632,7 +2676,7 @@ impl DurableStorage {
         group_commit: bool,
     ) -> Result<Self> {
         use crate::index_policy::IndexPolicy;
-        
+
         // Derive configuration from policy
         let (enable_ordered_index, memtable_type) = match policy {
             IndexPolicy::WriteOptimized | IndexPolicy::AppendOnly => {
@@ -2650,8 +2694,9 @@ impl DurableStorage {
         };
 
         if group_commit {
-            let mut storage = Self::open_with_full_config(path, enable_ordered_index, memtable_type)?;
-            
+            let mut storage =
+                Self::open_with_full_config(path, enable_ordered_index, memtable_type)?;
+
             let wal = storage.wal.clone();
             let gc = EventDrivenGroupCommit::new(move |txn_ids: &[u64]| {
                 for &txn_id in txn_ids {
@@ -2687,17 +2732,11 @@ impl DurableStorage {
         policy: crate::index_policy::IndexPolicy,
     ) -> Result<Self> {
         use crate::index_policy::IndexPolicy;
-        
+
         let (enable_ordered_index, memtable_type) = match policy {
-            IndexPolicy::WriteOptimized | IndexPolicy::AppendOnly => {
-                (false, MemTableType::Arena)
-            }
-            IndexPolicy::Balanced => {
-                (true, MemTableType::Standard)
-            }
-            IndexPolicy::ScanOptimized => {
-                (true, MemTableType::Standard)
-            }
+            IndexPolicy::WriteOptimized | IndexPolicy::AppendOnly => (false, MemTableType::Arena),
+            IndexPolicy::Balanced => (true, MemTableType::Standard),
+            IndexPolicy::ScanOptimized => (true, MemTableType::Standard),
         };
 
         // Open WITHOUT exclusive file lock (concurrent MVCC handles coordination)
@@ -2803,7 +2842,10 @@ impl DurableStorage {
     /// Only safe for single-threaded access (no concurrent writes).
     #[inline]
     pub fn read_latest(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let snapshot_ts = self.mvcc.ts_counter.load(std::sync::atomic::Ordering::Relaxed);
+        let snapshot_ts = self
+            .mvcc
+            .ts_counter
+            .load(std::sync::atomic::Ordering::Relaxed);
         self.memtable.read(key, snapshot_ts, None)
     }
 
@@ -2812,7 +2854,10 @@ impl DurableStorage {
     /// Uses the current global timestamp. Only safe for single-threaded access.
     #[inline]
     pub fn scan_latest(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let snapshot_ts = self.mvcc.ts_counter.load(std::sync::atomic::Ordering::Relaxed);
+        let snapshot_ts = self
+            .mvcc
+            .ts_counter
+            .load(std::sync::atomic::Ordering::Relaxed);
         self.memtable.scan_prefix(prefix, snapshot_ts, None)
     }
 
@@ -2935,8 +2980,11 @@ impl DurableStorage {
     /// - 1 (NORMAL): Adaptive sync using Little's Law: W* = √(τ/λ)
     /// - 2 (FULL): Sync every commit (safest, slowest)
     pub fn commit(&self, txn_id: u64) -> Result<u64> {
-        // First, flush all buffered writes to WAL with SINGLE lock acquisition
-        // This is the key optimization: O(1) lock instead of O(writes) locks
+        // First, flush all buffered DATA writes to the WAL with a SINGLE lock
+        // acquisition (O(1) lock instead of O(writes) locks). Flushing data
+        // records before validation is safe: ARIES recovery only treats them as
+        // winners if a *durable commit record* for this transaction also exists,
+        // and that record is written below — strictly after validation succeeds.
         if let Some((_, buffer)) = self.txn_write_buffers.remove(&txn_id)
             && !buffer.is_empty()
         {
@@ -2944,22 +2992,34 @@ impl DurableStorage {
             self.wal.flush_buffer(&buffer)?;
         }
 
-        // Use group commit if available, otherwise direct commit
+        // ====================================================================
+        // Task 1 — Linearizable commit invariant:
+        //
+        //   A commit record must NEVER become durable unless the transaction
+        //   has already passed SSI validation and its write set is final.
+        //
+        // We therefore VALIDATE (and freeze the write set) *before* making the
+        // commit record durable. `mvcc.commit` performs SSI validation and
+        // returns `None` on a dangerous structure (serialization conflict) or
+        // if the transaction no longer exists. Writing/fsyncing the commit
+        // record before this point would let a crash resurrect a transaction
+        // that the live system rejected — the classic "committed-after-crash,
+        // aborted-before-crash" non-linearizability bug.
+        // ====================================================================
+        let (commit_ts, write_set) = self.mvcc.commit(txn_id).ok_or_else(|| {
+            SochDBError::Validation(
+                "transaction aborted: SSI validation failed (serialization conflict) \
+                 or transaction not found"
+                    .into(),
+            )
+        })?;
+
+        // Validation passed and the write set is frozen. Only now may the
+        // commit record become durable.
         if let Some(gc) = &self.group_commit {
-            // Submit to group commit and wait for result
-            // This batches multiple commits into a single fsync
+            // Submit the *validated* commit intent to group commit and wait.
+            // This batches multiple validated commits into a single fsync.
             gc.submit_and_wait(txn_id).map_err(SochDBError::Internal)?;
-
-            // Get commit timestamp and write_set from MVCC
-            let (commit_ts, write_set) = self
-                .mvcc
-                .commit(txn_id)
-                .ok_or_else(|| SochDBError::Internal("Transaction not found".into()))?;
-
-            // Commit in memtable (O(k) where k = keys written)
-            self.memtable.commit(txn_id, commit_ts, &write_set);
-
-            Ok(commit_ts)
         } else {
             // Direct commit path with adaptive sync (Little's Law)
             let sync_mode = self.sync_mode.load(Ordering::Relaxed);
@@ -2993,18 +3053,13 @@ impl DurableStorage {
 
                 self.commits_since_sync.store(0, Ordering::Relaxed);
             }
-
-            // Get commit timestamp and write_set from MVCC
-            let (commit_ts, write_set) = self
-                .mvcc
-                .commit(txn_id)
-                .ok_or_else(|| SochDBError::Internal("Transaction not found".into()))?;
-
-            // Commit in memtable (O(k) where k = keys written)
-            self.memtable.commit(txn_id, commit_ts, &write_set);
-
-            Ok(commit_ts)
         }
+
+        // Commit record is durable (or buffered per sync mode) for a validated
+        // transaction — publish the writes to the memtable. (O(k), k = keys.)
+        self.memtable.commit(txn_id, commit_ts, &write_set);
+
+        Ok(commit_ts)
     }
 
     /// Update arrival rate using exponential moving average
@@ -3127,7 +3182,7 @@ impl DurableStorage {
     }
 
     /// Streaming scan for very large result sets
-    /// 
+    ///
     /// Returns an iterator that yields (key, value) pairs without
     /// materializing the entire result set in memory.
     #[inline]
@@ -3138,7 +3193,8 @@ impl DurableStorage {
         end: &'a [u8],
     ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a {
         let snapshot_ts = self.mvcc.get_snapshot_ts(txn_id).unwrap_or(0);
-        self.memtable.scan_range_iter(start, end, snapshot_ts, Some(txn_id))
+        self.memtable
+            .scan_range_iter(start, end, snapshot_ts, Some(txn_id))
     }
 
     /// Force fsync to disk
@@ -3359,6 +3415,104 @@ mod tests {
 
         storage.abort(t2).unwrap();
         storage.abort(t4).unwrap();
+    }
+
+    #[test]
+    fn test_gc_preserves_versions_for_active_snapshot() {
+        // GC must not free a version that an in-flight reader's snapshot can
+        // still observe. The low-water-mark (min_active_snapshot) is the oldest
+        // live reader; any version visible to it must survive GC.
+        let dir = tempdir().unwrap();
+        let storage = DurableStorage::open(dir.path()).unwrap();
+
+        // Seed an initial committed version v1.
+        let t1 = storage.begin_transaction().unwrap();
+        storage.write(t1, b"k".to_vec(), b"v1".to_vec()).unwrap();
+        storage.commit(t1).unwrap();
+
+        // Open a long-lived snapshot reader BEFORE any newer writes. Its
+        // snapshot_ts pins the GC watermark so v1 cannot be reclaimed.
+        let reader = storage.begin_transaction().unwrap();
+        assert_eq!(
+            storage.read(reader, b"k").unwrap(),
+            Some(b"v1".to_vec()),
+            "reader's snapshot must see v1"
+        );
+
+        // Produce several newer committed versions while the reader is active.
+        for v in ["v2", "v3", "v4"] {
+            let w = storage.begin_transaction().unwrap();
+            storage
+                .write(w, b"k".to_vec(), v.as_bytes().to_vec())
+                .unwrap();
+            storage.commit(w).unwrap();
+        }
+
+        // Run GC. Because `reader` is still active, the watermark is pinned at
+        // its snapshot and the version it needs (v1) must NOT be freed.
+        let _freed = storage.gc();
+        assert_eq!(
+            storage.read(reader, b"k").unwrap(),
+            Some(b"v1".to_vec()),
+            "GC must not free a version still visible to an active snapshot"
+        );
+
+        // A fresh transaction sees the latest committed version.
+        let fresh = storage.begin_transaction().unwrap();
+        assert_eq!(storage.read(fresh, b"k").unwrap(), Some(b"v4".to_vec()));
+        storage.abort(fresh).unwrap();
+
+        // Release the old reader; the watermark can now advance.
+        storage.abort(reader).unwrap();
+
+        // After the old snapshot is gone, GC may reclaim superseded versions,
+        // and new readers still resolve the latest value correctly.
+        let _freed2 = storage.gc();
+        let after = storage.begin_transaction().unwrap();
+        assert_eq!(storage.read(after, b"k").unwrap(), Some(b"v4".to_vec()));
+        storage.abort(after).unwrap();
+    }
+
+    #[test]
+    fn test_ssi_detects_write_skew() {
+        // Classic write-skew: two concurrent transactions each read what the
+        // other writes (disjoint write keys). Under plain SI both would commit,
+        // violating serializability. Under SSI the pivot transaction (with both
+        // an inbound and an outbound rw-edge) must be aborted, so the two
+        // commits cannot both succeed.
+        let dir = tempdir().unwrap();
+        let storage = DurableStorage::open(dir.path()).unwrap();
+
+        // Seed two keys.
+        let seed = storage.begin_transaction().unwrap();
+        storage.write(seed, b"x".to_vec(), b"0".to_vec()).unwrap();
+        storage.write(seed, b"y".to_vec(), b"0".to_vec()).unwrap();
+        storage.commit(seed).unwrap();
+
+        // T1 reads x and y, then writes x.
+        let t1 = storage.begin_transaction().unwrap();
+        let _ = storage.read(t1, b"x").unwrap();
+        let _ = storage.read(t1, b"y").unwrap();
+
+        // T2 reads x and y, then writes y. (Concurrent with T1.)
+        let t2 = storage.begin_transaction().unwrap();
+        let _ = storage.read(t2, b"x").unwrap();
+        let _ = storage.read(t2, b"y").unwrap();
+
+        storage.write(t1, b"x".to_vec(), b"1".to_vec()).unwrap();
+        storage.write(t2, b"y".to_vec(), b"1".to_vec()).unwrap();
+
+        // First committer wins.
+        let c1 = storage.commit(t1);
+        assert!(c1.is_ok(), "first committer should succeed: {c1:?}");
+
+        // The second committer forms a dangerous rw-structure with T1 and must
+        // be rejected to preserve serializability.
+        let c2 = storage.commit(t2);
+        assert!(
+            c2.is_err(),
+            "SSI must abort the write-skew pivot, but commit succeeded"
+        );
     }
 
     #[test]
@@ -3690,12 +3844,14 @@ mod tests {
         assert_eq!(memtable.kind(), MemTableType::Standard);
 
         // Write and read
-        memtable.write(b"key1".to_vec(), Some(b"value1".to_vec()), 1).unwrap();
-        
+        memtable
+            .write(b"key1".to_vec(), Some(b"value1".to_vec()), 1)
+            .unwrap();
+
         // Commit transaction at ts=100
         let write_set = std::iter::once(InlineKey::from_slice(b"key1")).collect();
         memtable.commit(1, 100, &write_set);
-        
+
         // Read after commit - snapshot_ts must be > commit_ts for visibility
         let v = memtable.read(b"key1", 101, None);
         assert_eq!(v, Some(b"value1".to_vec()));
@@ -3707,12 +3863,14 @@ mod tests {
         assert_eq!(memtable.kind(), MemTableType::Arena);
 
         // Write and read
-        memtable.write(b"key1".to_vec(), Some(b"value1".to_vec()), 1).unwrap();
-        
+        memtable
+            .write(b"key1".to_vec(), Some(b"value1".to_vec()), 1)
+            .unwrap();
+
         // Commit at ts=100
         let write_set = std::iter::once(InlineKey::from_slice(b"key1")).collect();
         memtable.commit(1, 100, &write_set);
-        
+
         // Read after commit - snapshot_ts > commit_ts
         let v = memtable.read(b"key1", 101, None);
         assert_eq!(v, Some(b"value1".to_vec()));
@@ -3728,7 +3886,9 @@ mod tests {
             for i in 0..5 {
                 let key = format!("key{}", i);
                 let value = format!("value{}", i);
-                memtable.write(key.into_bytes(), Some(value.into_bytes()), 1).unwrap();
+                memtable
+                    .write(key.into_bytes(), Some(value.into_bytes()), 1)
+                    .unwrap();
             }
 
             // Commit all at ts=100
@@ -3739,7 +3899,12 @@ mod tests {
 
             // Scan range with snapshot_ts > commit_ts
             let results = memtable.scan_range(b"key1", b"key4", 101, None);
-            assert_eq!(results.len(), 3, "kind={:?} should have 3 results (key1, key2, key3)", kind);
+            assert_eq!(
+                results.len(),
+                3,
+                "kind={:?} should have 3 results (key1, key2, key3)",
+                kind
+            );
         }
     }
 
@@ -3747,12 +3912,14 @@ mod tests {
     fn test_durable_storage_arena() {
         let dir = tempdir().unwrap();
         let storage = DurableStorage::open_with_arena(dir.path()).unwrap();
-        
+
         assert_eq!(storage.memtable_type(), MemTableType::Arena);
 
         // Basic transaction should work the same
         let txn_id = storage.begin_transaction().unwrap();
-        storage.write(txn_id, b"key1".to_vec(), b"value1".to_vec()).unwrap();
+        storage
+            .write(txn_id, b"key1".to_vec(), b"value1".to_vec())
+            .unwrap();
         storage.commit(txn_id).unwrap();
 
         let txn2 = storage.begin_transaction().unwrap();
@@ -3764,14 +3931,11 @@ mod tests {
     #[test]
     fn test_durable_storage_full_config() {
         let dir = tempdir().unwrap();
-        
+
         // Test with Arena and ordered index enabled
-        let storage = DurableStorage::open_with_full_config(
-            dir.path(),
-            true,
-            MemTableType::Arena,
-        ).unwrap();
-        
+        let storage =
+            DurableStorage::open_with_full_config(dir.path(), true, MemTableType::Arena).unwrap();
+
         assert_eq!(storage.memtable_type(), MemTableType::Arena);
 
         // Write multiple keys
@@ -3779,7 +3943,9 @@ mod tests {
         for i in 0..10 {
             let key = format!("key{:02}", i);
             let value = format!("value{}", i);
-            storage.write(txn, key.into_bytes(), value.into_bytes()).unwrap();
+            storage
+                .write(txn, key.into_bytes(), value.into_bytes())
+                .unwrap();
         }
         storage.commit(txn).unwrap();
 

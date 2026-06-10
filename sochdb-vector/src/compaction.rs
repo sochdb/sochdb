@@ -30,8 +30,8 @@
 //! - Compaction preserves search correctness
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 /// Shard identifier for compaction.
@@ -159,11 +159,17 @@ impl ShardCompactionState {
     pub fn finish_compaction(&self, bytes_reclaimed: u64, duration: Duration) {
         let _new_version = self.current_version.fetch_add(1, Ordering::AcqRel) + 1;
         self.compacting.store(false, Ordering::Release);
-        
-        self.stats.compactions_completed.fetch_add(1, Ordering::Relaxed);
-        self.stats.bytes_reclaimed.fetch_add(bytes_reclaimed, Ordering::Relaxed);
-        self.stats.compaction_time_ms.fetch_add(duration.as_millis() as u64, Ordering::Relaxed);
-        
+
+        self.stats
+            .compactions_completed
+            .fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .bytes_reclaimed
+            .fetch_add(bytes_reclaimed, Ordering::Relaxed);
+        self.stats
+            .compaction_time_ms
+            .fetch_add(duration.as_millis() as u64, Ordering::Relaxed);
+
         *self.last_compaction.write().unwrap() = Some(Instant::now());
     }
 
@@ -171,7 +177,7 @@ impl ShardCompactionState {
     pub fn queue_task(&self, task: CompactionTask) {
         let mut queue = self.pending_tasks.lock().unwrap();
         queue.push_back(task);
-        
+
         let depth = queue.len() as u64;
         let max = self.stats.max_queue_depth.load(Ordering::Relaxed);
         if depth > max {
@@ -182,7 +188,7 @@ impl ShardCompactionState {
     /// Pop highest priority task.
     pub fn pop_task(&self) -> Option<CompactionTask> {
         let mut queue = self.pending_tasks.lock().unwrap();
-        
+
         // Find highest priority task
         if queue.is_empty() {
             return None;
@@ -190,7 +196,7 @@ impl ShardCompactionState {
 
         let mut best_idx = 0;
         let mut best_priority = queue[0].priority;
-        
+
         for (i, task) in queue.iter().enumerate().skip(1) {
             if task.priority > best_priority {
                 best_priority = task.priority;
@@ -209,7 +215,7 @@ impl ShardCompactionState {
     /// Register a reader on current version.
     pub fn register_reader(&self) -> ReaderGuard {
         let version = self.current_version();
-        
+
         {
             let mut counts = self.reader_counts.write().unwrap();
             if let Some(entry) = counts.iter_mut().find(|(v, _)| *v == version) {
@@ -350,7 +356,7 @@ impl CompactionQueue {
     pub fn next_task(&self) -> Option<(ShardId, CompactionTask)> {
         // Find shard with highest priority task that isn't already compacting
         let mut best: Option<(ShardId, CompactionTask)> = None;
-        
+
         for shard in &self.shards {
             if shard.is_compacting() {
                 continue;
@@ -359,10 +365,10 @@ impl CompactionQueue {
             // Peek at next task
             let queue = shard.pending_tasks.lock().unwrap();
             if let Some(task) = queue.front() {
-                let dominated = best.as_ref().map_or(false, |(_, best_task)| {
-                    task.priority <= best_task.priority
-                });
-                
+                let dominated = best
+                    .as_ref()
+                    .map_or(false, |(_, best_task)| task.priority <= best_task.priority);
+
                 if !dominated {
                     drop(queue);
                     if let Some(task) = shard.pop_task() {
@@ -427,7 +433,7 @@ pub struct CompactionResult {
 pub trait CompactionExecutor: Send + Sync {
     /// Execute compaction for a shard.
     fn compact(&self, shard_id: ShardId) -> CompactionResult;
-    
+
     /// Estimate work for compaction.
     fn estimate_work(&self, shard_id: ShardId) -> u64;
 }
@@ -535,22 +541,22 @@ mod tests {
     fn test_shard_state_version() {
         let state = ShardCompactionState::new(0);
         assert_eq!(state.current_version(), 1);
-        
+
         state.try_start_compaction();
         state.finish_compaction(1000, Duration::from_millis(10));
-        
+
         assert_eq!(state.current_version(), 2);
     }
 
     #[test]
     fn test_compaction_lock() {
         let state = ShardCompactionState::new(0);
-        
+
         assert!(!state.is_compacting());
         assert!(state.try_start_compaction());
         assert!(state.is_compacting());
         assert!(!state.try_start_compaction()); // Already compacting
-        
+
         state.finish_compaction(0, Duration::ZERO);
         assert!(!state.is_compacting());
     }
@@ -630,7 +636,7 @@ mod tests {
     #[test]
     fn test_reader_guard() {
         let state = ShardCompactionState::new(0);
-        
+
         let guard = state.register_reader();
         assert_eq!(guard.version(), 1);
         assert_eq!(guard.shard_id(), 0);
@@ -651,10 +657,7 @@ mod tests {
 
     #[test]
     fn test_mock_executor() {
-        let executor = MockCompactionExecutor::new(
-            Duration::from_millis(10),
-            1000,
-        );
+        let executor = MockCompactionExecutor::new(Duration::from_millis(10), 1000);
 
         let result = executor.compact(0);
         assert!(result.success);
@@ -668,10 +671,7 @@ mod tests {
             ..Default::default()
         };
         let queue = Arc::new(CompactionQueue::new(4, config));
-        let executor = Arc::new(MockCompactionExecutor::new(
-            Duration::from_millis(1),
-            500,
-        ));
+        let executor = Arc::new(MockCompactionExecutor::new(Duration::from_millis(1), 500));
         let worker = CompactionWorker::new(queue.clone(), executor, 0);
 
         // No tasks - should return None
@@ -679,11 +679,11 @@ mod tests {
 
         // Add task
         queue.schedule(0, CompactionPriority::Normal);
-        
+
         // Should run compaction
         let result = worker.run_once();
         assert!(result.is_some());
-        
+
         let result = result.unwrap();
         assert_eq!(result.shard_id, 0);
         assert!(result.success);
@@ -692,7 +692,7 @@ mod tests {
     #[test]
     fn test_shutdown() {
         let queue = CompactionQueue::new(4, CompactionConfig::default());
-        
+
         assert!(!queue.is_shutdown());
         queue.shutdown();
         assert!(queue.is_shutdown());
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn test_time_since_compaction() {
         let state = ShardCompactionState::new(0);
-        
+
         // No compaction yet
         assert!(state.time_since_compaction().is_none());
 

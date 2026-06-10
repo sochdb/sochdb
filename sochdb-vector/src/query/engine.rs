@@ -8,10 +8,10 @@ use crate::config::EngineConfig;
 use crate::error::{Error, Result};
 use crate::filter::BitsetFilter;
 use crate::rotation::Rotator;
+use crate::segment::Segment;
 use crate::segment::bps::{BpsBuilder, BpsScanner};
 use crate::segment::rdf::RdfScorer;
-use crate::segment::rerank::{quantize_query, Reranker};
-use crate::segment::Segment;
+use crate::segment::rerank::{Reranker, quantize_query};
 use crate::types::*;
 
 /// Query engine for executing vector searches
@@ -26,7 +26,7 @@ impl QueryEngine {
     pub fn new(config: EngineConfig) -> Result<Self> {
         config.validate()?;
         let rotator = Rotator::new(config.dim);
-        
+
         Ok(Self {
             config,
             segments: Vec::new(),
@@ -122,11 +122,13 @@ impl QueryEngine {
         let _n_vec = header.n_vec as usize;
 
         // Compute selectivity for filter-aware widening
-        let selectivity = filter.map(|f| {
-            let mut f = f.clone();
-            f.selectivity()
-        }).unwrap_or(1.0);
-        
+        let selectivity = filter
+            .map(|f| {
+                let mut f = f.clone();
+                f.selectivity()
+            })
+            .unwrap_or(1.0);
+
         let widening_factor = if selectivity < 1.0 && params.adaptive {
             (1.0 / selectivity).min(4.0)
         } else {
@@ -135,7 +137,10 @@ impl QueryEngine {
 
         // Step 2: RDF candidate generation
         let rdf_start = Instant::now();
-        let rdf_candidates = if header.flags.has(crate::segment::format::SegmentFlags::HAS_RDF) {
+        let rdf_candidates = if header
+            .flags
+            .has(crate::segment::format::SegmentFlags::HAS_RDF)
+        {
             let l_a_widened = ((params.l_a as f32) * widening_factor) as usize;
             self.rdf_search(segment, rotated_query, l_a_widened)
         } else {
@@ -146,7 +151,10 @@ impl QueryEngine {
 
         // Step 3: BPS candidate generation
         let bps_start = Instant::now();
-        let bps_candidates = if header.flags.has(crate::segment::format::SegmentFlags::HAS_BPS) {
+        let bps_candidates = if header
+            .flags
+            .has(crate::segment::format::SegmentFlags::HAS_BPS)
+        {
             let l_b_widened = ((params.l_b as f32) * widening_factor) as usize;
             self.bps_search(segment, rotated_query, l_b_widened)
         } else {
@@ -168,11 +176,13 @@ impl QueryEngine {
         // Apply filter
         let filter_start = Instant::now();
         let filtered_candidates: Vec<VectorId> = if let Some(f) = filter {
-            candidate_set.into_iter()
+            candidate_set
+                .into_iter()
                 .filter(|&id| f.contains(id) && !segment.is_tombstoned(id))
                 .collect()
         } else {
-            candidate_set.into_iter()
+            candidate_set
+                .into_iter()
                 .filter(|&id| !segment.is_tombstoned(id))
                 .collect()
         };
@@ -195,7 +205,12 @@ impl QueryEngine {
     }
 
     /// RDF-based candidate generation
-    fn rdf_search(&self, segment: &Segment, rotated_query: &[f32], l_a: usize) -> Vec<ScoredCandidate> {
+    fn rdf_search(
+        &self,
+        segment: &Segment,
+        rotated_query: &[f32],
+        l_a: usize,
+    ) -> Vec<ScoredCandidate> {
         let directory = segment.rdf_directory();
         if directory.is_empty() {
             return Vec::new();
@@ -220,10 +235,15 @@ impl QueryEngine {
     }
 
     /// BPS-based candidate generation
-    fn bps_search(&self, segment: &Segment, rotated_query: &[f32], l_b: usize) -> Vec<(VectorId, Distance)> {
+    fn bps_search(
+        &self,
+        segment: &Segment,
+        rotated_query: &[f32],
+        l_b: usize,
+    ) -> Vec<(VectorId, Distance)> {
         let header = segment.header();
         let bps_data = segment.bps_data();
-        
+
         // Compute query sketch using stored qparams when available (correct
         // asymmetric quantization).  Fall back to legacy symmetric quantization
         // only for segments written before qparams were persisted.
@@ -233,7 +253,7 @@ impl QueryEngine {
         } else {
             BpsBuilder::compute_query_sketch(&self.config.bps, rotated_query)
         };
-        
+
         let scanner = BpsScanner::new(
             bps_data,
             header.n_vec as usize,
@@ -259,12 +279,15 @@ impl QueryEngine {
         let header = segment.header();
         let i8_data = segment.i8_data();
         let scales = segment.scales_data();
-        
+
         // Quantize query
         let (query_i8, query_scale) = quantize_query(rotated_query, &self.config.rerank);
 
         // Get outliers if available
-        let outliers = if header.flags.has(crate::segment::format::SegmentFlags::HAS_OUTLIERS) {
+        let outliers = if header
+            .flags
+            .has(crate::segment::format::SegmentFlags::HAS_OUTLIERS)
+        {
             unsafe {
                 std::slice::from_raw_parts(
                     segment.outliers_ptr(),
@@ -287,10 +310,17 @@ impl QueryEngine {
     }
 
     /// Optional verification with fp32
-    pub fn verify(&self, segment: &Segment, candidates: &[ScoredCandidate], query: &[f32], k: usize) -> Vec<ScoredCandidate> {
+    pub fn verify(
+        &self,
+        segment: &Segment,
+        candidates: &[ScoredCandidate],
+        query: &[f32],
+        k: usize,
+    ) -> Vec<ScoredCandidate> {
         if let Some(fp32_data) = segment.fp32_data() {
             let dim = segment.dim() as usize;
-            let mut verified: Vec<ScoredCandidate> = candidates.iter()
+            let mut verified: Vec<ScoredCandidate> = candidates
+                .iter()
                 .map(|c| {
                     let offset = c.id as usize * dim;
                     if offset + dim <= fp32_data.len() {
@@ -302,7 +332,7 @@ impl QueryEngine {
                     }
                 })
                 .collect();
-            
+
             verified.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
             verified.truncate(k);
             verified
@@ -348,14 +378,14 @@ mod tests {
 
         let file = NamedTempFile::new().unwrap();
         writer.build(file.path()).unwrap();
-        
+
         (file, config)
     }
 
     #[test]
     fn test_query_engine_basic() {
         let (file, config) = create_test_index();
-        
+
         let mut engine = QueryEngine::new(config).unwrap();
         engine.load_segment(file.path().to_str().unwrap()).unwrap();
 
@@ -374,7 +404,7 @@ mod tests {
         };
 
         let result = engine.search(&query, &params).unwrap();
-        
+
         assert!(!result.candidates.is_empty());
         println!("Query stats: {}", result.stats);
     }
@@ -382,7 +412,7 @@ mod tests {
     #[test]
     fn test_query_with_filter() {
         let (file, config) = create_test_index();
-        
+
         let mut engine = QueryEngine::new(config).unwrap();
         engine.load_segment(file.path().to_str().unwrap()).unwrap();
 
@@ -402,7 +432,7 @@ mod tests {
         };
 
         let result = engine.search(&query, &params).unwrap();
-        
+
         // All results should have even IDs
         for c in &result.candidates {
             assert!(c.id % 2 == 0, "Expected even ID, got {}", c.id);

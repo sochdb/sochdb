@@ -72,16 +72,17 @@ impl ReorderResult {
     pub fn apply_to_vectors(&self, vectors: &[f32], dim: usize) -> Vec<f32> {
         let n = self.permutation.len();
         let mut result = vec![0.0f32; n * dim];
-        
+
         for (new_idx, &old_idx) in self.permutation.iter().enumerate() {
             let src_start = old_idx * dim;
             let dst_start = new_idx * dim;
-            result[dst_start..dst_start + dim].copy_from_slice(&vectors[src_start..src_start + dim]);
+            result[dst_start..dst_start + dim]
+                .copy_from_slice(&vectors[src_start..src_start + dim]);
         }
-        
+
         result
     }
-    
+
     /// Apply permutation to IDs
     pub fn apply_to_ids<T: Copy>(&self, ids: &[T]) -> Vec<T> {
         self.permutation.iter().map(|&i| ids[i]).collect()
@@ -97,29 +98,17 @@ impl ReorderResult {
 ///
 /// # Returns
 /// Permutation that should be applied before insertion
-pub fn compute_ordering(
-    vectors: &[f32],
-    dim: usize,
-    strategy: OrderingStrategy,
-) -> ReorderResult {
+pub fn compute_ordering(vectors: &[f32], dim: usize, strategy: OrderingStrategy) -> ReorderResult {
     let start = Instant::now();
     let n = vectors.len() / dim;
-    
+
     let permutation = match strategy {
-        OrderingStrategy::None => {
-            (0..n).collect()
-        }
-        OrderingStrategy::RandomProjection => {
-            random_projection_order(vectors, dim)
-        }
-        OrderingStrategy::CoarseKMeans { k } => {
-            coarse_kmeans_order(vectors, dim, k)
-        }
-        OrderingStrategy::BlockShuffle { block_size } => {
-            block_shuffle_order(n, block_size)
-        }
+        OrderingStrategy::None => (0..n).collect(),
+        OrderingStrategy::RandomProjection => random_projection_order(vectors, dim),
+        OrderingStrategy::CoarseKMeans { k } => coarse_kmeans_order(vectors, dim, k),
+        OrderingStrategy::BlockShuffle { block_size } => block_shuffle_order(n, block_size),
     };
-    
+
     ReorderResult {
         permutation,
         compute_time: start.elapsed(),
@@ -137,7 +126,7 @@ pub fn compute_ordering(
 /// improving cache locality during graph construction.
 fn random_projection_order(vectors: &[f32], dim: usize) -> Vec<usize> {
     let n = vectors.len() / dim;
-    
+
     // Generate random unit vector
     let mut rng = rand::thread_rng();
     let random_vec: Vec<f32> = (0..dim)
@@ -148,29 +137,26 @@ fn random_projection_order(vectors: &[f32], dim: usize) -> Vec<usize> {
             dist.sample(&mut rng)
         })
         .collect();
-    
+
     // Normalize
     let norm: f32 = random_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
     let unit_vec: Vec<f32> = random_vec.iter().map(|x| x / norm).collect();
-    
+
     // Project all vectors (parallel)
     let projections: Vec<(usize, f32)> = (0..n)
         .into_par_iter()
         .map(|i| {
             let start = i * dim;
             let vec = &vectors[start..start + dim];
-            let proj: f32 = vec.iter()
-                .zip(unit_vec.iter())
-                .map(|(a, b)| a * b)
-                .sum();
+            let proj: f32 = vec.iter().zip(unit_vec.iter()).map(|(a, b)| a * b).sum();
             (i, proj)
         })
         .collect();
-    
+
     // Sort by projection
     let mut sorted = projections;
     sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    
+
     sorted.iter().map(|(i, _)| *i).collect()
 }
 
@@ -182,20 +168,20 @@ fn random_projection_order(vectors: &[f32], dim: usize) -> Vec<usize> {
 fn coarse_kmeans_order(vectors: &[f32], dim: usize, k: usize) -> Vec<usize> {
     let n = vectors.len() / dim;
     let k = k.min(n).max(1);
-    
+
     // Initialize centroids with k-means++ style (simplified: random sample)
     let mut rng = rand::thread_rng();
     let mut centroids: Vec<Vec<f32>> = Vec::with_capacity(k);
-    
+
     for _ in 0..k {
         let idx = rng.gen_range(0..n);
         let start = idx * dim;
         centroids.push(vectors[start..start + dim].to_vec());
     }
-    
+
     // Run 3 iterations of k-means (enough for coarse clustering)
     let mut assignments = vec![0usize; n];
-    
+
     for _iter in 0..3 {
         // Assign points to nearest centroid (parallel)
         assignments = (0..n)
@@ -203,30 +189,31 @@ fn coarse_kmeans_order(vectors: &[f32], dim: usize, k: usize) -> Vec<usize> {
             .map(|i| {
                 let start = i * dim;
                 let vec = &vectors[start..start + dim];
-                
+
                 let mut best_cluster = 0;
                 let mut best_dist = f32::MAX;
-                
+
                 for (c, centroid) in centroids.iter().enumerate() {
-                    let dist: f32 = vec.iter()
+                    let dist: f32 = vec
+                        .iter()
                         .zip(centroid.iter())
                         .map(|(a, b)| (a - b).powi(2))
                         .sum();
-                    
+
                     if dist < best_dist {
                         best_dist = dist;
                         best_cluster = c;
                     }
                 }
-                
+
                 best_cluster
             })
             .collect();
-        
+
         // Update centroids
         let mut new_centroids: Vec<Vec<f32>> = vec![vec![0.0; dim]; k];
         let mut counts = vec![0usize; k];
-        
+
         for (i, &c) in assignments.iter().enumerate() {
             let start = i * dim;
             for d in 0..dim {
@@ -234,7 +221,7 @@ fn coarse_kmeans_order(vectors: &[f32], dim: usize, k: usize) -> Vec<usize> {
             }
             counts[c] += 1;
         }
-        
+
         for c in 0..k {
             if counts[c] > 0 {
                 for d in 0..dim {
@@ -243,13 +230,13 @@ fn coarse_kmeans_order(vectors: &[f32], dim: usize, k: usize) -> Vec<usize> {
             }
         }
     }
-    
+
     // Group indices by cluster, then flatten
     let mut cluster_groups: Vec<Vec<usize>> = vec![Vec::new(); k];
     for (i, &c) in assignments.iter().enumerate() {
         cluster_groups[c].push(i);
     }
-    
+
     cluster_groups.into_iter().flatten().collect()
 }
 
@@ -260,18 +247,18 @@ fn coarse_kmeans_order(vectors: &[f32], dim: usize, k: usize) -> Vec<usize> {
 fn block_shuffle_order(n: usize, block_size: usize) -> Vec<usize> {
     let mut rng = rand::thread_rng();
     let block_size = block_size.max(1);
-    
+
     // Create blocks
     let mut blocks: Vec<Vec<usize>> = (0..n)
         .collect::<Vec<_>>()
         .chunks(block_size)
         .map(|c| c.to_vec())
         .collect();
-    
+
     // Shuffle blocks (but keep elements within blocks in order)
     // SliceRandom is already imported via prelude
     blocks.shuffle(&mut rng);
-    
+
     blocks.into_iter().flatten().collect()
 }
 
@@ -290,34 +277,34 @@ pub fn reorder_vectors_inplace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_random_projection() {
         let n = 100;
         let d = 16;
         let vectors: Vec<f32> = (0..n * d).map(|i| i as f32).collect();
-        
+
         let result = compute_ordering(&vectors, d, OrderingStrategy::RandomProjection);
-        
+
         assert_eq!(result.permutation.len(), n);
         // All indices should be present
         let mut sorted = result.permutation.clone();
         sorted.sort();
         assert_eq!(sorted, (0..n).collect::<Vec<_>>());
     }
-    
+
     #[test]
     fn test_coarse_kmeans() {
         let n = 100;
         let d = 16;
         let vectors: Vec<f32> = (0..n * d).map(|i| (i as f32) * 0.01).collect();
-        
+
         let k = (n as f64).sqrt() as usize;
         let result = compute_ordering(&vectors, d, OrderingStrategy::CoarseKMeans { k });
-        
+
         assert_eq!(result.permutation.len(), n);
     }
-    
+
     #[test]
     fn test_apply_permutation() {
         let vectors = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // 3 vectors, dim=2
@@ -326,7 +313,7 @@ mod tests {
             compute_time: std::time::Duration::ZERO,
             strategy: OrderingStrategy::None,
         };
-        
+
         let reordered = result.apply_to_vectors(&vectors, 2);
         assert_eq!(reordered, vec![5.0, 6.0, 1.0, 2.0, 3.0, 4.0]);
     }

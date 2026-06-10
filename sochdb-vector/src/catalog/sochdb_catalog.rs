@@ -25,8 +25,8 @@ impl Catalog {
             group_commit: true,
             ..Default::default()
         };
-        let db = Database::open_with_config(path, config)
-            .map_err(|e| Error::Storage(e.to_string()))?;
+        let db =
+            Database::open_with_config(path, config).map_err(|e| Error::Storage(e.to_string()))?;
 
         Ok(Self { db })
     }
@@ -56,7 +56,8 @@ impl Catalog {
             Metric::Cosine => "cosine",
         };
 
-        let txn = self.db
+        let txn = self
+            .db
             .begin_transaction()
             .map_err(|e| Error::Storage(e.to_string()))?;
 
@@ -73,10 +74,12 @@ impl Catalog {
             "created_at": Self::now_secs()
         });
 
-        self.db.put(txn, key.as_bytes(), value.to_string().as_bytes())
+        self.db
+            .put(txn, key.as_bytes(), value.to_string().as_bytes())
             .map_err(|e| Error::Storage(e.to_string()))?;
 
-        self.db.commit(txn)
+        self.db
+            .commit(txn)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         Ok(id)
@@ -86,14 +89,17 @@ impl Catalog {
     pub fn get_collection(&self, name: &str) -> Result<CollectionInfo> {
         let key = format!("collections/{}", name);
 
-        let txn = self.db
+        let txn = self
+            .db
             .begin_transaction()
             .map_err(|e| Error::Storage(e.to_string()))?;
-        let value = self.db
+        let value = self
+            .db
             .get(txn, key.as_bytes())
             .map_err(|e| Error::Storage(e.to_string()))?
             .ok_or_else(|| Error::CollectionNotFound(name.to_string()))?;
-        self.db.commit(txn)
+        self.db
+            .commit(txn)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         let json: serde_json::Value =
@@ -110,16 +116,19 @@ impl Catalog {
 
     /// List all collections
     pub fn list_collections(&self) -> Result<Vec<CollectionInfo>> {
-        let txn = self.db
+        let txn = self
+            .db
             .begin_transaction()
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         let prefix = b"collections/";
-        let entries = self.db
+        let entries = self
+            .db
             .scan(txn, prefix)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
-        self.db.commit(txn)
+        self.db
+            .commit(txn)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         let mut collections = Vec::new();
@@ -140,7 +149,8 @@ impl Catalog {
 
     /// Register a new segment
     pub fn add_segment(&self, collection_id: i64, segment: &SegmentInfo) -> Result<()> {
-        let txn = self.db
+        let txn = self
+            .db
             .begin_transaction()
             .map_err(|e| Error::Storage(e.to_string()))?;
 
@@ -156,10 +166,12 @@ impl Catalog {
             "created_at": Self::now_secs()
         });
 
-        self.db.put(txn, key.as_bytes(), value.to_string().as_bytes())
+        self.db
+            .put(txn, key.as_bytes(), value.to_string().as_bytes())
             .map_err(|e| Error::Storage(e.to_string()))?;
 
-        self.db.commit(txn)
+        self.db
+            .commit(txn)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         Ok(())
@@ -167,16 +179,19 @@ impl Catalog {
 
     /// Get all active segments for a collection
     pub fn get_segments(&self, collection_id: i64) -> Result<Vec<SegmentInfo>> {
-        let txn = self.db
+        let txn = self
+            .db
             .begin_transaction()
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         let prefix = format!("segments/{}/", collection_id);
-        let entries = self.db
+        let entries = self
+            .db
             .scan(txn, prefix.as_bytes())
             .map_err(|e| Error::Storage(e.to_string()))?;
 
-        self.db.commit(txn)
+        self.db
+            .commit(txn)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         let mut segments = Vec::new();
@@ -202,14 +217,59 @@ impl Catalog {
     }
 
     /// Update segment state
-    pub fn update_segment_state(&self, _segment_id: u64, _state: SegmentState) -> Result<()> {
-        // TODO: Implement key scanning to find and update the segment
+    pub fn update_segment_state(&self, segment_id: u64, state: SegmentState) -> Result<()> {
+        // Scan all collection segment prefixes to find the segment by ID.
+        // Key format: segments/{collection_id}/{segment_id}
+        let txn = self
+            .db
+            .begin_transaction()
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        let prefix = b"segments/";
+        let entries = self
+            .db
+            .scan(txn, prefix)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        // Find the entry matching segment_id and update its state
+        let mut found = false;
+        for (key, value) in &entries {
+            if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(value) {
+                if json["id"].as_u64() == Some(segment_id) {
+                    json["state"] = serde_json::Value::String(state.to_string().to_owned());
+
+                    let txn2 = self
+                        .db
+                        .begin_transaction()
+                        .map_err(|e| Error::Storage(e.to_string()))?;
+                    self.db
+                        .put(txn2, key, json.to_string().as_bytes())
+                        .map_err(|e| Error::Storage(e.to_string()))?;
+                    self.db
+                        .commit(txn2)
+                        .map_err(|e| Error::Storage(e.to_string()))?;
+
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        self.db
+            .commit(txn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        if !found {
+            tracing::warn!("update_segment_state: segment {} not found", segment_id);
+        }
+
         Ok(())
     }
 
     /// Add a tombstone
     pub fn add_tombstone(&self, collection_id: i64, segment_id: u64, vec_id: u32) -> Result<()> {
-        let txn = self.db
+        let txn = self
+            .db
             .begin_transaction()
             .map_err(|e| Error::Storage(e.to_string()))?;
 
@@ -221,10 +281,12 @@ impl Catalog {
             "created_at": Self::now_secs()
         });
 
-        self.db.put(txn, key.as_bytes(), value.to_string().as_bytes())
+        self.db
+            .put(txn, key.as_bytes(), value.to_string().as_bytes())
             .map_err(|e| Error::Storage(e.to_string()))?;
 
-        self.db.commit(txn)
+        self.db
+            .commit(txn)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         Ok(())
@@ -232,17 +294,20 @@ impl Catalog {
 
     /// Get tombstones for a segment
     pub fn get_tombstones(&self, segment_id: u64) -> Result<Vec<u32>> {
-        let txn = self.db
+        let txn = self
+            .db
             .begin_transaction()
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         // Scan all tombstones and filter by segment_id
         let prefix = b"tombstones/";
-        let entries = self.db
+        let entries = self
+            .db
             .scan(txn, prefix)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
-        self.db.commit(txn)
+        self.db
+            .commit(txn)
             .map_err(|e| Error::Storage(e.to_string()))?;
 
         let mut tombstones = Vec::new();
@@ -261,8 +326,57 @@ impl Catalog {
     }
 
     /// Delete tombstones for a segment (after compaction)
-    pub fn clear_tombstones(&self, _segment_id: u64) -> Result<()> {
-        // TODO: Implement tombstone clearing
+    pub fn clear_tombstones(&self, segment_id: u64) -> Result<()> {
+        let txn = self
+            .db
+            .begin_transaction()
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        // Scan all tombstone entries: tombstones/{collection_id}/{segment_id}/{vec_id}
+        let prefix = b"tombstones/";
+        let entries = self
+            .db
+            .scan(txn, prefix)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        self.db
+            .commit(txn)
+            .map_err(|e| Error::Storage(e.to_string()))?;
+
+        // Collect keys matching this segment_id
+        let mut keys_to_delete = Vec::new();
+        for (key, value) in &entries {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(value) {
+                if json["segment_id"].as_u64() == Some(segment_id) {
+                    keys_to_delete.push(key.clone());
+                }
+            }
+        }
+
+        // Delete all matching tombstones in a single transaction
+        if !keys_to_delete.is_empty() {
+            let txn = self
+                .db
+                .begin_transaction()
+                .map_err(|e| Error::Storage(e.to_string()))?;
+
+            for key in &keys_to_delete {
+                self.db
+                    .delete(txn, key)
+                    .map_err(|e| Error::Storage(e.to_string()))?;
+            }
+
+            self.db
+                .commit(txn)
+                .map_err(|e| Error::Storage(e.to_string()))?;
+
+            tracing::info!(
+                "clear_tombstones: removed {} tombstones for segment {}",
+                keys_to_delete.len(),
+                segment_id
+            );
+        }
+
         Ok(())
     }
 

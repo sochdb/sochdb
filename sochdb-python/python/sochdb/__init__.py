@@ -28,11 +28,14 @@ try:
     from sochdb._native import (
         Database,
         HnswIndex,
+        BM25Index,
+        RRFFusion,
         Transaction,
         build_index,
         version,
         is_safe_mode,
         TableDatabase,
+        ThreeLaneHybridIndex,
     )
     _HAS_NATIVE = True
 except ImportError as e:
@@ -40,10 +43,14 @@ except ImportError as e:
     _IMPORT_ERROR = str(e)
 
 # Re-export for convenience
+from .hybrid import HybridSearchIndex, HybridSearchResult
+
 __all__ = [
     # Core classes
     "Database",
     "HnswIndex",
+    "BM25Index",
+    "RRFFusion",
     "TableDatabase",
     "Transaction",
     # Functions
@@ -53,13 +60,17 @@ __all__ = [
     "recommended_hnsw_params",
     "version",
     "is_safe_mode",
+    # Hybrid retrieval
+    "HybridSearchIndex",
+    "HybridSearchResult",
+    "ThreeLaneHybridIndex",
     # Scale-out
     "MultiShardHnswIndex",
     # Legacy compatibility
     "bulk_build_index",
 ]
 
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 
 
 def _check_native():
@@ -586,6 +597,18 @@ else:
         
         @staticmethod
         def load(path: str) -> "HnswIndex":
+            _check_native()
+
+    class BM25Index:
+        """BM25 Index (stub - native extension not loaded)."""
+
+        def __init__(self, *args, **kwargs):
+            _check_native()
+
+    class RRFFusion:
+        """RRF Fusion (stub - native extension not loaded)."""
+
+        def __init__(self, *args, **kwargs):
             _check_native()
 
     class Transaction:

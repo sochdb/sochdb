@@ -1,0 +1,16 @@
+{
+  "source": "sochdb-bench bench-results-2026-06-08 (macOS aarch64, 10K scale)",
+  "topology": "standalone",
+  "targets": [
+    { "workload": "oltp_seq_write", "throughput_ops_sec": 177772, "p50_us": 5.3, "p99_us": 9.5, "tolerance_pct": 25 },
+    { "workload": "oltp_seq_read", "throughput_ops_sec": 9046131, "p50_us": 0.08, "p99_us": 0.3, "tolerance_pct": 30 },
+    { "workload": "oltp_rand_read", "throughput_ops_sec": 5520446, "p50_us": 0.17, "p99_us": 0.46, "tolerance_pct": 30 },
+    { "workload": "oltp_batch_write", "throughput_ops_sec": 2320432, "p50_us": 0.42, "p99_us": 0.55, "tolerance_pct": 25 },
+    { "workload": "oltp_delete", "throughput_ops_sec": 212694, "p50_us": 4.6, "p99_us": 6.6, "tolerance_pct": 25 },
+    { "workload": "analytics_bulk_insert", "throughput_ops_sec": 1185911, "p50_us": 0.8, "p99_us": 1.0, "tolerance_pct": 25 },
+    { "workload": "analytics_queries", "throughput_ops_sec": 35240, "p50_us": 4.0, "p99_us": 2054, "tolerance_pct": 30 },
+    { "workload": "vector_insert", "throughput_ops_sec": 1600929, "p50_us": 0.56, "p99_us": 1.35, "tolerance_pct": 25 },
+    { "workload": "vector_search", "throughput_ops_sec": 3182, "p50_us": 298, "p99_us": 317, "tolerance_pct": 30 },
+    { "workload": "mixed_80r_20w", "throughput_ops_sec": 831143, "p50_us": 0.33, "p99_us": 5.2, "tolerance_pct": 25 }
+  ]
+}

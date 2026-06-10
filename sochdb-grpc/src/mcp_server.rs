@@ -8,10 +8,10 @@
 //! Provides Model Context Protocol tool routing via gRPC.
 
 use crate::proto::{
-    mcp_service_server::{McpService, McpServiceServer},
     ExecuteToolRequest, ExecuteToolResponse, GetToolSchemaRequest, GetToolSchemaResponse,
     ListToolsRequest, ListToolsResponse, McpTool, RegisterToolRequest, RegisterToolResponse,
     UnregisterToolRequest, UnregisterToolResponse,
+    mcp_service_server::{McpService, McpServiceServer},
 };
 use dashmap::DashMap;
 use std::time::Instant;

@@ -83,17 +83,17 @@ pub enum IndexPolicy {
     /// No ordered index - fastest writes, O(N) scans
     /// Use for write-heavy tables that rarely need range scans.
     WriteOptimized,
-    
+
     /// LSM-style: unsorted memtable + periodic sorted runs
     /// Amortized O(1) inserts, O(output + log K) scans where K = run count.
     /// Good balance for mixed OLTP workloads.
     Balanced,
-    
+
     /// Maintain ordered index on every write
     /// O(log N) inserts, O(log N + K) scans.
     /// Use for analytics tables with frequent range queries.
     ScanOptimized,
-    
+
     /// Append-only with no indexing
     /// O(1) inserts, O(N) scans (but efficient forward iteration).
     /// Use for time-series logs where data is naturally ordered.
@@ -259,9 +259,7 @@ impl TableIndexRegistry {
         self.configs
             .get(table_name)
             .map(|c| c.clone())
-            .unwrap_or_else(|| {
-                TableIndexConfig::new(table_name, *self.default_policy.read())
-            })
+            .unwrap_or_else(|| TableIndexConfig::new(table_name, *self.default_policy.read()))
     }
 
     /// Check if a table has an explicitly configured policy
@@ -294,9 +292,9 @@ impl Default for TableIndexRegistry {
 ///
 /// Used by the Balanced policy for LSM-style scan optimization.
 /// Each run is sorted by key, enabling efficient k-way merge.
-/// 
+///
 /// ## Key Range Metadata
-/// 
+///
 /// Each run stores `min_key` and `max_key` bounds for O(1) overlap checking.
 /// This enables prefix scan pruning: runs that don't overlap the prefix
 /// range can be skipped entirely.
@@ -379,7 +377,8 @@ impl<K: Ord + Clone, V: Clone> SortedRun<K, V> {
 
     /// Range scan from start key
     pub fn range_from<'a>(&'a self, start: &K) -> impl Iterator<Item = &'a (K, V)> {
-        let idx = self.entries
+        let idx = self
+            .entries
             .binary_search_by(|(k, _)| k.cmp(start))
             .unwrap_or_else(|i| i);
         self.entries[idx..].iter()
@@ -387,10 +386,12 @@ impl<K: Ord + Clone, V: Clone> SortedRun<K, V> {
 
     /// Range scan with bounds
     pub fn range<'a>(&'a self, start: &K, end: &K) -> impl Iterator<Item = &'a (K, V)> {
-        let start_idx = self.entries
+        let start_idx = self
+            .entries
             .binary_search_by(|(k, _)| k.cmp(start))
             .unwrap_or_else(|i| i);
-        let end_idx = self.entries
+        let end_idx = self
+            .entries
             .binary_search_by(|(k, _)| k.cmp(end))
             .unwrap_or_else(|i| i);
         self.entries[start_idx..end_idx].iter()
@@ -402,7 +403,7 @@ impl<K: Ord + Clone, V: Clone> SortedRun<K, V> {
     }
 
     /// Direct access to underlying entries for O(1) indexing
-    /// 
+    ///
     /// Required for efficient k-way merge. Without this accessor,
     /// callers are forced to use `iter().nth()` which is O(n) per call.
     #[inline]
@@ -427,7 +428,7 @@ impl<K: Ord + Clone, V: Clone> SortedRun<K, V> {
     pub fn overlaps_prefix(&self, prefix: &K) -> bool {
         match &self.max_key {
             Some(max) if max < prefix => false, // Run entirely before prefix
-            _ => true, // Could overlap (conservative)
+            _ => true,                          // Could overlap (conservative)
         }
     }
 
@@ -439,9 +440,9 @@ impl<K: Ord + Clone, V: Clone> SortedRun<K, V> {
     pub fn overlaps_range(&self, start: &K, end: &K) -> bool {
         // Check if run is entirely outside the range
         match (&self.min_key, &self.max_key) {
-            (Some(min), _) if min >= end => false,  // Run entirely after range
+            (Some(min), _) if min >= end => false, // Run entirely after range
             (_, Some(max)) if max < start => false, // Run entirely before range
-            _ => true, // Could overlap
+            _ => true,                             // Could overlap
         }
     }
 
@@ -494,14 +495,15 @@ impl<V: Clone + Send + Sync + Eq + 'static> BalancedTableIndex<V> {
     pub fn insert(&self, key: ArenaKeyHandle, value: V) {
         let key_size = key.len();
         let value_size = std::mem::size_of::<V>();
-        
+
         self.memtable.insert(key, value);
-        self.memtable_size.fetch_add(key_size + value_size, std::sync::atomic::Ordering::Relaxed);
+        self.memtable_size
+            .fetch_add(key_size + value_size, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Get a value by key
-    /// 
-    /// Uses run metadata for O(1) pruning: skips runs where 
+    ///
+    /// Uses run metadata for O(1) pruning: skips runs where
     /// `max_key < key` (run entirely before search key).
     pub fn get(&self, key: &ArenaKeyHandle) -> Option<V> {
         // Check memtable first
@@ -525,25 +527,25 @@ impl<V: Clone + Send + Sync + Eq + 'static> BalancedTableIndex<V> {
     }
 
     /// Scan entries with a given key prefix
-    /// 
+    ///
     /// Uses run metadata for O(1) pruning: only scans runs whose
     /// key range overlaps with the prefix. Returns merged results
     /// in key order with duplicates resolved (newest wins).
-    /// 
+    ///
     /// # Pruning Benefit
-    /// 
+    ///
     /// For selective prefixes (e.g., "user:123:" in a table with 1M keys),
     /// most runs will have `max_key < prefix` or `min_key > prefix_end`,
     /// allowing them to be skipped entirely.
     pub fn scan_prefix(&self, prefix: &ArenaKeyHandle) -> Vec<(ArenaKeyHandle, V)> {
-        use std::collections::BinaryHeap;
         use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
 
         #[derive(Eq, PartialEq)]
         struct PrefixHeapEntry<V: Clone> {
             key: ArenaKeyHandle,
             value: V,
-            source_idx: usize,  // 0 = memtable, 1+ = sorted runs
+            source_idx: usize, // 0 = memtable, 1+ = sorted runs
         }
 
         impl<V: Clone + Eq + PartialEq> Ord for PrefixHeapEntry<V> {
@@ -580,18 +582,18 @@ impl<V: Clone + Send + Sync + Eq + 'static> BalancedTableIndex<V> {
         for (run_idx, run) in runs.iter().enumerate() {
             // Prune: skip runs that can't contain any matching keys
             if !run.overlaps_prefix(prefix) {
-                continue;  // Run is entirely before prefix
+                continue; // Run is entirely before prefix
             }
 
             // Scan matching entries in this run
             for (key, value) in run.range_from(prefix) {
                 if !key.as_bytes().starts_with(prefix.as_bytes()) {
-                    break;  // Past prefix range
+                    break; // Past prefix range
                 }
                 heap.push(Reverse(PrefixHeapEntry {
                     key: key.clone(),
                     value: value.clone(),
-                    source_idx: run_idx + 1,  // 1-indexed (0 = memtable)
+                    source_idx: run_idx + 1, // 1-indexed (0 = memtable)
                 }));
             }
         }
@@ -613,31 +615,35 @@ impl<V: Clone + Send + Sync + Eq + 'static> BalancedTableIndex<V> {
 
     /// Check if compaction is needed
     pub fn needs_compaction(&self) -> bool {
-        let memtable_size = self.memtable_size.load(std::sync::atomic::Ordering::Relaxed);
+        let memtable_size = self
+            .memtable_size
+            .load(std::sync::atomic::Ordering::Relaxed);
         let runs = self.sorted_runs.read();
-        
-        memtable_size >= self.config.target_run_size
-            || runs.len() >= self.config.max_sorted_runs
+
+        memtable_size >= self.config.target_run_size || runs.len() >= self.config.max_sorted_runs
     }
 
     /// Compact memtable to a new sorted run
     pub fn compact_memtable(&self) {
         // Drain memtable
-        let entries: Vec<_> = self.memtable.iter()
+        let entries: Vec<_> = self
+            .memtable
+            .iter()
             .map(|e| (e.key().clone(), e.value().clone()))
             .collect();
-        
+
         if entries.is_empty() {
             return;
         }
 
         // Clear memtable
         self.memtable.clear();
-        self.memtable_size.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.memtable_size
+            .store(0, std::sync::atomic::Ordering::Relaxed);
 
         // Create new sorted run
         let run = Arc::new(SortedRun::from_unsorted(entries, 0));
-        
+
         let mut runs = self.sorted_runs.write();
         runs.push(run);
     }
@@ -645,32 +651,32 @@ impl<V: Clone + Send + Sync + Eq + 'static> BalancedTableIndex<V> {
     /// Merge multiple sorted runs (compaction)
     pub fn merge_runs(&self, levels_to_merge: usize) {
         let mut runs = self.sorted_runs.write();
-        
+
         if runs.len() < levels_to_merge {
             return;
         }
 
         // Take the oldest runs to merge
         let to_merge: Vec<_> = runs.drain(..levels_to_merge).collect();
-        
+
         // K-way merge
         let merged = self.k_way_merge(&to_merge);
-        
+
         // Create new run at next level
         let new_run = Arc::new(SortedRun::from_sorted(merged, to_merge.len()));
         runs.insert(0, new_run);
     }
 
     /// K-way merge of sorted runs
-    /// 
+    ///
     /// Complexity: O(N log K) where N = total entries, K = number of runs
-    /// 
-    /// Key insight: Use direct indexing into the underlying Vec instead of 
+    ///
+    /// Key insight: Use direct indexing into the underlying Vec instead of
     /// creating new iterators. `iter().nth(n)` is O(n), making the old
     /// implementation O(N²/K).
     fn k_way_merge(&self, runs: &[Arc<SortedRun<ArenaKeyHandle, V>>]) -> Vec<(ArenaKeyHandle, V)> {
-        use std::collections::BinaryHeap;
         use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
 
         #[derive(Eq, PartialEq)]
         struct HeapEntry<V: Clone> {
@@ -698,15 +704,15 @@ impl<V: Clone + Send + Sync + Eq + 'static> BalancedTableIndex<V> {
         }
 
         let mut heap: BinaryHeap<Reverse<HeapEntry<V>>> = BinaryHeap::new();
-        
+
         // Track current position in each run (index into the underlying Vec)
         let mut run_positions: Vec<usize> = vec![0; runs.len()];
-        
+
         // Initialize heap with first entry from each run using direct indexing
         for (run_idx, run) in runs.iter().enumerate() {
             let entries = run.entries();
             if !entries.is_empty() {
-                let (key, value) = &entries[0];  // O(1) direct access
+                let (key, value) = &entries[0]; // O(1) direct access
                 heap.push(Reverse(HeapEntry {
                     key: key.clone(),
                     value: value.clone(),
@@ -732,11 +738,11 @@ impl<V: Clone + Send + Sync + Eq + 'static> BalancedTableIndex<V> {
             // Advance position in this run
             run_positions[entry.run_idx] += 1;
             let next_idx = run_positions[entry.run_idx];
-            
+
             // FIX: Direct indexing is O(1), not O(n) like iter().nth()
             let run_entries = runs[entry.run_idx].entries();
             if next_idx < run_entries.len() {
-                let (key, value) = &run_entries[next_idx];  // O(1) access
+                let (key, value) = &run_entries[next_idx]; // O(1) access
                 heap.push(Reverse(HeapEntry {
                     key: key.clone(),
                     value: value.clone(),
@@ -756,7 +762,8 @@ impl<V: Clone + Send + Sync + Eq + 'static> BalancedTableIndex<V> {
 
     /// Get memtable size
     pub fn memtable_size(&self) -> usize {
-        self.memtable_size.load(std::sync::atomic::Ordering::Relaxed)
+        self.memtable_size
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get number of sorted runs
@@ -775,24 +782,36 @@ mod tests {
 
     #[test]
     fn test_index_policy_from_str() {
-        assert_eq!(IndexPolicy::from_str("write_optimized"), Some(IndexPolicy::WriteOptimized));
-        assert_eq!(IndexPolicy::from_str("balanced"), Some(IndexPolicy::Balanced));
-        assert_eq!(IndexPolicy::from_str("scan-optimized"), Some(IndexPolicy::ScanOptimized));
-        assert_eq!(IndexPolicy::from_str("append_only"), Some(IndexPolicy::AppendOnly));
+        assert_eq!(
+            IndexPolicy::from_str("write_optimized"),
+            Some(IndexPolicy::WriteOptimized)
+        );
+        assert_eq!(
+            IndexPolicy::from_str("balanced"),
+            Some(IndexPolicy::Balanced)
+        );
+        assert_eq!(
+            IndexPolicy::from_str("scan-optimized"),
+            Some(IndexPolicy::ScanOptimized)
+        );
+        assert_eq!(
+            IndexPolicy::from_str("append_only"),
+            Some(IndexPolicy::AppendOnly)
+        );
         assert_eq!(IndexPolicy::from_str("invalid"), None);
     }
 
     #[test]
     fn test_registry_default_policy() {
         let registry = TableIndexRegistry::new();
-        
+
         // Unconfigured table gets default policy
         assert_eq!(registry.get_policy("unknown"), IndexPolicy::Balanced);
-        
+
         // Configure a table
         registry.configure_table(TableIndexConfig::new("users", IndexPolicy::WriteOptimized));
         assert_eq!(registry.get_policy("users"), IndexPolicy::WriteOptimized);
-        
+
         // Other tables still get default
         assert_eq!(registry.get_policy("orders"), IndexPolicy::Balanced);
     }
@@ -800,7 +819,7 @@ mod tests {
     #[test]
     fn test_registry_change_default() {
         let registry = TableIndexRegistry::new();
-        
+
         registry.set_default_policy(IndexPolicy::ScanOptimized);
         assert_eq!(registry.get_policy("any_table"), IndexPolicy::ScanOptimized);
     }
@@ -812,9 +831,9 @@ mod tests {
             (ArenaKeyHandle::new(b"a"), 1),
             (ArenaKeyHandle::new(b"b"), 2),
         ];
-        
+
         let run = SortedRun::from_unsorted(entries, 0);
-        
+
         assert_eq!(run.len(), 3);
         assert_eq!(run.get(&ArenaKeyHandle::new(b"a")), Some(&1));
         assert_eq!(run.get(&ArenaKeyHandle::new(b"b")), Some(&2));
@@ -826,10 +845,10 @@ mod tests {
     fn test_balanced_table_index() {
         let config = TableIndexConfig::new("test", IndexPolicy::Balanced);
         let index: BalancedTableIndex<i32> = BalancedTableIndex::new(config);
-        
+
         index.insert(ArenaKeyHandle::new(b"key1"), 1);
         index.insert(ArenaKeyHandle::new(b"key2"), 2);
-        
+
         assert_eq!(index.get(&ArenaKeyHandle::new(b"key1")), Some(1));
         assert_eq!(index.get(&ArenaKeyHandle::new(b"key2")), Some(2));
         assert_eq!(index.get(&ArenaKeyHandle::new(b"key3")), None);
@@ -837,22 +856,21 @@ mod tests {
 
     #[test]
     fn test_balanced_compaction() {
-        let config = TableIndexConfig::new("test", IndexPolicy::Balanced)
-            .with_target_run_size(100); // Small size to trigger compaction
-        
+        let config = TableIndexConfig::new("test", IndexPolicy::Balanced).with_target_run_size(100); // Small size to trigger compaction
+
         let index: BalancedTableIndex<i32> = BalancedTableIndex::new(config);
-        
+
         for i in 0..10 {
             let key = format!("key{:03}", i);
             index.insert(ArenaKeyHandle::new(key.as_bytes()), i as i32);
         }
-        
+
         // Compact memtable
         index.compact_memtable();
-        
+
         assert_eq!(index.run_count(), 1);
         assert_eq!(index.memtable_size(), 0);
-        
+
         // Values should still be accessible
         assert_eq!(index.get(&ArenaKeyHandle::new(b"key005")), Some(5));
     }
@@ -862,10 +880,10 @@ mod tests {
         // Verify O(N log K) complexity by checking that merge time scales linearly
         // with N (not quadratically as the old iter().nth() implementation would)
         use std::time::Instant;
-        
+
         let sizes = [100, 500, 1000];
         let mut times_ns: Vec<u128> = Vec::new();
-        
+
         for size in sizes {
             // Create 5 runs with `size` entries each
             let runs: Vec<Arc<SortedRun<ArenaKeyHandle, i32>>> = (0..5)
@@ -879,34 +897,44 @@ mod tests {
                     Arc::new(SortedRun::from_sorted(entries, run_id))
                 })
                 .collect();
-            
+
             let config = TableIndexConfig::new("test", IndexPolicy::Balanced);
             let index: BalancedTableIndex<i32> = BalancedTableIndex::new(config);
-            
+
             let start = Instant::now();
             let merged = index.k_way_merge(&runs);
             let elapsed = start.elapsed();
-            
+
             times_ns.push(elapsed.as_nanos());
-            
+
             // Verify merge produced correct output
             let total_entries = size * 5;
-            assert_eq!(merged.len(), total_entries, "Merge should produce all unique entries");
+            assert_eq!(
+                merged.len(),
+                total_entries,
+                "Merge should produce all unique entries"
+            );
         }
-        
+
         // For O(N log K) scaling, time should roughly double when N doubles
         // (since log K is constant). For O(N²), time would quadruple.
         // We check that the ratio is closer to linear than quadratic.
         if times_ns.len() >= 2 && times_ns[0] > 0 {
             let ratio_1_to_2 = times_ns[1] as f64 / times_ns[0] as f64;
             let ratio_2_to_3 = times_ns[2] as f64 / times_ns[1] as f64;
-            
+
             // For linear scaling with 5x size increase, expect ~5x time increase
             // For quadratic, expect ~25x. We assert it's closer to linear.
-            assert!(ratio_1_to_2 < 15.0, 
-                "Merge scaling should be sub-quadratic: ratio={:.1}x for 5x size", ratio_1_to_2);
-            assert!(ratio_2_to_3 < 10.0,
-                "Merge scaling should be sub-quadratic: ratio={:.1}x for 2x size", ratio_2_to_3);
+            assert!(
+                ratio_1_to_2 < 15.0,
+                "Merge scaling should be sub-quadratic: ratio={:.1}x for 5x size",
+                ratio_1_to_2
+            );
+            assert!(
+                ratio_2_to_3 < 10.0,
+                "Merge scaling should be sub-quadratic: ratio={:.1}x for 2x size",
+                ratio_2_to_3
+            );
         }
     }
 
@@ -919,41 +947,40 @@ mod tests {
             (ArenaKeyHandle::new(b"cherry"), 3),
         ];
         let run = SortedRun::from_sorted(entries, 0);
-        
+
         // Verify min/max are set correctly
-        assert_eq!(run.min_key().map(|k| k.as_bytes()), Some(b"apple".as_slice()));
-        assert_eq!(run.max_key().map(|k| k.as_bytes()), Some(b"cherry".as_slice()));
-        
+        assert_eq!(
+            run.min_key().map(|k| k.as_bytes()),
+            Some(b"apple".as_slice())
+        );
+        assert_eq!(
+            run.max_key().map(|k| k.as_bytes()),
+            Some(b"cherry".as_slice())
+        );
+
         // Test overlaps_prefix pruning
         assert!(run.overlaps_prefix(&ArenaKeyHandle::new(b"banana"))); // In range
-        assert!(run.overlaps_prefix(&ArenaKeyHandle::new(b"apple")));  // At start
+        assert!(run.overlaps_prefix(&ArenaKeyHandle::new(b"apple"))); // At start
         assert!(run.overlaps_prefix(&ArenaKeyHandle::new(b"cherry"))); // At end
-        
+
         // Prefix BEFORE range should not overlap (max_key < prefix)
-        assert!(!run.overlaps_prefix(&ArenaKeyHandle::new(b"date")));  // After range
+        assert!(!run.overlaps_prefix(&ArenaKeyHandle::new(b"date"))); // After range
         assert!(!run.overlaps_prefix(&ArenaKeyHandle::new(b"zebra"))); // Way after
-        
+
         // Test overlaps_range pruning
         assert!(run.overlaps_range(
             &ArenaKeyHandle::new(b"banana"),
             &ArenaKeyHandle::new(b"cherry")
         ));
-        assert!(!run.overlaps_range(
-            &ArenaKeyHandle::new(b"date"),
-            &ArenaKeyHandle::new(b"fig")
-        )); // Entirely after
-        assert!(!run.overlaps_range(
-            &ArenaKeyHandle::new(b"aaa"),
-            &ArenaKeyHandle::new(b"aab")
-        )); // Entirely before
+        assert!(!run.overlaps_range(&ArenaKeyHandle::new(b"date"), &ArenaKeyHandle::new(b"fig"))); // Entirely after
+        assert!(!run.overlaps_range(&ArenaKeyHandle::new(b"aaa"), &ArenaKeyHandle::new(b"aab"))); // Entirely before
     }
 
     #[test]
     fn test_scan_prefix() {
-        let config = TableIndexConfig::new("test", IndexPolicy::Balanced)
-            .with_target_run_size(50); // Small to trigger compaction
+        let config = TableIndexConfig::new("test", IndexPolicy::Balanced).with_target_run_size(50); // Small to trigger compaction
         let index: BalancedTableIndex<i32> = BalancedTableIndex::new(config);
-        
+
         // Insert entries with different prefixes
         let prefixes = ["user:1:", "user:2:", "order:1:", "order:2:"];
         for (i, prefix) in prefixes.iter().enumerate() {
@@ -962,29 +989,35 @@ mod tests {
                 index.insert(ArenaKeyHandle::new(key.as_bytes()), (i * 10 + j) as i32);
             }
         }
-        
+
         // Compact to create sorted runs
         index.compact_memtable();
-        
+
         // Add more entries to memtable
         index.insert(ArenaKeyHandle::new(b"user:1:99"), 199);
         index.insert(ArenaKeyHandle::new(b"order:1:99"), 299);
-        
+
         // Scan for user:1: prefix
         let results = index.scan_prefix(&ArenaKeyHandle::new(b"user:1:"));
         assert_eq!(results.len(), 6); // 5 from run + 1 from memtable
-        
+
         // Verify all results have the correct prefix
         for (key, _value) in &results {
-            assert!(key.as_bytes().starts_with(b"user:1:"), 
-                "Key {:?} should start with user:1:", String::from_utf8_lossy(key.as_bytes()));
+            assert!(
+                key.as_bytes().starts_with(b"user:1:"),
+                "Key {:?} should start with user:1:",
+                String::from_utf8_lossy(key.as_bytes())
+            );
         }
-        
+
         // Verify results are sorted
         for window in results.windows(2) {
-            assert!(window[0].0 <= window[1].0, "Results should be sorted by key");
+            assert!(
+                window[0].0 <= window[1].0,
+                "Results should be sorted by key"
+            );
         }
-        
+
         // Scan for order: prefix
         let results = index.scan_prefix(&ArenaKeyHandle::new(b"order:"));
         assert_eq!(results.len(), 11); // 10 from run + 1 from memtable
@@ -995,13 +1028,10 @@ mod tests {
         // Empty run should have None for min/max
         let entries: Vec<(ArenaKeyHandle, i32)> = vec![];
         let run = SortedRun::from_sorted(entries, 0);
-        
+
         assert!(run.min_key().is_none());
         assert!(run.max_key().is_none());
         assert!(run.overlaps_prefix(&ArenaKeyHandle::new(b"anything"))); // Conservative: true
-        assert!(run.overlaps_range(
-            &ArenaKeyHandle::new(b"a"),
-            &ArenaKeyHandle::new(b"z")
-        )); // Conservative: true
+        assert!(run.overlaps_range(&ArenaKeyHandle::new(b"a"), &ArenaKeyHandle::new(b"z"))); // Conservative: true
     }
 }

@@ -97,9 +97,7 @@ impl FilterValue {
             (FilterValue::String(a), FilterValue::String(b)) => a == b,
             (FilterValue::Int64(a), FilterValue::Int64(b)) => a == b,
             (FilterValue::Uint64(a), FilterValue::Uint64(b)) => a == b,
-            (FilterValue::Float64(a), FilterValue::Float64(b)) => {
-                (a - b).abs() < f64::EPSILON
-            }
+            (FilterValue::Float64(a), FilterValue::Float64(b)) => (a - b).abs() < f64::EPSILON,
             (FilterValue::Bool(a), FilterValue::Bool(b)) => a == b,
             (FilterValue::Null, FilterValue::Null) => true,
             _ => false,
@@ -171,29 +169,23 @@ impl From<bool> for FilterValue {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FilterAtom {
     /// Equality: field = value
-    Eq {
-        field: String,
-        value: FilterValue,
-    },
-    
+    Eq { field: String, value: FilterValue },
+
     /// Not equal: field != value
-    Ne {
-        field: String,
-        value: FilterValue,
-    },
-    
+    Ne { field: String, value: FilterValue },
+
     /// Membership: field IN (v1, v2, ...)
     In {
         field: String,
         values: Vec<FilterValue>,
     },
-    
+
     /// Not in set: field NOT IN (v1, v2, ...)
     NotIn {
         field: String,
         values: Vec<FilterValue>,
     },
-    
+
     /// Range: min <= field <= max (inclusive)
     /// Either bound can be None for open-ended ranges
     Range {
@@ -203,27 +195,19 @@ pub enum FilterAtom {
         min_inclusive: bool,
         max_inclusive: bool,
     },
-    
+
     /// Prefix match: field STARTS WITH prefix
-    Prefix {
-        field: String,
-        prefix: String,
-    },
-    
+    Prefix { field: String, prefix: String },
+
     /// Contains substring: field CONTAINS substring
-    Contains {
-        field: String,
-        substring: String,
-    },
-    
+    Contains { field: String, substring: String },
+
     /// ACL tag presence (for row-level security)
-    HasTag {
-        tag: String,
-    },
-    
+    HasTag { tag: String },
+
     /// Always true (identity for conjunction)
     True,
-    
+
     /// Always false (identity for disjunction)
     False,
 }
@@ -236,7 +220,7 @@ impl FilterAtom {
             value: value.into(),
         }
     }
-    
+
     /// Create an IN atom
     pub fn in_set(field: impl Into<String>, values: Vec<FilterValue>) -> Self {
         FilterAtom::In {
@@ -244,7 +228,7 @@ impl FilterAtom {
             values,
         }
     }
-    
+
     /// Create a range atom
     pub fn range(
         field: impl Into<String>,
@@ -259,7 +243,7 @@ impl FilterAtom {
             max_inclusive: true,
         }
     }
-    
+
     /// Create an open range (exclusive bounds)
     pub fn range_exclusive(
         field: impl Into<String>,
@@ -274,7 +258,7 @@ impl FilterAtom {
             max_inclusive: false,
         }
     }
-    
+
     /// Get the field name this atom filters on (if any)
     pub fn field(&self) -> Option<&str> {
         match self {
@@ -289,17 +273,17 @@ impl FilterAtom {
             FilterAtom::True | FilterAtom::False => None,
         }
     }
-    
+
     /// Check if this atom is always true
     pub fn is_trivially_true(&self) -> bool {
         matches!(self, FilterAtom::True)
     }
-    
+
     /// Check if this atom is always false
     pub fn is_trivially_false(&self) -> bool {
         matches!(self, FilterAtom::False)
     }
-    
+
     /// Negate this atom
     pub fn negate(&self) -> FilterAtom {
         match self {
@@ -340,15 +324,29 @@ impl fmt::Display for FilterAtom {
                 let vals: Vec<_> = values.iter().map(|v| v.to_string()).collect();
                 write!(f, "{} NOT IN ({})", field, vals.join(", "))
             }
-            FilterAtom::Range { field, min, max, min_inclusive, max_inclusive } => {
+            FilterAtom::Range {
+                field,
+                min,
+                max,
+                min_inclusive,
+                max_inclusive,
+            } => {
                 let left = if *min_inclusive { "[" } else { "(" };
                 let right = if *max_inclusive { "]" } else { ")" };
-                let min_str = min.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "-∞".to_string());
-                let max_str = max.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "∞".to_string());
+                let min_str = min
+                    .as_ref()
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-∞".to_string());
+                let max_str = max
+                    .as_ref()
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "∞".to_string());
                 write!(f, "{} ∈ {}{}, {}{}", field, left, min_str, max_str, right)
             }
             FilterAtom::Prefix { field, prefix } => write!(f, "{} STARTS WITH '{}'", field, prefix),
-            FilterAtom::Contains { field, substring } => write!(f, "{} CONTAINS '{}'", field, substring),
+            FilterAtom::Contains { field, substring } => {
+                write!(f, "{} CONTAINS '{}'", field, substring)
+            }
             FilterAtom::HasTag { tag } => write!(f, "HAS_TAG('{}')", tag),
             FilterAtom::True => write!(f, "TRUE"),
             FilterAtom::False => write!(f, "FALSE"),
@@ -371,39 +369,45 @@ impl Disjunction {
     pub fn new(atoms: Vec<FilterAtom>) -> Self {
         Self { atoms }
     }
-    
+
     /// Create a single-atom disjunction
     pub fn single(atom: FilterAtom) -> Self {
         Self { atoms: vec![atom] }
     }
-    
+
     /// Check if this disjunction is trivially true (contains TRUE or is empty after simplification)
     pub fn is_trivially_true(&self) -> bool {
         self.atoms.iter().any(|a| a.is_trivially_true())
     }
-    
+
     /// Check if this disjunction is trivially false (empty or all atoms are FALSE)
     pub fn is_trivially_false(&self) -> bool {
         self.atoms.is_empty() || self.atoms.iter().all(|a| a.is_trivially_false())
     }
-    
+
     /// Simplify this disjunction
     pub fn simplify(self) -> Self {
         // Remove FALSE atoms
-        let atoms: Vec<_> = self.atoms.into_iter()
+        let atoms: Vec<_> = self
+            .atoms
+            .into_iter()
             .filter(|a| !a.is_trivially_false())
             .collect();
-        
+
         // If any atom is TRUE, the whole disjunction is TRUE
         if atoms.iter().any(|a| a.is_trivially_true()) {
-            return Self { atoms: vec![FilterAtom::True] };
+            return Self {
+                atoms: vec![FilterAtom::True],
+            };
         }
-        
+
         // If empty, it's FALSE
         if atoms.is_empty() {
-            return Self { atoms: vec![FilterAtom::False] };
+            return Self {
+                atoms: vec![FilterAtom::False],
+            };
         }
-        
+
         Self { atoms }
     }
 }
@@ -438,26 +442,28 @@ impl FilterIR {
     pub fn all() -> Self {
         Self { clauses: vec![] }
     }
-    
+
     /// Create a filter that matches nothing
     pub fn none() -> Self {
         Self {
             clauses: vec![Disjunction::single(FilterAtom::False)],
         }
     }
-    
+
     /// Create a filter from a single atom
     pub fn from_atom(atom: FilterAtom) -> Self {
         Self {
             clauses: vec![Disjunction::single(atom)],
         }
     }
-    
+
     /// Create a filter from a single disjunction
     pub fn from_disjunction(disj: Disjunction) -> Self {
-        Self { clauses: vec![disj] }
+        Self {
+            clauses: vec![disj],
+        }
     }
-    
+
     /// Conjoin (AND) with another filter
     ///
     /// This is the key operation for auth scope injection:
@@ -466,13 +472,13 @@ impl FilterIR {
         self.clauses.extend(other.clauses);
         self
     }
-    
+
     /// Conjoin with a single atom
     pub fn and_atom(mut self, atom: FilterAtom) -> Self {
         self.clauses.push(Disjunction::single(atom));
         self
     }
-    
+
     /// Disjoin (OR) with another filter
     ///
     /// Note: This may expand the CNF representation
@@ -483,7 +489,7 @@ impl FilterIR {
         if other.clauses.is_empty() {
             return self;
         }
-        
+
         // Distribute: (A ∧ B) ∨ (C ∧ D) = (A ∨ C) ∧ (A ∨ D) ∧ (B ∨ C) ∧ (B ∨ D)
         // This can cause exponential blowup - in practice, limit depth
         let mut new_clauses = Vec::new();
@@ -494,36 +500,39 @@ impl FilterIR {
                 new_clauses.push(Disjunction::new(combined));
             }
         }
-        
-        FilterIR { clauses: new_clauses }
+
+        FilterIR {
+            clauses: new_clauses,
+        }
     }
-    
+
     /// Check if this filter matches everything
     pub fn is_all(&self) -> bool {
         self.clauses.is_empty() || self.clauses.iter().all(|c| c.is_trivially_true())
     }
-    
+
     /// Check if this filter matches nothing
     pub fn is_none(&self) -> bool {
         self.clauses.iter().any(|c| c.is_trivially_false())
     }
-    
+
     /// Simplify the filter
     pub fn simplify(self) -> Self {
-        let clauses: Vec<_> = self.clauses
+        let clauses: Vec<_> = self
+            .clauses
             .into_iter()
             .map(|c| c.simplify())
             .filter(|c| !c.is_trivially_true())
             .collect();
-        
+
         // If any clause is FALSE, the whole conjunction is FALSE
         if clauses.iter().any(|c| c.is_trivially_false()) {
             return Self::none();
         }
-        
+
         Self { clauses }
     }
-    
+
     /// Extract atoms for a specific field
     pub fn atoms_for_field(&self, field: &str) -> Vec<&FilterAtom> {
         self.clauses
@@ -532,12 +541,12 @@ impl FilterIR {
             .filter(|a| a.field() == Some(field))
             .collect()
     }
-    
+
     /// Check if this filter constrains a specific field
     pub fn constrains_field(&self, field: &str) -> bool {
         !self.atoms_for_field(field).is_empty()
     }
-    
+
     /// Get all fields constrained by this filter
     pub fn constrained_fields(&self) -> HashSet<&str> {
         self.clauses
@@ -579,19 +588,19 @@ impl fmt::Display for FilterIR {
 pub struct AuthScope {
     /// Allowed namespaces (non-empty; at least one required)
     pub allowed_namespaces: Vec<String>,
-    
+
     /// Optional tenant ID (for multi-tenant deployments)
     pub tenant_id: Option<String>,
-    
+
     /// Optional project scope
     pub project_id: Option<String>,
-    
+
     /// Token expiry timestamp (Unix epoch seconds)
     pub expires_at: Option<u64>,
-    
+
     /// Capability flags
     pub capabilities: AuthCapabilities,
-    
+
     /// Optional ACL tags the caller has access to
     pub acl_tags: Vec<String>,
 }
@@ -626,7 +635,7 @@ impl AuthScope {
             acl_tags: vec![],
         }
     }
-    
+
     /// Create with full access to a namespace
     pub fn full_access(namespace: impl Into<String>) -> Self {
         Self {
@@ -643,37 +652,37 @@ impl AuthScope {
             acl_tags: vec![],
         }
     }
-    
+
     /// Add a namespace to the allowed list
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.allowed_namespaces.push(namespace.into());
         self
     }
-    
+
     /// Set tenant ID
     pub fn with_tenant(mut self, tenant_id: impl Into<String>) -> Self {
         self.tenant_id = Some(tenant_id.into());
         self
     }
-    
+
     /// Set project ID
     pub fn with_project(mut self, project_id: impl Into<String>) -> Self {
         self.project_id = Some(project_id.into());
         self
     }
-    
+
     /// Set expiry
     pub fn with_expiry(mut self, expires_at: u64) -> Self {
         self.expires_at = Some(expires_at);
         self
     }
-    
+
     /// Add ACL tags
     pub fn with_acl_tags(mut self, tags: Vec<String>) -> Self {
         self.acl_tags = tags;
         self
     }
-    
+
     /// Check if this scope is expired
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {
@@ -686,19 +695,19 @@ impl AuthScope {
             false
         }
     }
-    
+
     /// Check if a namespace is allowed
     pub fn is_namespace_allowed(&self, namespace: &str) -> bool {
         self.allowed_namespaces.iter().any(|ns| ns == namespace)
     }
-    
+
     /// Convert auth scope to filter IR clauses
     ///
     /// This generates the mandatory predicates that MUST be conjoined
     /// with any user filter.
     pub fn to_filter_ir(&self) -> FilterIR {
         let mut filter = FilterIR::all();
-        
+
         // Namespace constraint (mandatory)
         if self.allowed_namespaces.len() == 1 {
             filter = filter.and_atom(FilterAtom::eq(
@@ -714,21 +723,21 @@ impl AuthScope {
                     .collect(),
             ));
         }
-        
+
         // Tenant constraint (if present)
         if let Some(ref tenant_id) = self.tenant_id {
             filter = filter.and_atom(FilterAtom::eq("tenant_id", tenant_id.clone()));
         }
-        
+
         // Project constraint (if present)
         if let Some(ref project_id) = self.project_id {
             filter = filter.and_atom(FilterAtom::eq("project_id", project_id.clone()));
         }
-        
+
         // ACL tags (if present, user must have at least one matching tag)
         // This is handled differently - the executor checks tag intersection
         // rather than adding to filter IR (since it's "has any of these tags")
-        
+
         filter
     }
 }
@@ -746,13 +755,13 @@ impl AuthScope {
 pub trait FilteredExecutor {
     /// The query operation type (varies by executor)
     type QueryOp;
-    
+
     /// The result type
     type Result;
-    
+
     /// The error type
     type Error;
-    
+
     /// Execute a query with mandatory filtering
     ///
     /// # Contract
@@ -775,7 +784,7 @@ pub trait FilteredExecutor {
         filter_ir: &FilterIR,
         auth_scope: &AuthScope,
     ) -> Result<Self::Result, Self::Error>;
-    
+
     /// Compute the effective filter (auth ∧ user)
     ///
     /// This is a convenience method that executors can use.
@@ -799,13 +808,14 @@ impl FilterBuilder {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Add an equality constraint
     pub fn eq(mut self, field: &str, value: impl Into<FilterValue>) -> Self {
-        self.clauses.push(Disjunction::single(FilterAtom::eq(field, value)));
+        self.clauses
+            .push(Disjunction::single(FilterAtom::eq(field, value)));
         self
     }
-    
+
     /// Add a not-equal constraint
     pub fn ne(mut self, field: &str, value: impl Into<FilterValue>) -> Self {
         self.clauses.push(Disjunction::single(FilterAtom::Ne {
@@ -814,13 +824,14 @@ impl FilterBuilder {
         }));
         self
     }
-    
+
     /// Add an IN constraint
     pub fn in_set(mut self, field: &str, values: Vec<FilterValue>) -> Self {
-        self.clauses.push(Disjunction::single(FilterAtom::in_set(field, values)));
+        self.clauses
+            .push(Disjunction::single(FilterAtom::in_set(field, values)));
         self
     }
-    
+
     /// Add a range constraint
     pub fn range(
         mut self,
@@ -835,7 +846,7 @@ impl FilterBuilder {
         )));
         self
     }
-    
+
     /// Add a greater-than constraint
     pub fn gt(mut self, field: &str, value: impl Into<FilterValue>) -> Self {
         self.clauses.push(Disjunction::single(FilterAtom::Range {
@@ -847,7 +858,7 @@ impl FilterBuilder {
         }));
         self
     }
-    
+
     /// Add a greater-than-or-equal constraint
     pub fn gte(mut self, field: &str, value: impl Into<FilterValue>) -> Self {
         self.clauses.push(Disjunction::single(FilterAtom::Range {
@@ -859,7 +870,7 @@ impl FilterBuilder {
         }));
         self
     }
-    
+
     /// Add a less-than constraint
     pub fn lt(mut self, field: &str, value: impl Into<FilterValue>) -> Self {
         self.clauses.push(Disjunction::single(FilterAtom::Range {
@@ -871,7 +882,7 @@ impl FilterBuilder {
         }));
         self
     }
-    
+
     /// Add a less-than-or-equal constraint
     pub fn lte(mut self, field: &str, value: impl Into<FilterValue>) -> Self {
         self.clauses.push(Disjunction::single(FilterAtom::Range {
@@ -883,7 +894,7 @@ impl FilterBuilder {
         }));
         self
     }
-    
+
     /// Add a prefix match constraint
     pub fn prefix(mut self, field: &str, prefix: &str) -> Self {
         self.clauses.push(Disjunction::single(FilterAtom::Prefix {
@@ -892,7 +903,7 @@ impl FilterBuilder {
         }));
         self
     }
-    
+
     /// Add a contains constraint
     pub fn contains(mut self, field: &str, substring: &str) -> Self {
         self.clauses.push(Disjunction::single(FilterAtom::Contains {
@@ -901,12 +912,12 @@ impl FilterBuilder {
         }));
         self
     }
-    
+
     /// Add a namespace constraint (convenience method)
     pub fn namespace(self, namespace: &str) -> Self {
         self.eq("namespace", namespace)
     }
-    
+
     /// Add a doc_id IN constraint (convenience method)
     pub fn doc_ids(self, doc_ids: &[u64]) -> Self {
         self.in_set(
@@ -914,7 +925,7 @@ impl FilterBuilder {
             doc_ids.iter().map(|&id| FilterValue::Uint64(id)).collect(),
         )
     }
-    
+
     /// Add a time range constraint (convenience method)
     pub fn time_range(self, field: &str, start: Option<u64>, end: Option<u64>) -> Self {
         self.range(
@@ -923,16 +934,18 @@ impl FilterBuilder {
             end.map(FilterValue::Uint64),
         )
     }
-    
+
     /// Add a disjunction (OR of multiple atoms)
     pub fn or_atoms(mut self, atoms: Vec<FilterAtom>) -> Self {
         self.clauses.push(Disjunction::new(atoms));
         self
     }
-    
+
     /// Build the filter IR
     pub fn build(self) -> FilterIR {
-        FilterIR { clauses: self.clauses }
+        FilterIR {
+            clauses: self.clauses,
+        }
     }
 }
 
@@ -955,7 +968,7 @@ macro_rules! filter_ir {
     () => {
         $crate::filter_ir::FilterIR::all()
     };
-    
+
     // Equality
     ($field:ident = $value:expr $(, $($rest:tt)*)?) => {{
         let mut builder = $crate::filter_ir::FilterBuilder::new()
@@ -965,7 +978,7 @@ macro_rules! filter_ir {
         )?
         builder.build()
     }};
-    
+
     // Chaining helper
     (@chain $builder:expr, $field:ident = $value:expr $(, $($rest:tt)*)?) => {{
         let builder = $builder.eq(stringify!($field), $value);
@@ -983,36 +996,39 @@ macro_rules! filter_ir {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_filter_atom_creation() {
         let eq = FilterAtom::eq("namespace", "my_ns");
         assert_eq!(eq.field(), Some("namespace"));
-        
-        let range = FilterAtom::range("timestamp", Some(FilterValue::Uint64(1000)), Some(FilterValue::Uint64(2000)));
+
+        let range = FilterAtom::range(
+            "timestamp",
+            Some(FilterValue::Uint64(1000)),
+            Some(FilterValue::Uint64(2000)),
+        );
         assert_eq!(range.field(), Some("timestamp"));
     }
-    
+
     #[test]
     fn test_filter_ir_conjunction() {
         let filter1 = FilterIR::from_atom(FilterAtom::eq("namespace", "ns1"));
         let filter2 = FilterIR::from_atom(FilterAtom::eq("project_id", "proj1"));
-        
+
         let combined = filter1.and(filter2);
         assert_eq!(combined.clauses.len(), 2);
     }
-    
+
     #[test]
     fn test_auth_scope_to_filter() {
-        let scope = AuthScope::for_namespace("production")
-            .with_tenant("acme_corp");
-        
+        let scope = AuthScope::for_namespace("production").with_tenant("acme_corp");
+
         let filter = scope.to_filter_ir();
         assert!(filter.constrains_field("namespace"));
         assert!(filter.constrains_field("tenant_id"));
         assert!(!filter.constrains_field("project_id"));
     }
-    
+
     #[test]
     fn test_effective_filter() {
         let auth = AuthScope::for_namespace("production");
@@ -1020,16 +1036,16 @@ mod tests {
             .eq("source", "documents")
             .time_range("created_at", Some(1000), Some(2000))
             .build();
-        
+
         let effective = auth.to_filter_ir().and(user_filter);
-        
+
         // Should have namespace + source + time range
         assert_eq!(effective.clauses.len(), 3);
         assert!(effective.constrains_field("namespace"));
         assert!(effective.constrains_field("source"));
         assert!(effective.constrains_field("created_at"));
     }
-    
+
     #[test]
     fn test_filter_builder() {
         let filter = FilterBuilder::new()
@@ -1038,10 +1054,10 @@ mod tests {
             .doc_ids(&[1, 2, 3, 4, 5])
             .time_range("timestamp", Some(1000), None)
             .build();
-        
+
         assert_eq!(filter.clauses.len(), 4);
     }
-    
+
     #[test]
     fn test_filter_simplification() {
         // TRUE AND X = X
@@ -1049,21 +1065,21 @@ mod tests {
             .and(FilterIR::from_atom(FilterAtom::eq("x", "y")));
         let simplified = filter.simplify();
         assert_eq!(simplified.clauses.len(), 1);
-        
+
         // FALSE AND X = FALSE
         let filter2 = FilterIR::from_atom(FilterAtom::False)
             .and(FilterIR::from_atom(FilterAtom::eq("x", "y")));
         let simplified2 = filter2.simplify();
         assert!(simplified2.is_none());
     }
-    
+
     #[test]
     fn test_filter_display() {
         let filter = FilterBuilder::new()
             .eq("namespace", "prod")
             .range("timestamp", Some(1000i64), Some(2000i64))
             .build();
-        
+
         let display = filter.to_string();
         assert!(display.contains("namespace"));
         assert!(display.contains("timestamp"));

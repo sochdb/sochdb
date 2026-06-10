@@ -76,13 +76,14 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
 
 use crossbeam_channel::{self, Receiver, Sender};
 use parking_lot::Mutex;
 
+use crate::supervisor::{SupervisedWorker, Supervisor, WorkerHealth, WorkerStep};
 use crate::txn_arena::KeyFingerprint;
 
 /// Default batch size for thread-local buffer
@@ -171,10 +172,10 @@ pub struct BatchedDirtyTracker {
     sender: Sender<DirtyEvent>,
     /// MPSC receiver (for aggregator thread)
     receiver: Receiver<DirtyEvent>,
-    /// Aggregator thread handle
-    aggregator_handle: Mutex<Option<JoinHandle<()>>>,
-    /// Running flag
-    running: AtomicBool,
+    /// Supervised aggregator worker handle (panic-contained, auto-restarting)
+    aggregator_handle: Mutex<Option<SupervisedWorker>>,
+    /// Running flag (shared with the supervised worker for cooperative shutdown)
+    running: Arc<AtomicBool>,
     /// Current epoch
     current_epoch: AtomicU64,
     /// Aggregated dirty keys per epoch
@@ -212,12 +213,12 @@ impl BatchedDirtyTracker {
     /// Create a new batched dirty tracker
     pub fn new() -> Arc<Self> {
         let (sender, receiver) = crossbeam_channel::bounded(1024);
-        
+
         let tracker = Arc::new(Self {
             sender,
             receiver,
             aggregator_handle: Mutex::new(None),
-            running: AtomicBool::new(false),
+            running: Arc::new(AtomicBool::new(false)),
             current_epoch: AtomicU64::new(0),
             epochs: [
                 Mutex::new(HashSet::new()),
@@ -227,22 +228,31 @@ impl BatchedDirtyTracker {
             ],
             stats: DirtyTrackingStats::default(),
         });
-        
+
         tracker
     }
 
-    /// Start the aggregator thread
+    /// Start the aggregator thread.
+    ///
+    /// The aggregator runs under a [`Supervisor`]: if processing a single event
+    /// panics (e.g. a poisoned lock), the panic is contained and counted and the
+    /// loop restarts rather than silently dying and stalling dirty tracking.
     pub fn start(self: &Arc<Self>) {
         if self.running.swap(true, Ordering::SeqCst) {
             return; // Already running
         }
 
         let tracker = Arc::clone(self);
-        let handle = thread::spawn(move || {
-            tracker.aggregator_loop();
-        });
+        let running = Arc::clone(&self.running);
+        let worker =
+            Supervisor::new("dirty-aggregator").spawn(running, move || tracker.aggregator_step());
 
-        *self.aggregator_handle.lock() = Some(handle);
+        *self.aggregator_handle.lock() = Some(worker);
+    }
+
+    /// Health/liveness counters for the supervised aggregator, if running.
+    pub fn aggregator_health(&self) -> Option<WorkerHealth> {
+        self.aggregator_handle.lock().as_ref().map(|w| w.health())
     }
 
     /// Stop the aggregator thread
@@ -251,12 +261,20 @@ impl BatchedDirtyTracker {
             return; // Already stopped
         }
 
-        // Send shutdown signal
+        // Send shutdown signal to unblock a parked recv immediately.
         let _ = self.sender.send(DirtyEvent::Shutdown);
 
-        // Wait for aggregator to finish
-        if let Some(handle) = self.aggregator_handle.lock().take() {
-            let _ = handle.join();
+        // Wait for the supervised aggregator to finish.
+        if let Some(worker) = self.aggregator_handle.lock().take() {
+            worker.join();
+        }
+
+        // Drain any remaining events so observers see a consistent final state.
+        while let Ok(event) = self.receiver.try_recv() {
+            if matches!(event, DirtyEvent::Shutdown) {
+                break;
+            }
+            self.process_event(event);
         }
     }
 
@@ -309,16 +327,18 @@ impl BatchedDirtyTracker {
     pub fn advance_epoch(&self) -> (u64, Vec<KeyFingerprint>) {
         // Send epoch advance event to ensure all pending events are processed
         let _ = self.sender.try_send(DirtyEvent::AdvanceEpoch);
-        
+
         let old_epoch = self.current_epoch.fetch_add(1, Ordering::SeqCst);
         let old_idx = (old_epoch as usize) % EPOCH_RING_SIZE;
-        
+
         // Drain the old epoch
         let mut guard = self.epochs[old_idx].lock();
         let keys: Vec<_> = guard.drain().collect();
-        
-        self.stats.current_epoch.store(old_epoch + 1, Ordering::Relaxed);
-        
+
+        self.stats
+            .current_epoch
+            .store(old_epoch + 1, Ordering::Relaxed);
+
         (old_epoch, keys)
     }
 
@@ -332,32 +352,23 @@ impl BatchedDirtyTracker {
         &self.stats
     }
 
-    /// Aggregator loop - runs in background thread
-    fn aggregator_loop(&self) {
+    /// One supervised iteration of the aggregator loop.
+    ///
+    /// Blocks up to `MAX_FLUSH_INTERVAL_MS` for the next event, processes it, and
+    /// reports whether the worker should continue. A panic inside
+    /// [`process_event`](Self::process_event) is contained by the [`Supervisor`].
+    fn aggregator_step(&self) -> WorkerStep {
         use crossbeam_channel::RecvTimeoutError;
-        
+
         let timeout = std::time::Duration::from_millis(MAX_FLUSH_INTERVAL_MS);
-        
-        while self.running.load(Ordering::Relaxed) {
-            match self.receiver.recv_timeout(timeout) {
-                Ok(event) => {
-                    self.process_event(event);
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    // No events for a while - that's fine
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    break;
-                }
+        match self.receiver.recv_timeout(timeout) {
+            Ok(DirtyEvent::Shutdown) => WorkerStep::Stop,
+            Ok(event) => {
+                self.process_event(event);
+                WorkerStep::Continue
             }
-        }
-        
-        // Drain remaining events on shutdown
-        while let Ok(event) = self.receiver.try_recv() {
-            if matches!(event, DirtyEvent::Shutdown) {
-                break;
-            }
-            self.process_event(event);
+            Err(RecvTimeoutError::Timeout) => WorkerStep::Continue,
+            Err(RecvTimeoutError::Disconnected) => WorkerStep::Stop,
         }
     }
 
@@ -367,13 +378,15 @@ impl BatchedDirtyTracker {
             DirtyEvent::Batch { txn_id: _, keys } => {
                 let epoch = self.current_epoch.load(Ordering::Relaxed);
                 let idx = (epoch as usize) % EPOCH_RING_SIZE;
-                
+
                 let mut guard = self.epochs[idx].lock();
                 let key_count = keys.len();
                 guard.extend(keys);
-                
+
                 self.stats.events_received.fetch_add(1, Ordering::Relaxed);
-                self.stats.keys_tracked.fetch_add(key_count as u64, Ordering::Relaxed);
+                self.stats
+                    .keys_tracked
+                    .fetch_add(key_count as u64, Ordering::Relaxed);
                 self.stats.batches_received.fetch_add(1, Ordering::Relaxed);
             }
             DirtyEvent::AdvanceEpoch => {
@@ -393,7 +406,7 @@ impl Default for BatchedDirtyTracker {
             sender,
             receiver,
             aggregator_handle: Mutex::new(None),
-            running: AtomicBool::new(false),
+            running: Arc::new(AtomicBool::new(false)),
             current_epoch: AtomicU64::new(0),
             epochs: [
                 Mutex::new(HashSet::new()),
@@ -512,13 +525,13 @@ mod tests {
     #[test]
     fn test_txn_dirty_buffer() {
         let mut buffer = TxnDirtyBuffer::new(1);
-        
+
         buffer.record(KeyFingerprint::from_bytes(b"key1"));
         buffer.record(KeyFingerprint::from_bytes(b"key2"));
         buffer.record(KeyFingerprint::from_bytes(b"key3"));
-        
+
         assert_eq!(buffer.len(), 3);
-        
+
         let keys = buffer.drain();
         assert_eq!(keys.len(), 3);
         assert!(buffer.is_empty());
@@ -528,40 +541,43 @@ mod tests {
     fn test_batched_tracker_basic() {
         let tracker = BatchedDirtyTracker::new();
         tracker.start();
-        
+
         // Send some events directly
-        tracker.send_batch(1, vec![
-            KeyFingerprint::from_bytes(b"key1"),
-            KeyFingerprint::from_bytes(b"key2"),
-        ]);
-        
+        tracker.send_batch(
+            1,
+            vec![
+                KeyFingerprint::from_bytes(b"key1"),
+                KeyFingerprint::from_bytes(b"key2"),
+            ],
+        );
+
         // Give aggregator time to process
         thread::sleep(Duration::from_millis(50));
-        
+
         // Advance epoch to collect
         let (_epoch, keys) = tracker.advance_epoch();
-        
+
         // Keys should have been processed
         assert!(tracker.stats().batches_received.load(Ordering::Relaxed) >= 1);
-        
+
         tracker.stop();
     }
 
     #[test]
     fn test_epoch_rotation() {
         let tracker = BatchedDirtyTracker::new();
-        
+
         // Directly insert into epochs without starting the aggregator thread
         {
             let mut guard = tracker.epochs[0].lock();
             guard.insert(KeyFingerprint::from_bytes(b"key1"));
             guard.insert(KeyFingerprint::from_bytes(b"key2"));
         }
-        
+
         let (epoch, keys) = tracker.advance_epoch();
         assert_eq!(epoch, 0);
         assert_eq!(keys.len(), 2);
-        
+
         // New epoch should be empty
         let (epoch2, keys2) = tracker.advance_epoch();
         assert_eq!(epoch2, 1);

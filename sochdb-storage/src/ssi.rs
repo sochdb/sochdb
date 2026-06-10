@@ -233,7 +233,7 @@ impl SsiTransaction {
         self.read_set.insert(ik);
         // Update Bloom filter — 2 hash slots from xxh3
         let h = twox_hash::xxh3::hash64(key);
-        let h1 = (h & 0xFF) as usize;       // bit index 0..255
+        let h1 = (h & 0xFF) as usize; // bit index 0..255
         let h2 = ((h >> 8) & 0xFF) as usize; // second bit index
         self.read_bloom[h1 / 64] |= 1u64 << (h1 % 64);
         self.read_bloom[h2 / 64] |= 1u64 << (h2 % 64);

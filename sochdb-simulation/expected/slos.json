@@ -1,0 +1,11 @@
+{
+  "source": "docs/ops/SLOs.md",
+  "topology": "any",
+  "targets": [
+    { "workload": "slo_point_read_p99", "p99_us": 10000, "tolerance_pct": 0, "unit": "latency_ceiling" },
+    { "workload": "slo_vector_search_p99", "p99_us": 100000, "tolerance_pct": 0, "unit": "latency_ceiling" },
+    { "workload": "slo_write_p50", "p50_us": 5000, "tolerance_pct": 0, "unit": "latency_ceiling" },
+    { "workload": "slo_mixed_throughput", "throughput_ops_sec": 10000, "tolerance_pct": 20, "unit": "throughput_floor" },
+    { "workload": "slo_availability", "score": 0.999, "tolerance_pct": 0, "unit": "ratio_floor" }
+  ]
+}

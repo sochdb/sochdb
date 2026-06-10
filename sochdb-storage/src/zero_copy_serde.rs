@@ -312,31 +312,31 @@ impl WalEntryBuilder {
 
     /// Calculate total size
     pub fn total_size(&self) -> usize {
-        HEADER_SIZE + 
-        WAL_ENTRY_HEADER_SIZE + 
-        self.fields.len() * FIELD_DESCRIPTOR_SIZE + 
-        self.data.len()
+        HEADER_SIZE
+            + WAL_ENTRY_HEADER_SIZE
+            + self.fields.len() * FIELD_DESCRIPTOR_SIZE
+            + self.data.len()
     }
 
     /// Build into bytes
     pub fn build(&self) -> Vec<u8> {
-        let data_len = WAL_ENTRY_HEADER_SIZE + 
-            self.fields.len() * FIELD_DESCRIPTOR_SIZE + 
-            self.data.len();
-        
+        let data_len =
+            WAL_ENTRY_HEADER_SIZE + self.fields.len() * FIELD_DESCRIPTOR_SIZE + self.data.len();
+
         let mut buf = vec![0u8; HEADER_SIZE + data_len];
-        
+
         // Calculate CRC of data portion
         let crc = crc32fast::hash(&buf[HEADER_SIZE..]);
-        
+
         // Write header
         let header = ZeroCopyHeader::new(data_len, 0, crc);
         header.write_to(&mut buf[0..HEADER_SIZE]);
-        
+
         // Write WAL entry header
         let offset = HEADER_SIZE;
-        self.header.write_to(&mut buf[offset..offset + WAL_ENTRY_HEADER_SIZE]);
-        
+        self.header
+            .write_to(&mut buf[offset..offset + WAL_ENTRY_HEADER_SIZE]);
+
         // Write field descriptors
         let mut offset = HEADER_SIZE + WAL_ENTRY_HEADER_SIZE;
         for field in &self.fields {
@@ -344,14 +344,14 @@ impl WalEntryBuilder {
             buf[offset + 4..offset + 8].copy_from_slice(&field.length.to_le_bytes());
             offset += FIELD_DESCRIPTOR_SIZE;
         }
-        
+
         // Write data
         buf[offset..].copy_from_slice(&self.data);
-        
+
         // Update CRC
         let crc = crc32fast::hash(&buf[HEADER_SIZE..]);
         buf[12..16].copy_from_slice(&crc.to_le_bytes());
-        
+
         buf
     }
 }
@@ -361,7 +361,7 @@ impl WalEntryBuilder {
 // =============================================================================
 
 /// Zero-copy WAL entry reader
-/// 
+///
 /// Provides direct access to WAL entry fields without deserialization.
 /// The backing data must remain valid for the lifetime of this reader.
 pub struct WalEntryReader<'a> {
@@ -385,22 +385,22 @@ impl<'a> WalEntryReader<'a> {
         if !outer_header.validate() {
             return None;
         }
-        
+
         // Validate CRC
         let expected_crc = outer_header.crc;
         let actual_crc = crc32fast::hash(&bytes[HEADER_SIZE..]);
         if expected_crc != actual_crc {
             return None;
         }
-        
+
         // Read WAL entry header (zero-copy if aligned)
         let entry_data = &bytes[HEADER_SIZE..];
         let header = WalEntryHeader::read_from(entry_data)?;
-        
+
         let field_count = header.field_count as usize;
         let fields_offset = WAL_ENTRY_HEADER_SIZE;
         let data_offset = fields_offset + field_count * FIELD_DESCRIPTOR_SIZE;
-        
+
         Some(Self {
             data: entry_data,
             header,
@@ -446,13 +446,15 @@ impl<'a> WalEntryReader<'a> {
         if index >= self.field_count {
             return None;
         }
-        
+
         let desc_offset = self.fields_offset + index * FIELD_DESCRIPTOR_SIZE;
-        let desc_bytes = self.data.get(desc_offset..desc_offset + FIELD_DESCRIPTOR_SIZE)?;
-        
+        let desc_bytes = self
+            .data
+            .get(desc_offset..desc_offset + FIELD_DESCRIPTOR_SIZE)?;
+
         let offset = u32::from_le_bytes(desc_bytes[0..4].try_into().ok()?) as usize;
         let length = u32::from_le_bytes(desc_bytes[4..8].try_into().ok()?) as usize;
-        
+
         let start = self.data_offset + offset;
         self.data.get(start..start + length)
     }
@@ -480,7 +482,7 @@ impl<'a> WalEntryReader<'a> {
 // =============================================================================
 
 /// Batch writer for multiple WAL entries
-/// 
+///
 /// Optimized for group commit scenarios where multiple entries
 /// are written together.
 pub struct WalBatchWriter {
@@ -530,17 +532,17 @@ impl WalBatchWriter {
     /// Build into single contiguous buffer
     pub fn build(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.total_size + 8);
-        
+
         // Write entry count
         buf.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
         // Write total size
         buf.extend_from_slice(&(self.total_size as u32).to_le_bytes());
-        
+
         // Write all entries
         for entry in &self.entries {
             buf.extend_from_slice(entry);
         }
-        
+
         buf
     }
 
@@ -574,10 +576,10 @@ impl<'a> WalBatchReader<'a> {
         if data.len() < 8 {
             return None;
         }
-        
+
         let entry_count = u32::from_le_bytes(data[0..4].try_into().ok()?) as usize;
         let _total_size = u32::from_le_bytes(data[4..8].try_into().ok()?) as usize;
-        
+
         Some(Self {
             data,
             entry_count,
@@ -614,16 +616,16 @@ impl<'a> Iterator for WalBatchIter<'a> {
         if self.remaining == 0 {
             return None;
         }
-        
+
         let entry_data = &self.data[self.offset..];
         let header = ZeroCopyHeader::read_from(entry_data)?;
-        
+
         let entry_len = header.total_length as usize;
         let entry = WalEntryReader::from_bytes(&entry_data[..entry_len])?;
-        
+
         self.offset += entry_len;
         self.remaining -= 1;
-        
+
         Some(entry)
     }
 
@@ -652,10 +654,10 @@ impl MmapWalReader {
         let file = std::fs::File::open(path)?;
         let metadata = file.metadata()?;
         let size = metadata.len() as usize;
-        
+
         // Safety: File is opened read-only
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
-        
+
         Ok(Self { mmap, size })
     }
 
@@ -701,25 +703,25 @@ impl<'a> Iterator for MmapWalIter<'a> {
         if self.offset >= self.size {
             return None;
         }
-        
+
         let entry_data = &self.data[self.offset..];
         if entry_data.len() < HEADER_SIZE {
             return None;
         }
-        
+
         let header = ZeroCopyHeader::read_from(entry_data)?;
         if !header.validate() {
             return None;
         }
-        
+
         let entry_len = header.total_length as usize;
         if self.offset + entry_len > self.size {
             return None;
         }
-        
+
         let entry = WalEntryReader::from_bytes(&entry_data[..entry_len])?;
         self.offset += entry_len;
-        
+
         Some(entry)
     }
 }
@@ -775,10 +777,10 @@ mod tests {
     fn test_wal_entry_roundtrip() {
         let mut builder = WalEntryBuilder::new(42, 100, WalEntryType::Insert);
         builder.with_key(b"test_key").with_value(b"test_value");
-        
+
         let bytes = builder.build();
         let reader = WalEntryReader::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(reader.txn_id(), 42);
         assert_eq!(reader.lsn(), 100);
         assert_eq!(reader.entry_type(), Some(WalEntryType::Insert));
@@ -792,7 +794,7 @@ mod tests {
         let header = WalEntryHeader::new(123, 456, WalEntryType::Update, 3);
         let mut buf = vec![0u8; WAL_ENTRY_HEADER_SIZE];
         header.write_to(&mut buf);
-        
+
         // Test zero-copy read (if aligned)
         if let Some(read_header) = WalEntryHeader::read_from(&buf) {
             assert_eq!(read_header.txn_id, 123);
@@ -800,7 +802,7 @@ mod tests {
             assert_eq!(read_header.entry_type, WalEntryType::Update as u8);
             assert_eq!(read_header.field_count, 3);
         }
-        
+
         // Test copy read
         let read_header = WalEntryHeader::read_from_copy(&buf).unwrap();
         assert_eq!(read_header.txn_id, 123);
@@ -811,17 +813,17 @@ mod tests {
     fn test_wal_entry_crc_validation() {
         let mut builder = WalEntryBuilder::new(1, 1, WalEntryType::Insert);
         builder.with_key(b"key");
-        
+
         let mut bytes = builder.build();
-        
+
         // Valid entry should parse
         assert!(WalEntryReader::from_bytes(&bytes).is_some());
-        
+
         // Corrupt data
         if bytes.len() > 20 {
             bytes[20] ^= 0xFF;
         }
-        
+
         // Corrupted entry should fail CRC
         assert!(WalEntryReader::from_bytes(&bytes).is_none());
     }
@@ -829,21 +831,21 @@ mod tests {
     #[test]
     fn test_batch_writer_reader() {
         let mut batch = WalBatchWriter::new();
-        
+
         for i in 0..10 {
             let mut entry = WalEntryBuilder::new(i, i * 10, WalEntryType::Insert);
             entry.with_key(format!("key_{}", i).as_bytes());
             entry.with_value(format!("value_{}", i).as_bytes());
             batch.add(entry);
         }
-        
+
         assert_eq!(batch.len(), 10);
-        
+
         let bytes = batch.build();
         let reader = WalBatchReader::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(reader.entry_count(), 10);
-        
+
         for (i, entry) in reader.entries().enumerate() {
             assert_eq!(entry.txn_id(), i as u64);
             assert_eq!(entry.key(), Some(format!("key_{}", i).as_bytes()));
@@ -857,12 +859,12 @@ mod tests {
         builder.add_field(b"field_1");
         builder.add_field(b"field_2");
         builder.add_field(b"field_3");
-        
+
         let bytes = builder.build();
         let reader = WalEntryReader::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(reader.field_count(), 4);
-        
+
         let fields: Vec<_> = reader.fields().collect();
         assert_eq!(fields.len(), 4);
         assert_eq!(fields[0], b"field_0");
@@ -874,10 +876,10 @@ mod tests {
     #[test]
     fn test_empty_fields() {
         let builder = WalEntryBuilder::new(1, 1, WalEntryType::BeginTxn);
-        
+
         let bytes = builder.build();
         let reader = WalEntryReader::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(reader.field_count(), 0);
         assert_eq!(reader.entry_type(), Some(WalEntryType::BeginTxn));
     }
@@ -885,13 +887,13 @@ mod tests {
     #[test]
     fn test_large_value() {
         let large_value = vec![0xAB; 1024 * 1024]; // 1MB
-        
+
         let mut builder = WalEntryBuilder::new(1, 1, WalEntryType::Insert);
         builder.with_key(b"large_key").with_value(&large_value);
-        
+
         let bytes = builder.build();
         let reader = WalEntryReader::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(reader.value(), Some(large_value.as_slice()));
     }
 
@@ -899,7 +901,7 @@ mod tests {
     fn test_header_validation() {
         let header = ZeroCopyHeader::new(100, 0, 12345);
         assert!(header.validate());
-        
+
         let mut bad_header = header;
         bad_header.magic = 0xDEADBEEF;
         assert!(!bad_header.validate());

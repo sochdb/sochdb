@@ -89,8 +89,8 @@ impl OutlierEntry {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct RdfPosting {
-    pub vid_in_stripe: u8,      // Local ID within stripe (0-255 for shift=8)
-    pub sign_and_mag: u8,       // High bit = sign, low 7 bits = magnitude
+    pub vid_in_stripe: u8, // Local ID within stripe (0-255 for shift=8)
+    pub sign_and_mag: u8,  // High bit = sign, low 7 bits = magnitude
 }
 
 impl RdfPosting {
@@ -100,7 +100,10 @@ impl RdfPosting {
         } else {
             mag & 0x7F
         };
-        Self { vid_in_stripe, sign_and_mag }
+        Self {
+            vid_in_stripe,
+            sign_and_mag,
+        }
     }
 
     #[inline]

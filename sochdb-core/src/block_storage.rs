@@ -1618,14 +1618,18 @@ mod tests {
         // Write records
         {
             let mut writer = WalWriter::open(&wal_path).unwrap();
-            writer.append(1, BlockWalRecordType::TxnBegin, 0, &[]).unwrap();
+            writer
+                .append(1, BlockWalRecordType::TxnBegin, 0, &[])
+                .unwrap();
             writer
                 .append(1, BlockWalRecordType::BlockWrite, 0, b"data1")
                 .unwrap();
             writer
                 .append(1, BlockWalRecordType::BlockWrite, 1, b"data2")
                 .unwrap();
-            writer.append(1, BlockWalRecordType::Commit, 0, &[]).unwrap();
+            writer
+                .append(1, BlockWalRecordType::Commit, 0, &[])
+                .unwrap();
             writer.sync().unwrap();
         }
 

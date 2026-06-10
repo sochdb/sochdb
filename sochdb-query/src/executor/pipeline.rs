@@ -9,16 +9,16 @@
 //! SQL Text → Parser → AST → Planner → Volcano Operator Tree → ExecutionResult
 //! ```
 
-use crate::optimizer_integration::StorageBackend;
-use crate::soch_ql::SochValue;
-use crate::storage_bridge::convert_query_to_core;
-use crate::sql::bridge::ExecutionResult;
-use crate::sql::ast::*;
-use crate::sql::error::{SqlError, SqlResult};
-use crate::sql::parser::Parser;
 use super::explain::ExplainNode;
 use super::node::PlanNode;
 use super::planner::{QueryPlanner, explain_select};
+use crate::optimizer_integration::StorageBackend;
+use crate::soch_ql::SochValue;
+use crate::sql::ast::*;
+use crate::sql::bridge::ExecutionResult;
+use crate::sql::error::{SqlError, SqlResult};
+use crate::sql::parser::Parser;
+use crate::storage_bridge::convert_query_to_core;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -46,10 +46,7 @@ impl Default for ExecutorConfig {
 /// ```text
 /// let result = execute_sql("SELECT * FROM users WHERE age > 21", &storage)?;
 /// ```
-pub fn execute_sql(
-    sql: &str,
-    storage: &Arc<dyn StorageBackend>,
-) -> SqlResult<ExecutionResult> {
+pub fn execute_sql(sql: &str, storage: &Arc<dyn StorageBackend>) -> SqlResult<ExecutionResult> {
     let stmt = Parser::parse(sql).map_err(SqlError::from_parse_errors)?;
     execute_statement(&stmt, storage)
 }
@@ -62,18 +59,16 @@ pub fn execute_statement(
     match stmt {
         Statement::Select(select) => execute_select(select, storage),
 
-        Statement::Explain(inner) => {
-            match inner.as_ref() {
-                Statement::Select(select) => {
-                    let plan_text = explain_select(select, storage);
-                    let mut node = ExplainNode::new(plan_text);
-                    collect_rows_from_node(&mut node)
-                }
-                _ => Err(SqlError::NotImplemented(
-                    "EXPLAIN only supported for SELECT statements".into(),
-                )),
+        Statement::Explain(inner) => match inner.as_ref() {
+            Statement::Select(select) => {
+                let plan_text = explain_select(select, storage);
+                let mut node = ExplainNode::new(plan_text);
+                collect_rows_from_node(&mut node)
             }
-        }
+            _ => Err(SqlError::NotImplemented(
+                "EXPLAIN only supported for SELECT statements".into(),
+            )),
+        },
 
         // DML / DDL — these still need to go through the SqlConnection/storage bridge
         // The Volcano executor handles SELECT; mutations go through the existing path.

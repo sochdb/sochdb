@@ -74,7 +74,7 @@
 //! }
 //! ```
 
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{Layout, alloc, dealloc};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -83,13 +83,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct BatchIngestConfig {
     /// Size of each arena chunk (default: 4MB)
     pub chunk_size: usize,
-    
+
     /// Alignment for vector storage (default: 64 bytes for AVX-512)
     pub alignment: usize,
-    
+
     /// Expected vector dimension (for pre-allocation)
     pub expected_dim: usize,
-    
+
     /// Pre-allocate for this many vectors
     pub initial_capacity: usize,
 }
@@ -110,10 +110,10 @@ impl Default for BatchIngestConfig {
 pub struct VectorHandle {
     /// Chunk index
     chunk: u32,
-    
+
     /// Offset within chunk (in bytes)
     offset: u32,
-    
+
     /// Vector dimension
     dim: u32,
 }
@@ -135,13 +135,13 @@ impl VectorHandle {
 struct ArenaChunk {
     /// Pointer to allocated memory
     ptr: NonNull<u8>,
-    
+
     /// Total capacity in bytes
     capacity: usize,
-    
+
     /// Current offset (bump pointer)
     offset: AtomicUsize,
-    
+
     /// Layout for deallocation
     layout: Layout,
 }
@@ -149,12 +149,11 @@ struct ArenaChunk {
 impl ArenaChunk {
     /// Create a new chunk with given capacity
     fn new(capacity: usize, alignment: usize) -> Self {
-        let layout = Layout::from_size_align(capacity, alignment)
-            .expect("invalid layout");
-        
+        let layout = Layout::from_size_align(capacity, alignment).expect("invalid layout");
+
         let ptr = unsafe { alloc(layout) };
         let ptr = NonNull::new(ptr).expect("allocation failed");
-        
+
         Self {
             ptr,
             capacity,
@@ -166,16 +165,16 @@ impl ArenaChunk {
     /// Try to allocate bytes, returns offset if successful
     fn try_alloc(&self, size: usize, alignment: usize) -> Option<usize> {
         let mut current = self.offset.load(Ordering::Acquire);
-        
+
         loop {
             // Align the offset
             let aligned = (current + alignment - 1) & !(alignment - 1);
             let new_offset = aligned + size;
-            
+
             if new_offset > self.capacity {
                 return None;
             }
-            
+
             match self.offset.compare_exchange_weak(
                 current,
                 new_offset,
@@ -196,7 +195,8 @@ impl ArenaChunk {
 
     /// Remaining capacity
     fn remaining(&self) -> usize {
-        self.capacity.saturating_sub(self.offset.load(Ordering::Acquire))
+        self.capacity
+            .saturating_sub(self.offset.load(Ordering::Acquire))
     }
 }
 
@@ -219,13 +219,13 @@ unsafe impl Sync for ArenaChunk {}
 pub struct VectorBatchArena {
     /// Configuration
     config: BatchIngestConfig,
-    
+
     /// Arena chunks
     chunks: Vec<ArenaChunk>,
-    
+
     /// Total vectors stored
     len: AtomicUsize,
-    
+
     /// Vector dimension (set on first push)
     dim: AtomicUsize,
 }
@@ -235,9 +235,9 @@ impl VectorBatchArena {
     pub fn new(config: BatchIngestConfig) -> Self {
         let initial_size = config.expected_dim * 4 * config.initial_capacity;
         let chunk_size = config.chunk_size.max(initial_size);
-        
+
         let chunk = ArenaChunk::new(chunk_size, config.alignment);
-        
+
         Self {
             config,
             chunks: vec![chunk],
@@ -273,18 +273,18 @@ impl VectorBatchArena {
     pub fn push(&mut self, vector: &[f32]) -> VectorHandle {
         let dim = vector.len();
         self.set_dim(dim);
-        
+
         let size = dim * std::mem::size_of::<f32>();
         let (chunk_idx, offset) = self.alloc_bytes(size);
-        
+
         // Copy vector data
         unsafe {
             let dst = self.chunks[chunk_idx].ptr_at(offset) as *mut f32;
             std::ptr::copy_nonoverlapping(vector.as_ptr(), dst, dim);
         }
-        
+
         self.len.fetch_add(1, Ordering::Release);
-        
+
         VectorHandle::new(chunk_idx as u32, offset as u32, dim as u32)
     }
 
@@ -295,82 +295,86 @@ impl VectorBatchArena {
         if vectors.is_empty() {
             return Vec::new();
         }
-        
+
         let dim = vectors[0].len();
         self.set_dim(dim);
-        
+
         let vec_size = dim * std::mem::size_of::<f32>();
         let total_size = vec_size * vectors.len();
-        
+
         // Try to allocate contiguous space for all vectors
         let mut handles = Vec::with_capacity(vectors.len());
-        
+
         // Pre-allocate enough space
         self.ensure_capacity(total_size);
-        
+
         for vector in vectors {
             debug_assert_eq!(vector.len(), dim);
-            
+
             let (chunk_idx, offset) = self.alloc_bytes(vec_size);
-            
+
             unsafe {
                 let dst = self.chunks[chunk_idx].ptr_at(offset) as *mut f32;
                 std::ptr::copy_nonoverlapping(vector.as_ptr(), dst, dim);
             }
-            
+
             handles.push(VectorHandle::new(
                 chunk_idx as u32,
                 offset as u32,
                 dim as u32,
             ));
         }
-        
+
         self.len.fetch_add(vectors.len(), Ordering::Release);
-        
+
         handles
     }
 
     /// Push a batch from flat contiguous data (true zero-copy path)
     ///
     /// The input is a flat array of [v0_0, v0_1, ..., v0_d, v1_0, v1_1, ..., v1_d, ...]
-    pub fn push_batch_flat(&mut self, flat_data: &[f32], dim: usize) -> Result<Vec<VectorHandle>, BatchError> {
+    pub fn push_batch_flat(
+        &mut self,
+        flat_data: &[f32],
+        dim: usize,
+    ) -> Result<Vec<VectorHandle>, BatchError> {
         if flat_data.len() % dim != 0 {
             return Err(BatchError::DimensionMismatch {
                 expected: dim,
                 actual: flat_data.len(),
             });
         }
-        
+
         self.set_dim(dim);
-        
+
         let num_vectors = flat_data.len() / dim;
         let vec_size = dim * std::mem::size_of::<f32>();
         let total_size = flat_data.len() * std::mem::size_of::<f32>();
-        
+
         self.ensure_capacity(total_size);
-        
+
         let mut handles = Vec::with_capacity(num_vectors);
-        
+
         for i in 0..num_vectors {
             let start = i * dim;
             let vector = &flat_data[start..start + dim];
-            
+
             let (chunk_idx, offset) = self.alloc_bytes(vec_size);
-            
+
             unsafe {
                 let dst = self.chunks[chunk_idx].ptr_at(offset) as *mut f32;
                 std::ptr::copy_nonoverlapping(vector.as_ptr(), dst, dim);
             }
-            
+
             handles.push(VectorHandle::new(
                 chunk_idx as u32,
                 offset as u32,
                 dim as u32,
             ));
         }
-        
+
         self.len.fetch_add(num_vectors, Ordering::Release);
-        
+
         Ok(handles)
     }
 
@@ -388,32 +392,32 @@ impl VectorBatchArena {
         if num_vectors == 0 {
             return Vec::new();
         }
-        
+
         self.set_dim(dim);
-        
+
         let vec_size = dim * std::mem::size_of::<f32>();
         let total_size = vec_size * num_vectors;
-        
+
         self.ensure_capacity(total_size);
-        
+
         let mut handles = Vec::with_capacity(num_vectors);
-        
+
         for i in 0..num_vectors {
             let src = unsafe { data.add(i * dim) };
             let (chunk_idx, offset) = self.alloc_bytes(vec_size);
-            
+
             let dst = unsafe { self.chunks[chunk_idx].ptr_at(offset) } as *mut f32;
             unsafe { std::ptr::copy_nonoverlapping(src, dst, dim) };
-            
+
             handles.push(VectorHandle::new(
                 chunk_idx as u32,
                 offset as u32,
                 dim as u32,
             ));
         }
-        
+
         self.len.fetch_add(num_vectors, Ordering::Release);
-        
+
         handles
     }
 
@@ -431,6 +435,10 @@ impl VectorBatchArena {
     ///
     /// # Safety
     /// Caller must ensure exclusive access
+    // `mut_from_ref`: deliberate zero-copy arena access. The mutable slice
+    // aliases backing storage through `&self` + raw pointers; exclusivity is
+    // the caller's contract (see Safety above), which this `unsafe fn` encodes.
+    #[allow(clippy::mut_from_ref)]
     #[inline]
     pub unsafe fn get_mut(&self, handle: VectorHandle) -> &mut [f32] {
         let chunk = &self.chunks[handle.chunk as usize];
@@ -451,17 +459,14 @@ impl VectorBatchArena {
     }
 
     fn set_dim(&self, dim: usize) {
-        let _ = self.dim.compare_exchange(
-            0,
-            dim,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        let _ = self
+            .dim
+            .compare_exchange(0, dim, Ordering::AcqRel, Ordering::Acquire);
     }
 
     fn ensure_capacity(&mut self, additional: usize) {
         let last_chunk = self.chunks.last().unwrap();
-        
+
         if last_chunk.remaining() < additional {
             // Need a new chunk
             let new_size = self.config.chunk_size.max(additional);
@@ -472,23 +477,23 @@ impl VectorBatchArena {
 
     fn alloc_bytes(&mut self, size: usize) -> (usize, usize) {
         let alignment = self.config.alignment;
-        
+
         // Try last chunk first
         let last_idx = self.chunks.len() - 1;
         if let Some(offset) = self.chunks[last_idx].try_alloc(size, alignment) {
             return (last_idx, offset);
         }
-        
+
         // Need new chunk
         let new_size = self.config.chunk_size.max(size);
         let new_chunk = ArenaChunk::new(new_size, self.config.alignment);
         self.chunks.push(new_chunk);
-        
+
         let new_idx = self.chunks.len() - 1;
         let offset = self.chunks[new_idx]
             .try_alloc(size, alignment)
             .expect("fresh chunk should have space");
-        
+
         (new_idx, offset)
     }
 
@@ -496,12 +501,12 @@ impl VectorBatchArena {
     pub fn memory_stats(&self) -> MemoryStats {
         let mut allocated = 0;
         let mut used = 0;
-        
+
         for chunk in &self.chunks {
             allocated += chunk.capacity;
             used += chunk.offset.load(Ordering::Acquire);
         }
-        
+
         MemoryStats {
             chunks: self.chunks.len(),
             allocated_bytes: allocated,
@@ -523,7 +528,11 @@ impl std::fmt::Display for BatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BatchError::DimensionMismatch { expected, actual } => {
-                write!(f, "dimension mismatch: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "dimension mismatch: expected {}, got {}",
+                    expected, actual
+                )
             }
             BatchError::AllocationFailed { size } => {
                 write!(f, "allocation failed for {} bytes", size)
@@ -539,16 +548,16 @@ impl std::error::Error for BatchError {}
 pub struct MemoryStats {
     /// Number of chunks
     pub chunks: usize,
-    
+
     /// Total allocated bytes
     pub allocated_bytes: usize,
-    
+
     /// Actually used bytes
     pub used_bytes: usize,
-    
+
     /// Number of vectors
     pub vectors: usize,
-    
+
     /// Fragmentation ratio (0 = no fragmentation)
     pub fragmentation: f64,
 }
@@ -594,7 +603,7 @@ pub struct BatchIngestPipeline {
     /// Configuration
     #[allow(dead_code)]
     config: BatchIngestConfig,
-    
+
     /// Statistics
     stats: IngestStats,
 }
@@ -616,14 +625,14 @@ impl BatchIngestPipeline {
         dim: usize,
     ) -> Result<Vec<VectorHandle>, BatchError> {
         let start = std::time::Instant::now();
-        
+
         let handles = arena.push_batch_flat(data, dim)?;
-        
+
         let elapsed = start.elapsed();
         self.stats.total_vectors += handles.len();
         self.stats.total_bytes += data.len() * std::mem::size_of::<f32>();
         self.stats.total_time_ns += elapsed.as_nanos() as u64;
-        
+
         Ok(handles)
     }
 
@@ -638,10 +647,10 @@ impl BatchIngestPipeline {
 pub struct IngestStats {
     /// Total vectors ingested
     pub total_vectors: usize,
-    
+
     /// Total bytes processed
     pub total_bytes: usize,
-    
+
     /// Total time in nanoseconds
     pub total_time_ns: u64,
 }
@@ -676,10 +685,10 @@ mod tests {
     #[test]
     fn test_arena_basic() {
         let mut arena = VectorBatchArena::with_defaults();
-        
+
         let v1 = vec![1.0, 2.0, 3.0, 4.0];
         let h1 = arena.push(&v1);
-        
+
         let retrieved = arena.get(h1);
         assert_eq!(retrieved, &v1);
     }
@@ -687,16 +696,14 @@ mod tests {
     #[test]
     fn test_arena_batch() {
         let mut arena = VectorBatchArena::with_defaults();
-        
-        let vectors: Vec<Vec<f32>> = (0..100)
-            .map(|i| vec![i as f32; 128])
-            .collect();
-        
+
+        let vectors: Vec<Vec<f32>> = (0..100).map(|i| vec![i as f32; 128]).collect();
+
         let handles = arena.push_batch(&vectors);
-        
+
         assert_eq!(handles.len(), 100);
         assert_eq!(arena.len(), 100);
-        
+
         for (i, handle) in handles.iter().enumerate() {
             let retrieved = arena.get(*handle);
             assert_eq!(retrieved[0], i as f32);
@@ -707,18 +714,18 @@ mod tests {
     #[test]
     fn test_arena_batch_flat() {
         let mut arena = VectorBatchArena::with_defaults();
-        
+
         let dim = 4;
         let flat_data: Vec<f32> = (0..40).map(|i| i as f32).collect();
-        
+
         let handles = arena.push_batch_flat(&flat_data, dim).unwrap();
-        
+
         assert_eq!(handles.len(), 10);
-        
+
         // Check first vector: [0, 1, 2, 3]
         let v0 = arena.get(handles[0]);
         assert_eq!(v0, &[0.0, 1.0, 2.0, 3.0]);
-        
+
         // Check second vector: [4, 5, 6, 7]
         let v1 = arena.get(handles[1]);
         assert_eq!(v1, &[4.0, 5.0, 6.0, 7.0]);
@@ -727,12 +734,12 @@ mod tests {
     #[test]
     fn test_arena_dimension_mismatch() {
         let mut arena = VectorBatchArena::with_defaults();
-        
+
         let dim = 4;
         let flat_data: Vec<f32> = (0..10).map(|i| i as f32).collect(); // 10 not divisible by 4
-        
+
         let result = arena.push_batch_flat(&flat_data, dim);
-        
+
         assert!(result.is_err());
     }
 
@@ -744,24 +751,22 @@ mod tests {
             expected_dim: 128,
             initial_capacity: 1,
         };
-        
+
         let mut arena = VectorBatchArena::new(config);
-        
+
         // Push enough vectors to span multiple chunks
-        let vectors: Vec<Vec<f32>> = (0..100)
-            .map(|i| vec![i as f32; 128])
-            .collect();
-        
+        let vectors: Vec<Vec<f32>> = (0..100).map(|i| vec![i as f32; 128]).collect();
+
         let handles = arena.push_batch(&vectors);
-        
+
         assert_eq!(handles.len(), 100);
-        
+
         // Verify all vectors are accessible
         for (i, handle) in handles.iter().enumerate() {
             let retrieved = arena.get(*handle);
             assert_eq!(retrieved[0], i as f32);
         }
-        
+
         let stats = arena.memory_stats();
         assert!(stats.chunks > 1, "Expected multiple chunks");
     }
@@ -769,15 +774,13 @@ mod tests {
     #[test]
     fn test_memory_stats() {
         let mut arena = VectorBatchArena::with_defaults();
-        
-        let vectors: Vec<Vec<f32>> = (0..10)
-            .map(|i| vec![i as f32; 128])
-            .collect();
-        
+
+        let vectors: Vec<Vec<f32>> = (0..10).map(|i| vec![i as f32; 128]).collect();
+
         arena.push_batch(&vectors);
-        
+
         let stats = arena.memory_stats();
-        
+
         assert_eq!(stats.vectors, 10);
         assert!(stats.used_bytes > 0);
         assert!(stats.allocated_bytes >= stats.used_bytes);
@@ -787,16 +790,14 @@ mod tests {
     #[test]
     fn test_batch_raw() {
         let mut arena = VectorBatchArena::with_defaults();
-        
+
         let dim = 4;
         let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
-        
-        let handles = unsafe {
-            arena.push_batch_raw(data.as_ptr(), 4, dim)
-        };
-        
+
+        let handles = unsafe { arena.push_batch_raw(data.as_ptr(), 4, dim) };
+
         assert_eq!(handles.len(), 4);
-        
+
         let v2 = arena.get(handles[2]);
         assert_eq!(v2, &[8.0, 9.0, 10.0, 11.0]);
     }

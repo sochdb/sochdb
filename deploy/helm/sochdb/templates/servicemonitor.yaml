@@ -1,0 +1,19 @@
+{{- if and .Values.observability.metrics.enabled .Values.observability.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "sochdb.fullname" . }}
+  labels:
+    {{- include "sochdb.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "sochdb.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.observability.metrics.path }}
+      interval: {{ .Values.observability.metrics.serviceMonitor.interval }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}

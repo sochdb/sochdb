@@ -44,8 +44,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
@@ -122,15 +122,9 @@ pub enum ArchiveDestination {
         region: String,
     },
     /// Google Cloud Storage
-    Gcs {
-        bucket: String,
-        prefix: String,
-    },
+    Gcs { bucket: String, prefix: String },
     /// Azure Blob Storage
-    Azure {
-        container: String,
-        prefix: String,
-    },
+    Azure { container: String, prefix: String },
 }
 
 /// WAL archiver configuration
@@ -228,7 +222,9 @@ impl WalArchiver {
             self.archive_lsn.fetch_max(new_lsn, Ordering::Release);
 
             // Add to history
-            self.archive_history.write().insert(segment.segment_id, segment);
+            self.archive_history
+                .write()
+                .insert(segment.segment_id, segment);
         }
 
         Ok(count)
@@ -243,9 +239,9 @@ impl WalArchiver {
                 std::fs::copy(&segment.path, &dest)
                     .map_err(|e| PitrError::ArchiveFailed(e.to_string()))?;
             }
-            ArchiveDestination::S3 { .. } |
-            ArchiveDestination::Gcs { .. } |
-            ArchiveDestination::Azure { .. } => {
+            ArchiveDestination::S3 { .. }
+            | ArchiveDestination::Gcs { .. }
+            | ArchiveDestination::Azure { .. } => {
                 // Would use appropriate SDK
                 return Err(PitrError::NotImplemented("Cloud storage archiving".into()));
             }
@@ -481,7 +477,10 @@ mod tests {
     #[test]
     fn test_pitr_recovery_validation_no_snapshot() {
         let recovery = PitrRecovery::new(RecoveryTarget::Latest);
-        assert!(matches!(recovery.validate(), Err(PitrError::NoBaseSnapshot)));
+        assert!(matches!(
+            recovery.validate(),
+            Err(PitrError::NoBaseSnapshot)
+        ));
     }
 
     #[test]
@@ -495,18 +494,16 @@ mod tests {
             checksum: "abc".to_string(),
         };
 
-        let segments = vec![
-            WalSegment {
-                segment_id: 1,
-                start_lsn: Lsn::new(200), // Gap! Expected 100
-                end_lsn: Lsn::new(300),
-                path: PathBuf::from("/tmp/wal_1"),
-                size_bytes: 1024,
-                checksum: 0,
-                created_at: 0,
-                archived: true,
-            },
-        ];
+        let segments = vec![WalSegment {
+            segment_id: 1,
+            start_lsn: Lsn::new(200), // Gap! Expected 100
+            end_lsn: Lsn::new(300),
+            path: PathBuf::from("/tmp/wal_1"),
+            size_bytes: 1024,
+            checksum: 0,
+            created_at: 0,
+            archived: true,
+        }];
 
         let recovery = PitrRecovery::new(RecoveryTarget::Latest)
             .with_base_snapshot(snapshot)
@@ -526,18 +523,16 @@ mod tests {
             checksum: "abc".to_string(),
         };
 
-        let segments = vec![
-            WalSegment {
-                segment_id: 1,
-                start_lsn: Lsn::new(100),
-                end_lsn: Lsn::new(200),
-                path: PathBuf::from("/tmp/wal_1"),
-                size_bytes: 1024,
-                checksum: 0,
-                created_at: 0,
-                archived: true,
-            },
-        ];
+        let segments = vec![WalSegment {
+            segment_id: 1,
+            start_lsn: Lsn::new(100),
+            end_lsn: Lsn::new(200),
+            path: PathBuf::from("/tmp/wal_1"),
+            size_bytes: 1024,
+            checksum: 0,
+            created_at: 0,
+            archived: true,
+        }];
 
         let recovery = PitrRecovery::new(RecoveryTarget::Lsn(Lsn::new(150)))
             .with_base_snapshot(snapshot)

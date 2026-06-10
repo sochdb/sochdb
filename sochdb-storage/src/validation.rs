@@ -34,10 +34,10 @@
 //! This establishes that all memory-mapped pages are valid before dereferencing.
 
 use blake3::Hasher;
+use sochdb_core::{Result, SochDBError};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use sochdb_core::{Result, SochDBError};
 
 /// Minimum valid SSTable size (header + at least one edge + footer)
 /// Header (8 bytes magic) + Edge (128 bytes) + Footer (144 bytes) = 280 bytes

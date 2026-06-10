@@ -691,7 +691,29 @@ impl WriteAheadLog {
             buffer.add_waiter(txn_id, tx);
 
             if buffer.should_flush(&self.config) {
+                // This commit pushed the batch over a size/time threshold:
+                // flush now. `flush_buffer_locked` notifies parked peers.
                 self.flush_buffer_locked(&mut buffer)?;
+            } else {
+                // Group-commit leader/timeout: park until either a peer
+                // committer flushes the batch (and notifies us via `flush_cv`)
+                // or the remaining flush interval elapses, at which point we
+                // flush the accumulated batch ourselves. This bounds commit
+                // latency and prevents a lone or trailing commit from blocking
+                // on `rx.recv()` indefinitely (there is no background flusher).
+                let remaining = self
+                    .config
+                    .flush_interval
+                    .saturating_sub(buffer.last_flush.elapsed());
+                let (mut buffer, _timeout) = self
+                    .flush_cv
+                    .wait_timeout(buffer, remaining)
+                    .unwrap_or_else(|e| e.into_inner());
+                // If our records are still unflushed (no peer flushed them
+                // while we were parked), flush them now.
+                if !buffer.records.is_empty() {
+                    self.flush_buffer_locked(&mut buffer)?;
+                }
             }
         }
 
@@ -807,6 +829,12 @@ impl WriteAheadLog {
         }
 
         buffer.clear();
+
+        // Wake any committers parked in `commit_txn` waiting for a group flush,
+        // so they observe the now-empty buffer and return instead of flushing
+        // again.
+        self.flush_cv.notify_all();
+
         Ok(())
     }
 
@@ -957,9 +985,8 @@ impl WriteAheadLog {
                     Ok(WalRecordType::Clr) => {
                         // Get undo_next_lsn from after_image
                         if record.after_image.len() >= 8 {
-                            let bytes: [u8; 8] = record.after_image[0..8]
-                                .try_into()
-                                .unwrap_or([0; 8]);
+                            let bytes: [u8; 8] =
+                                record.after_image[0..8].try_into().unwrap_or([0; 8]);
                             let undo_next = u64::from_le_bytes(bytes);
                             if undo_next > 0 {
                                 undo_list.push_back((undo_next, txn_id));
@@ -1121,9 +1148,9 @@ impl Iterator for WalIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sochdb_core::ValidityBitmap;
     use std::sync::atomic::AtomicU64;
     use tempfile::TempDir;
-    use sochdb_core::ValidityBitmap;
 
     #[test]
     fn test_wal_record_serialization() {
@@ -1140,6 +1167,42 @@ mod tests {
         assert_eq!(txn_id, 100);
         assert_eq!(deserialized.before_image, vec![1, 2, 3, 4]);
         assert_eq!(deserialized.after_image, vec![5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn test_lone_commit_does_not_hang() {
+        // Regression: a single (lone/trailing) commit must not block forever on
+        // `rx.recv()`. With no peer committer to push the batch over a size
+        // threshold, the committer must flush itself once the flush interval
+        // elapses. A long flush_interval keeps the test fast while still
+        // exercising the timeout path (no size-based flush is triggered).
+        let dir = TempDir::new().unwrap();
+        let config = WalConfig {
+            sync_mode: SyncMode::None, // Fast for tests
+            buffer_size: 10_000_000,   // Large: never size-flush
+            max_batch_size: 1_000_000, // Large: never count-flush
+            flush_interval: Duration::from_millis(20),
+            ..Default::default()
+        };
+
+        let wal = WriteAheadLog::open(dir.path(), config).unwrap();
+        wal.begin_txn(1).unwrap();
+        wal.log_update(1, 100, 0, vec![0; 10], vec![1; 10]).unwrap();
+
+        // Bound the wait: if the liveness bug regresses, this thread would hang
+        // forever, so run the commit on a worker and fail on timeout.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let lsn = wal.commit_txn(1);
+            let _ = done_tx.send(lsn.map(|l| l > 0));
+        });
+
+        match done_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(true)) => {}
+            Ok(other) => panic!("commit_txn returned unexpected result: {:?}", other),
+            Err(_) => panic!("commit_txn hung: lone commit did not flush within timeout"),
+        }
+        handle.join().unwrap();
     }
 
     #[test]

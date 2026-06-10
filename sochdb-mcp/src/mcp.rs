@@ -29,8 +29,8 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
-use sochdb::connection::EmbeddedConnection;
 use sochdb::DurableSochClient;
+use sochdb::connection::EmbeddedConnection;
 
 use crate::jsonrpc::{RpcRequest, RpcResponse};
 use crate::tools::{ToolExecutor, get_built_in_tools};
@@ -319,14 +319,14 @@ impl McpServer {
         // Use scan to get table data
         let prefix = format!("/{}", table_name);
         self.conn.begin().ok();
-        
+
         let scan_result = self.conn.scan(&prefix);
         self.conn.abort().ok();
-        
+
         match scan_result {
             Ok(results) if !results.is_empty() => {
                 let meta = get_resource_metadata(table_name);
-                
+
                 // Extract unique field names from paths
                 let mut fields = std::collections::HashSet::new();
                 for (key, _) in &results {
@@ -336,7 +336,7 @@ impl McpServer {
                         fields.insert(parts[2].to_string());
                     }
                 }
-                
+
                 let content = serde_json::to_string_pretty(&json!({
                     "name": table_name,
                     "fields": fields.into_iter().collect::<Vec<_>>(),

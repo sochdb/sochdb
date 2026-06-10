@@ -1,0 +1,72 @@
+# =============================================================================
+# SochDB CI Gate - Pull Request & main branch validation
+# =============================================================================
+# Unlike the release pipelines (azure-pipelines*.yml, trigger: none), this
+# pipeline runs automatically on every push to main and on every pull request.
+# It is the correctness gate: formatting and the full test suite are HARD
+# blockers that must pass before code lands. Clippy runs for visibility but is
+# non-blocking today (see the clippy step for the rationale and ratchet plan).
+# Keep it Rust-only and fast so it stays a practical pre-merge check; SDK
+# packaging stays in the release jobs.
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+steps:
+  - script: |
+      sudo apt-get update
+      sudo apt-get install -y protobuf-compiler
+    displayName: 'Install system dependencies'
+
+  - script: |
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      echo "##vso[task.prependpath]$HOME/.cargo/bin"
+    displayName: 'Install Rust'
+
+  - script: |
+      rustup component add rustfmt clippy
+    displayName: 'Install Rust components'
+
+  - script: cargo fmt --all -- --check
+    displayName: 'Check Rust formatting'
+
+  # Clippy is intentionally NON-BLOCKING for now. The workspace currently
+  # carries a large pre-existing lint baseline (~788 warnings on Rust 1.94,
+  # plus deliberately self-`deprecated` buddy_allocator test constants), so a
+  # hard `-D warnings` gate would red-fail every PR and train contributors to
+  # bypass CI. We still run clippy so regressions are visible in the logs.
+  # RATCHET PLAN: once a dedicated cleanup drives the baseline to zero, restore
+  # the hard gate by switching this step back to:
+  #   cargo clippy --all-targets -- -D warnings
+  - script: cargo clippy --all-targets
+    displayName: 'Run clippy (non-blocking; see ratchet plan above)'
+
+  - script: cargo test --release --workspace
+    displayName: 'Run Rust tests'
+
+  # Exhaustively model-check the lock-free MVCC coordination protocols
+  # (reader-slot CAS allocation, HLC timestamp advance) across all thread
+  # interleavings. Loom only compiles under this cfg, so it costs nothing above.
+  - script: RUSTFLAGS="--cfg loom" cargo test -p sochdb-storage --test loom_concurrency
+    displayName: 'Loom concurrency model check'
+
+  # Default features only compile the wired surface. Compile-check the
+  # quarantined `experimental` modules (sochdb-storage, sochdb-query, sochdb-index)
+  # so they cannot rot silently while gated out of the default build.
+  - script: cargo check -p sochdb-storage -p sochdb-query -p sochdb-index --features experimental
+    displayName: 'Compile-check experimental modules'

@@ -5,8 +5,8 @@
 //! - Bulk loading embeddings
 //! - Finding nearest neighbors
 
-use sochdb::vectors::VectorCollection;
 use sochdb::SochConnection;
+use sochdb::vectors::VectorCollection;
 use std::error::Error;
 use std::sync::Arc;
 

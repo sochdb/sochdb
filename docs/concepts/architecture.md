@@ -1,7 +1,7 @@
 # SochDB Complete Architecture & API Reference
 
 **Version:** 0.3.1  
-**License:** Apache-2.0  
+**License:** AGPL-3.0-or-later  
 **Repository:** https://github.com/sochdb/sochdb
 
 ---

@@ -29,9 +29,9 @@ mod measurement_harness;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use measurement_harness::{generate_key, generate_value};
+use sochdb_storage::{DurableStorage, TransactionMode};
 use std::time::Instant;
 use tempfile::TempDir;
-use sochdb_storage::{DurableStorage, TransactionMode};
 
 /// Measure recovery time from clean shutdown
 fn bench_recovery_clean_shutdown(c: &mut Criterion) {
@@ -48,7 +48,7 @@ fn bench_recovery_clean_shutdown(c: &mut Criterion) {
             |b, &dataset_size| {
                 // Create and populate database
                 let temp_dir = TempDir::new().unwrap();
-                
+
                 {
                     let storage = DurableStorage::open(temp_dir.path()).unwrap();
                     storage.set_sync_mode(1); // Ensure data is persisted
@@ -100,7 +100,8 @@ fn bench_recovery_wal_size(c: &mut Criterion) {
                             storage.set_sync_mode(1);
 
                             // Write data that will need to be recovered
-                            let txn_id = storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
+                            let txn_id =
+                                storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
                             for i in 0..writes_before_recover {
                                 let key = generate_key(i, key_size);
                                 let value = generate_value(i, value_size, 42);
@@ -150,7 +151,8 @@ fn bench_recovery_multiple_txns(c: &mut Criterion) {
                             storage.set_sync_mode(1);
 
                             for txn in 0..num_txns {
-                                let txn_id = storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
+                                let txn_id =
+                                    storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
                                 for i in 0..writes_per_txn {
                                     let key_idx = txn * writes_per_txn + i;
                                     let key = generate_key(key_idx, key_size);
@@ -201,7 +203,8 @@ fn bench_recovery_with_uncommitted(c: &mut Criterion) {
                             storage.set_sync_mode(1);
 
                             // Committed data
-                            let txn_id = storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
+                            let txn_id =
+                                storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
                             for i in 0..committed_size {
                                 let key = generate_key(i, key_size);
                                 let value = generate_value(i, value_size, 42);
@@ -210,7 +213,8 @@ fn bench_recovery_with_uncommitted(c: &mut Criterion) {
                             storage.commit(txn_id).unwrap();
 
                             // Uncommitted data (will be rolled back)
-                            let txn_id = storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
+                            let txn_id =
+                                storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
                             for i in 0..uncommitted_size {
                                 let key = generate_key(committed_size + i, key_size);
                                 let value = generate_value(committed_size + i, value_size, 99);

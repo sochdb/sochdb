@@ -109,7 +109,10 @@ impl Slot {
 
     #[inline]
     pub fn null() -> Self {
-        Self { offset: 0xFFFF, len: 0 }
+        Self {
+            offset: 0xFFFF,
+            len: 0,
+        }
     }
 }
 
@@ -171,16 +174,14 @@ impl SlotRow {
     pub fn from_values(row_id: u64, values: &[Option<&[u8]>]) -> Self {
         let slot_count = values.len().min(MAX_SLOT_COLUMNS) as u8;
         let slots_size = (slot_count as usize) * Slot::SIZE;
-        
+
         // Calculate total data size
-        let data_size: usize = values.iter()
-            .map(|v| v.map(|b| b.len()).unwrap_or(0))
-            .sum();
-        
+        let data_size: usize = values.iter().map(|v| v.map(|b| b.len()).unwrap_or(0)).sum();
+
         let mut storage = vec![0u8; slots_size + data_size];
         let mut null_bitmap = 0u16;
         let mut data_offset = 0u16;
-        
+
         // Write slots and data
         for (i, value) in values.iter().enumerate() {
             let slot = match value {
@@ -197,13 +198,13 @@ impl SlotRow {
                     Slot::null()
                 }
             };
-            
+
             // Write slot
             let slot_start = i * Slot::SIZE;
             storage[slot_start..slot_start + 2].copy_from_slice(&slot.offset.to_le_bytes());
             storage[slot_start + 2..slot_start + 4].copy_from_slice(&slot.len.to_le_bytes());
         }
-        
+
         Self {
             row_id,
             null_bitmap,
@@ -246,16 +247,10 @@ impl SlotRow {
         if slot_start + Slot::SIZE > self.storage.len() {
             return None;
         }
-        
-        let offset = u16::from_le_bytes([
-            self.storage[slot_start],
-            self.storage[slot_start + 1],
-        ]);
-        let len = u16::from_le_bytes([
-            self.storage[slot_start + 2],
-            self.storage[slot_start + 3],
-        ]);
-        
+
+        let offset = u16::from_le_bytes([self.storage[slot_start], self.storage[slot_start + 1]]);
+        let len = u16::from_le_bytes([self.storage[slot_start + 2], self.storage[slot_start + 3]]);
+
         Some(Slot { offset, len })
     }
 
@@ -268,20 +263,20 @@ impl SlotRow {
         if self.is_null(column_idx) {
             return None;
         }
-        
+
         let slot = self.get_slot(column_idx)?;
         if slot.is_null() {
             return None;
         }
-        
+
         let slots_size = (self.slot_count as usize) * Slot::SIZE;
         let data_start = slots_size + slot.offset as usize;
         let data_end = data_start + slot.len as usize;
-        
+
         if data_end > self.storage.len() {
             return None;
         }
-        
+
         Some(&self.storage[data_start..data_end])
     }
 
@@ -376,7 +371,7 @@ impl SlotRow {
     pub fn to_bytes(&self) -> Vec<u8> {
         let total_size = SLOT_ROW_HEADER_SIZE + self.storage.len();
         let mut buf = Vec::with_capacity(total_size);
-        
+
         buf.extend_from_slice(&self.row_id.to_le_bytes());
         buf.extend_from_slice(&self.null_bitmap.to_le_bytes());
         buf.push(self.slot_count);
@@ -384,7 +379,7 @@ impl SlotRow {
         buf.extend_from_slice(&self.txn_start.to_le_bytes());
         buf.extend_from_slice(&self.txn_end.to_le_bytes());
         buf.extend_from_slice(&self.storage);
-        
+
         buf
     }
 
@@ -393,7 +388,7 @@ impl SlotRow {
         if data.len() < SLOT_ROW_HEADER_SIZE {
             return None;
         }
-        
+
         let row_id = u64::from_le_bytes(data[0..8].try_into().ok()?);
         let null_bitmap = u16::from_le_bytes(data[8..10].try_into().ok()?);
         let slot_count = data[10];
@@ -401,7 +396,7 @@ impl SlotRow {
         let txn_start = u64::from_le_bytes(data[12..20].try_into().ok()?);
         let txn_end = u64::from_le_bytes(data[20..28].try_into().ok()?);
         let storage = data[28..].to_vec();
-        
+
         Some(Self {
             row_id,
             null_bitmap,
@@ -477,11 +472,11 @@ impl SlotRowArena {
             self.current_block = self.blocks.len() - 1;
             self.current_offset = 0;
         }
-        
+
         let start = self.current_offset;
         self.current_offset += size;
         self.total_allocated += size;
-        
+
         &mut self.blocks[self.current_block][start..start + size]
     }
 
@@ -490,7 +485,7 @@ impl SlotRowArena {
         let bytes = row.to_bytes();
         let slot = self.allocate(bytes.len());
         slot.copy_from_slice(&bytes);
-        
+
         SlotRowHandle {
             block_idx: self.current_block,
             offset: self.current_offset - bytes.len(),
@@ -553,13 +548,16 @@ mod tests {
 
     #[test]
     fn test_slot_row_basic() {
-        let row = SlotRow::from_values(1, &[
-            Some(b"hello"),
-            Some(&42i64.to_le_bytes()),
-            None,
-            Some(b"world"),
-        ]);
-        
+        let row = SlotRow::from_values(
+            1,
+            &[
+                Some(b"hello"),
+                Some(&42i64.to_le_bytes()),
+                None,
+                Some(b"world"),
+            ],
+        );
+
         assert_eq!(row.row_id(), 1);
         assert_eq!(row.column_count(), 4);
         assert!(!row.is_null(0));
@@ -570,24 +568,25 @@ mod tests {
 
     #[test]
     fn test_slot_row_get_bytes() {
-        let row = SlotRow::from_values(1, &[
-            Some(b"hello"),
-            Some(b"world"),
-        ]);
-        
+        let row = SlotRow::from_values(1, &[Some(b"hello"), Some(b"world")]);
+
         assert_eq!(row.get_bytes(0), Some(b"hello".as_slice()));
         assert_eq!(row.get_bytes(1), Some(b"world".as_slice()));
         assert_eq!(row.get_bytes(2), None);
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is arbitrary test data, not PI
     fn test_slot_row_get_typed() {
-        let row = SlotRow::from_values(1, &[
-            Some(&42i64.to_le_bytes()),
-            Some(&3.14f64.to_le_bytes()),
-            Some(&1u8.to_le_bytes()),
-        ]);
-        
+        let row = SlotRow::from_values(
+            1,
+            &[
+                Some(&42i64.to_le_bytes()),
+                Some(&3.14f64.to_le_bytes()),
+                Some(&1u8.to_le_bytes()),
+            ],
+        );
+
         assert_eq!(row.get_i64(0), Some(42));
         assert_eq!(row.get_f64(1), Some(3.14));
         assert_eq!(row.get_bool(2), Some(true));
@@ -595,10 +594,8 @@ mod tests {
 
     #[test]
     fn test_slot_row_get_str() {
-        let row = SlotRow::from_values(1, &[
-            Some(b"hello world"),
-        ]);
-        
+        let row = SlotRow::from_values(1, &[Some(b"hello world")]);
+
         assert_eq!(row.get_str(0), Some("hello world"));
     }
 
@@ -606,7 +603,7 @@ mod tests {
     fn test_slot_row_mvcc() {
         let mut row = SlotRow::from_values(1, &[Some(b"test")]);
         row.set_mvcc(100, 200);
-        
+
         assert_eq!(row.txn_start(), 100);
         assert_eq!(row.txn_end(), 200);
         assert!(row.is_visible_at(150));
@@ -616,15 +613,11 @@ mod tests {
 
     #[test]
     fn test_slot_row_serialize() {
-        let row = SlotRow::from_values(42, &[
-            Some(b"hello"),
-            Some(&123i64.to_le_bytes()),
-            None,
-        ]);
-        
+        let row = SlotRow::from_values(42, &[Some(b"hello"), Some(&123i64.to_le_bytes()), None]);
+
         let bytes = row.to_bytes();
         let restored = SlotRow::from_bytes(&bytes).unwrap();
-        
+
         assert_eq!(restored.row_id(), 42);
         assert_eq!(restored.get_bytes(0), Some(b"hello".as_slice()));
         assert_eq!(restored.get_i64(1), Some(123));
@@ -633,11 +626,8 @@ mod tests {
 
     #[test]
     fn test_slot_row_memory_size() {
-        let row = SlotRow::from_values(1, &[
-            Some(b"hello"),
-            Some(b"world"),
-        ]);
-        
+        let row = SlotRow::from_values(1, &[Some(b"hello"), Some(b"world")]);
+
         // Header (28) + 2 slots (8) + data (10) = 46 bytes
         // Much smaller than HashMap equivalent (~150+ bytes)
         let size = row.memory_size();
@@ -647,16 +637,16 @@ mod tests {
     #[test]
     fn test_slot_row_arena() {
         let mut arena = SlotRowArena::new();
-        
+
         let row1 = SlotRow::from_values(1, &[Some(b"hello")]);
         let row2 = SlotRow::from_values(2, &[Some(b"world")]);
-        
+
         let h1 = arena.store(&row1);
         let h2 = arena.store(&row2);
-        
+
         let r1 = arena.get(&h1).unwrap();
         let r2 = arena.get(&h2).unwrap();
-        
+
         assert_eq!(r1.row_id(), 1);
         assert_eq!(r2.row_id(), 2);
         assert_eq!(r1.get_str(0), Some("hello"));
@@ -668,22 +658,25 @@ mod tests {
         // Use small block size to force multiple blocks
         let mut arena = SlotRowArena::with_block_size(1024);
         let mut handles = Vec::new();
-        
+
         for i in 0..1000 {
-            let row = SlotRow::from_values(i, &[
-                Some(&i.to_le_bytes()),
-                Some(format!("row_{}", i).as_bytes()),
-            ]);
+            let row = SlotRow::from_values(
+                i,
+                &[
+                    Some(&i.to_le_bytes()),
+                    Some(format!("row_{}", i).as_bytes()),
+                ],
+            );
             handles.push(arena.store(&row));
         }
-        
+
         // Verify all rows
         for (i, handle) in handles.iter().enumerate() {
             let row = arena.get(handle).unwrap();
             assert_eq!(row.row_id(), i as u64);
             assert_eq!(row.get_u64(0), Some(i as u64));
         }
-        
+
         // Should use multiple blocks (1000 rows * ~50 bytes = ~50KB > 1024)
         assert!(arena.block_count() > 1);
     }

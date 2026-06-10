@@ -37,14 +37,16 @@ pub mod token;
 
 pub use ast::*;
 pub use bridge::{ExecutionResult as BridgeExecutionResult, SqlBridge, SqlConnection};
-pub use compatibility::{CompatibilityMatrix, FeatureSupport, SqlDialect, SqlFeature, get_feature_support};
+pub use compatibility::{
+    CompatibilityMatrix, FeatureSupport, SqlDialect, SqlFeature, get_feature_support,
+};
 pub use error::{SqlError, SqlResult};
 pub use lexer::{LexError, Lexer};
 pub use parser::{ParseError, Parser};
 pub use token::{Span, Token, TokenKind};
 
-use std::collections::HashMap;
 use sochdb_core::SochValue;
+use std::collections::HashMap;
 
 /// Result of SQL execution
 #[derive(Debug, Clone)]

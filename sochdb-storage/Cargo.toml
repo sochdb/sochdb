@@ -26,10 +26,15 @@ async = ["tokio"]
 # Pure synchronous mode for embedded deployments (like SQLite)
 # Reduces binary size by ~500KB and removes async runtime dependency
 embedded-sync = []
+# Experimental / not-yet-wired subsystems. These modules are NOT part of the
+# live storage path and are unreferenced by the rest of the workspace. They are
+# quarantined behind this feature so the default build surface (and attack
+# surface) stays minimal. Enable explicitly to compile them: `--features experimental`.
+experimental = []
 
 [dependencies]
-sochdb-core = { version = "2.0.0", path = "../sochdb-core" }
-sochdb-index = { version = "2.0.0", path = "../sochdb-index" }
+sochdb-core = { version = "2.0.3", path = "../sochdb-core" }
+sochdb-index = { version = "2.0.3", path = "../sochdb-index" }
 # Tokio is optional - only included when "async" feature is enabled
 tokio = { version = "1.35", features = ["sync", "time", "macros", "rt"], optional = true }
 serde = { workspace = true }
@@ -88,6 +93,13 @@ proptest = { workspace = true }
 criterion = { workspace = true }
 rand = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
+
+# Loom is only compiled when model-checking concurrency:
+#   RUSTFLAGS="--cfg loom" cargo test -p sochdb-storage --test loom_concurrency
+# It exhaustively explores thread interleavings for the lock-free MVCC
+# coordination protocols (reader-slot CAS allocation, HLC timestamp advance).
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
 
 [[bench]]
 name = "sochdb_benchmarks"

@@ -331,7 +331,7 @@ docker run -d \
 
 ## 📄 License
 
-Apache License 2.0 - See [LICENSE](../sochdb/LICENSE)
+AGPL-3.0-or-later - See [LICENSE](../sochdb/LICENSE)
 
 ## 🔗 Links
 

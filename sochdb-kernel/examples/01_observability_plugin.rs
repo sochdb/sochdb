@@ -4,11 +4,11 @@
 //!
 //! Run with: cargo run --example 01_observability_plugin --package sochdb-kernel
 
-use std::any::Any;
-use std::sync::Arc;
 use sochdb_kernel::{
     Extension, ExtensionCapability, ExtensionInfo, ObservabilityExtension, PluginManager,
 };
+use std::any::Any;
+use std::sync::Arc;
 
 /// A simple custom metrics collector that prints to stdout
 struct SimpleMetricsPlugin {
@@ -156,13 +156,19 @@ fn main() {
     // Step 1: Create the Plugin Manager
     println!("Step 1: Creating PluginManager...");
     let plugins = PluginManager::new();
-    println!("   Has observability before registration: {}\n", plugins.has_observability());
+    println!(
+        "   Has observability before registration: {}\n",
+        plugins.has_observability()
+    );
 
     // Step 2: Register our custom plugin
     println!("Step 2: Registering custom observability plugin...");
     let metrics_plugin = Arc::new(SimpleMetricsPlugin::new("demo-metrics"));
     plugins.register_observability(metrics_plugin).unwrap();
-    println!("   Has observability after registration: {}\n", plugins.has_observability());
+    println!(
+        "   Has observability after registration: {}\n",
+        plugins.has_observability()
+    );
 
     // Step 3: List all registered extensions
     println!("Step 3: Listing registered extensions...");

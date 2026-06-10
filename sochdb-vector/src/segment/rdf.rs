@@ -4,8 +4,8 @@
 //! Posting lists are stored in VID-striped chunks for cache-friendly scoring.
 
 use crate::config::RdfConfig;
-use crate::types::*;
 use crate::segment::format::PostingListEntry;
+use crate::types::*;
 use std::collections::HashMap;
 
 /// Builder for RDF posting lists
@@ -27,28 +27,23 @@ impl<'a> RdfBuilder<'a> {
         let mut sum = vec![0.0f64; dim_usize];
         let mut sum_sq = vec![0.0f64; dim_usize];
         let mut doc_freqs = vec![0u32; dim_usize];
-        
+
         // Track which dims appear in each vector's top-t
         let top_t = config.top_t as usize;
-        
+
         for vec in rotated_vectors {
             // Find top-t dims by absolute value
-            let mut scored: Vec<(usize, f32)> = vec
-                .iter()
-                .enumerate()
-                .map(|(i, &v)| (i, v.abs()))
-                .collect();
+            let mut scored: Vec<(usize, f32)> =
+                vec.iter().enumerate().map(|(i, &v)| (i, v.abs())).collect();
             let nth_idx = top_t.min(scored.len()).saturating_sub(1);
             if nth_idx < scored.len() {
-                scored.select_nth_unstable_by(nth_idx, |a, b| {
-                    b.1.partial_cmp(&a.1).unwrap()
-                });
+                scored.select_nth_unstable_by(nth_idx, |a, b| b.1.partial_cmp(&a.1).unwrap());
             }
-            
+
             for &(dim_idx, _) in scored.iter().take(top_t) {
                 doc_freqs[dim_idx] += 1;
             }
-            
+
             for (i, &v) in vec.iter().enumerate() {
                 sum[i] += v as f64;
                 sum_sq[i] += (v * v) as f64;
@@ -58,19 +53,18 @@ impl<'a> RdfBuilder<'a> {
         // Compute dimension weights: w[d] = α·idf[d] + β·sqrt(var[d])
         let n = n_vec as f64;
         let mut dim_weights = Vec::with_capacity(dim_usize);
-        
+
         for d in 0..dim_usize {
             let mean = sum[d] / n;
             let var = (sum_sq[d] / n - mean * mean).max(0.0);
             let std_dev = var.sqrt();
-            
+
             // IDF-like weight: log(N / df)
             let df = doc_freqs[d].max(1) as f64;
             let idf = (n / df).ln();
-            
+
             // Combined weight
-            let weight = config.idf_weight as f64 * idf 
-                       + config.var_weight as f64 * std_dev;
+            let weight = config.idf_weight as f64 * idf + config.var_weight as f64 * std_dev;
             dim_weights.push(weight as f32);
         }
 
@@ -95,14 +89,14 @@ impl<'a> RdfBuilder<'a> {
         let top_t = self.config.top_t as usize;
         let stripe_shift = self.config.stripe_shift;
         let _stripe_size = 1usize << stripe_shift;
-        
+
         // Collect postings per dimension
         // Each posting: (vid, sign, magnitude)
         let mut dim_postings: Vec<Vec<(VectorId, bool, u8)>> = vec![Vec::new(); dim_usize];
-        
+
         // Compute per-dimension magnitude scales for quantization
         let mut dim_max_mag = vec![0.0f32; dim_usize];
-        
+
         for (_vid, vec) in self.vectors.iter().enumerate() {
             // Score each dim: |v[d]| * w[d]
             let mut scored: Vec<(usize, f32, f32)> = vec
@@ -110,21 +104,19 @@ impl<'a> RdfBuilder<'a> {
                 .enumerate()
                 .map(|(d, &v)| (d, v.abs() * self.dim_weights[d], v))
                 .collect();
-            
+
             // Select top-t by score
             if scored.len() > top_t {
-                scored.select_nth_unstable_by(top_t - 1, |a, b| {
-                    b.1.partial_cmp(&a.1).unwrap()
-                });
+                scored.select_nth_unstable_by(top_t - 1, |a, b| b.1.partial_cmp(&a.1).unwrap());
                 scored.truncate(top_t);
             }
-            
+
             for &(dim_idx, _, value) in &scored {
                 let mag = value.abs();
                 dim_max_mag[dim_idx] = dim_max_mag[dim_idx].max(mag);
             }
         }
-        
+
         // Second pass: collect postings with quantized magnitudes
         for (vid, vec) in self.vectors.iter().enumerate() {
             let mut scored: Vec<(usize, f32, f32)> = vec
@@ -132,31 +124,29 @@ impl<'a> RdfBuilder<'a> {
                 .enumerate()
                 .map(|(d, &v)| (d, v.abs() * self.dim_weights[d], v))
                 .collect();
-            
+
             if scored.len() > top_t {
-                scored.select_nth_unstable_by(top_t - 1, |a, b| {
-                    b.1.partial_cmp(&a.1).unwrap()
-                });
+                scored.select_nth_unstable_by(top_t - 1, |a, b| b.1.partial_cmp(&a.1).unwrap());
                 scored.truncate(top_t);
             }
-            
+
             for &(dim_idx, _, value) in &scored {
                 let sign = value >= 0.0;
                 let mag = value.abs();
                 let max_mag = dim_max_mag[dim_idx].max(1e-10);
                 let mag8 = ((mag / max_mag) * 127.0).min(127.0) as u8;
-                
+
                 dim_postings[dim_idx].push((vid as VectorId, sign, mag8));
             }
         }
-        
+
         // Build striped posting lists
         let mut directory = Vec::with_capacity(dim_usize);
         let mut data = Vec::new();
-        
+
         for dim_idx in 0..dim_usize {
             let postings = &dim_postings[dim_idx];
-            
+
             if postings.is_empty() {
                 directory.push(PostingListEntry {
                     offset: data.len() as u64,
@@ -166,29 +156,36 @@ impl<'a> RdfBuilder<'a> {
                 });
                 continue;
             }
-            
+
             let offset = data.len() as u64;
-            
+
             // Check if this is a stop-dim
             let is_stopword = self.doc_freqs[dim_idx] > self.config.stop_dim_threshold;
-            let flags = if is_stopword { PostingListEntry::FLAG_STOPWORD } else { 0 };
-            
+            let flags = if is_stopword {
+                PostingListEntry::FLAG_STOPWORD
+            } else {
+                0
+            };
+
             // Group postings by stripe
             let mut stripes: HashMap<StripeId, Vec<(u8, bool, u8)>> = HashMap::new();
             for &(vid, sign, mag) in postings {
                 let stripe_id = vid >> stripe_shift;
                 let vid_in_stripe = (vid & ((1 << stripe_shift) - 1)) as u8;
-                stripes.entry(stripe_id).or_default().push((vid_in_stripe, sign, mag));
+                stripes
+                    .entry(stripe_id)
+                    .or_default()
+                    .push((vid_in_stripe, sign, mag));
             }
-            
+
             // Sort stripes by stripe_id
             let mut stripe_ids: Vec<StripeId> = stripes.keys().copied().collect();
             stripe_ids.sort();
-            
+
             // Write stripe chunks
             for stripe_id in &stripe_ids {
                 let entries = stripes.get(stripe_id).unwrap();
-                
+
                 // Write stripe header
                 let header = StripeChunkHeader {
                     stripe_id: *stripe_id,
@@ -196,17 +193,17 @@ impl<'a> RdfBuilder<'a> {
                     _pad: 0,
                 };
                 data.extend_from_slice(bytemuck::bytes_of(&header));
-                
+
                 // Write entries sorted by vid_in_stripe
                 let mut sorted_entries = entries.clone();
                 sorted_entries.sort_by_key(|e| e.0);
-                
+
                 for (vid_in_stripe, sign, mag) in sorted_entries {
                     let posting = RdfPosting::new(vid_in_stripe, sign, mag);
                     data.extend_from_slice(bytemuck::bytes_of(&posting));
                 }
             }
-            
+
             directory.push(PostingListEntry {
                 offset,
                 length: postings.len() as u32,
@@ -214,7 +211,7 @@ impl<'a> RdfBuilder<'a> {
                 flags,
             });
         }
-        
+
         (directory, data)
     }
 }
@@ -256,33 +253,33 @@ impl<'a> RdfScorer<'a> {
         }
 
         let _dim = query.len();
-        
+
         // Find top-t query dimensions by |q[d]| * w[d]
         let mut scored: Vec<(usize, f32, f32)> = query
             .iter()
             .enumerate()
             .map(|(d, &v)| {
-                let w = if d < self.dim_weights.len() { self.dim_weights[d] } else { 1.0 };
+                let w = if d < self.dim_weights.len() {
+                    self.dim_weights[d]
+                } else {
+                    1.0
+                };
                 (d, v.abs() * w, v)
             })
             .collect();
-        
+
         if scored.len() > top_t {
-            scored.select_nth_unstable_by(top_t - 1, |a, b| {
-                b.1.partial_cmp(&a.1).unwrap()
-            });
+            scored.select_nth_unstable_by(top_t - 1, |a, b| b.1.partial_cmp(&a.1).unwrap());
             scored.truncate(top_t);
         }
-        
+
         // Get query dims (excluding stopwords — but keep dims that pass
         // the directory bounds check even if all are stopwords)
         let query_dims: Vec<(usize, f32, f32)> = scored
             .into_iter()
-            .filter(|&(d, _, _)| {
-                d < self.directory.len() && !self.directory[d].is_stopword()
-            })
+            .filter(|&(d, _, _)| d < self.directory.len() && !self.directory[d].is_stopword())
             .collect();
-        
+
         if query_dims.is_empty() {
             // All query dimensions were stopwords — fall back to using
             // the original dimensions WITHOUT the stopword filter.
@@ -294,14 +291,16 @@ impl<'a> RdfScorer<'a> {
                     .iter()
                     .enumerate()
                     .map(|(d, &v)| {
-                        let w = if d < self.dim_weights.len() { self.dim_weights[d] } else { 1.0 };
+                        let w = if d < self.dim_weights.len() {
+                            self.dim_weights[d]
+                        } else {
+                            1.0
+                        };
                         (d, v.abs() * w, v)
                     })
                     .collect();
                 if s.len() > top_t {
-                    s.select_nth_unstable_by(top_t - 1, |a, b| {
-                        b.1.partial_cmp(&a.1).unwrap()
-                    });
+                    s.select_nth_unstable_by(top_t - 1, |a, b| b.1.partial_cmp(&a.1).unwrap());
                     s.truncate(top_t);
                 }
                 s.into_iter()
@@ -313,7 +312,7 @@ impl<'a> RdfScorer<'a> {
             }
             return self.score_with_dims(&query_dims_fallback, l_a);
         }
-        
+
         self.score_with_dims(&query_dims, l_a)
     }
 
@@ -327,21 +326,21 @@ impl<'a> RdfScorer<'a> {
         // Use stripe-based accumulation
         let num_stripes = (self.n_vec as usize + self.stripe_size - 1) / self.stripe_size;
         let mut global_candidates = Vec::new();
-        
+
         // Allocate stripe accumulator ONCE, clear per-stripe (avoids N allocs)
         let mut stripe_acc = vec![0.0f32; self.stripe_size];
-        
+
         // Process stripe by stripe for cache locality
         for stripe_id in 0..num_stripes as u32 {
             // Clear accumulator (memset — vectorizes to single SIMD store)
             stripe_acc.iter_mut().for_each(|x| *x = 0.0);
-            
+
             for &(dim_idx, _, q_value) in query_dims {
                 let entry = &self.directory[dim_idx];
                 if entry.length == 0 {
                     continue;
                 }
-                
+
                 // Find and process the stripe chunk for this dimension
                 self.accumulate_stripe(
                     entry,
@@ -351,7 +350,7 @@ impl<'a> RdfScorer<'a> {
                     &mut stripe_acc,
                 );
             }
-            
+
             // Collect non-zero scores from this stripe
             let base_vid = stripe_id << self.stripe_shift;
             for (i, &score) in stripe_acc.iter().enumerate() {
@@ -363,19 +362,18 @@ impl<'a> RdfScorer<'a> {
                 }
             }
         }
-        
+
         // Select top L_A
         if global_candidates.len() <= l_a {
             global_candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
             return global_candidates;
         }
-        
-        global_candidates.select_nth_unstable_by(l_a - 1, |a, b| {
-            b.score.partial_cmp(&a.score).unwrap()
-        });
+
+        global_candidates
+            .select_nth_unstable_by(l_a - 1, |a, b| b.score.partial_cmp(&a.score).unwrap());
         global_candidates.truncate(l_a);
         global_candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        
+
         global_candidates
     }
 
@@ -391,35 +389,34 @@ impl<'a> RdfScorer<'a> {
         let mut offset = entry.offset as usize;
         let header_size = std::mem::size_of::<StripeChunkHeader>();
         let posting_size = std::mem::size_of::<RdfPosting>();
-        
+
         for _ in 0..entry.num_stripes {
             if offset + header_size > self.rdf_data.len() {
                 break;
             }
-            
-            let header: StripeChunkHeader = unsafe {
-                std::ptr::read_unaligned(self.rdf_data.as_ptr().add(offset) as *const _)
-            };
+
+            let header: StripeChunkHeader =
+                unsafe { std::ptr::read_unaligned(self.rdf_data.as_ptr().add(offset) as *const _) };
             offset += header_size;
-            
+
             let count = header.count as usize;
-            
+
             if header.stripe_id == target_stripe_id {
                 // Process this stripe
                 for _ in 0..count {
                     if offset + posting_size > self.rdf_data.len() {
                         break;
                     }
-                    
+
                     let posting: RdfPosting = unsafe {
                         std::ptr::read_unaligned(self.rdf_data.as_ptr().add(offset) as *const _)
                     };
                     offset += posting_size;
-                    
+
                     let vid_in_stripe = posting.vid_in_stripe as usize;
                     let sign = if posting.sign() { 1.0 } else { -1.0 };
                     let mag = posting.magnitude() as f32 / 127.0;
-                    
+
                     // Score contribution: q_value * sign * mag * weight
                     let contribution = q_value * sign * mag * dim_weight;
                     stripe_acc[vid_in_stripe] += contribution;
@@ -449,9 +446,9 @@ mod tests {
 
         let vectors: Vec<Vec<f32>> = (0..100)
             .map(|i| {
-                (0..32).map(|j| {
-                    if j == (i % 32) { 1.0 } else { 0.1 }
-                }).collect()
+                (0..32)
+                    .map(|j| if j == (i % 32) { 1.0 } else { 0.1 })
+                    .collect()
             })
             .collect();
 
@@ -475,9 +472,9 @@ mod tests {
         // Create vectors with distinctive patterns
         let vectors: Vec<Vec<f32>> = (0..50)
             .map(|i| {
-                (0..16).map(|j| {
-                    if j == (i % 16) { 1.0 } else { 0.0 }
-                }).collect()
+                (0..16)
+                    .map(|j| if j == (i % 16) { 1.0 } else { 0.0 })
+                    .collect()
             })
             .collect();
 

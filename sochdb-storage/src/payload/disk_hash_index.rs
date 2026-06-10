@@ -135,12 +135,11 @@
 use memmap2::MmapMut;
 use parking_lot::RwLock;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sochdb_core::{Result, SochDBError};
 use super::{CompressionType, PayloadIndex, PayloadMeta};
+use sochdb_core::{Result, SochDBError};
 
 // =============================================================================
 // Constants
@@ -306,14 +305,12 @@ impl DiskHashIndex {
 
         // Write header
         mmap[HEADER_OFF_MAGIC..HEADER_OFF_MAGIC + 8].copy_from_slice(&MAGIC);
-        mmap[HEADER_OFF_VERSION..HEADER_OFF_VERSION + 4]
-            .copy_from_slice(&VERSION.to_le_bytes());
+        mmap[HEADER_OFF_VERSION..HEADER_OFF_VERSION + 4].copy_from_slice(&VERSION.to_le_bytes());
         mmap[HEADER_OFF_NUM_SLOTS..HEADER_OFF_NUM_SLOTS + 8]
             .copy_from_slice(&capacity.to_le_bytes());
         mmap[HEADER_OFF_NUM_ENTRIES..HEADER_OFF_NUM_ENTRIES + 8]
             .copy_from_slice(&0u64.to_le_bytes());
-        mmap[HEADER_OFF_SEED..HEADER_OFF_SEED + 8]
-            .copy_from_slice(&seed.to_le_bytes());
+        mmap[HEADER_OFF_SEED..HEADER_OFF_SEED + 8].copy_from_slice(&seed.to_le_bytes());
 
         // All slots are zero-initialized (TAG_EMPTY = 0x00) by the OS via ftruncate.
 
@@ -472,7 +469,8 @@ impl DiskHashIndex {
             edge_id,
             offset,
             length,
-            compression: CompressionType::from_u8(compression_byte).unwrap_or(CompressionType::None),
+            compression: CompressionType::from_u8(compression_byte)
+                .unwrap_or(CompressionType::None),
             uncompressed_length,
         }
     }
@@ -557,7 +555,8 @@ impl DiskHashIndex {
             .open(&temp_path)
             .map_err(|e| SochDBError::Internal(format!("Failed to create temp index: {}", e)))?;
 
-        new_file.set_len(new_file_size)
+        new_file
+            .set_len(new_file_size)
             .map_err(|e| SochDBError::Internal(format!("Failed to set temp index size: {}", e)))?;
 
         let mut new_mmap = unsafe {
@@ -572,8 +571,7 @@ impl DiskHashIndex {
             .copy_from_slice(&VERSION.to_le_bytes());
         new_mmap[HEADER_OFF_NUM_SLOTS..HEADER_OFF_NUM_SLOTS + 8]
             .copy_from_slice(&new_num_slots.to_le_bytes());
-        new_mmap[HEADER_OFF_SEED..HEADER_OFF_SEED + 8]
-            .copy_from_slice(&self.seed.to_le_bytes());
+        new_mmap[HEADER_OFF_SEED..HEADER_OFF_SEED + 8].copy_from_slice(&self.seed.to_le_bytes());
 
         // Rehash all occupied slots from old mmap into new mmap
         let old_mmap = self.mmap.read();

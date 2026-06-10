@@ -30,10 +30,10 @@
 //! I/O_reduction = 1 - (k/K) = 80%
 //! ```
 
+use sochdb_core::{Result, SochDBError, SochRow, SochValue};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
-use sochdb_core::{Result, SochDBError, SochRow, SochValue};
 
 /// Transaction handle for ACID operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

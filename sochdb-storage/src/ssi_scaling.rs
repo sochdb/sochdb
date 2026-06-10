@@ -45,10 +45,8 @@
 //!
 //! where n = keys read, m = intervals, k = hash functions
 
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -278,7 +276,9 @@ impl RangeLockManager {
                 if range.overlaps(&entry.range) {
                     // Conflict if either is a write lock
                     if is_write || entry.is_write {
-                        self.stats.conflicts_detected.fetch_add(1, AtomicOrdering::Relaxed);
+                        self.stats
+                            .conflicts_detected
+                            .fetch_add(1, AtomicOrdering::Relaxed);
                         return Err(RangeLockConflict {
                             holder_txn: entry.txn_id,
                             requester_txn: txn_id,
@@ -299,7 +299,9 @@ impl RangeLockManager {
                 if let Some(merged_range) = entry.range.try_merge(&range) {
                     entry.range = merged_range;
                     merged = true;
-                    self.stats.merges_performed.fetch_add(1, AtomicOrdering::Relaxed);
+                    self.stats
+                        .merges_performed
+                        .fetch_add(1, AtomicOrdering::Relaxed);
                     break;
                 }
             }
@@ -323,12 +325,7 @@ impl RangeLockManager {
     }
 
     /// Check for conflicts without acquiring
-    pub fn check_conflict(
-        &self,
-        txn_id: TxnId,
-        range: &KeyRange,
-        is_write: bool,
-    ) -> Option<TxnId> {
+    pub fn check_conflict(&self, txn_id: TxnId, range: &KeyRange, is_write: bool) -> Option<TxnId> {
         let locks = self.locks.read();
         for entry in locks.iter() {
             if entry.txn_id == txn_id {
@@ -399,8 +396,8 @@ impl BloomReadSet {
     /// m = -n * ln(p) / (ln(2))^2
     /// k = m/n * ln(2)
     pub fn new(expected_items: usize, false_positive_rate: f64) -> Self {
-        let m = (-((expected_items as f64) * false_positive_rate.ln())
-            / (2.0_f64.ln().powi(2))) as usize;
+        let m = (-((expected_items as f64) * false_positive_rate.ln()) / (2.0_f64.ln().powi(2)))
+            as usize;
         let k = ((m as f64 / expected_items as f64) * 2.0_f64.ln()).ceil() as usize;
 
         // Round up to 64-bit words
@@ -715,23 +712,31 @@ mod tests {
         let manager = RangeLockManager::new();
 
         // Acquire non-overlapping ranges
-        assert!(manager
-            .acquire(1, KeyRange::point(b"key1".to_vec()), true)
-            .is_ok());
-        assert!(manager
-            .acquire(2, KeyRange::point(b"key2".to_vec()), true)
-            .is_ok());
+        assert!(
+            manager
+                .acquire(1, KeyRange::point(b"key1".to_vec()), true)
+                .is_ok()
+        );
+        assert!(
+            manager
+                .acquire(2, KeyRange::point(b"key2".to_vec()), true)
+                .is_ok()
+        );
 
         // Conflict on overlapping write
-        assert!(manager
-            .acquire(3, KeyRange::point(b"key1".to_vec()), true)
-            .is_err());
+        assert!(
+            manager
+                .acquire(3, KeyRange::point(b"key1".to_vec()), true)
+                .is_err()
+        );
 
         // Release and retry
         manager.release(1);
-        assert!(manager
-            .acquire(3, KeyRange::point(b"key1".to_vec()), true)
-            .is_ok());
+        assert!(
+            manager
+                .acquire(3, KeyRange::point(b"key1".to_vec()), true)
+                .is_ok()
+        );
     }
 
     #[test]

@@ -44,11 +44,10 @@
 //! WFQ provides: O(1) amortized scheduling with fairness guarantees.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
 /// Resource dimension for admission control
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -126,7 +125,7 @@ impl OperationCost {
         let distance_calcs = ef_search * candidates;
         Self {
             cpu_us: (distance_calcs * dimension / 100) as u64, // ~100 dims per microsecond
-            random_iops: (ef_search / 10).max(1) as u64, // Random node access
+            random_iops: (ef_search / 10).max(1) as u64,       // Random node access
             sequential_bytes: 0,
             memory_bytes: (ef_search * dimension * 4) as u64, // Candidate vectors
             priority: 75,
@@ -146,7 +145,10 @@ impl OperationCost {
 
     /// Total weighted cost for simple comparisons
     pub fn total_weighted_cost(&self) -> u64 {
-        self.cpu_us + self.random_iops * 100 + self.sequential_bytes / 1024 + self.memory_bytes / 4096
+        self.cpu_us
+            + self.random_iops * 100
+            + self.sequential_bytes / 1024
+            + self.memory_bytes / 4096
     }
 }
 
@@ -406,7 +408,10 @@ impl Default for AdmissionConfig {
         let mut global_limits = HashMap::new();
         global_limits.insert(ResourceDimension::Cpu, (100_000_000, 10_000_000));
         global_limits.insert(ResourceDimension::RandomIops, (100_000, 10_000));
-        global_limits.insert(ResourceDimension::SequentialBandwidth, (10_000_000_000, 1_000_000_000));
+        global_limits.insert(
+            ResourceDimension::SequentialBandwidth,
+            (10_000_000_000, 1_000_000_000),
+        );
         global_limits.insert(ResourceDimension::Memory, (10_000_000_000, 2_000_000_000));
         global_limits.insert(ResourceDimension::Connections, (1000, 100));
 
@@ -505,7 +510,9 @@ impl AdmissionController {
         // Check queue depth
         let depth = self.queue_depth.load(Ordering::Relaxed);
         if depth >= self.config.queue_depth_rejection as u64 {
-            self.metrics.rejected_requests.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .rejected_requests
+                .fetch_add(1, Ordering::Relaxed);
             return AdmissionDecision::Reject {
                 reason: format!("Queue depth {} exceeds limit", depth),
                 retry_after_ms: Some(100),
@@ -515,7 +522,9 @@ impl AdmissionController {
         // Check global limits
         let global_ok = self.check_global_limits(&cost);
         if !global_ok {
-            self.metrics.rejected_requests.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .rejected_requests
+                .fetch_add(1, Ordering::Relaxed);
             return AdmissionDecision::Reject {
                 reason: "Global resource limits exceeded".to_string(),
                 retry_after_ms: Some(50),
@@ -526,7 +535,9 @@ impl AdmissionController {
         let tenant = self.get_tenant(tenant_id);
         if tenant.try_acquire(&cost) {
             self.queue_depth.fetch_add(1, Ordering::Relaxed);
-            self.metrics.admitted_requests.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .admitted_requests
+                .fetch_add(1, Ordering::Relaxed);
             AdmissionDecision::Admit { cost }
         } else if allow_partial && self.config.allow_partial_results {
             // Try with reduced cost
@@ -539,21 +550,28 @@ impl AdmissionController {
             };
             if tenant.try_acquire(&reduced_cost) {
                 self.queue_depth.fetch_add(1, Ordering::Relaxed);
-                self.metrics.partial_requests.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .partial_requests
+                    .fetch_add(1, Ordering::Relaxed);
                 AdmissionDecision::PartialAdmit {
                     cost: reduced_cost,
                     max_results: 25, // 25% of normal
-                    recall_warning: "Results limited due to load - recall may be degraded".to_string(),
+                    recall_warning: "Results limited due to load - recall may be degraded"
+                        .to_string(),
                 }
             } else {
-                self.metrics.rejected_requests.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .rejected_requests
+                    .fetch_add(1, Ordering::Relaxed);
                 AdmissionDecision::Reject {
                     reason: format!("Tenant {} quota exceeded", tenant_id),
                     retry_after_ms: Some(100),
                 }
             }
         } else {
-            self.metrics.rejected_requests.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .rejected_requests
+                .fetch_add(1, Ordering::Relaxed);
             AdmissionDecision::Reject {
                 reason: format!("Tenant {} quota exceeded", tenant_id),
                 retry_after_ms: Some(100),

@@ -78,11 +78,11 @@ use crate::ssi::SsiManager;
 use crate::txn_wal::TxnWal;
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use sochdb_core::{Result, SochDBError};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use sochdb_core::{Result, SochDBError};
 
 /// Transaction state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

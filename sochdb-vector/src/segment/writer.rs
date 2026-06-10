@@ -4,14 +4,14 @@ use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 
+use super::bps::BpsBuilder;
+use super::format::*;
+use super::rdf::RdfBuilder;
+use super::rerank::RerankBuilder;
 use crate::config::EngineConfig;
 use crate::error::{Error, Result};
 use crate::rotation::Rotator;
 use crate::types::*;
-use super::format::*;
-use super::bps::BpsBuilder;
-use super::rdf::RdfBuilder;
-use super::rerank::RerankBuilder;
 
 /// Builder for creating segment files
 pub struct SegmentWriter {
@@ -45,13 +45,13 @@ impl SegmentWriter {
 
         let vid = self.vectors.len() as VectorId;
         let vec_owned = vector.to_vec();
-        
+
         // Apply rotation
         let rotated = self.rotator.rotate(&vec_owned);
-        
+
         self.vectors.push(vec_owned);
         self.rotated.push(rotated);
-        
+
         Ok(vid)
     }
 
@@ -185,8 +185,8 @@ impl SegmentWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use crate::segment::Segment;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_segment_write_read() {

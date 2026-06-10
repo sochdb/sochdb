@@ -33,10 +33,10 @@
 //! ```
 
 use serde::Serialize;
+use sochdb_kernel::{Extension, ExtensionCapability, ExtensionInfo, ObservabilityExtension};
 use std::any::Any;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use sochdb_kernel::{Extension, ExtensionCapability, ExtensionInfo, ObservabilityExtension};
 
 /// Log level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

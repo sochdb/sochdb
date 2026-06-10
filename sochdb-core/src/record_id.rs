@@ -190,8 +190,14 @@ impl RecordId {
                     return None;
                 }
                 let n = u64::from_be_bytes([
-                    id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3],
-                    id_bytes[4], id_bytes[5], id_bytes[6], id_bytes[7],
+                    id_bytes[0],
+                    id_bytes[1],
+                    id_bytes[2],
+                    id_bytes[3],
+                    id_bytes[4],
+                    id_bytes[5],
+                    id_bytes[6],
+                    id_bytes[7],
                 ]);
                 IdValue::Integer(n)
             }
@@ -227,8 +233,14 @@ impl RecordId {
                     return None;
                 }
                 let n = u64::from_be_bytes([
-                    id_bytes[0], id_bytes[1], id_bytes[2], id_bytes[3],
-                    id_bytes[4], id_bytes[5], id_bytes[6], id_bytes[7],
+                    id_bytes[0],
+                    id_bytes[1],
+                    id_bytes[2],
+                    id_bytes[3],
+                    id_bytes[4],
+                    id_bytes[5],
+                    id_bytes[6],
+                    id_bytes[7],
                 ]);
                 IdValue::Integer(n)
             }
@@ -310,9 +322,9 @@ impl serde::Serialize for RecordId {
 impl<'de> serde::Deserialize<'de> for RecordId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        RecordId::parse(&s).ok_or_else(|| serde::de::Error::custom(
-            format!("invalid RecordId: '{}' (expected table:id)", s),
-        ))
+        RecordId::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid RecordId: '{}' (expected table:id)", s))
+        })
     }
 }
 

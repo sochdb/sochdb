@@ -8,14 +8,14 @@
 //! Provides basic key-value operations via gRPC.
 
 use crate::auth_interceptor::{extract_principal, require_capability, require_namespace_access};
+use crate::namespace_server::NamespaceServer;
 use crate::policy_server::PolicyServer;
 use crate::proto::{
+    KvBatchGetRequest, KvBatchGetResponse, KvBatchPutRequest, KvBatchPutResponse, KvDeleteRequest,
+    KvDeleteResponse, KvEntry, KvGetRequest, KvGetResponse, KvPutRequest, KvPutResponse,
+    KvScanRequest, KvScanResponse, PolicyActionType,
     kv_service_server::{KvService, KvServiceServer},
-    EvaluatePolicyRequest, KvBatchGetRequest, KvBatchGetResponse, KvBatchPutRequest,
-    KvBatchPutResponse, KvDeleteRequest, KvDeleteResponse, KvEntry, KvGetRequest, KvGetResponse,
-    KvPutRequest, KvPutResponse, KvScanRequest, KvScanResponse, PolicyActionType,
 };
-use crate::namespace_server::NamespaceServer;
 use crate::security::Capability;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -99,9 +99,7 @@ impl KvServer {
             return Ok(()); // No policy server — allow by default
         };
 
-        let response = policy
-            .evaluate_internal(key, operation, value)
-            .await;
+        let response = policy.evaluate_internal(key, operation, value).await;
 
         if response.action == PolicyActionType::PolicyActionDeny as i32 {
             return Err(Status::permission_denied(format!(
@@ -122,10 +120,7 @@ impl Default for KvServer {
 
 #[tonic::async_trait]
 impl KvService for KvServer {
-    async fn get(
-        &self,
-        request: Request<KvGetRequest>,
-    ) -> Result<Response<KvGetResponse>, Status> {
+    async fn get(&self, request: Request<KvGetRequest>) -> Result<Response<KvGetResponse>, Status> {
         let principal = extract_principal(&request);
         let req = request.into_inner();
         require_capability(&principal, &Capability::Read)?;
@@ -165,10 +160,7 @@ impl KvService for KvServer {
         }
     }
 
-    async fn put(
-        &self,
-        request: Request<KvPutRequest>,
-    ) -> Result<Response<KvPutResponse>, Status> {
+    async fn put(&self, request: Request<KvPutRequest>) -> Result<Response<KvPutResponse>, Status> {
         let principal = extract_principal(&request);
         let req = request.into_inner();
         require_capability(&principal, &Capability::Write)?;
@@ -247,7 +239,11 @@ impl KvService for KvServer {
 
         let (tx, rx) = mpsc::channel(100);
 
-        let limit = if req.limit > 0 { req.limit as usize } else { usize::MAX };
+        let limit = if req.limit > 0 {
+            req.limit as usize
+        } else {
+            usize::MAX
+        };
 
         // Collect matching entries
         let mut entries: Vec<(Vec<u8>, Vec<u8>)> = ns

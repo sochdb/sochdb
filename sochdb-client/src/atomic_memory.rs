@@ -56,8 +56,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ClientError, Result};
 use crate::ConnectionTrait;
+use crate::error::{ClientError, Result};
 
 // ============================================================================
 // Intent Operations
@@ -67,11 +67,8 @@ use crate::ConnectionTrait;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MemoryOp {
     /// Store a blob/value
-    PutBlob {
-        key: Vec<u8>,
-        value: Vec<u8>,
-    },
-    
+    PutBlob { key: Vec<u8>, value: Vec<u8> },
+
     /// Store a vector embedding
     PutEmbedding {
         collection: String,
@@ -79,7 +76,7 @@ pub enum MemoryOp {
         embedding: Vec<f32>,
         metadata: HashMap<String, String>,
     },
-    
+
     /// Create a graph node
     CreateNode {
         namespace: String,
@@ -87,7 +84,7 @@ pub enum MemoryOp {
         node_type: String,
         properties: HashMap<String, serde_json::Value>,
     },
-    
+
     /// Create a graph edge
     CreateEdge {
         namespace: String,
@@ -96,12 +93,10 @@ pub enum MemoryOp {
         to_id: String,
         properties: HashMap<String, serde_json::Value>,
     },
-    
+
     /// Delete a blob/value
-    DeleteBlob {
-        key: Vec<u8>,
-    },
-    
+    DeleteBlob { key: Vec<u8> },
+
     /// Delete a graph edge
     DeleteEdge {
         namespace: String,
@@ -148,7 +143,7 @@ impl MemoryIntent {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         Self {
             intent_id,
             memory_id,
@@ -181,17 +176,17 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
             next_intent_id: AtomicU64::new(1),
         }
     }
-    
+
     /// Generate a new intent ID
     fn next_id(&self) -> u64 {
         self.next_intent_id.fetch_add(1, Ordering::SeqCst)
     }
-    
+
     /// Key for storing intent records
     fn intent_key(intent_id: u64) -> Vec<u8> {
         format!("{}{}", INTENT_PREFIX, intent_id).into_bytes()
     }
-    
+
     /// Write an atomic memory item with all its components
     ///
     /// This is the main entry point for atomic multi-index writes.
@@ -212,14 +207,14 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
     ) -> Result<AtomicWriteResult> {
         let memory_id = memory_id.into();
         let intent_id = self.next_id();
-        
+
         // Phase 1: Write intent record
         let intent = MemoryIntent::new(intent_id, memory_id.clone(), ops);
         self.write_intent(&intent)?;
-        
+
         // Phase 2: Apply operations
         let apply_result = self.apply_ops(&intent);
-        
+
         // Phase 3: Commit or abort based on result
         match apply_result {
             Ok(applied_count) => {
@@ -238,28 +233,28 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
             }
         }
     }
-    
+
     /// Write the intent record to storage
     fn write_intent(&self, intent: &MemoryIntent) -> Result<()> {
         let key = Self::intent_key(intent.intent_id);
-        let value = serde_json::to_vec(intent)
-            .map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let value =
+            serde_json::to_vec(intent).map_err(|e| ClientError::Serialization(e.to_string()))?;
         self.conn.put(&key, &value)?;
         Ok(())
     }
-    
+
     /// Apply all operations in an intent
     fn apply_ops(&self, intent: &MemoryIntent) -> Result<usize> {
         let mut applied = 0;
-        
+
         for op in &intent.ops {
             self.apply_op(op, &intent.memory_id, intent.version)?;
             applied += 1;
         }
-        
+
         Ok(applied)
     }
-    
+
     /// Apply a single operation
     fn apply_op(&self, op: &MemoryOp, memory_id: &str, version: u64) -> Result<()> {
         match op {
@@ -270,8 +265,13 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
                 // Also write the main key (latest version)
                 self.conn.put(key, value)?;
             }
-            
-            MemoryOp::PutEmbedding { collection, id, embedding, metadata } => {
+
+            MemoryOp::PutEmbedding {
+                collection,
+                id,
+                embedding,
+                metadata,
+            } => {
                 // Store embedding metadata with version
                 let key = format!("_vectors/{}/{}/meta", collection, id).into_bytes();
                 let meta = EmbeddingMeta {
@@ -283,17 +283,19 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
                 let value = serde_json::to_vec(&meta)
                     .map_err(|e| ClientError::Serialization(e.to_string()))?;
                 self.conn.put(&key, &value)?;
-                
+
                 // Store the embedding vector
                 let emb_key = format!("_vectors/{}/{}/data", collection, id).into_bytes();
-                let emb_bytes: Vec<u8> = embedding
-                    .iter()
-                    .flat_map(|f| f.to_le_bytes())
-                    .collect();
+                let emb_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
                 self.conn.put(&emb_key, &emb_bytes)?;
             }
-            
-            MemoryOp::CreateNode { namespace, node_id, node_type, properties } => {
+
+            MemoryOp::CreateNode {
+                namespace,
+                node_id,
+                node_type,
+                properties,
+            } => {
                 let key = format!("_graph/{}/nodes/{}", namespace, node_id).into_bytes();
                 let node = GraphNodeRecord {
                     id: node_id.clone(),
@@ -306,13 +308,20 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
                     .map_err(|e| ClientError::Serialization(e.to_string()))?;
                 self.conn.put(&key, &value)?;
             }
-            
-            MemoryOp::CreateEdge { namespace, from_id, edge_type, to_id, properties } => {
+
+            MemoryOp::CreateEdge {
+                namespace,
+                from_id,
+                edge_type,
+                to_id,
+                properties,
+            } => {
                 // Store edge
                 let edge_key = format!(
-                    "_graph/{}/edges/{}/{}/{}", 
+                    "_graph/{}/edges/{}/{}/{}",
                     namespace, from_id, edge_type, to_id
-                ).into_bytes();
+                )
+                .into_bytes();
                 let edge = GraphEdgeRecord {
                     from_id: from_id.clone(),
                     edge_type: edge_type.clone(),
@@ -324,37 +333,45 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
                 let value = serde_json::to_vec(&edge)
                     .map_err(|e| ClientError::Serialization(e.to_string()))?;
                 self.conn.put(&edge_key, &value)?;
-                
+
                 // Store reverse index
                 let rev_key = format!(
-                    "_graph/{}/index/{}/{}/{}", 
+                    "_graph/{}/index/{}/{}/{}",
                     namespace, edge_type, to_id, from_id
-                ).into_bytes();
+                )
+                .into_bytes();
                 self.conn.put(&rev_key, from_id.as_bytes())?;
             }
-            
+
             MemoryOp::DeleteBlob { key } => {
                 self.conn.delete(key)?;
             }
-            
-            MemoryOp::DeleteEdge { namespace, from_id, edge_type, to_id } => {
+
+            MemoryOp::DeleteEdge {
+                namespace,
+                from_id,
+                edge_type,
+                to_id,
+            } => {
                 let edge_key = format!(
-                    "_graph/{}/edges/{}/{}/{}", 
+                    "_graph/{}/edges/{}/{}/{}",
                     namespace, from_id, edge_type, to_id
-                ).into_bytes();
+                )
+                .into_bytes();
                 self.conn.delete(&edge_key)?;
-                
+
                 let rev_key = format!(
-                    "_graph/{}/index/{}/{}/{}", 
+                    "_graph/{}/index/{}/{}/{}",
                     namespace, edge_type, to_id, from_id
-                ).into_bytes();
+                )
+                .into_bytes();
                 self.conn.delete(&rev_key)?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Create a versioned key for idempotency
     fn versioned_key(key: &[u8], version: u64) -> Vec<u8> {
         let mut versioned = key.to_vec();
@@ -362,17 +379,17 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
         versioned.extend_from_slice(&version.to_le_bytes());
         versioned
     }
-    
+
     /// Mark an intent as committed
     fn mark_committed(&self, intent_id: u64) -> Result<()> {
         self.update_intent_status(intent_id, IntentStatus::Committed)
     }
-    
+
     /// Mark an intent as aborted
     fn mark_aborted(&self, intent_id: u64) -> Result<()> {
         self.update_intent_status(intent_id, IntentStatus::Aborted)
     }
-    
+
     /// Update intent status
     fn update_intent_status(&self, intent_id: u64, status: IntentStatus) -> Result<()> {
         let key = Self::intent_key(intent_id);
@@ -386,7 +403,7 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
         }
         Ok(())
     }
-    
+
     /// Recover incomplete intents on startup
     ///
     /// This should be called during connection initialization to
@@ -394,9 +411,9 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
     pub fn recover(&self) -> Result<RecoveryReport> {
         let prefix = INTENT_PREFIX.as_bytes();
         let intents = self.conn.scan(prefix)?;
-        
+
         let mut report = RecoveryReport::default();
-        
+
         for (_, value) in intents {
             let intent: MemoryIntent = match serde_json::from_slice(&value) {
                 Ok(i) => i,
@@ -405,7 +422,7 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
                     continue;
                 }
             };
-            
+
             match intent.status {
                 IntentStatus::Pending | IntentStatus::Applied => {
                     // Replay this intent
@@ -428,40 +445,43 @@ impl<C: ConnectionTrait> AtomicMemoryWriter<C> {
                 }
             }
         }
-        
+
         Ok(report)
     }
-    
+
     /// Clean up old committed/aborted intents
     ///
     /// Call this periodically to reclaim storage.
     pub fn cleanup(&self, max_age_secs: u64) -> Result<usize> {
         let prefix = INTENT_PREFIX.as_bytes();
         let intents = self.conn.scan(prefix)?;
-        
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
         let cutoff = now.saturating_sub(max_age_secs * 1000);
-        
+
         let mut cleaned = 0;
-        
+
         for (key, value) in intents {
             let intent: MemoryIntent = match serde_json::from_slice(&value) {
                 Ok(i) => i,
                 Err(_) => continue,
             };
-            
+
             // Only clean up committed/aborted intents older than cutoff
             if intent.created_at < cutoff {
-                if matches!(intent.status, IntentStatus::Committed | IntentStatus::Aborted) {
+                if matches!(
+                    intent.status,
+                    IntentStatus::Committed | IntentStatus::Aborted
+                ) {
                     self.conn.delete(&key)?;
                     cleaned += 1;
                 }
             }
         }
-        
+
         Ok(cleaned)
     }
 }
@@ -547,7 +567,7 @@ impl MemoryWriteBuilder {
             ops: Vec::new(),
         }
     }
-    
+
     /// Add a blob/value storage operation
     pub fn put_blob(mut self, key: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) -> Self {
         self.ops.push(MemoryOp::PutBlob {
@@ -556,7 +576,7 @@ impl MemoryWriteBuilder {
         });
         self
     }
-    
+
     /// Add an embedding storage operation
     pub fn put_embedding(
         mut self,
@@ -572,7 +592,7 @@ impl MemoryWriteBuilder {
         });
         self
     }
-    
+
     /// Add an embedding with metadata
     pub fn put_embedding_with_meta(
         mut self,
@@ -589,7 +609,7 @@ impl MemoryWriteBuilder {
         });
         self
     }
-    
+
     /// Add a graph node creation
     pub fn create_node(
         mut self,
@@ -605,7 +625,7 @@ impl MemoryWriteBuilder {
         });
         self
     }
-    
+
     /// Add a graph node with properties
     pub fn create_node_with_props(
         mut self,
@@ -622,7 +642,7 @@ impl MemoryWriteBuilder {
         });
         self
     }
-    
+
     /// Add a graph edge creation
     pub fn create_edge(
         mut self,
@@ -640,7 +660,7 @@ impl MemoryWriteBuilder {
         });
         self
     }
-    
+
     /// Add a graph edge with properties
     pub fn create_edge_with_props(
         mut self,
@@ -659,12 +679,15 @@ impl MemoryWriteBuilder {
         });
         self
     }
-    
+
     /// Execute the atomic write
-    pub fn execute<C: ConnectionTrait>(self, writer: &AtomicMemoryWriter<C>) -> Result<AtomicWriteResult> {
+    pub fn execute<C: ConnectionTrait>(
+        self,
+        writer: &AtomicMemoryWriter<C>,
+    ) -> Result<AtomicWriteResult> {
         writer.write_atomic(self.memory_id, self.ops)
     }
-    
+
     /// Get the operations (for testing)
     pub fn ops(&self) -> &[MemoryOp] {
         &self.ops
@@ -674,6 +697,6 @@ impl MemoryWriteBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     // Tests would use a mock ConnectionTrait implementation
 }

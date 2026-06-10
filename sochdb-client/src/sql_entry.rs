@@ -76,7 +76,6 @@
 //! )?;
 //! ```
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -84,9 +83,7 @@ use sochdb_core::soch::SochValue;
 
 use crate::ast_query::AstQueryExecutor;
 use crate::connection::SochConnection;
-use crate::crud::{DeleteResult, InsertResult, UpdateResult};
 use crate::error::{ClientError, Result};
-use crate::schema::{CreateIndexResult, CreateTableResult, DropTableResult};
 
 // Re-export QueryResult from ast_query for convenience
 pub use crate::ast_query::QueryResult;
@@ -170,13 +167,13 @@ pub fn execute_with_params(
 ) -> Result<QueryResult> {
     let start = Instant::now();
     let query_id = QUERY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    
+
     // Use the AST-based executor
     let executor = AstQueryExecutor::new(conn);
     let result = executor.execute_with_params(sql, params);
-    
+
     let total_us = start.elapsed().as_micros() as u64;
-    
+
     // Emit telemetry (would integrate with tracing in production)
     if cfg!(debug_assertions) {
         tracing::debug!(
@@ -186,15 +183,12 @@ pub fn execute_with_params(
             "SQL executed"
         );
     }
-    
+
     result
 }
 
 /// Execute a SQL query and return statistics along with result.
-pub fn execute_with_stats(
-    conn: &SochConnection,
-    sql: &str,
-) -> Result<(QueryResult, QueryStats)> {
+pub fn execute_with_stats(conn: &SochConnection, sql: &str) -> Result<(QueryResult, QueryStats)> {
     execute_with_params_and_stats(conn, sql, &[])
 }
 
@@ -206,22 +200,22 @@ pub fn execute_with_params_and_stats(
 ) -> Result<(QueryResult, QueryStats)> {
     let start = Instant::now();
     let query_id = QUERY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    
+
     // Detect dialect for stats
     let dialect = detect_dialect(sql);
-    
+
     // Parse timing (would be more accurate with separate parse step)
     let parse_start = Instant::now();
     let executor = AstQueryExecutor::new(conn);
     let parse_time_us = parse_start.elapsed().as_micros() as u64;
-    
+
     // Execute
     let exec_start = Instant::now();
     let result = executor.execute_with_params(sql, params)?;
     let exec_time_us = exec_start.elapsed().as_micros() as u64;
-    
+
     let total_time_us = start.elapsed().as_micros() as u64;
-    
+
     // Count rows
     let (rows_affected, query_type) = match &result {
         QueryResult::Select(rows) => (rows.len(), "SELECT"),
@@ -233,7 +227,7 @@ pub fn execute_with_params_and_stats(
         QueryResult::CreateIndex(_) => (0, "CREATE INDEX"),
         QueryResult::Empty => (0, "OTHER"),
     };
-    
+
     let stats = QueryStats {
         query_id,
         parse_time_us,
@@ -243,14 +237,14 @@ pub fn execute_with_params_and_stats(
         dialect: dialect.to_string(),
         query_type: query_type.to_string(),
     };
-    
+
     Ok((result, stats))
 }
 
 /// Detect SQL dialect from query text
 fn detect_dialect(sql: &str) -> &'static str {
     let upper = sql.to_uppercase();
-    
+
     if upper.contains("ON CONFLICT") && upper.contains("DO UPDATE") {
         "PostgreSQL"
     } else if upper.contains("ON DUPLICATE KEY") {
@@ -296,10 +290,10 @@ pub fn execute_batch(
     let mut results = Vec::with_capacity(statements.len());
     let mut succeeded = 0;
     let mut failed = 0;
-    
+
     for sql in statements {
         let result = execute(conn, sql);
-        
+
         match &result {
             Ok(_) => succeeded += 1,
             Err(_) => {
@@ -310,10 +304,10 @@ pub fn execute_batch(
                 }
             }
         }
-        
+
         results.push(result);
     }
-    
+
     BatchResult {
         results,
         total: statements.len(),
@@ -340,22 +334,22 @@ impl<'a> PreparedStatement<'a> {
     /// Prepare a SQL statement
     pub fn prepare(conn: &'a SochConnection, sql: impl Into<String>) -> Result<Self> {
         let sql = sql.into();
-        
+
         // Count parameters
         let param_count = count_parameters(&sql);
-        
+
         // Validate syntax by attempting parse
         // (in production, we'd cache the parsed AST)
         let executor = AstQueryExecutor::new(conn);
         let _ = executor.execute_with_params(&sql, &vec![SochValue::Null; param_count])?;
-        
+
         Ok(Self {
             conn,
             sql,
             param_count,
         })
     }
-    
+
     /// Execute the prepared statement with parameters
     pub fn execute(&self, params: &[SochValue]) -> Result<QueryResult> {
         if params.len() != self.param_count {
@@ -365,15 +359,15 @@ impl<'a> PreparedStatement<'a> {
                 params.len()
             )));
         }
-        
+
         execute_with_params(self.conn, &self.sql, params)
     }
-    
+
     /// Get the SQL text
     pub fn sql(&self) -> &str {
         &self.sql
     }
-    
+
     /// Get expected parameter count
     pub fn param_count(&self) -> usize {
         self.param_count
@@ -384,10 +378,10 @@ impl<'a> PreparedStatement<'a> {
 fn count_parameters(sql: &str) -> usize {
     let mut count = 0;
     let mut max_numbered = 0;
-    
+
     let chars: Vec<char> = sql.chars().collect();
     let mut i = 0;
-    
+
     while i < chars.len() {
         match chars[i] {
             '?' => {
@@ -424,7 +418,7 @@ fn count_parameters(sql: &str) -> usize {
             _ => i += 1,
         }
     }
-    
+
     count.max(max_numbered)
 }
 
@@ -470,7 +464,7 @@ impl<'a> QueryBuilder<'a> {
             offset: None,
         }
     }
-    
+
     /// Start an INSERT query
     pub fn insert(conn: &'a SochConnection, table: impl Into<String>) -> Self {
         Self {
@@ -485,7 +479,7 @@ impl<'a> QueryBuilder<'a> {
             offset: None,
         }
     }
-    
+
     /// Start an UPDATE query
     pub fn update(conn: &'a SochConnection, table: impl Into<String>) -> Self {
         Self {
@@ -500,7 +494,7 @@ impl<'a> QueryBuilder<'a> {
             offset: None,
         }
     }
-    
+
     /// Start a DELETE query
     pub fn delete(conn: &'a SochConnection, table: impl Into<String>) -> Self {
         Self {
@@ -515,50 +509,50 @@ impl<'a> QueryBuilder<'a> {
             offset: None,
         }
     }
-    
+
     /// Add columns to select
     pub fn columns(mut self, cols: &[&str]) -> Self {
         self.columns = cols.iter().map(|s| s.to_string()).collect();
         self
     }
-    
+
     /// Add a column-value pair (for INSERT/UPDATE)
     pub fn set(mut self, column: impl Into<String>, value: SochValue) -> Self {
         self.columns.push(column.into());
         self.values.push(value);
         self
     }
-    
+
     /// Add a WHERE condition
     pub fn where_eq(mut self, column: impl Into<String>, value: SochValue) -> Self {
         self.conditions.push((column.into(), "=", value));
         self
     }
-    
+
     /// Add ORDER BY
     pub fn order_by(mut self, column: impl Into<String>, asc: bool) -> Self {
         self.order_by = Some((column.into(), asc));
         self
     }
-    
+
     /// Add LIMIT
     pub fn limit(mut self, n: usize) -> Self {
         self.limit = Some(n);
         self
     }
-    
+
     /// Add OFFSET
     pub fn offset(mut self, n: usize) -> Self {
         self.offset = Some(n);
         self
     }
-    
+
     /// Build the SQL string
     pub fn to_sql(&self) -> (String, Vec<SochValue>) {
         let mut sql = String::new();
         let mut params = Vec::new();
         let mut param_idx = 1;
-        
+
         match self.query_type {
             QueryBuilderType::Select => {
                 sql.push_str("SELECT ");
@@ -588,7 +582,10 @@ impl<'a> QueryBuilder<'a> {
                 sql.push_str("UPDATE ");
                 sql.push_str(&self.table);
                 sql.push_str(" SET ");
-                let sets: Vec<String> = self.columns.iter().enumerate()
+                let sets: Vec<String> = self
+                    .columns
+                    .iter()
+                    .enumerate()
                     .map(|(i, col)| format!("{} = ${}", col, i + 1))
                     .collect();
                 sql.push_str(&sets.join(", "));
@@ -600,11 +597,14 @@ impl<'a> QueryBuilder<'a> {
                 sql.push_str(&self.table);
             }
         }
-        
+
         // WHERE
         if !self.conditions.is_empty() {
             sql.push_str(" WHERE ");
-            let conds: Vec<String> = self.conditions.iter().enumerate()
+            let conds: Vec<String> = self
+                .conditions
+                .iter()
+                .enumerate()
                 .map(|(i, (col, op, val))| {
                     params.push(val.clone());
                     let idx = param_idx + i;
@@ -613,27 +613,27 @@ impl<'a> QueryBuilder<'a> {
                 .collect();
             sql.push_str(&conds.join(" AND "));
         }
-        
+
         // ORDER BY
         if let Some((col, asc)) = &self.order_by {
             sql.push_str(" ORDER BY ");
             sql.push_str(col);
             sql.push_str(if *asc { " ASC" } else { " DESC" });
         }
-        
+
         // LIMIT
         if let Some(n) = self.limit {
             sql.push_str(&format!(" LIMIT {}", n));
         }
-        
+
         // OFFSET
         if let Some(n) = self.offset {
             sql.push_str(&format!(" OFFSET {}", n));
         }
-        
+
         (sql, params)
     }
-    
+
     /// Execute the query
     pub fn execute(self) -> Result<QueryResult> {
         let (sql, params) = self.to_sql();
@@ -644,24 +644,39 @@ impl<'a> QueryBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_count_parameters() {
         assert_eq!(count_parameters("SELECT * FROM t WHERE id = ?"), 1);
-        assert_eq!(count_parameters("SELECT * FROM t WHERE id = ? AND name = ?"), 2);
+        assert_eq!(
+            count_parameters("SELECT * FROM t WHERE id = ? AND name = ?"),
+            2
+        );
         assert_eq!(count_parameters("SELECT * FROM t WHERE id = $1"), 1);
-        assert_eq!(count_parameters("SELECT * FROM t WHERE id = $1 AND name = $2"), 2);
+        assert_eq!(
+            count_parameters("SELECT * FROM t WHERE id = $1 AND name = $2"),
+            2
+        );
         assert_eq!(count_parameters("SELECT * FROM t WHERE name = 'test?'"), 0);
     }
-    
+
     #[test]
     fn test_detect_dialect() {
-        assert_eq!(detect_dialect("INSERT INTO t (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET x = 1"), "PostgreSQL");
-        assert_eq!(detect_dialect("INSERT INTO t (id) VALUES (1) ON DUPLICATE KEY UPDATE x = 1"), "MySQL");
-        assert_eq!(detect_dialect("INSERT OR REPLACE INTO t (id) VALUES (1)"), "SQLite");
+        assert_eq!(
+            detect_dialect("INSERT INTO t (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET x = 1"),
+            "PostgreSQL"
+        );
+        assert_eq!(
+            detect_dialect("INSERT INTO t (id) VALUES (1) ON DUPLICATE KEY UPDATE x = 1"),
+            "MySQL"
+        );
+        assert_eq!(
+            detect_dialect("INSERT OR REPLACE INTO t (id) VALUES (1)"),
+            "SQLite"
+        );
         assert_eq!(detect_dialect("SELECT * FROM t"), "SQL-92");
     }
-    
+
     #[test]
     fn test_query_builder_sql() {
         // This would need a mock connection to fully test

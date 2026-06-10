@@ -29,9 +29,9 @@ mod measurement_harness;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use measurement_harness::{generate_key, generate_value};
+use sochdb_storage::{DurableStorage, TransactionMode};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use sochdb_storage::{DurableStorage, TransactionMode};
 
 /// Measure read latency while accumulating data (potential compaction trigger)
 fn bench_read_during_writes(c: &mut Criterion) {
@@ -170,7 +170,8 @@ fn bench_latency_with_growth(c: &mut Criterion) {
                         // Read some data after load
                         for i in 0..1000 {
                             let key = generate_key(i % data_size, key_size);
-                            let txn_id = storage.begin_with_mode(TransactionMode::ReadOnly).unwrap();
+                            let txn_id =
+                                storage.begin_with_mode(TransactionMode::ReadOnly).unwrap();
                             let _ = storage.read(txn_id, &key);
                             storage.commit(txn_id).unwrap();
                         }

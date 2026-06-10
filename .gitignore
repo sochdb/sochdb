@@ -73,6 +73,9 @@ sochdb_agent_memory/
 toondb_rust.txt
 test_k8s_concurrency.py
 test_k8s_deployment.py
+
+# Local scratch / experiments moved out of the project root
+/scratch/
 # H2O benchmark large data files (generate with h2o_datagen.py)
 sochdb-bench/h2o-bench/data/*_1e7_*
 sochdb-bench/h2o-bench/data/
@@ -92,3 +95,18 @@ benchmarks/retrieval/datasets/
 full_test_remote.py
 full_test_v2.py
 run_vdbbench_sochdb.py
+sochdb.tex
+sochdb.tex.bak
+sochdb.tex.bak2
+sochdb.txt
+tastk.md
+toondb (1).pdf
+
+# Benchmark data & generated run artifacts (large / not source)
+benchmarks/_archive/
+benchmarks/memoryagentbench/results/
+benchmarks/locomo_plus/results/
+benchmarks/longmemeval/data/
+sochdb-bench/bench-results-*/
+**/embedding_cache/
+*.npy

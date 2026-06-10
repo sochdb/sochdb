@@ -89,7 +89,7 @@ pub enum ClrLookupResult {
 /// - max_error: u16 (2 bytes)
 /// - min_key_hash: u32 (4 bytes for bounds check)
 /// - max_key_hash: u32 (4 bytes for bounds check)
-/// 
+///
 /// Note: We use key hashes for bounds checking to avoid storing
 /// the actual keys (which could be large).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,7 +122,7 @@ impl ClrIndex {
         F: Fn(&K) -> u64,
     {
         let n = keys.len();
-        
+
         if n == 0 {
             return Self {
                 slope: 0.0,
@@ -153,7 +153,7 @@ impl ClrIndex {
 
         // Normalize keys to [0, 1] for numerical stability
         let key_range = (max_key as f64) - (min_key as f64);
-        
+
         if key_range == 0.0 {
             // All keys are equal - degenerate case
             return Self {
@@ -204,29 +204,24 @@ impl ClrIndex {
     }
 
     /// Fit linear regression: position = slope × normalized_key + intercept
-    fn fit_linear_regression(
-        keys: &[u64],
-        min_key: u64,
-        key_range: f64,
-        n: usize,
-    ) -> (f64, f64) {
+    fn fit_linear_regression(keys: &[u64], min_key: u64, key_range: f64, n: usize) -> (f64, f64) {
         // Using Ordinary Least Squares (OLS):
         // slope = Σ(x_i - x̄)(y_i - ȳ) / Σ(x_i - x̄)²
         // intercept = ȳ - slope × x̄
-        
+
         // For normalized keys in [0, 1], we optimize:
         // slope = Σ(x_i × i) / Σ(x_i²) - when intercept is 0
-        
+
         // Simple approach: fit to endpoints
         // position_0 = 0, position_{n-1} = n - 1
         // slope = (n - 1) / 1.0 = n - 1 (for normalized range [0, 1])
-        
+
         // More accurate: full OLS
         let mut sum_x = 0.0f64;
         let mut sum_y = 0.0f64;
         let mut sum_xy = 0.0f64;
         let mut sum_xx = 0.0f64;
-        
+
         for (i, &key) in keys.iter().enumerate() {
             let x = ((key as f64) - (min_key as f64)) / key_range;
             let y = i as f64;
@@ -235,22 +230,22 @@ impl ClrIndex {
             sum_xy += x * y;
             sum_xx += x * x;
         }
-        
+
         let n_f64 = n as f64;
         let mean_x = sum_x / n_f64;
         let mean_y = sum_y / n_f64;
-        
+
         let numerator = sum_xy - n_f64 * mean_x * mean_y;
         let denominator = sum_xx - n_f64 * mean_x * mean_x;
-        
+
         if denominator.abs() < 1e-10 {
             // Degenerate case: all keys have same normalized value
             return (0.0, mean_y);
         }
-        
+
         let slope = numerator / denominator;
         let intercept = mean_y - slope * mean_x;
-        
+
         (slope, intercept)
     }
 
@@ -263,7 +258,7 @@ impl ClrIndex {
         intercept: f64,
     ) -> usize {
         let mut max_error = 0usize;
-        
+
         for (i, &key) in keys.iter().enumerate() {
             let normalized = ((key as f64) - (min_key as f64)) / key_range;
             let predicted = slope * normalized + intercept;
@@ -272,7 +267,7 @@ impl ClrIndex {
             let error = (predicted_pos - actual_pos).unsigned_abs();
             max_error = max_error.max(error);
         }
-        
+
         max_error
     }
 
@@ -293,7 +288,7 @@ impl ClrIndex {
         }
 
         let key_range = (self.max_key as f64) - (self.min_key as f64);
-        
+
         if key_range == 0.0 {
             // All keys are equal
             return ClrLookupResult::Range {
@@ -339,15 +334,15 @@ impl ClrIndex {
     pub fn is_useful(&self) -> bool {
         // Minimum size threshold - CLR overhead isn't worth it for small runs
         const MIN_USEFUL_SIZE: usize = 64;
-        
+
         if self.num_entries < MIN_USEFUL_SIZE {
             return false;
         }
-        
+
         let log2_n = (self.num_entries as f64).log2().ceil() as usize;
         let search_range = 2 * (self.max_error as usize) + 1;
         let log2_range = (search_range as f64).log2().ceil() as usize;
-        
+
         // CLR is useful if searching the error range is faster than binary search
         log2_range < log2_n
     }
@@ -357,7 +352,7 @@ impl ClrIndex {
         if self.num_entries == 0 || self.max_error as usize >= self.num_entries {
             return 1.0;
         }
-        
+
         let search_range = 2 * (self.max_error as usize) + 1;
         self.num_entries as f64 / search_range as f64
     }
@@ -420,7 +415,7 @@ impl<K: Ord + Clone + Hash, V: Clone> IndexedSortedRun<K, V> {
     pub fn from_sorted_no_index(entries: Vec<(K, V)>) -> Self {
         let min_key = entries.first().map(|(k, _)| k.clone());
         let max_key = entries.last().map(|(k, _)| k.clone());
-        
+
         Self {
             entries,
             clr_index: None,
@@ -449,9 +444,7 @@ impl<K: Ord + Clone + Hash, V: Clone> IndexedSortedRun<K, V> {
                     // Fall back to binary search in range
                     self.binary_search_range(key, pos, pos)
                 }
-                ClrLookupResult::Range { low, high } => {
-                    self.binary_search_range(key, low, high)
-                }
+                ClrLookupResult::Range { low, high } => self.binary_search_range(key, low, high),
                 ClrLookupResult::OutOfBounds => None,
             }
         } else {
@@ -464,7 +457,7 @@ impl<K: Ord + Clone + Hash, V: Clone> IndexedSortedRun<K, V> {
     fn binary_search_range(&self, key: &K, low: usize, high: usize) -> Option<&V> {
         let low = low.min(self.entries.len().saturating_sub(1));
         let high = (high + 1).min(self.entries.len());
-        
+
         if low >= high {
             // Single element
             if low < self.entries.len() && &self.entries[low].0 == key {
@@ -557,11 +550,11 @@ mod tests {
         // Sequential keys should have very low error
         let keys: Vec<u64> = (0..1000).collect();
         let clr = ClrIndex::build_from_u64(&keys);
-        
+
         assert_eq!(clr.num_entries(), 1000);
         assert_eq!(clr.max_error(), 0); // Perfect fit for sequential data
         assert!(clr.is_useful());
-        
+
         // Test predictions
         for i in 0..1000u64 {
             match clr.predict(i) {
@@ -581,15 +574,15 @@ mod tests {
         let keys: Vec<u64> = (0..10000)
             .map(|i| base + i * 100 + (i % 7) as u64) // ~100ms apart with jitter
             .collect();
-        
+
         let clr = ClrIndex::build_from_u64(&keys);
-        
+
         assert_eq!(clr.num_entries(), 10000);
         assert!(clr.is_useful());
-        
+
         // Max error should be small due to near-linear distribution
         assert!(clr.max_error() < 10);
-        
+
         // Compression ratio should be high
         assert!(clr.compression_ratio() > 100.0);
     }
@@ -606,13 +599,13 @@ mod tests {
         // Gap: 1100-9999
         // Cluster 3: 10000-10099
         keys.extend(10000..10100);
-        
+
         let clr = ClrIndex::build_from_u64(&keys);
-        
+
         assert_eq!(clr.num_entries(), 300);
         // Non-uniform data will have higher error
         assert!(clr.max_error() > 10);
-        
+
         // Should still find all keys
         for &key in &keys {
             let result = clr.predict(key);
@@ -624,34 +617,32 @@ mod tests {
     fn test_clr_out_of_bounds() {
         let keys: Vec<u64> = (100..200).collect();
         let clr = ClrIndex::build_from_u64(&keys);
-        
+
         // Below range
         assert!(matches!(clr.predict(50), ClrLookupResult::OutOfBounds));
-        
+
         // Above range
         assert!(matches!(clr.predict(250), ClrLookupResult::OutOfBounds));
-        
+
         // In range
         assert!(!matches!(clr.predict(150), ClrLookupResult::OutOfBounds));
     }
 
     #[test]
     fn test_indexed_sorted_run() {
-        let entries: Vec<(u64, String)> = (0..1000)
-            .map(|i| (i, format!("value_{}", i)))
-            .collect();
-        
+        let entries: Vec<(u64, String)> = (0..1000).map(|i| (i, format!("value_{}", i))).collect();
+
         let run = IndexedSortedRun::from_sorted_with_index(entries, |k| *k);
-        
+
         assert_eq!(run.len(), 1000);
         assert!(run.has_clr_index());
-        
+
         // Lookup should work
         for i in 0..1000u64 {
             let result = run.get(&i, |k| *k);
             assert_eq!(result, Some(&format!("value_{}", i)));
         }
-        
+
         // Missing keys
         assert_eq!(run.get(&2000, |k| *k), None);
     }
@@ -659,17 +650,14 @@ mod tests {
     #[test]
     fn test_indexed_sorted_run_bytes() {
         // Test with byte keys - need enough entries for CLR to be useful
-        let entries: Vec<(Vec<u8>, u32)> = (0..500u32)
-            .map(|i| (i.to_be_bytes().to_vec(), i))
-            .collect();
-        
-        let run = IndexedSortedRun::from_sorted_with_index(entries, |k| {
-            ClrIndex::bytes_to_u64(k)
-        });
-        
+        let entries: Vec<(Vec<u8>, u32)> =
+            (0..500u32).map(|i| (i.to_be_bytes().to_vec(), i)).collect();
+
+        let run = IndexedSortedRun::from_sorted_with_index(entries, |k| ClrIndex::bytes_to_u64(k));
+
         // 500 entries >= MIN_USEFUL_SIZE (64), so CLR should be enabled
         assert!(run.has_clr_index());
-        
+
         // Lookup
         for i in 0..500u32 {
             let key = i.to_be_bytes().to_vec();
@@ -684,7 +672,7 @@ mod tests {
         let small: Vec<u64> = (0..5).collect();
         let clr_small = ClrIndex::build_from_u64(&small);
         assert!(!clr_small.is_useful());
-        
+
         // Large runs with good distribution should use CLR
         let large: Vec<u64> = (0..10000).collect();
         let clr_large = ClrIndex::build_from_u64(&large);
@@ -695,7 +683,7 @@ mod tests {
     fn test_clr_compression_ratio() {
         let keys: Vec<u64> = (0..10000).collect();
         let clr = ClrIndex::build_from_u64(&keys);
-        
+
         // Sequential data should have very high compression
         assert!(clr.compression_ratio() > 1000.0);
     }
@@ -703,7 +691,7 @@ mod tests {
     #[test]
     fn test_clr_size() {
         let clr = ClrIndex::build_from_u64(&[1, 2, 3, 4, 5]);
-        
+
         // CLR index should be compact (~40 bytes)
         assert!(clr.size_bytes() < 100);
     }

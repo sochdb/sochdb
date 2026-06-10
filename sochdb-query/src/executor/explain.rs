@@ -2,9 +2,9 @@
 
 //! EXPLAIN operator — generates query plan description as rows.
 
-use crate::soch_ql::SochValue;
 use super::node::PlanNode;
-use super::types::{Row, Schema, ColumnMeta};
+use super::types::{ColumnMeta, Row, Schema};
+use crate::soch_ql::SochValue;
 use sochdb_core::Result;
 
 /// Explain operator: returns the plan description as text rows.

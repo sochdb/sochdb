@@ -41,8 +41,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
@@ -168,13 +167,29 @@ impl SegmentHeader {
             return None;
         }
 
+        // Fail fast on an incompatible (newer) on-disk version rather than
+        // silently misinterpreting a layout we do not understand. Treating an
+        // unknown version like a magic mismatch (returning `None`) stops replay
+        // at this segment instead of decoding newer fields as if they were the
+        // current layout, which could corrupt recovery.
+        let version = u16::from_le_bytes([buf[4], buf[5]]);
+        if version > SEGMENT_VERSION {
+            return None;
+        }
+
         Some(Self {
             magic,
-            version: u16::from_le_bytes([buf[4], buf[5]]),
+            version,
             flags: u16::from_le_bytes([buf[6], buf[7]]),
-            sequence: u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]),
-            first_lsn: u64::from_le_bytes([buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23]]),
-            created_at: u64::from_le_bytes([buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31]]),
+            sequence: u64::from_le_bytes([
+                buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+            ]),
+            first_lsn: u64::from_le_bytes([
+                buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+            ]),
+            created_at: u64::from_le_bytes([
+                buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+            ]),
             reserved: [0; 8],
         })
     }
@@ -242,11 +257,21 @@ impl CheckpointRecord {
         }
 
         Some(Self {
-            lsn: u64::from_le_bytes([buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]]),
-            last_segment: u64::from_le_bytes([buf[12], buf[13], buf[14], buf[15], buf[16], buf[17], buf[18], buf[19]]),
-            timestamp: u64::from_le_bytes([buf[20], buf[21], buf[22], buf[23], buf[24], buf[25], buf[26], buf[27]]),
-            memtable_checksum: u64::from_le_bytes([buf[28], buf[29], buf[30], buf[31], buf[32], buf[33], buf[34], buf[35]]),
-            entry_count: u64::from_le_bytes([buf[36], buf[37], buf[38], buf[39], buf[40], buf[41], buf[42], buf[43]]),
+            lsn: u64::from_le_bytes([
+                buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11],
+            ]),
+            last_segment: u64::from_le_bytes([
+                buf[12], buf[13], buf[14], buf[15], buf[16], buf[17], buf[18], buf[19],
+            ]),
+            timestamp: u64::from_le_bytes([
+                buf[20], buf[21], buf[22], buf[23], buf[24], buf[25], buf[26], buf[27],
+            ]),
+            memtable_checksum: u64::from_le_bytes([
+                buf[28], buf[29], buf[30], buf[31], buf[32], buf[33], buf[34], buf[35],
+            ]),
+            entry_count: u64::from_le_bytes([
+                buf[36], buf[37], buf[38], buf[39], buf[40], buf[41], buf[42], buf[43],
+            ]),
         })
     }
 }
@@ -343,14 +368,17 @@ impl WalSegmentManager {
                             max_lsn = max_lsn.max(header.first_lsn);
 
                             let metadata = file.metadata()?;
-                            self.segments.write().insert(header.sequence, SegmentMetadata {
-                                sequence: header.sequence,
-                                first_lsn: header.first_lsn,
-                                last_lsn: None,
-                                path: path.clone(),
-                                size: metadata.len(),
-                                is_active: false,
-                            });
+                            self.segments.write().insert(
+                                header.sequence,
+                                SegmentMetadata {
+                                    sequence: header.sequence,
+                                    first_lsn: header.first_lsn,
+                                    last_lsn: None,
+                                    path: path.clone(),
+                                    size: metadata.len(),
+                                    is_active: false,
+                                },
+                            );
                         }
                     }
                 }
@@ -358,7 +386,8 @@ impl WalSegmentManager {
         }
 
         // Set counters
-        self.segment_sequence.store(max_sequence + 1, Ordering::SeqCst);
+        self.segment_sequence
+            .store(max_sequence + 1, Ordering::SeqCst);
         self.current_lsn.store(max_lsn, Ordering::SeqCst);
 
         Ok(())
@@ -418,7 +447,11 @@ impl WalSegmentManager {
         if let Some(mut segment) = active.take() {
             // Flush and sync the old segment
             segment.file.flush()?;
-            segment.file.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+            segment
+                .file
+                .into_inner()
+                .map_err(|e| e.into_error())?
+                .sync_all()?;
 
             // Update metadata to mark as not active
             let current_lsn = self.current_lsn.load(Ordering::SeqCst);
@@ -437,7 +470,10 @@ impl WalSegmentManager {
         let sequence = self.segment_sequence.fetch_add(1, Ordering::SeqCst);
         let first_lsn = self.current_lsn.load(Ordering::SeqCst);
 
-        let path = self.config.wal_dir.join(format!("segment_{:016x}.wal", sequence));
+        let path = self
+            .config
+            .wal_dir
+            .join(format!("segment_{:016x}.wal", sequence));
 
         let file = OpenOptions::new()
             .create(true)
@@ -465,14 +501,17 @@ impl WalSegmentManager {
         };
 
         // Add to segments map
-        self.segments.write().insert(sequence, SegmentMetadata {
+        self.segments.write().insert(
             sequence,
-            first_lsn,
-            last_lsn: None,
-            path,
-            size: SEGMENT_HEADER_SIZE as u64,
-            is_active: true,
-        });
+            SegmentMetadata {
+                sequence,
+                first_lsn,
+                last_lsn: None,
+                path,
+                size: SEGMENT_HEADER_SIZE as u64,
+                is_active: true,
+            },
+        );
 
         *active = Some(segment);
 
@@ -571,7 +610,7 @@ impl WalSegmentManager {
     }
 
     /// Iterator for recovery
-    pub fn recovery_iterator(&self, from_lsn: u64) -> RecoveryIterator {
+    pub fn recovery_iterator(&self, from_lsn: u64) -> RecoveryIterator<'_> {
         RecoveryIterator::new(self, from_lsn)
     }
 
@@ -591,7 +630,11 @@ impl WalSegmentManager {
         let mut active = self.active.lock();
         if let Some(mut segment) = active.take() {
             segment.file.flush()?;
-            segment.file.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+            segment
+                .file
+                .into_inner()
+                .map_err(|e| e.into_error())?
+                .sync_all()?;
         }
 
         Ok(())
@@ -628,7 +671,9 @@ impl<'a> RecoveryIterator<'a> {
         let segments = manager.segments.read();
         let mut sequences: Vec<u64> = segments
             .values()
-            .filter(|s| s.first_lsn >= from_lsn || s.last_lsn.map(|l| l >= from_lsn).unwrap_or(true))
+            .filter(|s| {
+                s.first_lsn >= from_lsn || s.last_lsn.map(|l| l >= from_lsn).unwrap_or(true)
+            })
             .map(|s| s.sequence)
             .collect();
         sequences.sort();
@@ -793,8 +838,9 @@ mod tests {
 
         // Cleanup should work
         let cleaned = manager.cleanup_old_segments().unwrap();
-        // May or may not clean depending on segment boundaries
-        assert!(cleaned >= 0);
+        // May or may not clean depending on segment boundaries;
+        // cleaned is unsigned, so just ensure cleanup returned a count.
+        let _ = cleaned;
 
         manager.shutdown().unwrap();
     }
@@ -802,8 +848,7 @@ mod tests {
     #[test]
     fn test_recovery() {
         let dir = tempdir().unwrap();
-        let config = SegmentConfig::default()
-            .with_wal_dir(dir.path());
+        let config = SegmentConfig::default().with_wal_dir(dir.path());
 
         // Write some data
         {
@@ -840,6 +885,19 @@ mod tests {
         assert_eq!(decoded.magic, SEGMENT_MAGIC);
         assert_eq!(decoded.sequence, 42);
         assert_eq!(decoded.first_lsn, 12345);
+    }
+
+    #[test]
+    fn test_segment_header_rejects_future_version() {
+        // A segment written by a hypothetical newer release must not be
+        // decoded with the current layout — doing so could misinterpret bytes
+        // during replay and corrupt recovery. We treat it like a magic
+        // mismatch (None) so replay stops at this segment instead.
+        let mut encoded = SegmentHeader::new(1, 1).encode();
+        let future = SEGMENT_VERSION + 1;
+        encoded[4..6].copy_from_slice(&future.to_le_bytes());
+
+        assert!(SegmentHeader::decode(&encoded).is_none());
     }
 
     #[test]

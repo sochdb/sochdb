@@ -45,12 +45,11 @@
 
 use lazy_static::lazy_static;
 use prometheus::{
-    Counter, CounterVec, Encoder, Gauge, GaugeVec, Histogram, HistogramVec, TextEncoder,
-    register_counter, register_counter_vec, register_gauge, register_gauge_vec,
-    register_histogram, register_histogram_vec,
+    Counter, CounterVec, Encoder, Gauge, GaugeVec, HistogramVec, TextEncoder, register_counter,
+    register_counter_vec, register_gauge, register_gauge_vec, register_histogram_vec,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 // =============================================================================
@@ -213,9 +212,7 @@ pub fn start_grpc_timer(service: &str, method: &str) -> prometheus::HistogramTim
 
 /// Record a SQL query execution
 pub fn record_sql_query(statement_type: &str, duration_secs: f64) {
-    SQL_QUERIES_TOTAL
-        .with_label_values(&[statement_type])
-        .inc();
+    SQL_QUERIES_TOTAL.with_label_values(&[statement_type]).inc();
     SQL_QUERY_LATENCY
         .with_label_values(&[statement_type])
         .observe(duration_secs);
@@ -293,7 +290,10 @@ fn run_server(port: u16, shutdown: Arc<AtomicBool>) {
         }
     };
 
-    tracing::info!("Prometheus metrics server listening on http://{}/metrics", addr);
+    tracing::info!(
+        "Prometheus metrics server listening on http://{}/metrics",
+        addr
+    );
 
     // Process requests until shutdown
     loop {
@@ -343,8 +343,8 @@ fn handle_metrics(request: tiny_http::Request) {
 
     if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
         tracing::error!("Failed to encode metrics: {}", e);
-        let response = tiny_http::Response::from_string("Internal Server Error\n")
-            .with_status_code(500);
+        let response =
+            tiny_http::Response::from_string("Internal Server Error\n").with_status_code(500);
         let _ = request.respond(response);
         return;
     }
@@ -393,7 +393,10 @@ impl PrometheusObservability {
         match name {
             "grpc_requests" => {
                 if let (Some(svc), Some(method)) = (
-                    labels.iter().find(|(k, _)| *k == "service").map(|(_, v)| *v),
+                    labels
+                        .iter()
+                        .find(|(k, _)| *k == "service")
+                        .map(|(_, v)| *v),
                     labels.iter().find(|(k, _)| *k == "method").map(|(_, v)| *v),
                 ) {
                     GRPC_REQUESTS_TOTAL
@@ -428,7 +431,10 @@ impl PrometheusObservability {
         match name {
             "grpc_latency" => {
                 if let (Some(svc), Some(method)) = (
-                    labels.iter().find(|(k, _)| *k == "service").map(|(_, v)| *v),
+                    labels
+                        .iter()
+                        .find(|(k, _)| *k == "service")
+                        .map(|(_, v)| *v),
                     labels.iter().find(|(k, _)| *k == "method").map(|(_, v)| *v),
                 ) {
                     GRPC_LATENCY
@@ -442,9 +448,7 @@ impl PrometheusObservability {
                     .find(|(k, _)| *k == "statement_type")
                     .map(|(_, v)| *v)
                 {
-                    SQL_QUERY_LATENCY
-                        .with_label_values(&[stmt])
-                        .observe(value);
+                    SQL_QUERY_LATENCY.with_label_values(&[stmt]).observe(value);
                 }
             }
             _ => {
@@ -488,9 +492,7 @@ mod tests {
         record_sql_query("SELECT", 0.005);
         record_sql_query("INSERT", 0.001);
 
-        let val = SQL_QUERIES_TOTAL
-            .with_label_values(&["SELECT"])
-            .get();
+        let val = SQL_QUERIES_TOTAL.with_label_values(&["SELECT"]).get();
         assert!(val >= 1.0);
     }
 

@@ -50,7 +50,7 @@
 //! let results = view.search(&query, k, ef)?;
 //! ```
 
-use crate::aosoa_tiles::{TiledVectorStore, DEFAULT_TILE_SIZE};
+use crate::aosoa_tiles::{DEFAULT_TILE_SIZE, TiledVectorStore};
 use crate::csr_graph::{CsrGraph, CsrGraphBuilder, InternalSearchCandidate};
 use crate::internal_id::{IdMapper, InternalId, VisitedBitmap};
 use crate::simd_batch_distance::{BatchDistanceCalculator, BatchDistanceMetric};
@@ -209,7 +209,9 @@ impl UnifiedSearchView {
             .into_iter()
             .take(k)
             .filter_map(|c| {
-                self.id_mapper.to_external(c.id).map(|ext| (ext, c.distance))
+                self.id_mapper
+                    .to_external(c.id)
+                    .map(|ext| (ext, c.distance))
             })
             .collect()
     }
@@ -387,7 +389,7 @@ impl UnifiedSearchView {
     }
 
     /// Calculate distance between query and node.
-    /// 
+    ///
     /// Uses SIMD-accelerated distance computation via `BatchDistanceCalculator`
     /// which provides the single control point for AVX2/NEON dispatch.
     #[inline]
@@ -398,7 +400,7 @@ impl UnifiedSearchView {
             // For single distances, the overhead is minimal and ensures consistent dispatch
             let distances = self.distance_calculator.compute(query, &[&vector]);
             let raw_distance = distances.first().copied().unwrap_or(f32::MAX);
-            
+
             // For dot product, negate for min-heap (we want maximum similarity)
             match self.metric {
                 DistanceMetric::DotProduct => -raw_distance,
@@ -421,21 +423,21 @@ impl UnifiedSearchView {
             .iter()
             .filter_map(|&node| self.vectors.get(node.get() as usize))
             .collect();
-        
+
         if vectors.is_empty() {
             return vec![f32::MAX; nodes.len()];
         }
 
         let refs: Vec<&[f32]> = vectors.iter().map(|v| v.as_slice()).collect();
         let mut distances = self.distance_calculator.compute(query, &refs);
-        
+
         // For dot product, negate for min-heap
         if matches!(self.metric, DistanceMetric::DotProduct) {
             for d in &mut distances {
                 *d = -*d;
             }
         }
-        
+
         distances
     }
 
@@ -459,7 +461,7 @@ impl UnifiedSearchView {
                 }
             }
         }
-        
+
         // On aarch64, hardware prefetch is generally sufficient
         // and explicit prefetch intrinsics are unstable
         #[cfg(not(target_arch = "x86_64"))]
@@ -485,9 +487,7 @@ impl UnifiedSearchView {
 
     /// Memory usage in bytes.
     pub fn memory_usage(&self) -> usize {
-        self.graph.memory_usage()
-            + self.id_mapper.memory_usage()
-            + self.vectors.memory_bytes()
+        self.graph.memory_usage() + self.id_mapper.memory_usage() + self.vectors.memory_bytes()
     }
 }
 
@@ -513,11 +513,11 @@ fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|&x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|&x| x * x).sum::<f32>().sqrt();
-    
+
     if norm_a == 0.0 || norm_b == 0.0 {
         return 1.0;
     }
-    
+
     1.0 - (dot / (norm_a * norm_b))
 }
 
@@ -585,29 +585,22 @@ impl UnifiedViewBuilder {
     /// # Arguments
     /// * `nodes` - Iterator of (external_id, vector, layer, neighbors_per_layer)
     /// * `entry_point` - External ID of the entry point
-    pub fn build<'a, I>(
-        self,
-        nodes: I,
-        entry_point: Option<u128>,
-    ) -> UnifiedSearchView
+    pub fn build<'a, I>(self, nodes: I, entry_point: Option<u128>) -> UnifiedSearchView
     where
         I: Iterator<Item = (u128, &'a [f32], usize, Vec<Vec<u128>>)>,
     {
         // First pass: collect all nodes to get count
         let node_list: Vec<_> = nodes.collect();
         let num_nodes = node_list.len();
-        
+
         let id_mapper = IdMapper::new();
         let mut vectors = TiledVectorStore::<DEFAULT_TILE_SIZE>::new(self.dimension, num_nodes);
-        let mut graph_builder = CsrGraphBuilder::new(
-            self.num_layers,
-            self.max_degree,
-            self.max_degree_layer0,
-        );
+        let mut graph_builder =
+            CsrGraphBuilder::new(self.num_layers, self.max_degree, self.max_degree_layer0);
 
         // Second pass: assign internal IDs and store vectors
         let mut node_data: Vec<(InternalId, usize, Vec<Vec<u128>>)> = Vec::with_capacity(num_nodes);
-        
+
         for (ext_id, vector, layer, neighbors_per_layer) in node_list {
             let internal_id = id_mapper.register(ext_id);
             vectors.push(vector);
@@ -655,7 +648,7 @@ mod tests {
         for i in 0..num_nodes {
             let ext_id = (i as u128) + 1000;
             let internal_id = id_mapper.register(ext_id);
-            
+
             let vector: Vec<f32> = (0..dimension).map(|d| (i + d) as f32).collect();
             vectors.push(&vector);
 
@@ -702,13 +695,13 @@ mod tests {
     fn test_search_returns_k() {
         let view = create_test_view(100, 64);
         let query = vec![0.0f32; 64];
-        
+
         let results = view.search(&query, 10, 50);
         assert_eq!(results.len(), 10);
 
         // Results should be sorted by distance
         for i in 1..results.len() {
-            assert!(results[i-1].1 <= results[i].1);
+            assert!(results[i - 1].1 <= results[i].1);
         }
     }
 
@@ -775,7 +768,7 @@ mod tests {
     fn test_memory_usage() {
         let view = create_test_view(1000, 128);
         let mem = view.memory_usage();
-        
+
         // Should be much smaller than 1000 * (128 * 4 + 600) ~= 1.1 MB
         // CSR + tiled should be around 0.5-0.6 MB
         assert!(mem > 0);
@@ -800,12 +793,14 @@ mod tests {
         let view = UnifiedViewBuilder::new(32)
             .metric(DistanceMetric::Euclidean)
             .build(
-                nodes.iter().map(|(id, v, l, n)| (*id, v.as_slice(), *l, n.clone())),
+                nodes
+                    .iter()
+                    .map(|(id, v, l, n)| (*id, v.as_slice(), *l, n.clone())),
                 Some(0),
             );
 
         assert_eq!(view.num_nodes(), 10);
-        
+
         let query = vec![5.0f32; 32];
         let results = view.search(&query, 5, 20);
         assert!(!results.is_empty());

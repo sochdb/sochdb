@@ -13,17 +13,17 @@
 fn main() {
     // Detect target architecture for conditional compilation hints
     let target = std::env::var("TARGET").unwrap_or_default();
-    
+
     // Emit cfg flags for architecture-specific code
     if target.contains("x86_64") {
         println!("cargo:rustc-cfg=has_x86_simd");
     } else if target.contains("aarch64") || target.contains("arm64") {
         println!("cargo:rustc-cfg=has_arm_simd");
     }
-    
+
     // Rerun if simd modules change
     println!("cargo:rerun-if-changed=src/simd/");
-    
+
     // Note: No C++ compilation needed!
     // All SIMD kernels are now pure Rust in src/simd/
     //

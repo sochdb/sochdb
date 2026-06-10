@@ -39,7 +39,7 @@
 //! 4. **Recovery Phases**: Analysis → Redo → Undo (with CLRs for nested undo)
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Durability level for write operations
@@ -79,12 +79,18 @@ pub enum DurabilityLevel {
 impl DurabilityLevel {
     /// Check if this level is safe for production
     pub fn is_production_safe(&self) -> bool {
-        matches!(self, DurabilityLevel::Durable | DurabilityLevel::GroupCommit { .. })
+        matches!(
+            self,
+            DurabilityLevel::Durable | DurabilityLevel::GroupCommit { .. }
+        )
     }
 
     /// Check if explicit risk acceptance is required
     pub fn requires_risk_acceptance(&self) -> bool {
-        matches!(self, DurabilityLevel::Periodic { .. } | DurabilityLevel::NoSync { .. })
+        matches!(
+            self,
+            DurabilityLevel::Periodic { .. } | DurabilityLevel::NoSync { .. }
+        )
     }
 
     /// Get the default production-safe configuration
@@ -111,8 +117,15 @@ impl fmt::Display for DurabilityLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DurabilityLevel::Durable => write!(f, "Durable (fsync per commit)"),
-            DurabilityLevel::GroupCommit { max_batch, flush_interval } => {
-                write!(f, "GroupCommit (batch={}, interval={:?})", max_batch, flush_interval)
+            DurabilityLevel::GroupCommit {
+                max_batch,
+                flush_interval,
+            } => {
+                write!(
+                    f,
+                    "GroupCommit (batch={}, interval={:?})",
+                    max_batch, flush_interval
+                )
             }
             DurabilityLevel::Periodic { sync_interval, .. } => {
                 write!(f, "UNSAFE:Periodic (interval={:?})", sync_interval)
@@ -133,7 +146,11 @@ pub struct DurabilityContractError {
 
 impl fmt::Display for DurabilityContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Durability contract '{}' violated: {}", self.contract_violated, self.message)
+        write!(
+            f,
+            "Durability contract '{}' violated: {}",
+            self.contract_violated, self.message
+        )
     }
 }
 
@@ -158,7 +175,9 @@ impl Default for WalArchiveConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            destination: WalArchiveDestination::LocalPath(PathBuf::from("/var/lib/sochdb/wal_archive")),
+            destination: WalArchiveDestination::LocalPath(PathBuf::from(
+                "/var/lib/sochdb/wal_archive",
+            )),
             trigger: WalArchiveTrigger::SegmentFull,
             compress: true,
             verify: true,
@@ -189,9 +208,7 @@ pub enum WalArchiveTrigger {
     /// Archive on timer (may archive partial segments)
     TimeBased(Duration),
     /// Archive on both conditions (whichever first)
-    Both {
-        max_interval: Duration,
-    },
+    Both { max_interval: Duration },
 }
 
 /// Checkpoint configuration for avoiding long write stalls
@@ -248,8 +265,14 @@ impl DurabilityContract {
     pub fn new(level: DurabilityLevel) -> Result<Self, DurabilityContractError> {
         // Validate unsafe levels have risk acceptance
         match &level {
-            DurabilityLevel::Periodic { accept_data_loss_risk, .. } 
-            | DurabilityLevel::NoSync { accept_data_loss_risk, .. } => {
+            DurabilityLevel::Periodic {
+                accept_data_loss_risk,
+                ..
+            }
+            | DurabilityLevel::NoSync {
+                accept_data_loss_risk,
+                ..
+            } => {
                 if !accept_data_loss_risk {
                     return Err(DurabilityContractError {
                         message: format!(
@@ -296,9 +319,13 @@ impl DurabilityContract {
     }
 
     /// Validate that a page flush respects WAL protocol
-    /// 
+    ///
     /// ARIES invariant: Page cannot be flushed until its log record is durable
-    pub fn validate_page_flush(&self, page_lsn: u64, flushed_lsn: u64) -> Result<(), DurabilityContractError> {
+    pub fn validate_page_flush(
+        &self,
+        page_lsn: u64,
+        flushed_lsn: u64,
+    ) -> Result<(), DurabilityContractError> {
         if self.wal_before_page && page_lsn > flushed_lsn {
             return Err(DurabilityContractError {
                 message: format!(
@@ -314,7 +341,11 @@ impl DurabilityContract {
     /// Validate that a commit respects force-on-commit
     ///
     /// ARIES invariant: Commit record must be durable before returning
-    pub fn validate_commit(&self, commit_lsn: u64, flushed_lsn: u64) -> Result<(), DurabilityContractError> {
+    pub fn validate_commit(
+        &self,
+        commit_lsn: u64,
+        flushed_lsn: u64,
+    ) -> Result<(), DurabilityContractError> {
         if self.force_on_commit && commit_lsn > flushed_lsn {
             return Err(DurabilityContractError {
                 message: format!(
@@ -489,8 +520,12 @@ mod tests {
         let group = DurabilityContract::new(DurabilityLevel::GroupCommit {
             max_batch: 100,
             flush_interval: Duration::from_millis(10),
-        }).unwrap();
-        assert_eq!(group.max_data_loss_window(), Some(Duration::from_millis(10)));
+        })
+        .unwrap();
+        assert_eq!(
+            group.max_data_loss_window(),
+            Some(Duration::from_millis(10))
+        );
     }
 
     #[test]
@@ -500,7 +535,8 @@ mod tests {
 
         let unsafe_contract = DurabilityContract::new(DurabilityLevel::NoSync {
             accept_data_loss_risk: true,
-        }).unwrap();
+        })
+        .unwrap();
         assert!(!unsafe_contract.is_production_ready());
     }
 }

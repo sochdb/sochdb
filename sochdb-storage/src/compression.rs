@@ -357,7 +357,8 @@ mod tests {
     #[test]
     fn test_zstd_max_roundtrip() {
         let mut engine = CompressionEngine::new();
-        let data = b"Hello, World! This is test data for Zstd level-19 maximum compression roundtrip.";
+        let data =
+            b"Hello, World! This is test data for Zstd level-19 maximum compression roundtrip.";
 
         let compressed = engine.compress(data, CompressionType::ZstdMax).unwrap();
         let decompressed = engine
@@ -413,7 +414,9 @@ mod tests {
     #[test]
     fn test_compression_stats() {
         let mut engine = CompressionEngine::new();
-        let data: Vec<u8> = "Test data for compression statistics. ".repeat(50).into_bytes();
+        let data: Vec<u8> = "Test data for compression statistics. "
+            .repeat(50)
+            .into_bytes();
 
         engine.compress(&data, CompressionType::Lz4).unwrap();
 
@@ -467,7 +470,9 @@ mod tests {
 
         let mut engine2 = CompressionEngine::new();
         let zstd = engine2.compress(data, CompressionType::ZstdFast).unwrap();
-        let rt2 = engine2.decompress(&zstd, CompressionType::ZstdFast).unwrap();
+        let rt2 = engine2
+            .decompress(&zstd, CompressionType::ZstdFast)
+            .unwrap();
         assert_eq!(data.as_slice(), rt2.as_slice());
     }
 

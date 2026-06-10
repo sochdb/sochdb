@@ -558,10 +558,7 @@ impl TokenBudgetEnforcer {
                         requested: section.estimated_tokens,
                         allocated: 0,
                         outcome: AllocationOutcome::Dropped,
-                        reason: format!(
-                            "Minimum {} exceeds remaining {} tokens",
-                            min, remaining
-                        ),
+                        reason: format!("Minimum {} exceeds remaining {} tokens", min, remaining),
                     });
                 }
             } else {
@@ -614,28 +611,31 @@ impl TokenBudgetEnforcer {
                 let proportional = ((available as f32) * s.weight / total_weight).floor() as usize;
                 let capped = proportional.min(s.estimated_tokens);
                 let min = s.minimum_tokens.unwrap_or(0);
-                (capped.max(min), s.estimated_tokens, capped < s.estimated_tokens)
+                (
+                    capped.max(min),
+                    s.estimated_tokens,
+                    capped < s.estimated_tokens,
+                )
             })
             .collect();
 
         // Phase 2: Adjust to fit budget (water-filling)
         let mut total: usize = allocations.iter().map(|(a, _, _)| *a).sum();
-        
+
         // If over budget, reduce proportionally from largest allocations
         while total > available {
             // Find the section with largest allocation that can be reduced
             let max_idx = allocations
                 .iter()
                 .enumerate()
-                .filter(|(i, (a, _, _))| {
-                    *a > sections[*i].minimum_tokens.unwrap_or(0)
-                })
+                .filter(|(i, (a, _, _))| *a > sections[*i].minimum_tokens.unwrap_or(0))
                 .max_by_key(|(_, (a, _, _))| *a)
                 .map(|(i, _)| i);
 
             match max_idx {
                 Some(idx) => {
-                    let reduce = (total - available).min(allocations[idx].0 - sections[idx].minimum_tokens.unwrap_or(0));
+                    let reduce = (total - available)
+                        .min(allocations[idx].0 - sections[idx].minimum_tokens.unwrap_or(0));
                     allocations[idx].0 -= reduce;
                     total -= reduce;
                 }
@@ -646,7 +646,7 @@ impl TokenBudgetEnforcer {
         // Phase 3: Record results
         for (i, section) in sections.iter().enumerate() {
             let (allocated, requested, truncated) = allocations[i];
-            
+
             if allocated == 0 {
                 allocation.dropped_sections.push(section.name.clone());
                 allocation.explain.push(AllocationDecision {
@@ -658,11 +658,9 @@ impl TokenBudgetEnforcer {
                     reason: "No budget available after proportional allocation".to_string(),
                 });
             } else if truncated {
-                allocation.truncated_sections.push((
-                    section.name.clone(),
-                    requested,
-                    allocated,
-                ));
+                allocation
+                    .truncated_sections
+                    .push((section.name.clone(), requested, allocated));
                 allocation.tokens_allocated += allocated;
                 allocation.tokens_remaining = allocation.tokens_remaining.saturating_sub(allocated);
                 allocation.explain.push(AllocationDecision {
@@ -702,7 +700,7 @@ impl TokenBudgetEnforcer {
     fn allocate_strict(&self, sections: &[BudgetSection]) -> BudgetAllocation {
         let mut sorted: Vec<_> = sections.iter().collect();
         sorted.sort_by_key(|s| (if s.required { 0 } else { 1 }, s.priority));
-        
+
         // First pass: allocate minimums for required sections
         let mut allocation = BudgetAllocation {
             full_sections: Vec::new(),
@@ -815,7 +813,10 @@ impl TokenBudgetEnforcer {
                     requested: section.estimated_tokens,
                     allocated: 0,
                     outcome: AllocationOutcome::Dropped,
-                    reason: format!("Requested {} exceeds remaining {}", section.estimated_tokens, remaining),
+                    reason: format!(
+                        "Requested {} exceeds remaining {}",
+                        section.estimated_tokens, remaining
+                    ),
                 });
             }
         }
@@ -878,15 +879,20 @@ impl BudgetAllocation {
             full_sections: self.full_sections.clone(),
             truncated_sections: self.truncated_sections.clone(),
             dropped_sections: self.dropped_sections.clone(),
-            decisions: self.explain.iter().map(|d| ExplainDecision {
-                section: d.section.clone(),
-                priority: d.priority,
-                requested: d.requested,
-                allocated: d.allocated,
-                outcome: format!("{:?}", d.outcome),
-                reason: d.reason.clone(),
-            }).collect(),
-        }).unwrap_or_else(|_| "{}".to_string())
+            decisions: self
+                .explain
+                .iter()
+                .map(|d| ExplainDecision {
+                    section: d.section.clone(),
+                    priority: d.priority,
+                    requested: d.requested,
+                    allocated: d.allocated,
+                    outcome: format!("{:?}", d.outcome),
+                    reason: d.reason.clone(),
+                })
+                .collect(),
+        })
+        .unwrap_or_else(|_| "{}".to_string())
     }
 }
 
