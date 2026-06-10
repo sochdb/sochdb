@@ -1,0 +1,10 @@
+{
+  "source": "SciFact BEIR benchmark (BGE-base-en-v1.5, M=32, ef_c=200, ef_s=128)",
+  "topology": "distributed",
+  "targets": [
+    { "workload": "retrieval_recall_at_5", "score": 0.8037, "tolerance_pct": 5, "unit": "ratio" },
+    { "workload": "retrieval_mrr", "score": 0.6974, "tolerance_pct": 5, "unit": "ratio" },
+    { "workload": "retrieval_ndcg_at_5", "score": 0.7203, "tolerance_pct": 5, "unit": "ratio" },
+    { "workload": "retrieval_p50_ms", "score": 1.03, "tolerance_pct": 30, "unit": "ms" }
+  ]
+}

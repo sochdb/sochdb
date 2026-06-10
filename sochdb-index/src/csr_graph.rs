@@ -288,7 +288,13 @@ impl CsrGraphBuilder {
     /// Create a new builder for a graph with specified layers.
     pub fn new(num_layers: usize, max_degree: usize, max_degree_layer0: usize) -> Self {
         let max_degrees = (0..num_layers)
-            .map(|l| if l == 0 { max_degree_layer0 } else { max_degree })
+            .map(|l| {
+                if l == 0 {
+                    max_degree_layer0
+                } else {
+                    max_degree
+                }
+            })
             .collect();
 
         let layers = (0..num_layers).map(|_| Vec::new()).collect();
@@ -303,11 +309,12 @@ impl CsrGraphBuilder {
     /// Ensure node exists in all layers up to `layer`.
     fn ensure_node(&mut self, node: InternalId, layer: usize) {
         let idx = node.get() as usize;
-        
+
         // Expand layers vector if needed
         while self.layers.len() <= layer {
             self.layers.push(Vec::new());
-            self.max_degrees.push(*self.max_degrees.last().unwrap_or(&16));
+            self.max_degrees
+                .push(*self.max_degrees.last().unwrap_or(&16));
         }
 
         // Expand each layer's node list if needed
@@ -325,7 +332,7 @@ impl CsrGraphBuilder {
 
         let max_deg = self.max_degrees.get(layer).copied().unwrap_or(16);
         let neighbors = &mut self.layers[layer][from.get() as usize];
-        
+
         if !neighbors.contains(&to) && neighbors.len() < max_deg {
             neighbors.push(to);
         }

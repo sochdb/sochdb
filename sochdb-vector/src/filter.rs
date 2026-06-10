@@ -28,13 +28,13 @@ impl BitsetFilter {
     pub fn new_full(n_vec: u32) -> Self {
         let num_words = (n_vec as usize + 63) / 64;
         let mut bits = vec![u64::MAX; num_words];
-        
+
         // Clear bits beyond n_vec
         let remainder = n_vec as usize % 64;
         if remainder > 0 && !bits.is_empty() {
             bits[num_words - 1] = (1u64 << remainder) - 1;
         }
-        
+
         Self {
             bits,
             n_vec,
@@ -106,7 +106,9 @@ impl BitsetFilter {
     /// AND with another filter
     pub fn and(&self, other: &BitsetFilter) -> BitsetFilter {
         assert_eq!(self.n_vec, other.n_vec);
-        let bits: Vec<u64> = self.bits.iter()
+        let bits: Vec<u64> = self
+            .bits
+            .iter()
             .zip(other.bits.iter())
             .map(|(&a, &b)| a & b)
             .collect();
@@ -120,7 +122,9 @@ impl BitsetFilter {
     /// OR with another filter
     pub fn or(&self, other: &BitsetFilter) -> BitsetFilter {
         assert_eq!(self.n_vec, other.n_vec);
-        let bits: Vec<u64> = self.bits.iter()
+        let bits: Vec<u64> = self
+            .bits
+            .iter()
             .zip(other.bits.iter())
             .map(|(&a, &b)| a | b)
             .collect();
@@ -135,13 +139,13 @@ impl BitsetFilter {
     pub fn not(&self) -> BitsetFilter {
         let num_words = self.bits.len();
         let mut bits: Vec<u64> = self.bits.iter().map(|&w| !w).collect();
-        
+
         // Clear bits beyond n_vec
         let remainder = self.n_vec as usize % 64;
         if remainder > 0 && !bits.is_empty() {
             bits[num_words - 1] &= (1u64 << remainder) - 1;
         }
-        
+
         BitsetFilter {
             bits,
             n_vec: self.n_vec,
@@ -151,7 +155,8 @@ impl BitsetFilter {
 
     /// Apply filter to candidates, returning only included ones
     pub fn filter_candidates(&self, candidates: &[ScoredCandidate]) -> Vec<ScoredCandidate> {
-        candidates.iter()
+        candidates
+            .iter()
             .filter(|c| self.contains(c.id))
             .copied()
             .collect()
@@ -203,15 +208,15 @@ mod tests {
     #[test]
     fn test_bitset_basic() {
         let mut filter = BitsetFilter::new_empty(100);
-        
+
         assert!(!filter.contains(0));
         filter.set(0);
         assert!(filter.contains(0));
-        
+
         filter.set(50);
         filter.set(99);
         assert_eq!(filter.count(), 3);
-        
+
         filter.clear(50);
         assert!(!filter.contains(50));
         assert_eq!(filter.count(), 2);
@@ -232,12 +237,12 @@ mod tests {
         a.set(0);
         a.set(1);
         a.set(2);
-        
+
         let mut b = BitsetFilter::new_empty(100);
         b.set(1);
         b.set(2);
         b.set(3);
-        
+
         let mut c = a.and(&b);
         assert!(!c.contains(0));
         assert!(c.contains(1));
@@ -251,11 +256,11 @@ mod tests {
         let mut a = BitsetFilter::new_empty(100);
         a.set(0);
         a.set(1);
-        
+
         let mut b = BitsetFilter::new_empty(100);
         b.set(1);
         b.set(2);
-        
+
         let mut c = a.or(&b);
         assert!(c.contains(0));
         assert!(c.contains(1));
@@ -270,7 +275,7 @@ mod tests {
         for i in 0..100 {
             filter.set(i);
         }
-        
+
         let selectivity = filter.selectivity();
         assert!((selectivity - 0.1).abs() < 0.001);
     }
@@ -279,10 +284,10 @@ mod tests {
     fn test_widening_factor() {
         // 10% selectivity -> 10x widening (capped)
         assert!((compute_widening_factor(0.1, 20.0) - 10.0).abs() < 0.001);
-        
+
         // 1% selectivity -> capped at max
         assert!((compute_widening_factor(0.01, 20.0) - 20.0).abs() < 0.001);
-        
+
         // 100% selectivity -> no widening
         assert!((compute_widening_factor(1.0, 20.0) - 1.0).abs() < 0.001);
     }
@@ -293,14 +298,14 @@ mod tests {
         filter.set(1);
         filter.set(3);
         filter.set(5);
-        
+
         let candidates = vec![
             ScoredCandidate { id: 0, score: 1.0 },
             ScoredCandidate { id: 1, score: 2.0 },
             ScoredCandidate { id: 2, score: 3.0 },
             ScoredCandidate { id: 3, score: 4.0 },
         ];
-        
+
         let filtered = filter.filter_candidates(&candidates);
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].id, 1);

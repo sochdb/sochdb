@@ -4,7 +4,7 @@
 
 //! # Fused Query Execution Pipeline
 //!
-//! The `FusionEngine` is the core of the Knowledge Fabric architecture. It holds
+//! The `KnowledgeFusionEngine` is the core of the Knowledge Fabric architecture. It holds
 //! references to all three index types (ART, HNSW, CSR graph) and composes their
 //! operations in a single code path, using `BitSet`-based candidate masks as the
 //! intermediate representation.
@@ -165,7 +165,7 @@ impl fmt::Display for FusionResult {
 /// ## Architecture
 ///
 /// ```text
-/// FusionEngine
+/// KnowledgeFusionEngine
 /// ├── object_store: HashMap<ObjectId, KnowledgeObject>  (in-memory for now)
 /// ├── graph: TemporalCsrGraph                           (CSR relationship index)
 /// ├── embeddings: HashMap<ObjectId, HashMap<String, Vec<f32>>>  (vector data)
@@ -178,7 +178,7 @@ impl fmt::Display for FusionResult {
 ///
 /// The BitSet-based pipeline architecture remains the same regardless of
 /// the underlying index implementation.
-pub struct FusionEngine {
+pub struct KnowledgeFusionEngine {
     /// Knowledge Object store (ObjectId → KnowledgeObject).
     /// In a full implementation, this would be backed by LSCS.
     objects: HashMap<ObjectId, KnowledgeObject>,
@@ -194,7 +194,7 @@ pub struct FusionEngine {
     config: FusionConfig,
 }
 
-impl FusionEngine {
+impl KnowledgeFusionEngine {
     /// Create a new fusion engine.
     pub fn new(config: FusionConfig) -> Self {
         Self {
@@ -355,7 +355,11 @@ impl FusionEngine {
         }
 
         // Sort by score descending
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Apply min_score filter
         if let Some(min) = query.min_score {
@@ -399,13 +403,17 @@ impl FusionEngine {
                 embedding,
                 candidates,
                 ..
-            } => self.execute_vector_search(space, embedding, *candidates, current_mask, num_objects),
+            } => {
+                self.execute_vector_search(space, embedding, *candidates, current_mask, num_objects)
+            }
 
             QueryStage::GraphExpand {
                 edge_kind,
                 max_hops,
                 compose,
-            } => self.execute_graph_expand(edge_kind, *max_hops, *compose, current_mask, num_objects),
+            } => {
+                self.execute_graph_expand(edge_kind, *max_hops, *compose, current_mask, num_objects)
+            }
 
             QueryStage::TemporalFilter {
                 valid_time,
@@ -418,9 +426,10 @@ impl FusionEngine {
 
             QueryStage::TagFilter { tag } => self.execute_tag_filter(tag, num_objects),
 
-            QueryStage::ProximityTo { target, max_distance } => {
-                self.execute_proximity(target, *max_distance, num_objects)
-            }
+            QueryStage::ProximityTo {
+                target,
+                max_distance,
+            } => self.execute_proximity(target, *max_distance, num_objects),
         }
     }
 
@@ -443,32 +452,26 @@ impl FusionEngine {
             };
 
             let matches = match predicate {
-                FilterPredicate::Eq(value) => {
-                    obj.attribute(field)
-                        .map_or(false, |attr| filter_value_matches(attr, value))
-                }
-                FilterPredicate::Ne(value) => {
-                    obj.attribute(field)
-                        .map_or(true, |attr| !filter_value_matches(attr, value))
-                }
-                FilterPredicate::In(values) => {
-                    obj.attribute(field)
-                        .map_or(false, |attr| values.iter().any(|v| filter_value_matches(attr, v)))
-                }
-                FilterPredicate::Prefix(prefix) => {
-                    obj.text_attribute(field)
-                        .map_or(false, |text| text.starts_with(prefix.as_str()))
-                }
+                FilterPredicate::Eq(value) => obj
+                    .attribute(field)
+                    .map_or(false, |attr| filter_value_matches(attr, value)),
+                FilterPredicate::Ne(value) => obj
+                    .attribute(field)
+                    .map_or(true, |attr| !filter_value_matches(attr, value)),
+                FilterPredicate::In(values) => obj.attribute(field).map_or(false, |attr| {
+                    values.iter().any(|v| filter_value_matches(attr, v))
+                }),
+                FilterPredicate::Prefix(prefix) => obj
+                    .text_attribute(field)
+                    .map_or(false, |text| text.starts_with(prefix.as_str())),
                 FilterPredicate::Exists => obj.attribute(field).is_some(),
                 FilterPredicate::HasTag(tag) => obj.has_tag(tag),
                 FilterPredicate::IsKind(kind) => obj.kind() == kind,
-                FilterPredicate::Range { min, max } => {
-                    obj.attribute(field).map_or(false, |attr| {
-                        let above_min = min.as_ref().map_or(true, |m| filter_value_gte(attr, m));
-                        let below_max = max.as_ref().map_or(true, |m| filter_value_lte(attr, m));
-                        above_min && below_max
-                    })
-                }
+                FilterPredicate::Range { min, max } => obj.attribute(field).map_or(false, |attr| {
+                    let above_min = min.as_ref().map_or(true, |m| filter_value_gte(attr, m));
+                    let below_max = max.as_ref().map_or(true, |m| filter_value_lte(attr, m));
+                    above_min && below_max
+                }),
             };
 
             if matches {
@@ -615,7 +618,10 @@ impl FusionEngine {
 
         CandidateMask::new(
             bits,
-            MaskSource::TemporalFilter { valid_time, system_time },
+            MaskSource::TemporalFilter {
+                valid_time,
+                system_time,
+            },
         )
     }
 
@@ -654,7 +660,9 @@ impl FusionEngine {
 
         CandidateMask::new(
             bits,
-            MaskSource::TagFilter { tag: tag.to_string() },
+            MaskSource::TagFilter {
+                tag: tag.to_string(),
+            },
         )
     }
 
@@ -695,10 +703,9 @@ impl FusionEngine {
                     if emb.vector.len() == query_embedding.len() {
                         let similarity = cosine_similarity(&emb.vector, query_embedding);
                         result.score = similarity;
-                        result.stage_scores.push((
-                            format!("vector:{}", space),
-                            similarity,
-                        ));
+                        result
+                            .stage_scores
+                            .push((format!("vector:{}", space), similarity));
                     }
                 }
             }
@@ -711,10 +718,7 @@ impl FusionEngine {
 // =============================================================================
 
 /// Check if a SochValue matches a FilterValue.
-fn filter_value_matches(
-    attr: &sochdb_core::soch::SochValue,
-    value: &FilterValue,
-) -> bool {
+fn filter_value_matches(attr: &sochdb_core::soch::SochValue, value: &FilterValue) -> bool {
     use sochdb_core::soch::SochValue;
 
     match (attr, value) {
@@ -728,10 +732,7 @@ fn filter_value_matches(
 }
 
 /// Check if a SochValue is >= a FilterValue.
-fn filter_value_gte(
-    attr: &sochdb_core::soch::SochValue,
-    value: &FilterValue,
-) -> bool {
+fn filter_value_gte(attr: &sochdb_core::soch::SochValue, value: &FilterValue) -> bool {
     use sochdb_core::soch::SochValue;
 
     match (attr, value) {
@@ -744,10 +745,7 @@ fn filter_value_gte(
 }
 
 /// Check if a SochValue is <= a FilterValue.
-fn filter_value_lte(
-    attr: &sochdb_core::soch::SochValue,
-    value: &FilterValue,
-) -> bool {
+fn filter_value_lte(attr: &sochdb_core::soch::SochValue, value: &FilterValue) -> bool {
     use sochdb_core::soch::SochValue;
 
     match (attr, value) {
@@ -780,12 +778,12 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::*;
     use sochdb_core::knowledge_object::*;
     use sochdb_core::soch::SochValue;
-    use crate::query::*;
 
-    fn make_test_engine() -> FusionEngine {
-        let mut engine = FusionEngine::default_engine();
+    fn make_test_engine() -> KnowledgeFusionEngine {
+        let mut engine = KnowledgeFusionEngine::default_engine();
 
         // Create test objects
         let acme_oid = ObjectId::from_content(b"acme");
@@ -1008,7 +1006,7 @@ mod tests {
 
     #[test]
     fn test_from_store_integration() {
-        use crate::versioned_store::{VersionedObjectStore, StoreConfig};
+        use crate::versioned_store::{StoreConfig, VersionedObjectStore};
         use sochdb_core::knowledge_object::{
             CompressionMode, Edge, EdgeKind, KnowledgeObjectBuilder, ObjectKind,
         };
@@ -1041,7 +1039,7 @@ mod tests {
         store.put(bob).unwrap();
 
         // Build a FusionEngine from the store
-        let engine = FusionEngine::from_store(&store, FusionConfig::default()).unwrap();
+        let engine = KnowledgeFusionEngine::from_store(&store, FusionConfig::default()).unwrap();
         assert_eq!(engine.num_objects(), 2);
 
         // Run a query

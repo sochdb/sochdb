@@ -86,16 +86,16 @@ use std::thread::{self, JoinHandle};
 pub struct RotationConfig {
     /// Number of worker threads
     pub num_workers: usize,
-    
+
     /// Input channel capacity
     pub input_capacity: usize,
-    
+
     /// Output channel capacity
     pub output_capacity: usize,
-    
+
     /// Vector dimension
     pub dim: usize,
-    
+
     /// Batch size for worker processing
     pub batch_size: usize,
 }
@@ -120,10 +120,10 @@ pub type VectorKey = u64;
 pub struct RotationInput {
     /// Vector key
     pub key: VectorKey,
-    
+
     /// Original vector data
     pub vector: Vec<f32>,
-    
+
     /// Sequence number for ordering
     pub seq: u64,
 }
@@ -133,13 +133,13 @@ pub struct RotationInput {
 pub struct RotationOutput {
     /// Vector key
     pub key: VectorKey,
-    
+
     /// Rotated vector data
     pub rotated: Vec<f32>,
-    
+
     /// Sequence number for ordering
     pub seq: u64,
-    
+
     /// Rotation time in nanoseconds
     pub rotation_time_ns: u64,
 }
@@ -149,13 +149,13 @@ pub struct RotationOutput {
 pub struct PipelineStats {
     /// Vectors submitted
     pub submitted: u64,
-    
+
     /// Vectors completed
     pub completed: u64,
-    
+
     /// Total rotation time (nanoseconds)
     pub total_rotation_ns: u64,
-    
+
     /// Vectors currently in flight
     pub in_flight: u64,
 }
@@ -168,7 +168,7 @@ impl PipelineStats {
         }
         self.total_rotation_ns as f64 / self.completed as f64
     }
-    
+
     /// Rotation throughput (vectors/sec)
     pub fn throughput(&self) -> f64 {
         if self.total_rotation_ns == 0 {
@@ -191,7 +191,7 @@ impl<T> BoundedChannel<T> {
             capacity,
         }
     }
-    
+
     fn try_push(&self, item: T) -> Result<(), T> {
         let mut buffer = self.buffer.lock().unwrap();
         if buffer.len() >= self.capacity {
@@ -200,17 +200,17 @@ impl<T> BoundedChannel<T> {
         buffer.push(item);
         Ok(())
     }
-    
+
     #[allow(dead_code)]
     fn push_single(&self, item: T) -> bool {
         self.try_push(item).is_ok()
     }
-    
+
     fn try_pop(&self) -> Option<T> {
         let mut buffer = self.buffer.lock().unwrap();
         buffer.pop()
     }
-    
+
     fn try_pop_batch(&self, max: usize) -> Vec<T> {
         let mut buffer = self.buffer.lock().unwrap();
         let len = buffer.len();
@@ -218,7 +218,7 @@ impl<T> BoundedChannel<T> {
         let start = len.saturating_sub(drain_count);
         buffer.drain(start..).collect()
     }
-    
+
     fn len(&self) -> usize {
         self.buffer.lock().unwrap().len()
     }
@@ -242,22 +242,22 @@ pub struct RotationPipeline {
     /// Configuration
     #[allow(dead_code)]
     config: RotationConfig,
-    
+
     /// Input channel
     input: Arc<BoundedChannel<RotationInput>>,
-    
+
     /// Output channel
     output: Arc<BoundedChannel<RotationOutput>>,
-    
+
     /// Worker handles
     workers: Vec<JoinHandle<()>>,
-    
+
     /// Shutdown flag
     shutdown: Arc<AtomicBool>,
-    
+
     /// Sequence counter
     seq_counter: AtomicU64,
-    
+
     /// Statistics
     stats: Arc<PipelineStatsInner>,
 }
@@ -279,23 +279,23 @@ impl RotationPipeline {
             completed: AtomicU64::new(0),
             total_rotation_ns: AtomicU64::new(0),
         });
-        
+
         let mut workers = Vec::with_capacity(config.num_workers);
-        
+
         for _ in 0..config.num_workers {
             let input = Arc::clone(&input);
             let output = Arc::clone(&output);
             let shutdown = Arc::clone(&shutdown);
             let stats = Arc::clone(&stats);
             let batch_size = config.batch_size;
-            
+
             let handle = thread::spawn(move || {
                 worker_loop(input, output, shutdown, stats, batch_size);
             });
-            
+
             workers.push(handle);
         }
-        
+
         Self {
             config,
             input,
@@ -310,10 +310,10 @@ impl RotationPipeline {
     /// Submit a vector for rotation
     pub fn submit(&self, key: VectorKey, vector: Vec<f32>) {
         let seq = self.seq_counter.fetch_add(1, Ordering::Relaxed);
-        
+
         let input = RotationInput { key, vector, seq };
         self.input.push_blocking(input);
-        
+
         self.stats.submitted.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -335,12 +335,12 @@ impl RotationPipeline {
             if let Some(output) = self.output.try_pop() {
                 return Some(output);
             }
-            
+
             if self.shutdown.load(Ordering::Acquire) && self.input.len() == 0 {
                 // Check one more time for stragglers
                 return self.output.try_pop();
             }
-            
+
             std::thread::sleep(std::time::Duration::from_micros(10));
         }
     }
@@ -354,7 +354,7 @@ impl RotationPipeline {
     pub fn stats(&self) -> PipelineStats {
         let submitted = self.stats.submitted.load(Ordering::Relaxed);
         let completed = self.stats.completed.load(Ordering::Relaxed);
-        
+
         PipelineStats {
             submitted,
             completed,
@@ -366,42 +366,42 @@ impl RotationPipeline {
     /// Flush all pending work and wait for completion
     pub fn flush(&self) -> Vec<RotationOutput> {
         let mut results = Vec::new();
-        
+
         // Wait for all submitted work to complete
         loop {
             let stats = self.stats();
-            
+
             if stats.completed >= stats.submitted {
                 break;
             }
-            
+
             // Collect any available outputs
             results.extend(self.recv_batch(64));
-            
+
             std::thread::sleep(std::time::Duration::from_micros(100));
         }
-        
+
         // Collect remaining outputs
         results.extend(self.recv_batch(1024));
-        
+
         results
     }
 
     /// Shutdown the pipeline
     pub fn shutdown(mut self) -> Vec<RotationOutput> {
         self.shutdown.store(true, Ordering::Release);
-        
+
         // Wait for workers to finish
         for handle in self.workers.drain(..) {
             let _ = handle.join();
         }
-        
+
         // Collect remaining outputs
         let mut results = Vec::new();
         while let Some(output) = self.output.try_pop() {
             results.push(output);
         }
-        
+
         results
     }
 }
@@ -417,7 +417,7 @@ fn worker_loop(
     loop {
         // Try to get a batch of work
         let batch = input.try_pop_batch(batch_size);
-        
+
         if batch.is_empty() {
             if shutdown.load(Ordering::Acquire) {
                 break;
@@ -425,27 +425,29 @@ fn worker_loop(
             std::thread::sleep(std::time::Duration::from_micros(10));
             continue;
         }
-        
+
         for item in batch {
             let start = std::time::Instant::now();
-            
+
             // Perform rotation
             let mut rotated = item.vector;
             hadamard_transform(&mut rotated);
-            
+
             let rotation_time_ns = start.elapsed().as_nanos() as u64;
-            
+
             let result = RotationOutput {
                 key: item.key,
                 rotated,
                 seq: item.seq,
                 rotation_time_ns,
             };
-            
+
             output.push_blocking(result);
-            
+
             stats.completed.fetch_add(1, Ordering::Relaxed);
-            stats.total_rotation_ns.fetch_add(rotation_time_ns, Ordering::Relaxed);
+            stats
+                .total_rotation_ns
+                .fetch_add(rotation_time_ns, Ordering::Relaxed);
         }
     }
 }
@@ -462,7 +464,7 @@ pub fn hadamard_transform(data: &mut [f32]) {
     if n == 0 {
         return;
     }
-    
+
     // Handle non-power-of-2 by padding conceptually
     // For actual implementation, we process the power-of-2 prefix
     let n_pow2 = n.next_power_of_two();
@@ -471,7 +473,7 @@ pub fn hadamard_transform(data: &mut [f32]) {
         normalize_vector(data);
         return;
     }
-    
+
     let mut h = 1;
     while h < n {
         for i in (0..n).step_by(h * 2) {
@@ -484,7 +486,7 @@ pub fn hadamard_transform(data: &mut [f32]) {
         }
         h *= 2;
     }
-    
+
     // Normalize
     let scale = 1.0 / (n as f32).sqrt();
     for x in data.iter_mut() {
@@ -541,7 +543,7 @@ impl SyncRotator {
     /// Rotate flat batch data
     pub fn rotate_batch_flat(&self, flat_data: &mut [f32], dim: usize) {
         let num_vectors = flat_data.len() / dim;
-        
+
         for i in 0..num_vectors {
             let start = i * dim;
             let slice = &mut flat_data[start..start + dim];
@@ -568,7 +570,7 @@ mod tests {
     fn test_hadamard_basic() {
         let mut data = vec![1.0, 0.0, 0.0, 0.0];
         hadamard_transform(&mut data);
-        
+
         // All components should be 0.5 for normalized Hadamard on [1,0,0,0]
         for &x in &data {
             assert!((x - 0.5).abs() < 0.01, "x = {}", x);
@@ -579,11 +581,11 @@ mod tests {
     fn test_hadamard_preserves_norm() {
         let mut data: Vec<f32> = (0..16).map(|i| i as f32 / 16.0).collect();
         let original_norm: f32 = data.iter().map(|x| x * x).sum();
-        
+
         hadamard_transform(&mut data);
-        
+
         let transformed_norm: f32 = data.iter().map(|x| x * x).sum();
-        
+
         // Norm should be preserved (approximately)
         assert!(
             (original_norm - transformed_norm).abs() < 0.01,
@@ -596,12 +598,12 @@ mod tests {
     #[test]
     fn test_sync_rotator() {
         let rotator = SyncRotator::new(4);
-        
+
         let vector = vec![1.0, 2.0, 3.0, 4.0];
         let rotated = rotator.rotate(&vector);
-        
+
         assert_eq!(rotated.len(), 4);
-        
+
         // Verify original is unchanged
         assert_eq!(vector, vec![1.0, 2.0, 3.0, 4.0]);
     }
@@ -615,18 +617,18 @@ mod tests {
             dim: 4,
             batch_size: 4,
         };
-        
+
         let pipeline = RotationPipeline::new(config);
-        
+
         // Submit some vectors
         for i in 0..10 {
             let vector = vec![i as f32; 4];
             pipeline.submit(i, vector);
         }
-        
+
         // Collect results
         let results = pipeline.flush();
-        
+
         assert_eq!(results.len(), 10);
     }
 
@@ -639,18 +641,18 @@ mod tests {
             dim: 4,
             batch_size: 1,
         };
-        
+
         let pipeline = RotationPipeline::new(config);
-        
+
         // Submit vectors
         for i in 0..5 {
             pipeline.submit(i as u64, vec![i as f32; 4]);
         }
-        
+
         // Collect and sort by sequence
         let mut results = pipeline.flush();
         results.sort_by_key(|r| r.seq);
-        
+
         // Verify keys match
         for (i, result) in results.iter().enumerate() {
             assert_eq!(result.key, i as u64);
@@ -661,18 +663,18 @@ mod tests {
     fn test_pipeline_stats() {
         let config = RotationConfig::default();
         let pipeline = RotationPipeline::new(config);
-        
+
         // Submit some work
         for i in 0..5 {
             pipeline.submit(i, vec![0.0; 768]);
         }
-        
+
         let initial_stats = pipeline.stats();
         assert_eq!(initial_stats.submitted, 5);
-        
+
         // Wait for completion
         let _ = pipeline.flush();
-        
+
         let final_stats = pipeline.stats();
         assert_eq!(final_stats.completed, 5);
         assert!(final_stats.total_rotation_ns > 0);
@@ -685,14 +687,14 @@ mod tests {
             dim: 4,
             ..Default::default()
         };
-        
+
         let pipeline = RotationPipeline::new(config);
-        
+
         pipeline.submit(1, vec![1.0; 4]);
         pipeline.submit(2, vec![2.0; 4]);
-        
+
         let results = pipeline.shutdown();
-        
+
         assert!(results.len() <= 2); // May have already been collected
     }
 }

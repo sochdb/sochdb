@@ -35,8 +35,8 @@
 //! - Tiles are padded to 64-byte boundaries
 
 use std::alloc::{self, Layout};
-use std::ptr::NonNull;
 use std::marker::PhantomData;
+use std::ptr::NonNull;
 
 /// Cache line size (64 bytes on most modern CPUs).
 pub const CACHE_LINE_SIZE: usize = 64;
@@ -72,7 +72,7 @@ impl<const T: usize> VectorTile<T> {
     pub fn set_vector(&mut self, pos: usize, vector: &[f32]) {
         debug_assert!(pos < T);
         debug_assert_eq!(vector.len(), self.dimension);
-        
+
         for (d, &v) in vector.iter().enumerate() {
             self.data[d * T + pos] = v;
         }
@@ -81,7 +81,7 @@ impl<const T: usize> VectorTile<T> {
     /// Get vector at position within tile.
     pub fn get_vector(&self, pos: usize) -> Vec<f32> {
         debug_assert!(pos < T);
-        
+
         (0..self.dimension)
             .map(|d| self.data[d * T + pos])
             .collect()
@@ -98,9 +98,9 @@ impl<const T: usize> VectorTile<T> {
     #[inline]
     pub fn batch_l2_squared(&self, query: &[f32]) -> [f32; T] {
         debug_assert_eq!(query.len(), self.dimension);
-        
+
         let mut dists = [0.0f32; T];
-        
+
         for (d, &q) in query.iter().enumerate() {
             let base = d * T;
             for i in 0..T {
@@ -108,7 +108,7 @@ impl<const T: usize> VectorTile<T> {
                 dists[i] += diff * diff;
             }
         }
-        
+
         dists
     }
 
@@ -116,16 +116,16 @@ impl<const T: usize> VectorTile<T> {
     #[inline]
     pub fn batch_dot(&self, query: &[f32]) -> [f32; T] {
         debug_assert_eq!(query.len(), self.dimension);
-        
+
         let mut dots = [0.0f32; T];
-        
+
         for (d, &q) in query.iter().enumerate() {
             let base = d * T;
             for i in 0..T {
                 dots[i] += q * self.data[base + i];
             }
         }
-        
+
         dots
     }
 
@@ -160,12 +160,16 @@ impl AlignedBlock {
         }
 
         let layout = Layout::from_size_align(size, alignment).ok()?;
-        
+
         // SAFETY: layout is valid and non-zero
         let ptr = unsafe { alloc::alloc_zeroed(layout) };
         let ptr = NonNull::new(ptr)?;
-        
-        Some(Self { ptr, layout, len: size })
+
+        Some(Self {
+            ptr,
+            layout,
+            len: size,
+        })
     }
 
     /// Get pointer to data.
@@ -237,9 +241,10 @@ impl<const T: usize> TiledVectorStore<T> {
         let num_tiles = (capacity + T - 1) / T;
         let tile_floats = T * dimension;
         let tile_bytes = tile_floats * std::mem::size_of::<f32>();
-        
+
         // Align tile size to cache line
-        let aligned_tile_bytes = (tile_bytes + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE * CACHE_LINE_SIZE;
+        let aligned_tile_bytes =
+            (tile_bytes + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE * CACHE_LINE_SIZE;
         let total_bytes = num_tiles * aligned_tile_bytes;
 
         let storage = AlignedBlock::new(total_bytes, CACHE_LINE_SIZE);
@@ -270,9 +275,8 @@ impl<const T: usize> TiledVectorStore<T> {
 
         // Write vector in AoSoA layout
         if let Some(ref mut storage) = self.storage {
-            let tile_ptr = unsafe { 
-                storage.as_mut_ptr().add(tile_idx * self.tile_bytes) as *mut f32 
-            };
+            let tile_ptr =
+                unsafe { storage.as_mut_ptr().add(tile_idx * self.tile_bytes) as *mut f32 };
 
             for (d, &v) in vector.iter().enumerate() {
                 unsafe {
@@ -295,9 +299,7 @@ impl<const T: usize> TiledVectorStore<T> {
         let pos_in_tile = idx % T;
 
         let storage = self.storage.as_ref()?;
-        let tile_ptr = unsafe { 
-            storage.as_ptr().add(tile_idx * self.tile_bytes) as *const f32 
-        };
+        let tile_ptr = unsafe { storage.as_ptr().add(tile_idx * self.tile_bytes) as *const f32 };
 
         let vector: Vec<f32> = (0..self.dimension)
             .map(|d| unsafe { *tile_ptr.add(d * T + pos_in_tile) })
@@ -314,9 +316,7 @@ impl<const T: usize> TiledVectorStore<T> {
         }
 
         let storage = self.storage.as_ref()?;
-        Some(unsafe { 
-            storage.as_ptr().add(tile_idx * self.tile_bytes) as *const f32 
-        })
+        Some(unsafe { storage.as_ptr().add(tile_idx * self.tile_bytes) as *const f32 })
     }
 
     /// Compute batch distances to vectors at given indices.
@@ -325,33 +325,36 @@ impl<const T: usize> TiledVectorStore<T> {
             return vec![];
         }
 
-        indices.iter().map(|&idx| {
-            if idx >= self.count {
-                return f32::MAX;
-            }
+        indices
+            .iter()
+            .map(|&idx| {
+                if idx >= self.count {
+                    return f32::MAX;
+                }
 
-            let tile_idx = idx / T;
-            let pos_in_tile = idx % T;
-            
-            let Some(tile_ptr) = self.tile_ptr(tile_idx) else {
-                return f32::MAX;
-            };
+                let tile_idx = idx / T;
+                let pos_in_tile = idx % T;
 
-            let mut dist = 0.0f32;
-            for (d, &q) in query.iter().enumerate() {
-                let v = unsafe { *tile_ptr.add(d * T + pos_in_tile) };
-                let diff = q - v;
-                dist += diff * diff;
-            }
-            dist
-        }).collect()
+                let Some(tile_ptr) = self.tile_ptr(tile_idx) else {
+                    return f32::MAX;
+                };
+
+                let mut dist = 0.0f32;
+                for (d, &q) in query.iter().enumerate() {
+                    let v = unsafe { *tile_ptr.add(d * T + pos_in_tile) };
+                    let diff = q - v;
+                    dist += diff * diff;
+                }
+                dist
+            })
+            .collect()
     }
 
     /// Compute distances to all vectors in a tile.
     #[inline]
     pub fn tile_l2_squared(&self, query: &[f32], tile_idx: usize) -> [f32; T] {
         let mut dists = [f32::MAX; T];
-        
+
         if query.len() != self.dimension || tile_idx >= self.num_tiles {
             return dists;
         }
@@ -385,7 +388,7 @@ impl<const T: usize> TiledVectorStore<T> {
         use std::arch::x86_64::*;
 
         let mut dists = [f32::MAX; T];
-        
+
         if query.len() != self.dimension || tile_idx >= self.num_tiles {
             return dists;
         }
@@ -406,7 +409,7 @@ impl<const T: usize> TiledVectorStore<T> {
 
         // Store results
         _mm_storeu_ps(dists.as_mut_ptr(), acc);
-        
+
         // Mark invalid slots
         let valid_count = (self.count.saturating_sub(tile_idx * T)).min(T);
         for i in valid_count..T {
@@ -422,7 +425,7 @@ impl<const T: usize> TiledVectorStore<T> {
         use std::arch::aarch64::*;
 
         let mut dists = [f32::MAX; T];
-        
+
         if query.len() != self.dimension || tile_idx >= self.num_tiles {
             return dists;
         }
@@ -448,7 +451,7 @@ impl<const T: usize> TiledVectorStore<T> {
         // Store results
         // SAFETY: dists is a valid array with enough space
         unsafe { vst1q_f32(dists.as_mut_ptr(), acc) };
-        
+
         // Mark invalid slots
         let valid_count = (self.count.saturating_sub(tile_idx * T)).min(T);
         for i in valid_count..T {
@@ -544,12 +547,12 @@ mod tests {
     #[test]
     fn test_vector_tile_basic() {
         let mut tile: VectorTile<4> = VectorTile::new(3);
-        
+
         tile.set_vector(0, &[1.0, 2.0, 3.0]);
         tile.set_vector(1, &[4.0, 5.0, 6.0]);
         tile.set_vector(2, &[7.0, 8.0, 9.0]);
         tile.set_vector(3, &[10.0, 11.0, 12.0]);
-        
+
         assert_eq!(tile.get_vector(0), vec![1.0, 2.0, 3.0]);
         assert_eq!(tile.get_vector(1), vec![4.0, 5.0, 6.0]);
         assert_eq!(tile.get_vector(2), vec![7.0, 8.0, 9.0]);
@@ -559,15 +562,15 @@ mod tests {
     #[test]
     fn test_tile_batch_distance() {
         let mut tile: VectorTile<4> = VectorTile::new(3);
-        
+
         tile.set_vector(0, &[1.0, 0.0, 0.0]);
         tile.set_vector(1, &[0.0, 1.0, 0.0]);
         tile.set_vector(2, &[0.0, 0.0, 1.0]);
         tile.set_vector(3, &[1.0, 1.0, 1.0]);
-        
+
         let query = [0.0, 0.0, 0.0];
         let dists = tile.batch_l2_squared(&query);
-        
+
         assert!((dists[0] - 1.0).abs() < 1e-6);
         assert!((dists[1] - 1.0).abs() < 1e-6);
         assert!((dists[2] - 1.0).abs() < 1e-6);
@@ -577,15 +580,15 @@ mod tests {
     #[test]
     fn test_tile_batch_dot() {
         let mut tile: VectorTile<4> = VectorTile::new(3);
-        
+
         tile.set_vector(0, &[1.0, 0.0, 0.0]);
         tile.set_vector(1, &[0.0, 1.0, 0.0]);
         tile.set_vector(2, &[0.0, 0.0, 1.0]);
         tile.set_vector(3, &[1.0, 1.0, 1.0]);
-        
+
         let query = [1.0, 1.0, 1.0];
         let dots = tile.batch_dot(&query);
-        
+
         assert!((dots[0] - 1.0).abs() < 1e-6);
         assert!((dots[1] - 1.0).abs() < 1e-6);
         assert!((dots[2] - 1.0).abs() < 1e-6);
@@ -595,16 +598,16 @@ mod tests {
     #[test]
     fn test_tiled_store_basic() {
         let mut store: TiledVectorStore<4> = TiledVectorStore::new(128, 100);
-        
+
         // Add some vectors
         for i in 0..50 {
             let v: Vec<f32> = (0..128).map(|d| (i * 128 + d) as f32).collect();
             assert_eq!(store.push(&v), Some(i));
         }
-        
+
         assert_eq!(store.len(), 50);
         assert_eq!(store.dimension(), 128);
-        
+
         // Verify retrieval
         let v0 = store.get(0).unwrap();
         assert_eq!(v0.len(), 128);
@@ -615,15 +618,15 @@ mod tests {
     #[test]
     fn test_tiled_store_distance() {
         let mut store: TiledVectorStore<4> = TiledVectorStore::new(3, 8);
-        
+
         store.push(&[1.0, 0.0, 0.0]).unwrap();
         store.push(&[0.0, 1.0, 0.0]).unwrap();
         store.push(&[0.0, 0.0, 1.0]).unwrap();
         store.push(&[1.0, 1.0, 1.0]).unwrap();
-        
+
         let query = vec![0.0, 0.0, 0.0];
         let dists = store.batch_l2_squared(&query, &[0, 1, 2, 3]);
-        
+
         assert!((dists[0] - 1.0).abs() < 1e-6);
         assert!((dists[1] - 1.0).abs() < 1e-6);
         assert!((dists[2] - 1.0).abs() < 1e-6);
@@ -633,15 +636,15 @@ mod tests {
     #[test]
     fn test_tiled_store_tile_distance() {
         let mut store: TiledVectorStore<4> = TiledVectorStore::new(3, 8);
-        
+
         store.push(&[1.0, 0.0, 0.0]).unwrap();
         store.push(&[0.0, 1.0, 0.0]).unwrap();
         store.push(&[0.0, 0.0, 1.0]).unwrap();
         store.push(&[1.0, 1.0, 1.0]).unwrap();
-        
+
         let query = vec![0.0, 0.0, 0.0];
         let dists = store.tile_l2_squared(&query, 0);
-        
+
         assert!((dists[0] - 1.0).abs() < 1e-6);
         assert!((dists[1] - 1.0).abs() < 1e-6);
         assert!((dists[2] - 1.0).abs() < 1e-6);
@@ -651,7 +654,7 @@ mod tests {
     #[test]
     fn test_aligned_block() {
         let block = AlignedBlock::new(256, 64).unwrap();
-        
+
         assert_eq!(block.len(), 256);
         assert_eq!(block.as_ptr() as usize % 64, 0); // Check alignment
     }
@@ -659,12 +662,12 @@ mod tests {
     #[test]
     fn test_store_stats() {
         let mut store: TiledVectorStore<4> = TiledVectorStore::new(128, 100);
-        
+
         for i in 0..50 {
             let v: Vec<f32> = (0..128).map(|d| (i * 128 + d) as f32).collect();
             store.push(&v).unwrap();
         }
-        
+
         let stats = store.stats();
         assert_eq!(stats.count, 50);
         assert!(stats.num_tiles > 0);
@@ -675,7 +678,7 @@ mod tests {
     #[test]
     fn test_empty_store() {
         let store: TiledVectorStore<4> = TiledVectorStore::new(128, 0);
-        
+
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
         assert_eq!(store.memory_bytes(), 0);
@@ -684,18 +687,18 @@ mod tests {
     #[test]
     fn test_partial_tile() {
         let mut store: TiledVectorStore<4> = TiledVectorStore::new(3, 10);
-        
+
         // Add only 2 vectors (partial first tile)
         store.push(&[1.0, 2.0, 3.0]).unwrap();
         store.push(&[4.0, 5.0, 6.0]).unwrap();
-        
+
         let query = vec![0.0, 0.0, 0.0];
         let dists = store.tile_l2_squared(&query, 0);
-        
+
         // First two should be valid
         assert!((dists[0] - 14.0).abs() < 1e-6); // 1^2 + 2^2 + 3^2 = 14
         assert!((dists[1] - 77.0).abs() < 1e-6); // 4^2 + 5^2 + 6^2 = 77
-        
+
         // Last two should be MAX (invalid)
         assert_eq!(dists[2], f32::MAX);
         assert_eq!(dists[3], f32::MAX);

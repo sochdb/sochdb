@@ -1,0 +1,290 @@
+# =============================================================================
+# Prometheus Deployment for SochDB Monitoring
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: sochdb-monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: sochdb-production
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager:9093']
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ['localhost:9090']
+
+      - job_name: sochdb
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['default', 'sochdb']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: sochdb
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+            regex: (.+)
+            target_label: __address__
+            replacement: ${1}:${2}
+            action: replace
+          - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            separator: ':'
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+  sochdb_alerts.yml: |
+    groups:
+      - name: sochdb.availability
+        rules:
+          - alert: SochDBDown
+            expr: up{job="sochdb"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "SochDB instance {{ $labels.pod }} is down"
+              runbook_url: "https://sochdb.dev/runbooks/instance-down"
+
+          - alert: SochDBHighErrorRate
+            expr: |
+              rate(sochdb_grpc_errors_total[5m])
+              / rate(sochdb_grpc_requests_total[5m]) > 0.05
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "gRPC error rate >5% on {{ $labels.pod }}"
+
+          - alert: SochDBHighLatencyP99
+            expr: |
+              histogram_quantile(0.99, rate(sochdb_grpc_request_duration_seconds_bucket[5m])) > 1.0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "P99 latency >1s on {{ $labels.pod }}"
+
+      - name: sochdb.storage
+        rules:
+          - alert: SochDBDiskUsageHigh
+            expr: |
+              (sochdb_storage_used_bytes / sochdb_storage_total_bytes) > 0.85
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Disk usage >85% on {{ $labels.pod }}"
+
+          - alert: SochDBDiskUsageCritical
+            expr: |
+              (sochdb_storage_used_bytes / sochdb_storage_total_bytes) > 0.95
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Disk usage >95% on {{ $labels.pod }}"
+
+          - alert: SochDBWALLagHigh
+            expr: sochdb_wal_pending_bytes > 536870912
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "WAL pending >512MB on {{ $labels.pod }}"
+
+      - name: sochdb.performance
+        rules:
+          - alert: SochDBSearchLatencySlow
+            expr: |
+              histogram_quantile(0.95, rate(hnsw_search_duration_seconds_bucket[5m])) > 0.5
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "HNSW P95 search latency >500ms on {{ $labels.pod }}"
+
+          - alert: SochDBRecallDegraded
+            expr: sochdb_hnsw_recall_at_10 < 0.90
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "HNSW recall@10 dropped below 90% on {{ $labels.pod }}"
+
+          - alert: SochDBCompactionBacklog
+            expr: sochdb_compaction_pending_segments > 50
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Compaction backlog >50 segments on {{ $labels.pod }}"
+
+          - alert: SochDBHighMemoryUsage
+            expr: |
+              container_memory_working_set_bytes{container="sochdb"}
+              / container_spec_memory_limit_bytes{container="sochdb"} > 0.90
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Memory >90% of limit on {{ $labels.pod }}"
+
+      - name: sochdb.cluster
+        rules:
+          - alert: SochDBShardImbalance
+            expr: |
+              max(sochdb_shard_vector_count) / min(sochdb_shard_vector_count) > 2.0
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Shard imbalance ratio >2x"
+
+          - alert: SochDBReplicaLag
+            expr: sochdb_replica_lag_seconds > 30
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Replica lag >30s on {{ $labels.pod }}"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: sochdb-monitoring
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=30d
+            - --web.enable-lifecycle
+            - --web.enable-admin-api
+          ports:
+            - containerPort: 9090
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: 1000m
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+            items:
+              - key: prometheus.yml
+                path: prometheus.yml
+        - name: rules
+          configMap:
+            name: prometheus-config
+            items:
+              - key: sochdb_alerts.yml
+                path: sochdb_alerts.yml
+        - name: data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: sochdb-monitoring
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: 9090
+      name: http
+  selector:
+    app: prometheus
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: sochdb-monitoring
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-sochdb
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy, services, endpoints, pods]
+    verbs: [get, list, watch]
+  - apiGroups: ["extensions"]
+    resources: [ingresses]
+    verbs: [get, list, watch]
+  - nonResourceURLs: [/metrics]
+    verbs: [get]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-sochdb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-sochdb
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: sochdb-monitoring

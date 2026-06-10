@@ -25,10 +25,10 @@
 
 use ndarray::Array1;
 use rand::Rng;
-use std::collections::HashSet;
-use std::time::Instant;
 use sochdb_index::product_quantization::{PQCodebooks, PQCodes};
 use sochdb_index::vamana::{VamanaConfig, VamanaIndex};
+use std::collections::HashSet;
+use std::time::Instant;
 
 /// Generate random vectors clustered around centroids (more realistic)
 fn generate_clustered_vectors(n: usize, dim: usize, n_clusters: usize) -> Vec<Array1<f32>> {

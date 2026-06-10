@@ -25,7 +25,7 @@ pub fn check_safe_mode() -> bool {
     let enabled = std::env::var("SOCHDB_BATCH_SAFE_MODE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
-    
+
     if enabled {
         SAFE_MODE_WARNING.call_once(|| {
             eprintln!(
@@ -43,8 +43,7 @@ pub fn check_safe_mode() -> bool {
 
 /// Check if performance debug logging is enabled.
 pub fn is_debug_enabled() -> bool {
-    std::env::var("SOCHDB_DEBUG_PERF").is_ok()
-        || std::env::var("SOCHDB_DEBUG_INSERT").is_ok()
+    std::env::var("SOCHDB_DEBUG_PERF").is_ok() || std::env::var("SOCHDB_DEBUG_INSERT").is_ok()
 }
 
 // =============================================================================
@@ -69,7 +68,10 @@ pub fn log_batch_detail(batch_idx: usize, batch_size: usize, elapsed: Duration) 
         let rate = batch_size as f64 / elapsed.as_secs_f64();
         eprintln!(
             "[sochdb-perf] Batch {}: {} vectors in {:.2}ms ({:.0} vec/s)",
-            batch_idx, batch_size, elapsed.as_millis(), rate
+            batch_idx,
+            batch_size,
+            elapsed.as_millis(),
+            rate
         );
     }
 }
@@ -85,11 +87,11 @@ pub fn log_batch_detail(batch_idx: usize, batch_size: usize, elapsed: Duration) 
 pub fn min_expected_throughput(dimension: usize) -> f64 {
     // Conservative minimums based on empirical data
     match dimension {
-        d if d <= 128 => 5000.0,   // 5K vec/s minimum for small dims
-        d if d <= 384 => 3000.0,   // 3K vec/s for embedding dims
-        d if d <= 768 => 1500.0,   // 1.5K vec/s for large embeddings
-        d if d <= 1536 => 750.0,   // 750 vec/s for very large embeddings
-        _ => 300.0,               // 300 vec/s for huge dimensions
+        d if d <= 128 => 5000.0, // 5K vec/s minimum for small dims
+        d if d <= 384 => 3000.0, // 3K vec/s for embedding dims
+        d if d <= 768 => 1500.0, // 1.5K vec/s for large embeddings
+        d if d <= 1536 => 750.0, // 750 vec/s for very large embeddings
+        _ => 300.0,              // 300 vec/s for huge dimensions
     }
 }
 
@@ -104,10 +106,10 @@ pub fn check_throughput(
     if vectors_inserted < 100 {
         return None; // Not enough data for meaningful check
     }
-    
+
     let rate = vectors_inserted as f64 / elapsed.as_secs_f64();
     let min_rate = min_expected_throughput(dimension);
-    
+
     if rate < min_rate {
         Some(format!(
             "PERFORMANCE WARNING: {:.0} vec/s is below minimum expected {:.0} vec/s for {}D vectors.\n\
@@ -137,13 +139,13 @@ pub fn verify_contiguous(vectors: &[f32], num_vectors: usize, dimension: usize) 
     if vectors.len() != expected_len {
         return false;
     }
-    
+
     // Check alignment (f32 should be 4-byte aligned)
     let ptr = vectors.as_ptr() as usize;
     if ptr % std::mem::align_of::<f32>() != 0 {
         return false;
     }
-    
+
     true
 }
 
@@ -159,26 +161,41 @@ pub fn print_perf_summary(
     output_bytes: Option<u64>,
 ) {
     let rate = vectors as f64 / elapsed.as_secs_f64();
-    
+
     eprintln!();
     eprintln!("╔══════════════════════════════════════════════════════════════╗");
     eprintln!("║                    Build Summary                             ║");
     eprintln!("╠══════════════════════════════════════════════════════════════╣");
-    eprintln!("║  Vectors:    {:>12}                                    ║", vectors);
-    eprintln!("║  Dimension:  {:>12}                                    ║", dimension);
-    eprintln!("║  Time:       {:>12.2}s                                   ║", elapsed.as_secs_f64());
-    eprintln!("║  Throughput: {:>12.0} vec/s                              ║", rate);
+    eprintln!(
+        "║  Vectors:    {:>12}                                    ║",
+        vectors
+    );
+    eprintln!(
+        "║  Dimension:  {:>12}                                    ║",
+        dimension
+    );
+    eprintln!(
+        "║  Time:       {:>12.2}s                                   ║",
+        elapsed.as_secs_f64()
+    );
+    eprintln!(
+        "║  Throughput: {:>12.0} vec/s                              ║",
+        rate
+    );
     if let Some(bytes) = output_bytes {
-        eprintln!("║  Output:     {:>12.1} MB                                 ║", bytes as f64 / 1024.0 / 1024.0);
+        eprintln!(
+            "║  Output:     {:>12.1} MB                                 ║",
+            bytes as f64 / 1024.0 / 1024.0
+        );
     }
     eprintln!("╚══════════════════════════════════════════════════════════════╝");
-    
+
     // Check for performance issues
     if let Some(warning) = check_throughput(vectors, elapsed, dimension) {
         eprintln!();
         eprintln!("⚠️  {}", warning);
     }
-    
+
     // Report if safe mode was active
     if check_safe_mode() {
         eprintln!();
@@ -189,18 +206,18 @@ pub fn print_perf_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_throughput_check() {
         // Good throughput
         assert!(check_throughput(10000, Duration::from_secs(1), 768).is_none());
-        
+
         // Bad throughput
         let warning = check_throughput(1000, Duration::from_secs(10), 768);
         assert!(warning.is_some());
         assert!(warning.unwrap().contains("PERFORMANCE WARNING"));
     }
-    
+
     #[test]
     fn test_contiguity() {
         let vectors = vec![0.0f32; 1000 * 128];

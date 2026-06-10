@@ -66,7 +66,7 @@ pub type Timestamp = u64;
 pub type RowId = u64;
 
 /// Result from a mutation operation (UPDATE/DELETE)
-/// 
+///
 /// Contains both the count and the affected row IDs for storage-level
 /// durability operations (WAL entries, secondary index updates, CDC).
 #[derive(Debug, Clone, Default)]
@@ -82,10 +82,13 @@ impl MutationResult {
     pub fn empty() -> Self {
         Self::default()
     }
-    
+
     /// Create from count and IDs
     pub fn new(affected_count: usize, affected_row_ids: Vec<RowId>) -> Self {
-        Self { affected_count, affected_row_ids }
+        Self {
+            affected_count,
+            affected_row_ids,
+        }
     }
 }
 
@@ -130,135 +133,6 @@ pub struct ArraySchema {
     pub name: String,
     pub fields: Vec<String>,
     pub types: Vec<FieldType>,
-}
-
-/// Simulated WAL storage manager for transactions
-/// 
-/// # ⚠️ DEPRECATED - DO NOT USE IN PRODUCTION
-/// 
-/// This is a **testing stub** that provides NO durability guarantees:
-/// - No disk I/O occurs
-/// - Data is lost on process exit
-/// - No crash recovery
-/// 
-/// ## Migration
-/// 
-/// Replace with `sochdb_storage::WalStorageManager` or use [`DurableConnection`]:
-/// 
-/// ```rust,ignore
-/// // Before (WRONG - no durability):
-/// let conn = SochConnection::open("./data")?;
-/// 
-/// // After (CORRECT - full WAL durability):
-/// let conn = DurableConnection::open("./data")?;
-/// ```
-/// 
-/// See: <https://github.com/sochdb/sochdb/blob/main/docs/ARCHITECTURE.md#wal-integration>
-#[deprecated(
-    since = "0.2.0",
-    note = "Use DurableConnection or sochdb_storage::WalStorageManager for production. \
-            This stub provides NO durability. REMOVAL SCHEDULED: v0.3.0"
-)]
-pub struct WalStorageManager {
-    next_txn_id: AtomicU64,
-    // In real impl: WAL file handle, buffer, etc.
-}
-
-#[allow(deprecated)]
-impl Default for WalStorageManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[allow(deprecated)]
-impl WalStorageManager {
-    pub fn new() -> Self {
-        Self {
-            next_txn_id: AtomicU64::new(1),
-        }
-    }
-
-    pub fn begin_txn(&self) -> Result<TxnId> {
-        Ok(self.next_txn_id.fetch_add(1, Ordering::SeqCst))
-    }
-
-    pub fn commit(&self, _txn_id: TxnId) -> Result<Timestamp> {
-        // In real impl: flush to WAL, fsync
-        Ok(self.next_txn_id.load(Ordering::SeqCst))
-    }
-
-    pub fn abort(&self, _txn_id: TxnId) -> Result<()> {
-        // In real impl: mark aborted in WAL
-        Ok(())
-    }
-}
-
-/// Simulated transaction manager for MVCC
-///
-/// # ⚠️ DEPRECATED - DO NOT USE IN PRODUCTION
-///
-/// This is a **testing stub** with NO MVCC semantics:
-/// - No snapshot isolation
-/// - No conflict detection  
-/// - No visibility tracking
-/// - Uses simple counter instead of Lamport timestamps
-///
-/// ## Migration
-///
-/// Replace with `sochdb_storage::MvccTransactionManager` or use [`DurableConnection`]:
-///
-/// ```rust,ignore
-/// // Before (WRONG - no MVCC):
-/// let conn = SochConnection::open("./data")?;
-///
-/// // After (CORRECT - full MVCC with SSI):
-/// let conn = DurableConnection::open("./data")?;
-/// ```
-///
-/// See: <https://github.com/sochdb/sochdb/blob/main/docs/ARCHITECTURE.md#wal-integration>
-#[deprecated(
-    since = "0.2.0",
-    note = "Use DurableConnection or sochdb_storage::MvccTransactionManager for production. \
-            This stub has NO MVCC semantics. REMOVAL SCHEDULED: v0.3.0"
-)]
-pub struct TransactionManager {
-    current_ts: AtomicU64,
-    // In real impl: active transactions, commit timestamps, etc.
-}
-
-#[allow(deprecated)]
-impl Default for TransactionManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[allow(deprecated)]
-impl TransactionManager {
-    pub fn new() -> Self {
-        Self {
-            current_ts: AtomicU64::new(1),
-        }
-    }
-
-    pub fn begin(&self) -> (TxnId, Timestamp) {
-        let ts = self.current_ts.fetch_add(1, Ordering::SeqCst);
-        (ts, ts)
-    }
-
-    pub fn current_timestamp(&self) -> Timestamp {
-        self.current_ts.load(Ordering::SeqCst)
-    }
-
-    pub fn commit(&self, _txn_id: TxnId) -> Result<Timestamp> {
-        let ts = self.current_ts.fetch_add(1, Ordering::SeqCst);
-        Ok(ts)
-    }
-
-    pub fn abort(&self, _txn_id: TxnId) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Bloom filter for efficient negative lookups
@@ -445,13 +319,12 @@ impl Level {
         self.sstables
             .iter()
             .map(|sst| match sst {
-                SstHandle::InMemory(s) => s.entries
+                SstHandle::InMemory(s) => s
+                    .entries
                     .iter()
                     .map(|e| e.key.len() + e.value.len())
                     .sum::<usize>() as u64,
-                SstHandle::OnDisk { reader, .. } => {
-                    reader.metadata().file_size
-                }
+                SstHandle::OnDisk { reader, .. } => reader.metadata().file_size,
             })
             .sum()
     }
@@ -784,7 +657,12 @@ impl LscsStorage {
                                 }
                             }
                         }
-                        SstHandle::OnDisk { reader, min_key, max_key, .. } => {
+                        SstHandle::OnDisk {
+                            reader,
+                            min_key,
+                            max_key,
+                            ..
+                        } => {
                             if key >= min_key.as_slice() && key <= max_key.as_slice() {
                                 let opts = sochdb_storage::ReadOptions::default();
                                 match reader.get(key, &opts) {
@@ -793,7 +671,9 @@ impl LscsStorage {
                                             // Empty value = tombstone for disk SSTables
                                             return Ok(None);
                                         }
-                                        self.stats.bloom_filter_hits.fetch_add(1, Ordering::Relaxed);
+                                        self.stats
+                                            .bloom_filter_hits
+                                            .fetch_add(1, Ordering::Relaxed);
                                         return Ok(Some(value));
                                     }
                                     Ok(None) => {
@@ -860,12 +740,18 @@ impl LscsStorage {
             for entry in &entries {
                 // For tombstones, write empty value; actual tombstone handling
                 // is done at read time via the deleted flag in compaction
-                let val = if entry.deleted { &[][..] } else { &entry.value[..] };
-                builder.add(&entry.key, val)
+                let val = if entry.deleted {
+                    &[][..]
+                } else {
+                    &entry.value[..]
+                };
+                builder
+                    .add(&entry.key, val)
                     .map_err(|e| ClientError::Storage(format!("SSTable write failed: {}", e)))?;
             }
 
-            let result = builder.finish()
+            let result = builder
+                .finish()
                 .map_err(|e| ClientError::Storage(format!("SSTable finish failed: {}", e)))?;
 
             let min_key = result.smallest_key.clone().unwrap_or_default();
@@ -959,7 +845,9 @@ impl LscsStorage {
             SstHandle::InMemory(s) => {
                 out.extend(s.entries);
             }
-            SstHandle::OnDisk { reader, seq_num, .. } => {
+            SstHandle::OnDisk {
+                reader, seq_num, ..
+            } => {
                 // Iterate through all entries in the on-disk SSTable
                 let mut iter = reader.iter();
                 while iter.valid() {
@@ -1207,12 +1095,17 @@ impl LscsStorage {
                     match sst {
                         SstHandle::InMemory(s) => {
                             for entry in &s.entries {
-                                if entry.key >= start_key.to_vec() && entry.key <= end_key.to_vec() {
+                                if entry.key >= start_key.to_vec() && entry.key <= end_key.to_vec()
+                                {
                                     results
                                         .entry(entry.key.clone())
                                         .and_modify(|e| {
                                             if entry.timestamp > e.1 {
-                                                *e = (entry.value.clone(), entry.timestamp, entry.deleted);
+                                                *e = (
+                                                    entry.value.clone(),
+                                                    entry.timestamp,
+                                                    entry.deleted,
+                                                );
                                             }
                                         })
                                         .or_insert_with(|| {
@@ -1221,7 +1114,12 @@ impl LscsStorage {
                                 }
                             }
                         }
-                        SstHandle::OnDisk { reader, min_key, max_key, .. } => {
+                        SstHandle::OnDisk {
+                            reader,
+                            min_key,
+                            max_key,
+                            ..
+                        } => {
                             // Skip SSTables whose key range doesn't overlap [start_key, end_key]
                             if max_key.as_slice() < start_key || min_key.as_slice() > end_key {
                                 continue;
@@ -1260,7 +1158,7 @@ impl LscsStorage {
                                 // only replaces if timestamp is strictly greater.
                                 results
                                     .entry(key_vec)
-                                    .and_modify(|e: &mut (Vec<u8>, u64, bool)| {
+                                    .and_modify(|_e: &mut (Vec<u8>, u64, bool)| {
                                         // Keep the existing (newer) entry
                                     })
                                     .or_insert_with(|| (val_vec, 0, deleted));
@@ -1285,39 +1183,37 @@ impl LscsStorage {
     }
 
     /// Force flush memtable to SST
-    /// 
+    ///
     /// Returns the number of bytes flushed.
     pub fn flush(&self) -> Result<usize> {
         use std::sync::atomic::Ordering;
-        
+
         let memtable_size = self.memtable_size.load(Ordering::SeqCst) as usize;
         self.maybe_flush_memtable()?;
         Ok(memtable_size)
     }
 
     /// Force compaction of all levels
-    /// 
+    ///
     /// Returns compaction metrics.
     pub fn compact(&self) -> Result<CompactionMetrics> {
-        
-        
         // First flush any pending memtable
         let flushed_bytes = self.flush()? as u64;
-        
+
         // Get pre-compaction stats
         let levels = self.levels.read();
         let pre_files: usize = levels.iter().map(|l| l.sstables.len()).sum();
         let pre_bytes: u64 = levels.iter().map(|l| l.total_size()).sum();
         drop(levels);
-        
+
         // Perform compaction
         self.maybe_compact()?;
-        
+
         // Get post-compaction stats
         let levels = self.levels.read();
         let post_files: usize = levels.iter().map(|l| l.sstables.len()).sum();
         let post_bytes: u64 = levels.iter().map(|l| l.total_size()).sum();
-        
+
         Ok(CompactionMetrics {
             bytes_compacted: Some(flushed_bytes + pre_bytes.saturating_sub(post_bytes)),
             files_merged: Some(pre_files.saturating_sub(post_files)),
@@ -1495,6 +1391,28 @@ impl ColumnStore {
         Some(row)
     }
 
+    /// Get the stable `row_id` for a positional row index.
+    fn row_id_at(&self, table: &str, row_idx: usize) -> Option<u64> {
+        self.row_meta
+            .get(table)
+            .and_then(|m| m.get(row_idx))
+            .map(|meta| meta.row_id)
+    }
+
+    /// Get a visible row by its stable `row_id` (rather than positional index).
+    fn get_row_by_id(
+        &self,
+        table: &str,
+        row_id: u64,
+        columns: &[String],
+    ) -> Option<std::collections::HashMap<String, SochValue>> {
+        let row_meta = self.row_meta.get(table)?;
+        let idx = row_meta
+            .iter()
+            .position(|m| m.row_id == row_id && !m.deleted)?;
+        self.get_row(table, idx, columns)
+    }
+
     /// Get all visible rows
     fn get_all_rows(
         &self,
@@ -1517,12 +1435,12 @@ impl ColumnStore {
     }
 
     /// Optimized batch scan with pre-allocation and vectorized column access
-    /// 
+    ///
     /// Performance optimizations:
     /// 1. Pre-allocates result vector based on non-deleted row count
     /// 2. Batches column reads to reduce HashMap lookups
     /// 3. Uses cache-friendly sequential iteration over column arrays
-    /// 
+    ///
     /// Target: ≤1.1× SQLite overhead for full table scans
     fn get_all_rows_optimized(
         &self,
@@ -1543,10 +1461,8 @@ impl ColumnStore {
         let mut results = Vec::with_capacity(visible_count);
 
         // Pre-fetch column references to avoid repeated HashMap lookups
-        let col_refs: Vec<(&String, Option<&Vec<ColumnValue>>)> = columns
-            .iter()
-            .map(|c| (c, table_cols.get(c)))
-            .collect();
+        let col_refs: Vec<(&String, Option<&Vec<ColumnValue>>)> =
+            columns.iter().map(|c| (c, table_cols.get(c))).collect();
 
         // Sequential scan with batched column access
         for (idx, meta) in row_meta.iter().enumerate() {
@@ -1570,7 +1486,7 @@ impl ColumnStore {
     }
 
     /// Streaming batch iterator for very large tables
-    /// 
+    ///
     /// Yields rows in batches to reduce peak memory usage.
     /// Each batch is cache-line aligned for optimal CPU prefetch.
     #[allow(dead_code)]
@@ -1789,8 +1705,21 @@ impl TrieColumnarHybrid {
         0
     }
 
+    /// Fetch a visible row by its stable `row_id`, projecting all schema columns.
+    ///
+    /// Used by the mutation write-through path to re-serialize an updated row
+    /// for durable storage.
+    pub fn get_row_by_id(
+        &self,
+        table: &str,
+        row_id: u64,
+    ) -> Option<std::collections::HashMap<String, SochValue>> {
+        let columns = self.tables.get(table)?.schema.fields.clone();
+        self.data.get_row_by_id(table, row_id, &columns)
+    }
+
     /// Update rows in a table - NOW ACTUALLY UPDATES DATA
-    /// 
+    ///
     /// Returns [`MutationResult`] with affected row IDs for storage-level durability.
     pub fn update_rows(
         &mut self,
@@ -1820,8 +1749,10 @@ impl TrieColumnarHybrid {
                 continue;
             }
 
-            if self.data.update_row(table, idx, updates) {
-                affected_ids.push(idx as RowId);
+            if self.data.update_row(table, idx, updates)
+                && let Some(row_id) = self.data.row_id_at(table, idx)
+            {
+                affected_ids.push(row_id);
             }
         }
 
@@ -1829,9 +1760,13 @@ impl TrieColumnarHybrid {
     }
 
     /// Delete rows from a table - NOW ACTUALLY DELETES DATA
-    /// 
+    ///
     /// Returns [`MutationResult`] with affected row IDs for storage-level durability.
-    pub fn delete_rows(&mut self, table: &str, where_clause: Option<&WhereClause>) -> MutationResult {
+    pub fn delete_rows(
+        &mut self,
+        table: &str,
+        where_clause: Option<&WhereClause>,
+    ) -> MutationResult {
         if !self.tables.contains_key(table) {
             return MutationResult::empty();
         }
@@ -1854,8 +1789,10 @@ impl TrieColumnarHybrid {
                 continue;
             }
 
-            if self.data.delete_row(table, idx) {
-                affected_ids.push(idx as RowId);
+            if self.data.delete_row(table, idx)
+                && let Some(row_id) = self.data.row_id_at(table, idx)
+            {
+                affected_ids.push(row_id);
             }
         }
 
@@ -1892,7 +1829,7 @@ impl TrieColumnarHybrid {
     }
 
     /// Select rows from a table - OPTIMIZED with batch allocation
-    /// 
+    ///
     /// Performance optimizations applied:
     /// - Uses `get_all_rows_optimized()` with pre-allocation
     /// - Cache-friendly sequential column access
@@ -1927,8 +1864,9 @@ impl TrieColumnarHybrid {
         } else {
             all_rows.len()
         };
-        
-        let mut filtered: Vec<std::collections::HashMap<String, SochValue>> = Vec::with_capacity(estimated_size);
+
+        let mut filtered: Vec<std::collections::HashMap<String, SochValue>> =
+            Vec::with_capacity(estimated_size);
         for (_, row) in all_rows {
             let matches = match where_clause {
                 Some(wc) => self.matches_where(&row, wc),
@@ -2044,10 +1982,7 @@ pub enum WhereClause {
         negated: bool,
     },
     /// IS NULL / IS NOT NULL
-    IsNull {
-        field: String,
-        negated: bool,
-    },
+    IsNull { field: String, negated: bool },
     /// BETWEEN: field BETWEEN low AND high
     Between {
         field: String,
@@ -2119,21 +2054,30 @@ impl WhereClause {
                     false
                 }
             }
-            WhereClause::In { field, values, negated } => {
+            WhereClause::In {
+                field,
+                values,
+                negated,
+            } => {
                 if let Some(row_val) = row.get(field) {
-                    let found = values.iter().any(|v| compare_values(row_val, &CompareOp::Eq, v));
+                    let found = values
+                        .iter()
+                        .any(|v| compare_values(row_val, &CompareOp::Eq, v));
                     if *negated { !found } else { found }
                 } else {
                     *negated // NULL NOT IN (values) is true, NULL IN (values) is false
                 }
             }
             WhereClause::IsNull { field, negated } => {
-                let is_null = row.get(field).map(|v| matches!(v, SochValue::Null)).unwrap_or(true);
+                let is_null = row
+                    .get(field)
+                    .map(|v| matches!(v, SochValue::Null))
+                    .unwrap_or(true);
                 if *negated { !is_null } else { is_null }
             }
             WhereClause::Between { field, low, high } => {
                 if let Some(row_val) = row.get(field) {
-                    compare_values(row_val, &CompareOp::Ge, low) 
+                    compare_values(row_val, &CompareOp::Ge, low)
                         && compare_values(row_val, &CompareOp::Le, high)
                 } else {
                     false
@@ -2265,37 +2209,38 @@ pub struct TchStats {
     pub total_columns: usize,
 }
 
-/// SochDB In-Memory Connection (Testing Only)
+/// SochDB Connection
 ///
-/// # ⚠️ NOT FOR PRODUCTION USE
+/// A connection to SochDB backed by the canonical `DurableStorage` engine
+/// (WAL + MVCC + SSI). Both the ephemeral and persistent constructors use the
+/// same storage engine, so test and production code paths are identical.
 ///
-/// This connection uses **stub** WAL/transaction managers:
-/// - No data persistence (lost on process exit)
-/// - No crash recovery
-/// - No snapshot isolation
-/// - No ACID guarantees
+/// ## Constructors
 ///
-/// ## For Production, Use [`DurableConnection`]
+/// - [`SochConnection::open`] — ephemeral: full `DurableStorage` backed by a
+///   temporary directory that is cleaned up on drop. Ideal for tests,
+///   benchmarks, and prototyping where on-disk data should not persist beyond
+///   the process.
+/// - [`SochConnection::open_persistent`] — durable: `DurableStorage` rooted at
+///   the given path, with real persistence and crash recovery.
+///
+/// For an explicitly durability-typed façade, see [`DurableConnection`].
 ///
 /// ```rust,ignore
-/// use sochdb::DurableConnection;
+/// use sochdb::SochConnection;
 ///
-/// // Production connection with full ACID guarantees
-/// let conn = DurableConnection::open("./data")?;
+/// // Ephemeral (temp dir, cleaned up on drop) — still real WAL/MVCC/SSI:
+/// let conn = SochConnection::open("./ignored")?;
+///
+/// // Persistent on-disk storage:
+/// let conn = SochConnection::open_persistent("./data")?;
 /// ```
-///
-/// ## When to Use SochConnection
-///
-/// - Unit tests where persistence isn't needed
-/// - Benchmarks measuring TCH performance in isolation
-/// - Prototyping before storage integration
 ///
 /// ## Architecture
 ///
 /// Provides unified access to:
 /// - TCH for O(|path|) path resolution
-/// - LSCS for columnar storage (in-memory only)
-/// - Stub transaction manager (no real MVCC)
+/// - `DurableStorage` for columnar storage, WAL, MVCC, and SSI transactions
 /// - Catalog for schema management
 ///
 /// See: <https://github.com/sochdb/sochdb/blob/main/docs/ARCHITECTURE.md#connection-types>
@@ -2330,8 +2275,8 @@ impl SochConnection {
     /// The path argument is accepted for API compatibility but ignored;
     /// all data is stored in a temporary directory cleaned up on drop.
     pub fn open(_path: impl AsRef<Path>) -> Result<Self> {
-        let handle = DurableStorage::open_ephemeral()
-            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        let handle =
+            DurableStorage::open_ephemeral().map_err(|e| ClientError::Storage(e.to_string()))?;
         let (storage, tmpdir) = handle.into_parts();
         Ok(Self {
             tch: Arc::new(RwLock::new(TrieColumnarHybrid::new())),
@@ -2350,8 +2295,8 @@ impl SochConnection {
     /// Unlike `open()` (which creates ephemeral storage), this creates a
     /// durable connection with real persistence at the specified path.
     pub fn open_persistent(path: impl AsRef<Path>) -> Result<Self> {
-        let storage = DurableStorage::open(path.as_ref())
-            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        let storage =
+            DurableStorage::open(path.as_ref()).map_err(|e| ClientError::Storage(e.to_string()))?;
         Ok(Self {
             tch: Arc::new(RwLock::new(TrieColumnarHybrid::new())),
             storage: Arc::new(storage),
@@ -2842,15 +2787,14 @@ impl EmbeddedConnection {
     pub fn scan_range(&self, start: &str, end: &str) -> Result<Vec<(String, Vec<u8>)>> {
         self.queries_executed.fetch_add(1, Ordering::Relaxed);
         let txn = self.ensure_txn()?;
-        let results = self.db
+        let results = self
+            .db
             .scan_range(txn, start.as_bytes(), end.as_bytes())
             .map_err(|e| ClientError::Storage(e.to_string()))?;
         // Convert byte keys to strings
         Ok(results
             .into_iter()
-            .filter_map(|(k, v)| {
-                String::from_utf8(k).ok().map(|s| (s, v))
-            })
+            .filter_map(|(k, v)| String::from_utf8(k).ok().map(|s| (s, v)))
             .collect())
     }
 
@@ -3176,8 +3120,10 @@ pub struct DurableConnection {
 pub struct ConnectionConfig {
     /// Enable group commit for better write throughput
     pub group_commit: bool,
-    /// Sync mode: controls fsync behavior
-    pub sync_mode: SyncModeClient,
+    /// Durability contract: controls fsync behavior. Defaults to
+    /// [`Durability::Full`] so a `DurableConnection` is crash-durable (commit ⇒
+    /// on stable storage) unless you explicitly opt into a lossy mode.
+    pub sync_mode: Durability,
     /// Enable ordered index for O(log N) prefix scans
     ///
     /// When false, saves ~134 ns/op on writes (20% speedup)
@@ -3189,22 +3135,65 @@ pub struct ConnectionConfig {
     pub group_commit_max_wait_us: u64,
 }
 
-/// Sync mode (client-side mirror of storage layer)
+/// Durability contract for a [`DurableConnection`] (Task 4 — Explicit Durability
+/// Contract + Safe Default).
+///
+/// The variant name **states the guarantee**, so a misread default can never
+/// silently cost data. This makes illegal interpretations unrepresentable: you
+/// cannot select a lossy mode without naming the loss. Formally this encodes the
+/// durability/latency Pareto frontier — expected loss on crash is
+/// `E[loss] = λ_commit · Δ_unsynced`, which is zero only under [`Durability::Full`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyncModeClient {
-    /// No fsync (fastest, risk of data loss on crash)
-    Off,
-    /// Fsync at checkpoints (balanced)
-    Normal,
-    /// Fsync every commit (safest, slowest)
+pub enum Durability {
+    /// fsync on every commit: **commit returns ⇒ data is on stable storage**
+    /// (ACID durability). This is the safe default and the guarantee the
+    /// `DurableConnection` name promises. Pair with group commit (enabled by
+    /// default) to amortize the fsync across concurrent commits.
     Full,
+    /// fsync deferred to checkpoints (SQLite `NORMAL` equivalent). Faster, but a
+    /// power failure can lose the most recent committed transactions. The long
+    /// name spells out the risk on purpose.
+    NormalMayLoseRecentCommits,
+    /// No fsync at all. ANY committed data can be lost on crash. Testing only.
+    Unsafe,
 }
+
+impl Durability {
+    /// Numeric sync-mode understood by the storage layer (0=off, 1=normal, 2=full).
+    fn to_storage_sync_mode(self) -> u64 {
+        match self {
+            Durability::Unsafe => 0,
+            Durability::NormalMayLoseRecentCommits => 1,
+            Durability::Full => 2,
+        }
+    }
+
+    /// `true` iff `commit` returning implies the data is durably on stable
+    /// storage (i.e. survives a power failure).
+    pub fn is_crash_durable(self) -> bool {
+        matches!(self, Durability::Full)
+    }
+}
+
+#[allow(non_upper_case_globals)]
+impl Durability {
+    /// Compatibility alias for the former `SyncModeClient::Off`.
+    /// Prefer [`Durability::Unsafe`] — the name states the risk.
+    pub const Off: Durability = Durability::Unsafe;
+    /// Compatibility alias for the former `SyncModeClient::Normal`.
+    /// Prefer [`Durability::NormalMayLoseRecentCommits`].
+    pub const Normal: Durability = Durability::NormalMayLoseRecentCommits;
+}
+
+/// Former name for [`Durability`]. Retained for source compatibility; new code
+/// should use [`Durability`] whose variant names state the guarantee.
+pub type SyncModeClient = Durability;
 
 impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
             group_commit: true,
-            sync_mode: SyncModeClient::Normal,
+            sync_mode: Durability::Full,
             enable_ordered_index: true,
             group_commit_batch_size: 100,
             group_commit_max_wait_us: 10_000,
@@ -3221,7 +3210,7 @@ impl ConnectionConfig {
     pub fn throughput_optimized() -> Self {
         Self {
             group_commit: true,
-            sync_mode: SyncModeClient::Normal,
+            sync_mode: Durability::NormalMayLoseRecentCommits,
             enable_ordered_index: false,
             group_commit_batch_size: 1000,
             group_commit_max_wait_us: 50_000,
@@ -3236,7 +3225,7 @@ impl ConnectionConfig {
     pub fn latency_optimized() -> Self {
         Self {
             group_commit: true,
-            sync_mode: SyncModeClient::Full,
+            sync_mode: Durability::Full,
             enable_ordered_index: true,
             group_commit_batch_size: 10,
             group_commit_max_wait_us: 1_000,
@@ -3251,7 +3240,7 @@ impl ConnectionConfig {
     pub fn max_durability() -> Self {
         Self {
             group_commit: false,
-            sync_mode: SyncModeClient::Full,
+            sync_mode: Durability::Full,
             enable_ordered_index: true,
             group_commit_batch_size: 1,
             group_commit_max_wait_us: 0,
@@ -3296,11 +3285,7 @@ impl DurableConnection {
         .map_err(|e| ClientError::Storage(e.to_string()))?;
 
         // Apply sync mode from config
-        let sync_mode = match config.sync_mode {
-            SyncModeClient::Off => 0,
-            SyncModeClient::Normal => 1,
-            SyncModeClient::Full => 2,
-        };
+        let sync_mode = config.sync_mode.to_storage_sync_mode();
         storage.set_sync_mode(sync_mode);
 
         Ok(Self {
@@ -3332,16 +3317,12 @@ impl DurableConnection {
 
     /// Open an ephemeral connection with custom configuration.
     pub fn open_ephemeral_with_config(config: ConnectionConfig) -> Result<Self> {
-        let handle = DurableStorage::open_ephemeral()
-            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        let handle =
+            DurableStorage::open_ephemeral().map_err(|e| ClientError::Storage(e.to_string()))?;
         let (storage, tmpdir) = handle.into_parts();
 
         // Apply sync mode
-        let sync_mode = match config.sync_mode {
-            SyncModeClient::Off => 0,
-            SyncModeClient::Normal => 1,
-            SyncModeClient::Full => 2,
-        };
+        let sync_mode = config.sync_mode.to_storage_sync_mode();
         storage.set_sync_mode(sync_mode);
 
         Ok(Self {
@@ -3498,11 +3479,88 @@ impl DurableConnection {
             .collect())
     }
 
+    /// Scan a key range [start, end) using lexicographic ordering.
+    ///
+    /// Returns all key-value pairs where `start <= key < end`.
+    pub fn scan_range(&self, start: &str, end: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let txn_id = self.ensure_txn()?;
+        let results = self
+            .storage
+            .scan_range(txn_id, start.as_bytes(), end.as_bytes())
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        Ok(results
+            .into_iter()
+            .filter_map(|(k, v)| String::from_utf8(k).ok().map(|s| (s, v)))
+            .collect())
+    }
+
     /// Force fsync to disk
     pub fn fsync(&self) -> Result<()> {
         self.storage
             .fsync()
             .map_err(|e| ClientError::Storage(e.to_string()))
+    }
+
+    /// Begin a read-only transaction using the fast path (no WAL records).
+    ///
+    /// This is ~2.6x faster than `begin_txn()` for read-only workloads because
+    /// it skips two WAL mutex acquisitions (TxnBegin + TxnAbort records).
+    /// The returned txn_id provides a consistent MVCC snapshot.
+    ///
+    /// Callers MUST call `end_read_txn_fast()` to release the snapshot.
+    pub fn begin_read_txn_fast(&self) -> u64 {
+        self.storage.begin_read_only_fast()
+    }
+
+    /// End a read-only fast transaction, releasing its MVCC snapshot.
+    pub fn end_read_txn_fast(&self, txn_id: u64) {
+        self.storage.abort_read_only_fast(txn_id);
+    }
+
+    /// Get a value by path using a read-only snapshot (no WAL overhead).
+    pub fn get_path_fast(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        self.queries_executed.fetch_add(1, Ordering::Relaxed);
+        let txn_id = self.begin_read_txn_fast();
+        let result = self
+            .storage
+            .read(txn_id, path.as_bytes())
+            .map_err(|e| ClientError::Storage(e.to_string()));
+        self.end_read_txn_fast(txn_id);
+        result
+    }
+
+    /// Scan by path prefix using a read-only snapshot (no WAL overhead).
+    pub fn scan_path_fast(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        self.queries_executed.fetch_add(1, Ordering::Relaxed);
+        let txn_id = self.begin_read_txn_fast();
+        let result = self
+            .storage
+            .scan(txn_id, prefix.as_bytes())
+            .map_err(|e| ClientError::Storage(e.to_string()));
+        self.end_read_txn_fast(txn_id);
+        result.map(|pairs| {
+            pairs
+                .into_iter()
+                .filter_map(|(k, v)| String::from_utf8(k).ok().map(|path| (path, v)))
+                .collect()
+        })
+    }
+
+    /// Scan a key range [start, end) using a read-only snapshot (no WAL overhead).
+    pub fn scan_range_fast(&self, start: &str, end: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        self.queries_executed.fetch_add(1, Ordering::Relaxed);
+        let txn_id = self.begin_read_txn_fast();
+        let result = self
+            .storage
+            .scan_range(txn_id, start.as_bytes(), end.as_bytes())
+            .map_err(|e| ClientError::Storage(e.to_string()));
+        self.end_read_txn_fast(txn_id);
+        result.map(|pairs| {
+            pairs
+                .into_iter()
+                .filter_map(|(k, v)| String::from_utf8(k).ok().map(|s| (s, v)))
+                .collect()
+        })
     }
 
     /// Create a checkpoint
@@ -3716,8 +3774,8 @@ impl ReadOnlyConnection {
     /// Write operations are not available on this connection type.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         // Open storage (uses shared lock internally)
-        let storage = DurableStorage::open(path.as_ref())
-            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        let storage =
+            DurableStorage::open(path.as_ref()).map_err(|e| ClientError::Storage(e.to_string()))?;
 
         Ok(Self {
             storage: Arc::new(storage),
@@ -3804,15 +3862,15 @@ impl ReadOnlyConnection {
 pub trait ReadableConnection {
     /// Get a value by key
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
-    
+
     /// Scan keys with a prefix
     fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
-    
+
     /// Get a value by path
     fn get_path(&self, path: &str) -> Result<Option<Vec<u8>>> {
         self.get(path.as_bytes())
     }
-    
+
     /// Scan by path prefix
     fn scan_path(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
         let results = self.scan(prefix.as_bytes())?;
@@ -3827,16 +3885,16 @@ pub trait ReadableConnection {
 pub trait WritableConnection: ReadableConnection {
     /// Put a key-value pair
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()>;
-    
+
     /// Delete a key
     fn delete(&self, key: &[u8]) -> Result<()>;
-    
+
     /// Begin a transaction
     fn begin_txn(&self) -> Result<u64>;
-    
+
     /// Commit a transaction
     fn commit_txn(&self) -> Result<u64>;
-    
+
     /// Abort a transaction
     fn abort_txn(&self) -> Result<()>;
 }
@@ -3845,7 +3903,7 @@ impl ReadableConnection for ReadOnlyConnection {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         ReadOnlyConnection::get(self, key)
     }
-    
+
     fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         ReadOnlyConnection::scan(self, prefix)
     }
@@ -3855,7 +3913,7 @@ impl ReadableConnection for DurableConnection {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         DurableConnection::get(self, key)
     }
-    
+
     fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         DurableConnection::scan(self, prefix)
     }
@@ -3865,19 +3923,19 @@ impl WritableConnection for DurableConnection {
     fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
         DurableConnection::put(self, key, value)
     }
-    
+
     fn delete(&self, key: &[u8]) -> Result<()> {
         DurableConnection::delete(self, key)
     }
-    
+
     fn begin_txn(&self) -> Result<u64> {
         DurableConnection::begin_txn(self)
     }
-    
+
     fn commit_txn(&self) -> Result<u64> {
         DurableConnection::commit_txn(self)
     }
-    
+
     fn abort_txn(&self) -> Result<()> {
         DurableConnection::abort_txn(self)
     }
@@ -4564,9 +4622,7 @@ mod tests {
         }
 
         // Scan full range
-        let results = storage
-            .scan(b"ts_key0000", b"ts_key0099", 200)
-            .unwrap();
+        let results = storage.scan(b"ts_key0000", b"ts_key0099", 200).unwrap();
 
         // Should have 90 entries (100 - 10 deleted)
         assert_eq!(

@@ -48,8 +48,7 @@
 //! ```
 
 use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::cost_model::CostTracker;
@@ -63,29 +62,29 @@ use crate::cost_model::CostTracker;
 pub struct RerankConfig {
     /// Maximum number of IO operations allowed
     pub max_io_ops: u32,
-    
+
     /// Maximum bytes to read
     pub max_io_bytes: u64,
-    
+
     /// Maximum latency before early termination
     pub max_latency: Duration,
-    
+
     /// Threshold for coalescing adjacent reads (bytes)
     /// Reads within this gap will be merged
     pub coalesce_threshold: u64,
-    
+
     /// Minimum number of candidates to rerank before considering early stop
     pub min_rerank_candidates: usize,
-    
+
     /// Enable hot vector caching
     pub enable_cache: bool,
-    
+
     /// Cache size in number of vectors
     pub cache_size: usize,
-    
+
     /// Queue depth for io_uring (if available)
     pub io_queue_depth: u32,
-    
+
     /// Prefetch distance for sequential reads
     pub prefetch_distance: usize,
 }
@@ -112,13 +111,13 @@ impl RerankConfig {
         self.max_io_ops = max_ops;
         self
     }
-    
+
     /// Set coalesce threshold
     pub fn coalesce_threshold(mut self, bytes: u64) -> Self {
         self.coalesce_threshold = bytes;
         self
     }
-    
+
     /// Set max latency
     pub fn max_latency(mut self, latency: Duration) -> Self {
         self.max_latency = latency;
@@ -150,27 +149,28 @@ impl IoRange {
             candidate_indices: vec![candidate_idx],
         }
     }
-    
+
     /// Try to merge with another range
     pub fn try_merge(&mut self, other: &IoRange, threshold: u64) -> bool {
         let self_end = self.offset + self.length;
         let other_end = other.offset + other.length;
-        
+
         // Check if ranges overlap or are within threshold
         if other.offset <= self_end + threshold && self.offset <= other_end + threshold {
             // Merge
             let new_start = self.offset.min(other.offset);
             let new_end = self_end.max(other_end);
-            
+
             self.offset = new_start;
             self.length = new_end - new_start;
-            self.candidate_indices.extend_from_slice(&other.candidate_indices);
+            self.candidate_indices
+                .extend_from_slice(&other.candidate_indices);
             true
         } else {
             false
         }
     }
-    
+
     /// Get end offset
     pub fn end(&self) -> u64 {
         self.offset + self.length
@@ -280,7 +280,7 @@ impl RerankStats {
             self.io_bytes as f32 / (self.candidates_reranked as f32 * 4.0 * 768.0) // Assume 768-dim f32
         }
     }
-    
+
     /// Compute cache hit ratio
     pub fn cache_hit_ratio(&self) -> f32 {
         let total = self.cache_hits + self.cache_misses;
@@ -306,7 +306,7 @@ impl IoCoalescer {
     pub fn new(threshold: u64) -> Self {
         Self { threshold }
     }
-    
+
     /// Coalesce candidates into IO ranges
     ///
     /// Algorithm:
@@ -317,47 +317,40 @@ impl IoCoalescer {
         if candidates.is_empty() {
             return Vec::new();
         }
-        
+
         // Sort by offset
         let mut indexed: Vec<(usize, &RerankCandidate)> = candidates.iter().enumerate().collect();
         indexed.sort_by_key(|(_, c)| c.disk_offset);
-        
+
         let mut ranges: Vec<IoRange> = Vec::with_capacity(candidates.len());
-        
+
         // Create initial range from first candidate
         let (first_idx, first) = indexed[0];
         let mut current = IoRange::single(first.disk_offset, first.vector_size as u64, first_idx);
-        
+
         // Try to merge subsequent candidates
         for (idx, candidate) in indexed.iter().skip(1) {
-            let new_range = IoRange::single(
-                candidate.disk_offset,
-                candidate.vector_size as u64,
-                *idx,
-            );
-            
+            let new_range =
+                IoRange::single(candidate.disk_offset, candidate.vector_size as u64, *idx);
+
             if !current.try_merge(&new_range, self.threshold) {
                 ranges.push(current);
                 current = new_range;
             }
         }
-        
+
         ranges.push(current);
         ranges
     }
-    
+
     /// Compute coalescing statistics
     pub fn coalesce_stats(&self, candidates: &[RerankCandidate]) -> CoalesceStats {
         let ranges = self.coalesce(candidates);
-        
-        let total_raw_bytes: u64 = candidates.iter()
-            .map(|c| c.vector_size as u64)
-            .sum();
-        
-        let total_coalesced_bytes: u64 = ranges.iter()
-            .map(|r| r.length)
-            .sum();
-        
+
+        let total_raw_bytes: u64 = candidates.iter().map(|c| c.vector_size as u64).sum();
+
+        let total_coalesced_bytes: u64 = ranges.iter().map(|r| r.length).sum();
+
         CoalesceStats {
             n_candidates: candidates.len(),
             n_ranges: ranges.len(),
@@ -401,7 +394,7 @@ impl VectorCache {
             access_counter: AtomicU64::new(0),
         }
     }
-    
+
     /// Get vector if cached
     pub fn get(&self, id: u32) -> Option<Vec<f32>> {
         let mut cache = self.cache.write();
@@ -412,37 +405,38 @@ impl VectorCache {
             None
         }
     }
-    
+
     /// Insert vector into cache
     pub fn insert(&self, id: u32, vector: Vec<f32>) {
         let mut cache = self.cache.write();
-        
+
         // Evict if full
         if cache.len() >= self.max_size {
             // Find LRU entry
-            let lru_id = cache.iter()
+            let lru_id = cache
+                .iter()
                 .min_by_key(|(_, (_, access))| *access)
                 .map(|(id, _)| *id);
-            
+
             if let Some(lru_id) = lru_id {
                 cache.remove(&lru_id);
             }
         }
-        
+
         let access = self.access_counter.fetch_add(1, Ordering::Relaxed);
         cache.insert(id, (vector, access));
     }
-    
+
     /// Check if vector is cached
     pub fn contains(&self, id: u32) -> bool {
         self.cache.read().contains_key(&id)
     }
-    
+
     /// Get cache size
     pub fn len(&self) -> usize {
         self.cache.read().len()
     }
-    
+
     /// Clear cache
     pub fn clear(&self) {
         self.cache.write().clear();
@@ -484,7 +478,7 @@ impl RerankExecutor {
         } else {
             None
         };
-        
+
         Self {
             coalescer: IoCoalescer::new(config.coalesce_threshold),
             cache,
@@ -494,7 +488,7 @@ impl RerankExecutor {
             dim,
         }
     }
-    
+
     /// Rerank candidates against query
     pub fn rerank(
         &self,
@@ -504,7 +498,7 @@ impl RerankExecutor {
     ) -> (Vec<RerankResult>, RerankStats) {
         self.rerank_with_tracker(candidates, query, k, None)
     }
-    
+
     /// Rerank with cost tracking
     pub fn rerank_with_tracker(
         &self,
@@ -518,17 +512,20 @@ impl RerankExecutor {
             candidates_requested: candidates.len(),
             ..Default::default()
         };
-        
+
         // Separate cached and uncached candidates
-        let (cached_ids, uncached): (Vec<_>, Vec<_>) = candidates.iter().enumerate()
-            .partition(|(_, c)| {
-                self.cache.as_ref().map(|cache| cache.contains(c.id)).unwrap_or(false)
+        let (cached_ids, uncached): (Vec<_>, Vec<_>) =
+            candidates.iter().enumerate().partition(|(_, c)| {
+                self.cache
+                    .as_ref()
+                    .map(|cache| cache.contains(c.id))
+                    .unwrap_or(false)
             });
-        
+
         // Process cached candidates first
         let mut results: BinaryHeap<RerankResult> = BinaryHeap::new();
-        
-        for (idx, candidate) in cached_ids {
+
+        for (_idx, candidate) in cached_ids {
             if let Some(ref cache) = self.cache {
                 if let Some(vector) = cache.get(candidate.id) {
                     let score = (self.distance_fn)(query, &vector);
@@ -542,37 +539,37 @@ impl RerankExecutor {
                 }
             }
         }
-        
+
         // Coalesce uncached candidates
         let uncached_candidates: Vec<_> = uncached.iter().map(|(_, c)| (*c).clone()).collect();
         let ranges = self.coalescer.coalesce(&uncached_candidates);
         stats.coalesced_ranges = ranges.len();
-        
+
         // Budget tracking
         let mut io_ops = 0u32;
         let mut io_bytes = 0u64;
-        
+
         // Process IO ranges
-        'outer: for range in &ranges {
+        for range in &ranges {
             // Check budgets
             if io_ops >= self.config.max_io_ops {
                 stats.budget_exhausted = true;
                 stats.stop_reason = "io_ops_exceeded".to_string();
                 break;
             }
-            
+
             if io_bytes + range.length > self.config.max_io_bytes {
                 stats.budget_exhausted = true;
                 stats.stop_reason = "io_bytes_exceeded".to_string();
                 break;
             }
-            
+
             if start.elapsed() > self.config.max_latency {
                 stats.budget_exhausted = true;
                 stats.stop_reason = "latency_exceeded".to_string();
                 break;
             }
-            
+
             // Track in cost tracker if provided
             if let Some(tracker) = cost_tracker {
                 if !tracker.add_ssd_sequential_bytes(range.length) {
@@ -581,29 +578,29 @@ impl RerankExecutor {
                     break;
                 }
             }
-            
+
             // Read from storage
             let data = match (self.reader)(range.offset, range.length) {
                 Ok(data) => data,
                 Err(_) => continue, // Skip failed reads
             };
-            
+
             io_ops += 1;
             io_bytes += range.length;
-            
+
             // Parse vectors from range
             for &candidate_idx in &range.candidate_indices {
                 let candidate = &uncached_candidates[candidate_idx];
-                
+
                 // Calculate offset within the range
                 let offset_in_range = candidate.disk_offset - range.offset;
                 let start_byte = offset_in_range as usize;
                 let end_byte = start_byte + candidate.vector_size as usize;
-                
+
                 if end_byte > data.len() {
                     continue; // Invalid range
                 }
-                
+
                 // Parse f32 vector
                 let vector_bytes = &data[start_byte..end_byte];
                 let vector: Vec<f32> = vector_bytes
@@ -613,40 +610,42 @@ impl RerankExecutor {
                         f32::from_le_bytes(arr)
                     })
                     .collect();
-                
+
                 // Compute true score
                 let score = (self.distance_fn)(query, &vector);
-                
+
                 // Add to results
                 results.push(RerankResult {
                     id: candidate.id,
                     true_score: score,
                     from_cache: false,
                 });
-                
+
                 // Cache the vector
                 if let Some(ref cache) = self.cache {
                     cache.insert(candidate.id, vector);
                 }
-                
+
                 stats.cache_misses += 1;
                 stats.candidates_reranked += 1;
-                
+
                 // Check if we can stop early (have enough good candidates)
-                if results.len() >= k * 2 && stats.candidates_reranked >= self.config.min_rerank_candidates {
+                if results.len() >= k * 2
+                    && stats.candidates_reranked >= self.config.min_rerank_candidates
+                {
                     // Early termination heuristic
                 }
             }
         }
-        
+
         stats.io_ops = io_ops;
         stats.io_bytes = io_bytes;
         stats.duration = start.elapsed();
-        
+
         if stats.stop_reason.is_empty() {
             stats.stop_reason = "complete".to_string();
         }
-        
+
         // Extract top-k
         let mut top_k: Vec<RerankResult> = Vec::with_capacity(k);
         while top_k.len() < k && !results.is_empty() {
@@ -654,18 +653,18 @@ impl RerankExecutor {
                 top_k.push(result);
             }
         }
-        
+
         // Sort by score descending
         top_k.sort_by(|a, b| b.true_score.partial_cmp(&a.true_score).unwrap());
-        
+
         (top_k, stats)
     }
-    
+
     /// Get configuration
     pub fn config(&self) -> &RerankConfig {
         &self.config
     }
-    
+
     /// Get cache statistics
     pub fn cache_stats(&self) -> Option<usize> {
         self.cache.as_ref().map(|c| c.len())
@@ -685,17 +684,17 @@ impl MockStorage {
     /// Create mock storage with random vectors
     pub fn new(n_vectors: usize, dim: usize) -> Self {
         let mut data = Vec::with_capacity(n_vectors * dim * 4);
-        
+
         for i in 0..n_vectors {
             for j in 0..dim {
-                let val = ((i + j) as f32 / (n_vectors + dim) as f32);
+                let val = (i + j) as f32 / (n_vectors + dim) as f32;
                 data.extend_from_slice(&val.to_le_bytes());
             }
         }
-        
+
         Self { data }
     }
-    
+
     /// Create reader function
     pub fn reader(&self) -> impl Fn(u64, u64) -> std::io::Result<Vec<u8>> + '_ {
         move |offset, length| {
@@ -704,7 +703,7 @@ impl MockStorage {
             Ok(self.data[start..end].to_vec())
         }
     }
-    
+
     /// Get offset for a vector
     pub fn offset(&self, id: u32, dim: usize) -> u64 {
         (id as usize * dim * 4) as u64
@@ -714,99 +713,100 @@ impl MockStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_io_coalescing() {
         let coalescer = IoCoalescer::new(1024);
-        
+
         let candidates = vec![
-            RerankCandidate::new(0, 0.9, 0, 3072),      // 0-3072
-            RerankCandidate::new(1, 0.8, 3072, 3072),   // 3072-6144 (adjacent)
-            RerankCandidate::new(2, 0.7, 10000, 3072),  // 10000-13072 (gap)
-            RerankCandidate::new(3, 0.6, 10500, 3072),  // Overlaps with #2
+            RerankCandidate::new(0, 0.9, 0, 3072),     // 0-3072
+            RerankCandidate::new(1, 0.8, 3072, 3072),  // 3072-6144 (adjacent)
+            RerankCandidate::new(2, 0.7, 10000, 3072), // 10000-13072 (gap)
+            RerankCandidate::new(3, 0.6, 10500, 3072), // Overlaps with #2
         ];
-        
+
         let ranges = coalescer.coalesce(&candidates);
-        
+
         // Should have 2 ranges: 0-6144 and 10000-13572
         assert_eq!(ranges.len(), 2);
         assert_eq!(ranges[0].offset, 0);
         assert!(ranges[0].length >= 6144);
     }
-    
+
     #[test]
     fn test_vector_cache() {
         let cache = VectorCache::new(3);
-        
+
         cache.insert(1, vec![1.0, 2.0, 3.0]);
         cache.insert(2, vec![4.0, 5.0, 6.0]);
         cache.insert(3, vec![7.0, 8.0, 9.0]);
-        
+
         assert!(cache.contains(1));
         assert!(cache.contains(2));
         assert!(cache.contains(3));
-        
+
         // Access 1 and 2 to make them more recent
         cache.get(1);
         cache.get(2);
-        
+
         // Insert 4, should evict 3 (least recently used)
         cache.insert(4, vec![10.0, 11.0, 12.0]);
-        
+
         assert!(cache.contains(1));
         assert!(cache.contains(2));
         assert!(!cache.contains(3)); // Evicted
         assert!(cache.contains(4));
     }
-    
+
     #[test]
     fn test_rerank_executor() {
         let dim = 4;
         let storage = MockStorage::new(100, dim);
-        
+
         let config = RerankConfig::default();
-        
-        let distance_fn = |a: &[f32], b: &[f32]| -> f32 {
-            a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-        };
-        
+
+        let distance_fn =
+            |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b.iter()).map(|(x, y)| x * y).sum() };
+
         let data_clone = storage.data.clone();
         let reader = move |offset: u64, length: u64| -> std::io::Result<Vec<u8>> {
             let start = offset as usize;
             let end = (start + length as usize).min(data_clone.len());
             Ok(data_clone[start..end].to_vec())
         };
-        
+
         let executor = RerankExecutor::new(config, distance_fn, reader, dim);
-        
+
         let candidates: Vec<RerankCandidate> = (0..10)
-            .map(|i| RerankCandidate::new(
-                i,
-                0.9 - i as f32 * 0.01,
-                storage.offset(i, dim),
-                (dim * 4) as u32,
-            ))
+            .map(|i| {
+                RerankCandidate::new(
+                    i,
+                    0.9 - i as f32 * 0.01,
+                    storage.offset(i, dim),
+                    (dim * 4) as u32,
+                )
+            })
             .collect();
-        
+
         let query = vec![1.0, 1.0, 1.0, 1.0];
         let (results, stats) = executor.rerank(&candidates, &query, 5);
-        
+
         assert!(results.len() <= 5);
         assert!(stats.candidates_reranked > 0);
         assert!(stats.io_ops > 0);
     }
-    
+
     #[test]
     fn test_coalesce_stats() {
         let coalescer = IoCoalescer::new(100);
-        
+
         // Create candidates with good locality
         let candidates: Vec<RerankCandidate> = (0..10)
             .map(|i| RerankCandidate::new(i, 0.9, i as u64 * 50, 50))
             .collect();
-        
+
         let stats = coalescer.coalesce_stats(&candidates);
-        
+
         assert_eq!(stats.n_candidates, 10);
         assert!(stats.n_ranges < 10); // Should be coalesced
         assert!(stats.reduction_ratio >= 1.0); // May be slightly larger due to gaps

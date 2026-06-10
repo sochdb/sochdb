@@ -44,10 +44,10 @@
 //!
 //! Uses bandit-like adaptation based on recent query statistics.
 
-use std::time::{Duration, Instant};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// Quantization level for a pipeline stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -100,9 +100,8 @@ pub struct PipelineStage {
 impl PipelineStage {
     /// Estimate the cost of this stage.
     pub fn estimate_cost(&self, dimension: usize, cost_model: &CostModel) -> f32 {
-        let base_cost = self.input_candidates as f32
-            * dimension as f32
-            * self.quant_level.relative_cost();
+        let base_cost =
+            self.input_candidates as f32 * dimension as f32 * self.quant_level.relative_cost();
         base_cost * cost_model.cpu_cycles_per_op
     }
 
@@ -262,11 +261,7 @@ impl SearchPlan {
     }
 
     /// Create a multi-stage plan with BPS → PQ → F32 pipeline.
-    pub fn multi_stage(
-        k: usize,
-        total_vectors: usize,
-        target_recall: f32,
-    ) -> Self {
+    pub fn multi_stage(k: usize, total_vectors: usize, target_recall: f32) -> Self {
         // Calculate candidate counts for each stage
         let coarse_candidates = (total_vectors as f32 * 0.1).min(10000.0) as usize;
         let refine_candidates = (coarse_candidates as f32 * 0.1).max(k as f32 * 10.0) as usize;
@@ -330,8 +325,7 @@ impl SearchPlan {
 
     /// Check if the plan meets the SLA.
     pub fn meets_sla(&self, sla: &SearchSLA) -> bool {
-        self.estimated_recall >= sla.target_recall
-            && self.estimated_latency <= sla.latency_budget
+        self.estimated_recall >= sla.target_recall && self.estimated_latency <= sla.latency_budget
     }
 }
 
@@ -411,12 +405,7 @@ impl SearchPlanner {
     }
 
     /// Generate an optimal search plan.
-    pub fn plan(
-        &self,
-        k: usize,
-        sla: &SearchSLA,
-        stats: &DatasetStats,
-    ) -> SearchPlan {
+    pub fn plan(&self, k: usize, sla: &SearchSLA, stats: &DatasetStats) -> SearchPlan {
         self.query_count.fetch_add(1, Ordering::Relaxed);
 
         // Choose planning strategy based on mode
@@ -436,7 +425,7 @@ impl SearchPlanner {
         if stats.total_vectors > 100_000 && stats.available_levels.contains(&StageQuantLevel::BPS) {
             // BPS → I8 pipeline
             let coarse_count = (stats.total_vectors as f32 * 0.01).max(1000.0) as usize;
-            
+
             SearchPlan {
                 stages: vec![
                     PipelineStage {
@@ -490,7 +479,7 @@ impl SearchPlanner {
     fn plan_for_quality(&self, k: usize, sla: &SearchSLA, stats: &DatasetStats) -> SearchPlan {
         // Use full F32 with high ef
         let ef = (k * 10).max(200);
-        
+
         SearchPlan {
             stages: vec![PipelineStage {
                 quant_level: StageQuantLevel::F32,
@@ -512,10 +501,10 @@ impl SearchPlanner {
     fn plan_balanced(&self, k: usize, sla: &SearchSLA, stats: &DatasetStats) -> SearchPlan {
         // Multi-stage with adaptive parameters
         let ef = (k * 4).max(64);
-        
+
         // Decide stages based on dataset size and available levels
-        let use_pq = stats.total_vectors > 10_000 
-            && stats.available_levels.contains(&StageQuantLevel::PQ);
+        let use_pq =
+            stats.total_vectors > 10_000 && stats.available_levels.contains(&StageQuantLevel::PQ);
         let use_i8 = stats.available_levels.contains(&StageQuantLevel::I8);
 
         let mut stages = Vec::new();
@@ -563,7 +552,7 @@ impl SearchPlanner {
     fn plan_for_slo(&self, k: usize, sla: &SearchSLA, stats: &DatasetStats) -> SearchPlan {
         // Use adaptive feedback from recent stats
         let recent = self.recent_stats.read().unwrap();
-        
+
         let base_plan = if let Some(avg_latency) = recent.avg_latency() {
             // Adjust based on recent performance
             if avg_latency > sla.latency_budget {
@@ -596,7 +585,12 @@ impl SearchPlanner {
     }
 
     /// Estimate latency for a stage.
-    fn estimate_latency(&self, candidates: usize, dimension: usize, level: StageQuantLevel) -> Duration {
+    fn estimate_latency(
+        &self,
+        candidates: usize,
+        dimension: usize,
+        level: StageQuantLevel,
+    ) -> Duration {
         let cost_per_candidate = match level {
             StageQuantLevel::BPS => self.cost_model.stage_costs_ns.bps_per_candidate_ns,
             StageQuantLevel::PQ => self.cost_model.stage_costs_ns.pq_per_candidate_ns,
@@ -610,16 +604,19 @@ impl SearchPlanner {
 
     /// Estimate recall for a pipeline.
     fn estimate_pipeline_recall(&self, stages: &[PipelineStage], total_vectors: usize) -> f32 {
-        stages.iter().fold(1.0, |acc, stage| {
-            acc * stage.estimate_recall(total_vectors)
-        })
+        stages
+            .iter()
+            .fold(1.0, |acc, stage| acc * stage.estimate_recall(total_vectors))
     }
 
     /// Estimate latency for a pipeline.
     fn estimate_pipeline_latency(&self, stages: &[PipelineStage], dimension: usize) -> Duration {
-        stages.iter().map(|stage| {
-            self.estimate_latency(stage.input_candidates, dimension, stage.quant_level)
-        }).sum()
+        stages
+            .iter()
+            .map(|stage| {
+                self.estimate_latency(stage.input_candidates, dimension, stage.quant_level)
+            })
+            .sum()
     }
 
     /// Get current cost model.
@@ -683,7 +680,9 @@ impl std::fmt::Display for PlanError {
         match self {
             PlanError::EmptyPipeline => write!(f, "Pipeline has no stages"),
             PlanError::InvalidK => write!(f, "k must be greater than 0"),
-            PlanError::StageOutputMismatch => write!(f, "Stage output doesn't match next stage input"),
+            PlanError::StageOutputMismatch => {
+                write!(f, "Stage output doesn't match next stage input")
+            }
         }
     }
 }
@@ -697,7 +696,7 @@ mod tests {
     #[test]
     fn test_simple_plan() {
         let plan = SearchPlan::simple(10, 64);
-        
+
         assert_eq!(plan.k, 10);
         assert_eq!(plan.ef_search, 64);
         assert_eq!(plan.stages.len(), 1);
@@ -707,7 +706,7 @@ mod tests {
     #[test]
     fn test_multi_stage_plan() {
         let plan = SearchPlan::multi_stage(10, 1_000_000, 0.95);
-        
+
         assert_eq!(plan.k, 10);
         assert!(plan.stages.len() >= 2);
         assert!(PlanExecutor::validate(&plan).is_ok());
@@ -723,14 +722,22 @@ mod tests {
         let stats = DatasetStats {
             total_vectors: 1_000_000,
             dimension: 768,
-            available_levels: vec![StageQuantLevel::BPS, StageQuantLevel::I8, StageQuantLevel::F32],
+            available_levels: vec![
+                StageQuantLevel::BPS,
+                StageQuantLevel::I8,
+                StageQuantLevel::F32,
+            ],
             ..Default::default()
         };
 
         let plan = planner.plan(10, &sla, &stats);
-        
+
         // Speed mode should use BPS for large datasets
-        assert!(plan.stages.iter().any(|s| s.quant_level == StageQuantLevel::BPS));
+        assert!(
+            plan.stages
+                .iter()
+                .any(|s| s.quant_level == StageQuantLevel::BPS)
+        );
         assert!(PlanExecutor::validate(&plan).is_ok());
     }
 
@@ -750,9 +757,13 @@ mod tests {
         };
 
         let plan = planner.plan(10, &sla, &stats);
-        
+
         // Quality mode should use F32
-        assert!(plan.stages.iter().any(|s| s.quant_level == StageQuantLevel::F32));
+        assert!(
+            plan.stages
+                .iter()
+                .any(|s| s.quant_level == StageQuantLevel::F32)
+        );
         assert!(plan.ef_search >= 100);
     }
 
@@ -767,12 +778,16 @@ mod tests {
         let stats = DatasetStats {
             total_vectors: 100_000,
             dimension: 384,
-            available_levels: vec![StageQuantLevel::PQ, StageQuantLevel::I8, StageQuantLevel::F32],
+            available_levels: vec![
+                StageQuantLevel::PQ,
+                StageQuantLevel::I8,
+                StageQuantLevel::F32,
+            ],
             ..Default::default()
         };
 
         let plan = planner.plan(10, &sla, &stats);
-        
+
         assert!(plan.stages.len() >= 1);
         assert!(PlanExecutor::validate(&plan).is_ok());
     }
@@ -780,7 +795,7 @@ mod tests {
     #[test]
     fn test_feedback_adaptation() {
         let planner = SearchPlanner::new();
-        
+
         // Record some fast queries
         for _ in 0..10 {
             planner.record_feedback(Duration::from_micros(100), 0.98);
@@ -807,7 +822,7 @@ mod tests {
     fn test_plan_cost_estimation() {
         let plan = SearchPlan::simple(10, 64);
         let cost_model = CostModel::default();
-        
+
         let cost = plan.total_cost(384, &cost_model);
         assert!(cost > 0.0);
     }
@@ -855,7 +870,10 @@ mod tests {
             created_at: Instant::now(),
         };
 
-        assert_eq!(PlanExecutor::validate(&empty_plan), Err(PlanError::EmptyPipeline));
+        assert_eq!(
+            PlanExecutor::validate(&empty_plan),
+            Err(PlanError::EmptyPipeline)
+        );
 
         let zero_k_plan = SearchPlan {
             stages: vec![PipelineStage {
@@ -873,7 +891,10 @@ mod tests {
             created_at: Instant::now(),
         };
 
-        assert_eq!(PlanExecutor::validate(&zero_k_plan), Err(PlanError::InvalidK));
+        assert_eq!(
+            PlanExecutor::validate(&zero_k_plan),
+            Err(PlanError::InvalidK)
+        );
     }
 
     #[test]

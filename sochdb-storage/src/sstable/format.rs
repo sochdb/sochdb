@@ -61,7 +61,6 @@
 //! ```
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 /// SSTable magic number: "TDBSSTab" in ASCII
@@ -175,7 +174,7 @@ impl Section {
         let offset = reader.read_u64::<LittleEndian>()?;
         let size = reader.read_u64::<LittleEndian>()?;
         let checksum = reader.read_u32::<LittleEndian>()?;
-        
+
         Ok(Self {
             section_type,
             offset,
@@ -220,14 +219,16 @@ impl Header {
     pub fn encode(&self) -> [u8; HEADER_SIZE] {
         let mut buf = [0u8; HEADER_SIZE];
         let mut cursor = Cursor::new(&mut buf[..]);
-        
+
         cursor.write_all(self.magic.as_bytes()).unwrap();
         cursor.write_u32::<LittleEndian>(self.version).unwrap();
         cursor.write_u32::<LittleEndian>(self.flags).unwrap();
         cursor.write_u32::<LittleEndian>(self.num_sections).unwrap();
-        cursor.write_u64::<LittleEndian>(self.footer_offset).unwrap();
+        cursor
+            .write_u64::<LittleEndian>(self.footer_offset)
+            .unwrap();
         cursor.write_u32::<LittleEndian>(self.checksum).unwrap();
-        
+
         buf
     }
 
@@ -236,19 +237,19 @@ impl Header {
         if data.len() < HEADER_SIZE {
             return None;
         }
-        
+
         let mut cursor = Cursor::new(data);
-        
+
         let mut magic_bytes = [0u8; 8];
         cursor.read_exact(&mut magic_bytes).ok()?;
         let magic = TableMagic(magic_bytes);
-        
+
         let version = cursor.read_u32::<LittleEndian>().ok()?;
         let flags = cursor.read_u32::<LittleEndian>().ok()?;
         let num_sections = cursor.read_u32::<LittleEndian>().ok()?;
         let footer_offset = cursor.read_u64::<LittleEndian>().ok()?;
         let checksum = cursor.read_u32::<LittleEndian>().ok()?;
-        
+
         let header = Self {
             magic,
             version,
@@ -257,12 +258,12 @@ impl Header {
             footer_offset,
             checksum,
         };
-        
+
         // Verify checksum
         if header.compute_checksum() != checksum {
             return None;
         }
-        
+
         Some(header)
     }
 
@@ -279,9 +280,9 @@ impl Header {
 
     /// Validate header
     pub fn is_valid(&self) -> bool {
-        self.magic.is_valid() && 
-        self.version <= FORMAT_VERSION &&
-        self.compute_checksum() == self.checksum
+        self.magic.is_valid()
+            && self.version <= FORMAT_VERSION
+            && self.compute_checksum() == self.checksum
     }
 }
 
@@ -311,14 +312,14 @@ impl Footer {
     pub fn encode(&self) -> Vec<u8> {
         let size = self.sections.len() * SECTION_ENTRY_SIZE + 4 + 8;
         let mut buf = Vec::with_capacity(size);
-        
+
         for section in &self.sections {
             section.encode(&mut buf).unwrap();
         }
-        
+
         buf.write_u32::<LittleEndian>(self.checksum).unwrap();
         buf.extend_from_slice(self.magic.as_bytes());
-        
+
         buf
     }
 
@@ -328,31 +329,31 @@ impl Footer {
         if data.len() < expected_size {
             return None;
         }
-        
+
         let mut cursor = Cursor::new(data);
-        
+
         let mut sections = Vec::with_capacity(num_sections as usize);
         for _ in 0..num_sections {
             sections.push(Section::decode(&mut cursor).ok()?);
         }
-        
+
         let checksum = cursor.read_u32::<LittleEndian>().ok()?;
-        
+
         let mut magic_bytes = [0u8; 8];
         cursor.read_exact(&mut magic_bytes).ok()?;
         let magic = TableMagic(magic_bytes);
-        
+
         let footer = Self {
             sections,
             checksum,
             magic,
         };
-        
+
         // Verify checksum
         if footer.compute_checksum() != checksum {
             return None;
         }
-        
+
         Some(footer)
     }
 
@@ -370,7 +371,9 @@ impl Footer {
 
     /// Get section by type
     pub fn get_section(&self, section_type: SectionType) -> Option<&Section> {
-        self.sections.iter().find(|s| s.section_type == section_type)
+        self.sections
+            .iter()
+            .find(|s| s.section_type == section_type)
     }
 
     /// Check if section exists
@@ -388,8 +391,12 @@ pub struct SSTableFormat {
 impl SSTableFormat {
     /// Create a new format with given sections
     pub fn new(sections: Vec<Section>) -> Self {
-        let footer_offset = sections.iter().map(|s| s.offset + s.size).max().unwrap_or(HEADER_SIZE as u64);
-        
+        let footer_offset = sections
+            .iter()
+            .map(|s| s.offset + s.size)
+            .max()
+            .unwrap_or(HEADER_SIZE as u64);
+
         Self {
             header: Header::new(sections.len() as u32, footer_offset),
             footer: Footer::new(sections),
@@ -401,25 +408,30 @@ impl SSTableFormat {
         // Read header
         let mut header_buf = [0u8; HEADER_SIZE];
         reader.read_exact(&mut header_buf)?;
-        
-        let header = Header::decode(&header_buf)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid header"))?;
-        
+
+        let header = Header::decode(&header_buf).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid header")
+        })?;
+
         if !header.is_valid() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid header"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid header",
+            ));
         }
-        
+
         // Seek to footer
         reader.seek(SeekFrom::Start(header.footer_offset))?;
-        
+
         // Read footer
         let footer_size = header.num_sections as usize * SECTION_ENTRY_SIZE + 4 + 8;
         let mut footer_buf = vec![0u8; footer_size];
         reader.read_exact(&mut footer_buf)?;
-        
-        let footer = Footer::decode(&footer_buf, header.num_sections)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid footer"))?;
-        
+
+        let footer = Footer::decode(&footer_buf, header.num_sections).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid footer")
+        })?;
+
         Ok(Self { header, footer })
     }
 
@@ -428,11 +440,11 @@ impl SSTableFormat {
         // Write header at start
         writer.seek(SeekFrom::Start(0))?;
         writer.write_all(&self.header.encode())?;
-        
+
         // Write footer at footer_offset
         writer.seek(SeekFrom::Start(self.header.footer_offset))?;
         writer.write_all(&self.footer.encode())?;
-        
+
         Ok(())
     }
 
@@ -448,10 +460,10 @@ impl SSTableFormat {
         section: &Section,
     ) -> std::io::Result<bool> {
         reader.seek(SeekFrom::Start(section.offset))?;
-        
+
         let mut data = vec![0u8; section.size as usize];
         reader.read_exact(&mut data)?;
-        
+
         let computed_checksum = crc32fast::hash(&data);
         Ok(computed_checksum == section.checksum)
     }
@@ -489,7 +501,7 @@ mod tests {
     fn test_header_roundtrip() {
         let header = Header::new(3, 1024);
         let encoded = header.encode();
-        
+
         let decoded = Header::decode(&encoded).unwrap();
         assert_eq!(decoded.version, FORMAT_VERSION);
         assert_eq!(decoded.num_sections, 3);
@@ -500,10 +512,10 @@ mod tests {
     #[test]
     fn test_section_roundtrip() {
         let section = Section::new(SectionType::DataBlocks, 100, 500, 12345);
-        
+
         let mut buf = Vec::new();
         section.encode(&mut buf).unwrap();
-        
+
         let decoded = Section::decode(&mut Cursor::new(&buf)).unwrap();
         assert_eq!(decoded.section_type, SectionType::DataBlocks);
         assert_eq!(decoded.offset, 100);
@@ -518,10 +530,10 @@ mod tests {
             Section::new(SectionType::Filter, 1032, 200, 222),
             Section::new(SectionType::Index, 1232, 100, 333),
         ];
-        
+
         let footer = Footer::new(sections);
         let encoded = footer.encode();
-        
+
         let decoded = Footer::decode(&encoded, 3).unwrap();
         assert_eq!(decoded.sections.len(), 3);
         assert!(decoded.magic.is_valid());
@@ -533,16 +545,16 @@ mod tests {
             Section::new(SectionType::DataBlocks, 32, 1000, 111),
             Section::new(SectionType::Index, 1032, 100, 222),
         ];
-        
+
         let format = SSTableFormat::new(sections);
-        
+
         let mut buf = vec![0u8; 2048];
         let mut cursor = Cursor::new(&mut buf[..]);
         format.write(&mut cursor).unwrap();
-        
+
         let mut cursor = Cursor::new(&buf[..]);
         let read_format = SSTableFormat::read(&mut cursor).unwrap();
-        
+
         assert_eq!(read_format.header.num_sections, 2);
         assert!(read_format.get_section(SectionType::DataBlocks).is_some());
         assert!(read_format.get_section(SectionType::Index).is_some());

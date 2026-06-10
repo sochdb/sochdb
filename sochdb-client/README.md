@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/sochdb.svg)](https://crates.io/crates/sochdb)
 [![Documentation](https://docs.rs/sochdb/badge.svg)](https://docs.rs/sochdb)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Rust 1.70+](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 
 The official Rust client SDK for **SochDB** — a high-performance embedded document database with HNSW vector search, built-in multi-tenancy, and SQL support.
@@ -654,7 +654,7 @@ Requires Rust 1.70 or later.
 
 ## License
 
-Apache License 2.0
+GNU AGPL v3.0 or later (AGPL-3.0-or-later)
 
 ## Links
 

@@ -46,8 +46,7 @@
 //! let index = FilterIndex::new(policy);
 //! ```
 
-use std::collections::{HashMap, HashSet, BTreeMap};
-use std::sync::Arc;
+use std::collections::HashMap;
 
 // ============================================================================
 // Filter Representation
@@ -59,15 +58,15 @@ pub enum FilterRepresentation {
     /// Roaring bitmap - best for low cardinality, high density
     /// Memory: ~O(N/8) for dense, O(N_set) for sparse
     RoaringBitmap,
-    
+
     /// Sorted postings list - best for high cardinality, sparse
     /// Memory: O(N_set * 4) for u32 IDs
     PostingsList,
-    
+
     /// Hash set - best for very high cardinality, point queries
     /// Memory: O(N_set * 8) with some overhead
     HashedSet,
-    
+
     /// Inverted postings - best for multi-value attributes (tags)
     /// Memory: O(N_values * avg_posting_size)
     InvertedPostings,
@@ -77,7 +76,7 @@ impl FilterRepresentation {
     /// Estimate memory bytes for this representation
     pub fn estimated_bytes(&self, n_vectors: usize, cardinality: usize, density: f32) -> usize {
         let n_set = (n_vectors as f32 * density) as usize;
-        
+
         match self {
             Self::RoaringBitmap => {
                 // Roaring uses ~16 bytes per run for RLE, or raw bitmap for dense
@@ -98,12 +97,18 @@ impl FilterRepresentation {
             }
         }
     }
-    
+
     /// Estimate query cost (relative units)
-    pub fn estimated_query_cost(&self, n_vectors: usize, cardinality: usize, density: f32, selectivity: f32) -> f32 {
+    pub fn estimated_query_cost(
+        &self,
+        n_vectors: usize,
+        cardinality: usize,
+        density: f32,
+        selectivity: f32,
+    ) -> f32 {
         let n_set = (n_vectors as f32 * density) as usize;
         let expected_result = (n_set as f32 * selectivity) as usize;
-        
+
         match self {
             Self::RoaringBitmap => {
                 // Bitmap intersection is fast
@@ -134,22 +139,22 @@ impl FilterRepresentation {
 pub struct AttributeStats {
     /// Attribute name
     pub name: String,
-    
+
     /// Number of distinct values
     pub cardinality: usize,
-    
+
     /// Fraction of vectors that have this attribute
     pub density: f32,
-    
+
     /// Average selectivity of queries on this attribute
     pub avg_selectivity: f32,
-    
+
     /// Query frequency (queries per second)
     pub query_frequency: f32,
-    
+
     /// Is multi-valued (like tags)
     pub is_multi_valued: bool,
-    
+
     /// Value distribution (optional: value -> count)
     pub value_distribution: Option<HashMap<String, usize>>,
 }
@@ -167,47 +172,47 @@ impl AttributeStats {
             value_distribution: None,
         }
     }
-    
+
     /// Set cardinality
     pub fn cardinality(mut self, c: usize) -> Self {
         self.cardinality = c;
         self
     }
-    
+
     /// Set density
     pub fn density(mut self, d: f32) -> Self {
         self.density = d;
         self
     }
-    
+
     /// Set average selectivity
     pub fn selectivity(mut self, s: f32) -> Self {
         self.avg_selectivity = s;
         self
     }
-    
+
     /// Set query frequency
     pub fn frequency(mut self, f: f32) -> Self {
         self.query_frequency = f;
         self
     }
-    
+
     /// Set multi-valued
     pub fn multi_valued(mut self, m: bool) -> Self {
         self.is_multi_valued = m;
         self
     }
-    
+
     /// Compute cardinality ratio (cardinality / n_vectors)
     pub fn cardinality_ratio(&self, n_vectors: usize) -> f32 {
         self.cardinality as f32 / n_vectors.max(1) as f32
     }
-    
+
     /// Is this a low-cardinality attribute?
     pub fn is_low_cardinality(&self, n_vectors: usize) -> bool {
         self.cardinality_ratio(n_vectors) < 0.01 || self.cardinality < 1000
     }
-    
+
     /// Is this a high-cardinality attribute?
     pub fn is_high_cardinality(&self, n_vectors: usize) -> bool {
         self.cardinality_ratio(n_vectors) > 0.1 && self.cardinality > 10000
@@ -223,13 +228,13 @@ impl AttributeStats {
 pub struct FilterPolicy {
     /// Representation to use
     pub representation: FilterRepresentation,
-    
+
     /// Build index per-list (for IVF) vs global
     pub per_list: bool,
-    
+
     /// Cache filter results
     pub cache_results: bool,
-    
+
     /// Threshold for switching to post-filter
     pub postfilter_threshold: f32,
 }
@@ -252,7 +257,7 @@ impl FilterPolicy {
             // Default to bitmap
             FilterRepresentation::RoaringBitmap
         };
-        
+
         Self {
             representation: repr,
             per_list: stats.avg_selectivity < 0.1, // Per-list for selective filters
@@ -260,7 +265,7 @@ impl FilterPolicy {
             postfilter_threshold: 0.8, // Switch to post-filter above 80% selectivity
         }
     }
-    
+
     /// Create bitmap policy
     pub fn bitmap() -> Self {
         Self {
@@ -270,7 +275,7 @@ impl FilterPolicy {
             postfilter_threshold: 0.8,
         }
     }
-    
+
     /// Create postings policy
     pub fn postings() -> Self {
         Self {
@@ -304,7 +309,7 @@ impl BitmapFilter {
             n_bits,
         }
     }
-    
+
     /// Set a bit
     pub fn set(&mut self, idx: u32) {
         if (idx as usize) < self.n_bits {
@@ -313,7 +318,7 @@ impl BitmapFilter {
             self.words[word] |= 1 << bit;
         }
     }
-    
+
     /// Check if bit is set
     pub fn contains(&self, idx: u32) -> bool {
         if (idx as usize) >= self.n_bits {
@@ -323,7 +328,7 @@ impl BitmapFilter {
         let bit = idx as usize % 64;
         (self.words[word] & (1 << bit)) != 0
     }
-    
+
     /// AND with another bitmap
     pub fn and(&self, other: &BitmapFilter) -> BitmapFilter {
         let n_words = self.words.len().min(other.words.len());
@@ -333,10 +338,10 @@ impl BitmapFilter {
         }
         result
     }
-    
+
     /// OR with another bitmap
     pub fn or(&self, other: &BitmapFilter) -> BitmapFilter {
-        let n_words = self.words.len().max(other.words.len());
+        let _n_words = self.words.len().max(other.words.len());
         let mut result = BitmapFilter::new(self.n_bits.max(other.n_bits));
         for i in 0..self.words.len() {
             result.words[i] |= self.words[i];
@@ -346,25 +351,29 @@ impl BitmapFilter {
         }
         result
     }
-    
+
     /// Count set bits
     pub fn count(&self) -> usize {
         self.words.iter().map(|w| w.count_ones() as usize).sum()
     }
-    
+
     /// Iterate over set bits
     pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
-        self.words.iter().enumerate().flat_map(|(word_idx, &word)| {
-            (0..64).filter_map(move |bit| {
-                if (word & (1 << bit)) != 0 {
-                    Some((word_idx * 64 + bit) as u32)
-                } else {
-                    None
-                }
+        self.words
+            .iter()
+            .enumerate()
+            .flat_map(|(word_idx, &word)| {
+                (0..64).filter_map(move |bit| {
+                    if (word & (1 << bit)) != 0 {
+                        Some((word_idx * 64 + bit) as u32)
+                    } else {
+                        None
+                    }
+                })
             })
-        }).filter(move |&idx| (idx as usize) < self.n_bits)
+            .filter(move |&idx| (idx as usize) < self.n_bits)
     }
-    
+
     /// Memory footprint
     pub fn memory_bytes(&self) -> usize {
         self.words.len() * 8
@@ -383,7 +392,7 @@ impl PostingsFilter {
     pub fn new() -> Self {
         Self { ids: Vec::new() }
     }
-    
+
     /// Create from sorted IDs
     pub fn from_ids(ids: Vec<u32>) -> Self {
         let mut ids = ids;
@@ -391,7 +400,7 @@ impl PostingsFilter {
         ids.dedup();
         Self { ids }
     }
-    
+
     /// Add an ID
     pub fn add(&mut self, id: u32) {
         match self.ids.binary_search(&id) {
@@ -399,18 +408,18 @@ impl PostingsFilter {
             Err(pos) => self.ids.insert(pos, id),
         }
     }
-    
+
     /// Check if ID is present
     pub fn contains(&self, id: u32) -> bool {
         self.ids.binary_search(&id).is_ok()
     }
-    
+
     /// Intersect with another postings list
     pub fn intersect(&self, other: &PostingsFilter) -> PostingsFilter {
         let mut result = Vec::new();
         let mut i = 0;
         let mut j = 0;
-        
+
         while i < self.ids.len() && j < other.ids.len() {
             match self.ids[i].cmp(&other.ids[j]) {
                 std::cmp::Ordering::Less => i += 1,
@@ -422,16 +431,16 @@ impl PostingsFilter {
                 }
             }
         }
-        
+
         PostingsFilter { ids: result }
     }
-    
+
     /// Union with another postings list
     pub fn union(&self, other: &PostingsFilter) -> PostingsFilter {
         let mut result = Vec::with_capacity(self.ids.len() + other.ids.len());
         let mut i = 0;
         let mut j = 0;
-        
+
         while i < self.ids.len() && j < other.ids.len() {
             match self.ids[i].cmp(&other.ids[j]) {
                 std::cmp::Ordering::Less => {
@@ -449,23 +458,23 @@ impl PostingsFilter {
                 }
             }
         }
-        
+
         result.extend_from_slice(&self.ids[i..]);
         result.extend_from_slice(&other.ids[j..]);
-        
+
         PostingsFilter { ids: result }
     }
-    
+
     /// Get count
     pub fn count(&self) -> usize {
         self.ids.len()
     }
-    
+
     /// Iterate over IDs
     pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
         self.ids.iter().copied()
     }
-    
+
     /// Memory footprint
     pub fn memory_bytes(&self) -> usize {
         self.ids.len() * 4
@@ -510,7 +519,7 @@ impl FilterIndex {
             n_vectors,
         }
     }
-    
+
     /// Add a value for a vector
     pub fn add(&mut self, vector_id: u32, value: &str) {
         let filter = self.inverted.entry(value.to_string()).or_insert_with(|| {
@@ -521,13 +530,13 @@ impl FilterIndex {
                 _ => FilterData::Postings(PostingsFilter::new()),
             }
         });
-        
+
         match filter {
             FilterData::Bitmap(b) => b.set(vector_id),
             FilterData::Postings(p) => p.add(vector_id),
         }
     }
-    
+
     /// Query for a value, returns matching vector IDs
     pub fn query(&self, value: &str) -> Option<Vec<u32>> {
         self.inverted.get(value).map(|filter| match filter {
@@ -535,7 +544,7 @@ impl FilterIndex {
             FilterData::Postings(p) => p.iter().collect(),
         })
     }
-    
+
     /// Query with selectivity estimate
     pub fn query_with_stats(&self, value: &str) -> (Option<Vec<u32>>, f32) {
         match self.inverted.get(value) {
@@ -550,7 +559,7 @@ impl FilterIndex {
             None => (None, 0.0),
         }
     }
-    
+
     /// Check if a specific vector matches a value
     pub fn contains(&self, vector_id: u32, value: &str) -> bool {
         match self.inverted.get(value) {
@@ -559,23 +568,30 @@ impl FilterIndex {
             None => false,
         }
     }
-    
+
     /// Get memory footprint
     pub fn memory_bytes(&self) -> usize {
-        self.inverted.values().map(|f| match f {
-            FilterData::Bitmap(b) => b.memory_bytes(),
-            FilterData::Postings(p) => p.memory_bytes(),
-        }).sum()
+        self.inverted
+            .values()
+            .map(|f| match f {
+                FilterData::Bitmap(b) => b.memory_bytes(),
+                FilterData::Postings(p) => p.memory_bytes(),
+            })
+            .sum()
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> FilterIndexStats {
         let n_values = self.inverted.len();
-        let total_entries: usize = self.inverted.values().map(|f| match f {
-            FilterData::Bitmap(b) => b.count(),
-            FilterData::Postings(p) => p.count(),
-        }).sum();
-        
+        let total_entries: usize = self
+            .inverted
+            .values()
+            .map(|f| match f {
+                FilterData::Bitmap(b) => b.count(),
+                FilterData::Postings(p) => p.count(),
+            })
+            .sum();
+
         FilterIndexStats {
             attribute: self.attribute.clone(),
             n_values,
@@ -614,28 +630,30 @@ impl FilterIndexManager {
             n_vectors,
         }
     }
-    
+
     /// Add or get an index for an attribute
     pub fn get_or_create(&mut self, attribute: &str, stats: &AttributeStats) -> &mut FilterIndex {
         let n_vectors = self.n_vectors;
-        self.indexes.entry(attribute.to_string()).or_insert_with(|| {
-            let policy = FilterPolicy::auto_select(stats, n_vectors);
-            FilterIndex::new(attribute, n_vectors, policy)
-        })
+        self.indexes
+            .entry(attribute.to_string())
+            .or_insert_with(|| {
+                let policy = FilterPolicy::auto_select(stats, n_vectors);
+                FilterIndex::new(attribute, n_vectors, policy)
+            })
     }
-    
+
     /// Add a value to an attribute's index
     pub fn add(&mut self, attribute: &str, vector_id: u32, value: &str) {
         if let Some(index) = self.indexes.get_mut(attribute) {
             index.add(vector_id, value);
         }
     }
-    
+
     /// Query an attribute
     pub fn query(&self, attribute: &str, value: &str) -> Option<Vec<u32>> {
         self.indexes.get(attribute).and_then(|idx| idx.query(value))
     }
-    
+
     /// Total memory footprint
     pub fn memory_bytes(&self) -> usize {
         self.indexes.values().map(|idx| idx.memory_bytes()).sum()
@@ -645,84 +663,82 @@ impl FilterIndexManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_bitmap_filter() {
         let mut bitmap = BitmapFilter::new(1000);
-        
+
         bitmap.set(0);
         bitmap.set(10);
         bitmap.set(100);
         bitmap.set(999);
-        
+
         assert!(bitmap.contains(0));
         assert!(bitmap.contains(10));
         assert!(!bitmap.contains(1));
         assert!(!bitmap.contains(500));
-        
+
         assert_eq!(bitmap.count(), 4);
     }
-    
+
     #[test]
     fn test_bitmap_intersection() {
         let mut a = BitmapFilter::new(100);
         let mut b = BitmapFilter::new(100);
-        
+
         a.set(1);
         a.set(2);
         a.set(3);
-        
+
         b.set(2);
         b.set(3);
         b.set(4);
-        
+
         let c = a.and(&b);
-        
+
         assert!(!c.contains(1));
         assert!(c.contains(2));
         assert!(c.contains(3));
         assert!(!c.contains(4));
     }
-    
+
     #[test]
     fn test_postings_filter() {
         let mut postings = PostingsFilter::new();
-        
+
         postings.add(5);
         postings.add(10);
         postings.add(3);
         postings.add(5); // Duplicate
-        
+
         assert!(postings.contains(3));
         assert!(postings.contains(5));
         assert!(postings.contains(10));
         assert!(!postings.contains(7));
-        
+
         assert_eq!(postings.count(), 3);
     }
-    
+
     #[test]
     fn test_postings_intersection() {
         let a = PostingsFilter::from_ids(vec![1, 2, 3, 5, 7]);
         let b = PostingsFilter::from_ids(vec![2, 3, 6, 7, 8]);
-        
+
         let c = a.intersect(&b);
-        
+
         assert_eq!(c.count(), 3);
         assert!(c.contains(2));
         assert!(c.contains(3));
         assert!(c.contains(7));
     }
-    
+
     #[test]
     fn test_policy_selection() {
         // Low cardinality, high density -> bitmap
-        let stats1 = AttributeStats::new("status")
-            .cardinality(5)
-            .density(0.9);
+        let stats1 = AttributeStats::new("status").cardinality(5).density(0.9);
         let policy1 = FilterPolicy::auto_select(&stats1, 1_000_000);
         assert_eq!(policy1.representation, FilterRepresentation::RoaringBitmap);
-        
+
         // High cardinality, low density -> postings
         let stats2 = AttributeStats::new("user_id")
             .cardinality(500_000)
@@ -730,23 +746,23 @@ mod tests {
         let policy2 = FilterPolicy::auto_select(&stats2, 1_000_000);
         assert_eq!(policy2.representation, FilterRepresentation::PostingsList);
     }
-    
+
     #[test]
     fn test_filter_index() {
         let policy = FilterPolicy::bitmap();
         let mut index = FilterIndex::new("category", 1000, policy);
-        
+
         index.add(0, "electronics");
         index.add(1, "electronics");
         index.add(2, "clothing");
         index.add(3, "electronics");
-        
+
         let electronics = index.query("electronics").unwrap();
         assert_eq!(electronics.len(), 3);
         assert!(electronics.contains(&0));
         assert!(electronics.contains(&1));
         assert!(electronics.contains(&3));
-        
+
         let clothing = index.query("clothing").unwrap();
         assert_eq!(clothing.len(), 1);
     }

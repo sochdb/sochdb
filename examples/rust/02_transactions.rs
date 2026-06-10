@@ -25,14 +25,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Read current balances
     let alice_bytes = conn.get(b"accounts/alice/balance")?.unwrap_or_default();
-    let alice_balance: i64 = String::from_utf8_lossy(&alice_bytes)
-        .parse()
-        .unwrap_or(0);
+    let alice_balance: i64 = String::from_utf8_lossy(&alice_bytes).parse().unwrap_or(0);
 
     let bob_bytes = conn.get(b"accounts/bob/balance")?.unwrap_or_default();
-    let bob_balance: i64 = String::from_utf8_lossy(&bob_bytes)
-        .parse()
-        .unwrap_or(0);
+    let bob_balance: i64 = String::from_utf8_lossy(&bob_bytes).parse().unwrap_or(0);
 
     let transfer_amount = 250;
 

@@ -44,7 +44,6 @@ pub enum Statement {
     // ====================================================================
     // Security DDL (P2 — Scope-Based Auth)
     // ====================================================================
-
     /// DEFINE SCOPE <name> SESSION <duration>
     ///   SIGNIN (<expr>)
     ///   SIGNUP (<expr>)
@@ -63,7 +62,6 @@ pub enum Statement {
     // ====================================================================
     // Graph & Real-Time (P1 — Multi-Model)
     // ====================================================================
-
     /// RELATE <from> -> <edge> -> <to> [SET ... | CONTENT ...]
     Relate(RelateStmt),
 
@@ -644,10 +642,7 @@ pub enum Expr {
     },
 
     /// Record ID literal: table:id (e.g. person:1, post:abc)
-    RecordId {
-        table: String,
-        id: Box<Expr>,
-    },
+    RecordId { table: String, id: Box<Expr> },
 }
 
 /// Literal values

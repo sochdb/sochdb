@@ -2,8 +2,8 @@
 //!
 //! Monitors query confidence signals and adjusts search parameters dynamically.
 
-use crate::types::*;
 use crate::config::QueryConfig;
+use crate::types::*;
 
 /// Adaptive controller for recall optimization
 pub struct AdaptiveController {
@@ -62,13 +62,14 @@ impl AdaptiveController {
 
         let scores: Vec<f32> = results.iter().map(|c| c.score.max(0.001)).collect();
         let sum: f32 = scores.iter().sum();
-        
+
         if sum <= 0.0 {
             return 0.0;
         }
 
         let probs: Vec<f32> = scores.iter().map(|s| s / sum).collect();
-        let entropy: f32 = probs.iter()
+        let entropy: f32 = probs
+            .iter()
             .filter(|&&p| p > 0.0)
             .map(|&p| -p * p.ln())
             .sum();
@@ -86,10 +87,10 @@ impl AdaptiveController {
     fn combine_signals(&self, score_gap: f32, entropy: f32, coverage: f32) -> f32 {
         // High score gap = high confidence (clear separation)
         let gap_signal = (score_gap / self.config.score_gap_threshold).min(1.0);
-        
+
         // Low entropy = high confidence (peaked distribution)
         let entropy_signal = 1.0 - entropy;
-        
+
         // High coverage = high confidence
         let coverage_signal = coverage.min(1.0);
 
@@ -103,13 +104,17 @@ impl AdaptiveController {
     }
 
     /// Compute widening parameters
-    pub fn compute_widening(&self, signals: &ConfidenceSignals, _params: &QueryParams) -> WideningParams {
+    pub fn compute_widening(
+        &self,
+        signals: &ConfidenceSignals,
+        _params: &QueryParams,
+    ) -> WideningParams {
         if signals.confidence >= 0.5 {
             return WideningParams::none();
         }
 
         let factor = self.config.widening_factor;
-        
+
         // Progressive widening strategy
         if signals.confidence < 0.2 {
             // Very low confidence: widen everything
@@ -213,7 +218,11 @@ mod tests {
             .collect();
 
         let signals = controller.compute_confidence(&results, 10);
-        assert!(signals.confidence > 0.5, "Expected high confidence: {}", signals.confidence);
+        assert!(
+            signals.confidence > 0.5,
+            "Expected high confidence: {}",
+            signals.confidence
+        );
         assert!(!controller.should_widen(signals.confidence));
     }
 
@@ -232,7 +241,11 @@ mod tests {
 
         let signals = controller.compute_confidence(&results, 10);
         // Should have high entropy, lower confidence
-        assert!(signals.entropy > 0.8, "Expected high entropy: {}", signals.entropy);
+        assert!(
+            signals.entropy > 0.8,
+            "Expected high entropy: {}",
+            signals.entropy
+        );
     }
 
     #[test]

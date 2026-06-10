@@ -1,5 +1,3 @@
-[workspace]
-
 [package]
 name = "sochdb-bench"
 version = "0.1.0"
@@ -15,10 +13,20 @@ path = "src/main.rs"
 name = "sochdb-h2o-bench"
 path = "src/h2o_main.rs"
 
+[[bin]]
+name = "sochdb-memory-bench"
+path = "src/memory_bench_main.rs"
+
+[[bin]]
+name = "sochdb-membench-retriever"
+path = "src/membench_retriever_main.rs"
+
 [dependencies]
 # ── SochDB ──
 sochdb-storage = { path = "../sochdb-storage", features = ["embedded-sync"] }
 sochdb-core    = { path = "../sochdb-core" }
+sochdb-memory  = { path = "../sochdb-memory" }
+sochdb-query   = { path = "../sochdb-query" }
 
 # ── Competitors ──
 rusqlite = { version = "0.31", features = ["bundled"] }

@@ -290,14 +290,20 @@ impl FatNode {
     /// Thread-safety: CAS on `count` serializes slot reservation. The reserving
     /// thread then publishes the pointer via Release store on the slot.
     #[inline]
-    fn try_push(&self, version: *mut LockFreeVersion) -> std::result::Result<(), *mut LockFreeVersion> {
+    fn try_push(
+        &self,
+        version: *mut LockFreeVersion,
+    ) -> std::result::Result<(), *mut LockFreeVersion> {
         loop {
             let c = self.count.load(Ordering::Acquire);
             if c as usize >= FAT_NODE_SLOTS {
                 return Err(version); // Full
             }
             // Reserve slot `c` by CAS count → c+1
-            match self.count.compare_exchange(c, c + 1, Ordering::AcqRel, Ordering::Acquire) {
+            match self
+                .count
+                .compare_exchange(c, c + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => {
                     // We own slot `c` — publish the version pointer
                     self.slots[c as usize].store(version, Ordering::Release);
@@ -320,7 +326,11 @@ impl FatNode {
         let count = self.count.load(Ordering::Acquire);
         (0..count).rev().filter_map(move |i| {
             let ptr = self.slots[i as usize].load(Ordering::Acquire);
-            if ptr.is_null() { None } else { Some(unsafe { &*ptr }) }
+            if ptr.is_null() {
+                None
+            } else {
+                Some(unsafe { &*ptr })
+            }
         })
     }
 }
@@ -367,7 +377,9 @@ impl LockFreeVersionChain {
                     if !newest.is_null() {
                         let newest_ref = unsafe { &*newest };
                         if !newest_ref.is_committed() && newest_ref.txn_id != txn_id {
-                            unsafe { drop(Box::from_raw(new_version)); }
+                            unsafe {
+                                drop(Box::from_raw(new_version));
+                            }
                             return Err(SochDBError::Internal("Write-write conflict".into()));
                         }
                     }
@@ -378,8 +390,14 @@ impl LockFreeVersionChain {
                     Ok(()) => return Ok(()),
                     Err(_) => {
                         // Fat node is full — allocate new one linking to current head
-                        let new_fat = Box::into_raw(Box::new(FatNode::new_with_first(new_version, head)));
-                        match self.head.compare_exchange(head, new_fat, Ordering::AcqRel, Ordering::Acquire) {
+                        let new_fat =
+                            Box::into_raw(Box::new(FatNode::new_with_first(new_version, head)));
+                        match self.head.compare_exchange(
+                            head,
+                            new_fat,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        ) {
                             Ok(_) => return Ok(()),
                             Err(_) => {
                                 // CAS failed — reclaim the fat node, keep the version for retry
@@ -396,8 +414,14 @@ impl LockFreeVersionChain {
                 }
             } else {
                 // No head — allocate first fat node
-                let new_fat = Box::into_raw(Box::new(FatNode::new_with_first(new_version, ptr::null_mut())));
-                match self.head.compare_exchange(head, new_fat, Ordering::AcqRel, Ordering::Acquire) {
+                let new_fat = Box::into_raw(Box::new(FatNode::new_with_first(
+                    new_version,
+                    ptr::null_mut(),
+                )));
+                match self
+                    .head
+                    .compare_exchange(head, new_fat, Ordering::AcqRel, Ordering::Acquire)
+                {
                     Ok(_) => return Ok(()),
                     Err(_) => {
                         unsafe {
@@ -982,11 +1006,7 @@ mod tests {
         for i in 0..12u64 {
             // Each write from a different committed txn
             memtable
-                .write(
-                    b"key".to_vec(),
-                    Some(format!("v{}", i).into_bytes()),
-                    i + 1,
-                )
+                .write(b"key".to_vec(), Some(format!("v{}", i).into_bytes()), i + 1)
                 .unwrap();
             memtable.commit(i + 1, (i + 1) * 10, &[b"key".to_vec()]);
         }

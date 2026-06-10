@@ -87,6 +87,7 @@ use crate::database::{Database, TxnHandle};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -913,6 +914,21 @@ impl Default for IpcServerConfig {
     }
 }
 
+/// Restrict a freshly-bound Unix socket to owner-only access (mode 0600).
+///
+/// Unix-domain sockets honor filesystem permissions on connect, so tightening
+/// the socket file to the owner prevents other local users from connecting to
+/// the unauthenticated IPC endpoint. Best-effort: a failure to chmod is logged
+/// but does not abort startup (the bind already succeeded).
+fn secure_socket_path(path: &Path) {
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        eprintln!(
+            "[IpcServer] WARNING: failed to restrict socket permissions on {:?}: {}",
+            path, e
+        );
+    }
+}
+
 impl IpcServerConfig {
     pub fn with_socket_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.socket_path = path.as_ref().to_path_buf();
@@ -965,6 +981,9 @@ impl IpcServer {
         // Create listener
         let listener = UnixListener::bind(&self.config.socket_path)?;
         listener.set_nonblocking(false)?;
+
+        // Restrict socket to owner-only access (defense in depth for local IPC)
+        secure_socket_path(&self.config.socket_path);
 
         // Record start time
         *self.stats.start_time.lock() = Some(Instant::now());
@@ -1043,6 +1062,9 @@ impl IpcServer {
                 }
             };
             let _ = listener.set_nonblocking(false);
+
+            // Restrict socket to owner-only access (defense in depth for local IPC)
+            secure_socket_path(&config.socket_path);
 
             // Record start time
             *stats.start_time.lock() = Some(Instant::now());
@@ -1291,11 +1313,13 @@ impl IpcClient {
         match resp.opcode {
             opcode::STATS_RESP => {
                 let stats_str = String::from_utf8_lossy(&resp.payload);
-                
+
                 // Parse JSON response
-                let stats: HashMap<String, u64> = serde_json::from_str(&stats_str)
-                    .map_err(|e| IpcError::Protocol(format!("Failed to parse stats JSON: {}", e)))?;
-                
+                let stats: HashMap<String, u64> =
+                    serde_json::from_str(&stats_str).map_err(|e| {
+                        IpcError::Protocol(format!("Failed to parse stats JSON: {}", e))
+                    })?;
+
                 Ok(stats)
             }
             opcode::ERROR => Err(IpcError::Database(
@@ -1414,6 +1438,33 @@ mod tests {
         assert_eq!(value, None);
 
         // Stop server
+        server.stop();
+    }
+
+    #[test]
+    fn test_socket_permissions_are_owner_only() {
+        let (db, _temp_dir, socket_path) = setup_test_server();
+
+        let config = IpcServerConfig::default().with_socket_path(&socket_path);
+        let server = IpcServer::new(Arc::clone(&db), config);
+        server.start().unwrap();
+
+        // Wait for the server to bind and chmod the socket.
+        thread::sleep(Duration::from_millis(100));
+
+        let mode = std::fs::metadata(&socket_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        // Only the low 9 permission bits matter; the socket must be 0600
+        // (owner read/write, no group/other access).
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "socket permissions must be owner-only, got {:o}",
+            mode & 0o777
+        );
+
         server.stop();
     }
 

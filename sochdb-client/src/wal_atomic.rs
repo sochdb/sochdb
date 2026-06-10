@@ -58,10 +58,10 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
@@ -77,7 +77,7 @@ pub struct Lsn(pub u64);
 
 impl Lsn {
     pub const ZERO: Lsn = Lsn(0);
-    
+
     pub fn next(&self) -> Lsn {
         Lsn(self.0 + 1)
     }
@@ -156,10 +156,7 @@ pub struct WalRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WalPayload {
     /// Intent start
-    IntentStart {
-        memory_id: String,
-        op_count: usize,
-    },
+    IntentStart { memory_id: String, op_count: usize },
     /// Operation details
     Operation {
         op_index: usize,
@@ -170,9 +167,7 @@ pub enum WalPayload {
     /// Commit marker
     Commit,
     /// Abort marker with reason
-    Abort {
-        reason: String,
-    },
+    Abort { reason: String },
     /// Checkpoint data
     Checkpoint {
         last_committed_lsn: Lsn,
@@ -187,7 +182,7 @@ impl WalRecord {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         let mut record = Self {
             lsn,
             record_type,
@@ -196,11 +191,11 @@ impl WalRecord {
             timestamp,
             checksum: 0,
         };
-        
+
         record.checksum = record.compute_checksum();
         record
     }
-    
+
     /// Compute CRC32 checksum
     fn compute_checksum(&self) -> u32 {
         let mut hasher = crc32fast::Hasher::new();
@@ -214,7 +209,7 @@ impl WalRecord {
         }
         hasher.finalize()
     }
-    
+
     /// Verify checksum
     pub fn verify(&self) -> bool {
         let expected = {
@@ -224,17 +219,15 @@ impl WalRecord {
         };
         self.checksum == expected
     }
-    
+
     /// Serialize to bytes
     pub fn to_bytes(&self) -> io::Result<Vec<u8>> {
-        bincode::serialize(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        bincode::serialize(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
-    
+
     /// Deserialize from bytes
     pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
-        bincode::deserialize(bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        bincode::deserialize(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 }
 
@@ -292,7 +285,7 @@ impl WalWriter {
     /// Create new WAL writer
     pub fn new(config: WalConfig) -> io::Result<Self> {
         std::fs::create_dir_all(&config.dir)?;
-        
+
         let writer = Self {
             config,
             current_file: Mutex::new(None),
@@ -300,62 +293,62 @@ impl WalWriter {
             current_file_size: AtomicU64::new(0),
             current_file_id: AtomicU64::new(1),
         };
-        
+
         writer.rotate_if_needed()?;
         Ok(writer)
     }
-    
+
     /// Get current LSN
     pub fn current_lsn(&self) -> Lsn {
         Lsn(self.current_lsn.load(Ordering::SeqCst))
     }
-    
+
     /// Allocate next LSN
     fn next_lsn(&self) -> Lsn {
         Lsn(self.current_lsn.fetch_add(1, Ordering::SeqCst))
     }
-    
+
     /// Rotate WAL file if needed
     fn rotate_if_needed(&self) -> io::Result<()> {
         let size = self.current_file_size.load(Ordering::Relaxed);
-        
+
         if size >= self.config.max_file_size || self.current_file.lock().is_none() {
             let file_id = self.current_file_id.fetch_add(1, Ordering::SeqCst);
             let path = self.config.dir.join(format!("wal_{:016x}.log", file_id));
-            
+
             let file = OpenOptions::new()
                 .create(true)
                 .write(true)
                 .append(true)
                 .open(&path)?;
-            
+
             let mut writer = BufWriter::with_capacity(self.config.buffer_size, file);
-            
+
             // Write header
             let header = b"SOCHWAL1"; // Magic + version
             writer.write_all(header)?;
-            
+
             *self.current_file.lock() = Some(writer);
             self.current_file_size.store(8, Ordering::Relaxed);
         }
-        
+
         Ok(())
     }
-    
+
     /// Append a record to WAL
     pub fn append(&self, record: WalRecord) -> io::Result<Lsn> {
         self.rotate_if_needed()?;
-        
+
         let bytes = record.to_bytes()?;
         let record_len = bytes.len() as u32;
-        
+
         let mut file = self.current_file.lock();
         if let Some(ref mut writer) = *file {
             // Write length prefix
             writer.write_all(&record_len.to_le_bytes())?;
             // Write record
             writer.write_all(&bytes)?;
-            
+
             // Sync based on mode
             match self.config.sync_mode {
                 SyncMode::EveryRecord => writer.flush()?,
@@ -365,15 +358,21 @@ impl WalWriter {
                 }
                 _ => {}
             }
-            
-            self.current_file_size.fetch_add(4 + bytes.len() as u64, Ordering::Relaxed);
+
+            self.current_file_size
+                .fetch_add(4 + bytes.len() as u64, Ordering::Relaxed);
         }
-        
+
         Ok(record.lsn)
     }
-    
+
     /// Write intent record
-    pub fn write_intent(&self, intent_id: u64, memory_id: &str, op_count: usize) -> io::Result<Lsn> {
+    pub fn write_intent(
+        &self,
+        intent_id: u64,
+        memory_id: &str,
+        op_count: usize,
+    ) -> io::Result<Lsn> {
         let lsn = self.next_lsn();
         let record = WalRecord::new(
             lsn,
@@ -386,7 +385,7 @@ impl WalWriter {
         );
         self.append(record)
     }
-    
+
     /// Write operation record
     pub fn write_operation(
         &self,
@@ -410,19 +409,14 @@ impl WalWriter {
         );
         self.append(record)
     }
-    
+
     /// Write commit record
     pub fn write_commit(&self, intent_id: u64) -> io::Result<Lsn> {
         let lsn = self.next_lsn();
-        let record = WalRecord::new(
-            lsn,
-            WalRecordType::Commit,
-            intent_id,
-            WalPayload::Commit,
-        );
+        let record = WalRecord::new(lsn, WalRecordType::Commit, intent_id, WalPayload::Commit);
         self.append(record)
     }
-    
+
     /// Write abort record
     pub fn write_abort(&self, intent_id: u64, reason: &str) -> io::Result<Lsn> {
         let lsn = self.next_lsn();
@@ -436,9 +430,13 @@ impl WalWriter {
         );
         self.append(record)
     }
-    
+
     /// Write checkpoint record
-    pub fn write_checkpoint(&self, last_committed_lsn: Lsn, intent_count: usize) -> io::Result<Lsn> {
+    pub fn write_checkpoint(
+        &self,
+        last_committed_lsn: Lsn,
+        intent_count: usize,
+    ) -> io::Result<Lsn> {
         let lsn = self.next_lsn();
         let record = WalRecord::new(
             lsn,
@@ -450,16 +448,16 @@ impl WalWriter {
             },
         );
         self.append(record)?;
-        
+
         // Force sync on checkpoint
         if let Some(ref mut writer) = *self.current_file.lock() {
             writer.flush()?;
             writer.get_ref().sync_all()?;
         }
-        
+
         Ok(lsn)
     }
-    
+
     /// Sync all pending writes
     pub fn sync(&self) -> io::Result<()> {
         if let Some(ref mut writer) = *self.current_file.lock() {
@@ -486,7 +484,7 @@ impl WalReader {
             dir: dir.as_ref().to_path_buf(),
         }
     }
-    
+
     /// List WAL files in order
     pub fn list_files(&self) -> io::Result<Vec<PathBuf>> {
         let mut files: Vec<PathBuf> = std::fs::read_dir(&self.dir)?
@@ -499,29 +497,29 @@ impl WalReader {
                         .unwrap_or(false)
             })
             .collect();
-        
+
         files.sort();
         Ok(files)
     }
-    
+
     /// Read all records from a file
     pub fn read_file(&self, path: &Path) -> io::Result<Vec<WalRecord>> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
-        
+
         // Verify header
         let mut header = [0u8; 8];
         reader.read_exact(&mut header)?;
-        
+
         if &header != b"SOCHWAL1" {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Invalid WAL header",
             ));
         }
-        
+
         let mut records = Vec::new();
-        
+
         loop {
             // Read length prefix
             let mut len_buf = [0u8; 4];
@@ -530,43 +528,43 @@ impl WalReader {
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e),
             }
-            
+
             let len = u32::from_le_bytes(len_buf) as usize;
-            
+
             // Read record
             let mut record_buf = vec![0u8; len];
             reader.read_exact(&mut record_buf)?;
-            
+
             let record = WalRecord::from_bytes(&record_buf)?;
-            
+
             if !record.verify() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("Checksum mismatch at LSN {:?}", record.lsn),
                 ));
             }
-            
+
             records.push(record);
         }
-        
+
         Ok(records)
     }
-    
+
     /// Read all records from all files
     pub fn read_all(&self) -> io::Result<Vec<WalRecord>> {
         let mut all_records = Vec::new();
-        
+
         for path in self.list_files()? {
             let records = self.read_file(&path)?;
             all_records.extend(records);
         }
-        
+
         // Sort by LSN
         all_records.sort_by_key(|r| r.lsn);
-        
+
         Ok(all_records)
     }
-    
+
     /// Read records since a checkpoint
     pub fn read_since(&self, checkpoint_lsn: Lsn) -> io::Result<Vec<WalRecord>> {
         let all = self.read_all()?;
@@ -605,26 +603,29 @@ impl WalAtomicWriter {
             pending: RwLock::new(HashMap::new()),
         }
     }
-    
+
     /// Start an atomic operation
     pub fn begin(&self, memory_id: &str, op_count: usize) -> io::Result<u64> {
         let intent_id = self.next_intent_id.fetch_add(1, Ordering::SeqCst);
-        
+
         // Write intent to WAL
         let lsn = self.wal.write_intent(intent_id, memory_id, op_count)?;
-        
+
         // Track pending intent
-        self.pending.write().insert(intent_id, PendingIntent {
+        self.pending.write().insert(
             intent_id,
-            memory_id: memory_id.to_string(),
-            start_lsn: lsn,
-            ops_completed: 0,
-            total_ops: op_count,
-        });
-        
+            PendingIntent {
+                intent_id,
+                memory_id: memory_id.to_string(),
+                start_lsn: lsn,
+                ops_completed: 0,
+                total_ops: op_count,
+            },
+        );
+
         Ok(intent_id)
     }
-    
+
     /// Record an operation
     pub fn record_op(
         &self,
@@ -635,42 +636,44 @@ impl WalAtomicWriter {
     ) -> io::Result<Lsn> {
         let op_index = {
             let mut pending = self.pending.write();
-            let intent = pending.get_mut(&intent_id)
-                .ok_or_else(|| io::Error::new(
+            let intent = pending.get_mut(&intent_id).ok_or_else(|| {
+                io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("Intent {} not found", intent_id),
-                ))?;
-            
+                )
+            })?;
+
             let idx = intent.ops_completed;
             intent.ops_completed += 1;
             idx
         };
-        
-        self.wal.write_operation(intent_id, op_index, op_type, key, value)
+
+        self.wal
+            .write_operation(intent_id, op_index, op_type, key, value)
     }
-    
+
     /// Commit an atomic operation
     pub fn commit(&self, intent_id: u64) -> io::Result<Lsn> {
         // Write commit to WAL
         let lsn = self.wal.write_commit(intent_id)?;
-        
+
         // Remove from pending
         self.pending.write().remove(&intent_id);
-        
+
         Ok(lsn)
     }
-    
+
     /// Abort an atomic operation
     pub fn abort(&self, intent_id: u64, reason: &str) -> io::Result<Lsn> {
         // Write abort to WAL
         let lsn = self.wal.write_abort(intent_id, reason)?;
-        
+
         // Remove from pending
         self.pending.write().remove(&intent_id);
-        
+
         Ok(lsn)
     }
-    
+
     /// Get pending intent count
     pub fn pending_count(&self) -> usize {
         self.pending.read().len()
@@ -681,7 +684,7 @@ impl WalAtomicWriter {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_wal_write_read() -> io::Result<()> {
         let tmp = TempDir::new()?;
@@ -690,29 +693,29 @@ mod tests {
             sync_mode: SyncMode::None,
             ..Default::default()
         };
-        
+
         // Write some records
         let writer = WalWriter::new(config)?;
-        
+
         let lsn1 = writer.write_intent(1, "memory1", 2)?;
         let lsn2 = writer.write_operation(1, 0, "PUT", b"key1", Some(b"value1"))?;
         let lsn3 = writer.write_operation(1, 1, "PUT", b"key2", Some(b"value2"))?;
         let lsn4 = writer.write_commit(1)?;
-        
+
         writer.sync()?;
-        
+
         // Read back
         let reader = WalReader::new(tmp.path());
         let records = reader.read_all()?;
-        
+
         assert_eq!(records.len(), 4);
         assert_eq!(records[0].lsn, lsn1);
         assert_eq!(records[3].lsn, lsn4);
         assert_eq!(records[3].record_type, WalRecordType::Commit);
-        
+
         Ok(())
     }
-    
+
     #[test]
     fn test_atomic_writer() -> io::Result<()> {
         let tmp = TempDir::new()?;
@@ -721,22 +724,22 @@ mod tests {
             sync_mode: SyncMode::None,
             ..Default::default()
         };
-        
+
         let wal = Arc::new(WalWriter::new(config)?);
         let writer = WalAtomicWriter::new(wal.clone());
-        
+
         // Start atomic operation
         let intent_id = writer.begin("test_memory", 2)?;
         assert_eq!(writer.pending_count(), 1);
-        
+
         // Record operations
         writer.record_op(intent_id, "PUT", b"key1", Some(b"value1"))?;
         writer.record_op(intent_id, "PUT", b"key2", Some(b"value2"))?;
-        
+
         // Commit
         writer.commit(intent_id)?;
         assert_eq!(writer.pending_count(), 0);
-        
+
         Ok(())
     }
 }

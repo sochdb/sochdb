@@ -485,12 +485,8 @@ impl FencedWal {
     /// Append an entry with epoch fencing
     pub fn append(&mut self, payload: Vec<u8>) -> Result<u64> {
         let lsn = self.header.entry_count + 1;
-        let entry = FencedWalEntry::new(
-            lsn,
-            self.header.last_entry_crc,
-            self.header.epoch,
-            payload,
-        );
+        let entry =
+            FencedWalEntry::new(lsn, self.header.last_entry_crc, self.header.epoch, payload);
 
         let bytes = entry.to_bytes();
         self.file.seek(SeekFrom::Start(self.write_pos))?;

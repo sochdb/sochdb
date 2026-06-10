@@ -181,10 +181,10 @@ mod tests {
     fn test_transaction_mode_tracking() {
         assert!(TransactionMode::ReadWrite.tracks_reads());
         assert!(TransactionMode::ReadWrite.tracks_writes());
-        
+
         assert!(!TransactionMode::ReadOnly.tracks_reads());
         assert!(!TransactionMode::ReadOnly.tracks_writes());
-        
+
         assert!(!TransactionMode::WriteOnly.tracks_reads());
         assert!(TransactionMode::WriteOnly.tracks_writes());
     }

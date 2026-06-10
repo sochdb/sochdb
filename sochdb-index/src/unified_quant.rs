@@ -61,7 +61,7 @@ impl QuantLevel {
             QuantLevel::F16 => 2.0,
             QuantLevel::BF16 => 2.0,
             QuantLevel::I8 => 1.0,
-            QuantLevel::PQ => 0.125, // ~1 byte per 8 dims (typical)
+            QuantLevel::PQ => 0.125,   // ~1 byte per 8 dims (typical)
             QuantLevel::BPS => 0.0625, // ~1 byte per 16 dims
         }
     }
@@ -108,7 +108,7 @@ impl fmt::Display for QuantLevel {
 ///
 /// This is the canonical representation that all vector data flows through.
 /// Each format has a specific layout optimized for its access pattern.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum UnifiedQuantizedVector {
     /// Full precision f32 vector.
     F32(Vec<f32>),
@@ -145,6 +145,41 @@ pub enum UnifiedQuantizedVector {
     },
 }
 
+/// Errors produced by quantized-vector construction and decoding.
+///
+/// These exist to make unsupported operations *fail fast* with a typed error
+/// instead of silently returning all-zero (origin) vectors, which would make
+/// distance computations meaningless and recall effectively random.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuantError {
+    /// Product quantization requires a trained codebook that this entry point
+    /// does not have access to. Train a codebook and use the codebook-aware
+    /// encode/decode path instead.
+    PqRequiresCodebook,
+    /// The format is a coarse sketch and cannot be reconstructed to f32.
+    NotReconstructable(QuantLevel),
+}
+
+impl fmt::Display for QuantError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QuantError::PqRequiresCodebook => write!(
+                f,
+                "product quantization requires a trained codebook (no codebook available on this path)"
+            ),
+            QuantError::NotReconstructable(level) => {
+                write!(
+                    f,
+                    "{} is a coarse sketch and cannot be reconstructed to f32",
+                    level
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for QuantError {}
+
 impl UnifiedQuantizedVector {
     /// Get the quantization level.
     pub fn level(&self) -> QuantLevel {
@@ -166,7 +201,7 @@ impl UnifiedQuantizedVector {
             UnifiedQuantizedVector::BF16(v) => v.len(),
             UnifiedQuantizedVector::I8 { data, .. } => data.len(),
             UnifiedQuantizedVector::PQ { num_subspaces, .. } => *num_subspaces * 8, // Approximate
-            UnifiedQuantizedVector::BPS { num_blocks, .. } => *num_blocks * 16, // Approximate
+            UnifiedQuantizedVector::BPS { num_blocks, .. } => *num_blocks * 16,     // Approximate
         }
     }
 
@@ -183,36 +218,45 @@ impl UnifiedQuantizedVector {
     }
 
     /// Convert to f32 vector (decode).
-    pub fn to_f32(&self) -> Vec<f32> {
+    ///
+    /// Returns an error for formats that cannot be faithfully reconstructed on
+    /// this path (`PQ` without a codebook, and `BPS` sketches), rather than
+    /// silently returning an all-zero vector.
+    pub fn to_f32(&self) -> Result<Vec<f32>, QuantError> {
         match self {
-            UnifiedQuantizedVector::F32(v) => v.clone(),
-            UnifiedQuantizedVector::F16(v) => v.iter().map(|&x| f16_to_f32(x)).collect(),
-            UnifiedQuantizedVector::BF16(v) => v.iter().map(|&x| bf16_to_f32(x)).collect(),
+            UnifiedQuantizedVector::F32(v) => Ok(v.clone()),
+            UnifiedQuantizedVector::F16(v) => Ok(v.iter().map(|&x| f16_to_f32(x)).collect()),
+            UnifiedQuantizedVector::BF16(v) => Ok(v.iter().map(|&x| bf16_to_f32(x)).collect()),
             UnifiedQuantizedVector::I8 {
                 data,
                 scale,
                 zero_point,
-            } => data
+            } => Ok(data
                 .iter()
                 .map(|&x| (x as f32 - *zero_point as f32) * scale)
-                .collect(),
-            UnifiedQuantizedVector::PQ { .. } => {
-                // PQ decode requires codebooks - return zeros as placeholder
-                vec![0.0; self.dimension()]
-            }
+                .collect()),
+            UnifiedQuantizedVector::PQ { .. } => Err(QuantError::PqRequiresCodebook),
             UnifiedQuantizedVector::BPS { .. } => {
-                // BPS is not meant for reconstruction
-                vec![0.0; self.dimension()]
+                Err(QuantError::NotReconstructable(QuantLevel::BPS))
             }
         }
     }
 
     /// Create from f32 vector with specified quantization level.
-    pub fn from_f32(data: &[f32], level: QuantLevel) -> Self {
+    ///
+    /// Returns [`QuantError::PqRequiresCodebook`] for `QuantLevel::PQ`: product
+    /// quantization cannot be performed here because there is no trained
+    /// codebook on this path. Previously this produced an all-zero PQ vector,
+    /// which silently corrupted distance computations.
+    pub fn from_f32(data: &[f32], level: QuantLevel) -> Result<Self, QuantError> {
         match level {
-            QuantLevel::F32 => UnifiedQuantizedVector::F32(data.to_vec()),
-            QuantLevel::F16 => UnifiedQuantizedVector::F16(data.iter().map(|&x| f32_to_f16(x)).collect()),
-            QuantLevel::BF16 => UnifiedQuantizedVector::BF16(data.iter().map(|&x| f32_to_bf16(x)).collect()),
+            QuantLevel::F32 => Ok(UnifiedQuantizedVector::F32(data.to_vec())),
+            QuantLevel::F16 => Ok(UnifiedQuantizedVector::F16(
+                data.iter().map(|&x| f32_to_f16(x)).collect(),
+            )),
+            QuantLevel::BF16 => Ok(UnifiedQuantizedVector::BF16(
+                data.iter().map(|&x| f32_to_bf16(x)).collect(),
+            )),
             QuantLevel::I8 => {
                 // Simple symmetric quantization
                 let max_abs = data.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
@@ -221,21 +265,13 @@ impl UnifiedQuantizedVector {
                     .iter()
                     .map(|&x| (x / scale).clamp(-127.0, 127.0) as i8)
                     .collect();
-                UnifiedQuantizedVector::I8 {
+                Ok(UnifiedQuantizedVector::I8 {
                     data: quantized,
                     scale,
                     zero_point: 0,
-                }
+                })
             }
-            QuantLevel::PQ => {
-                // PQ requires training - return placeholder
-                let num_subspaces = (data.len() + 7) / 8;
-                UnifiedQuantizedVector::PQ {
-                    codes: vec![0u8; num_subspaces],
-                    num_subspaces,
-                    scale: 1.0,
-                }
-            }
+            QuantLevel::PQ => Err(QuantError::PqRequiresCodebook),
             QuantLevel::BPS => {
                 // BPS projection
                 let num_blocks = (data.len() + 15) / 16;
@@ -247,8 +283,45 @@ impl UnifiedQuantizedVector {
                         ((sum * 10.0).clamp(0.0, 255.0)) as u8
                     })
                     .collect();
-                UnifiedQuantizedVector::BPS { sketch, num_blocks }
+                Ok(UnifiedQuantizedVector::BPS { sketch, num_blocks })
             }
+        }
+    }
+
+    /// Encode an f32 vector into PQ codes using a trained codebook.
+    ///
+    /// This is the codebook-aware counterpart to [`from_f32`](Self::from_f32) for
+    /// `QuantLevel::PQ`. Unlike the codebook-less path (which fails fast with
+    /// [`QuantError::PqRequiresCodebook`]), this performs real product
+    /// quantization: each subspace is mapped to its nearest centroid in the
+    /// trained codebook, yielding one byte per subspace (~32× compression).
+    ///
+    /// The vector dimension must match the codebook's `original_dim`.
+    pub fn from_f32_pq(data: &[f32], codebook: &crate::product_quantization::PQCodebooks) -> Self {
+        let pq = codebook.encode_slice(data);
+        UnifiedQuantizedVector::PQ {
+            codes: pq.codes,
+            num_subspaces: codebook.n_subspaces,
+            scale: 1.0,
+        }
+    }
+
+    /// Decode PQ codes back to an approximate f32 vector using the trained codebook.
+    ///
+    /// This is the codebook-aware counterpart to [`to_f32`](Self::to_f32): given the
+    /// same codebook used to encode, it reconstructs the approximate vector by
+    /// concatenating the per-subspace centroids. Returns
+    /// [`QuantError::NotReconstructable`] if called on a non-`PQ` value.
+    pub fn to_f32_pq(
+        &self,
+        codebook: &crate::product_quantization::PQCodebooks,
+    ) -> Result<Vec<f32>, QuantError> {
+        match self {
+            UnifiedQuantizedVector::PQ { codes, .. } => {
+                let pq = crate::product_quantization::PQCodes::from_bytes(codes);
+                Ok(codebook.decode(&pq).to_vec())
+            }
+            other => Err(QuantError::NotReconstructable(other.level())),
         }
     }
 }
@@ -363,12 +436,7 @@ impl UnifiedScorer {
 
     /// Compute I8 dot product with dequantization.
     #[inline]
-    pub fn dot_i8_dequant(
-        query: &[i8],
-        query_scale: f32,
-        vector: &[i8],
-        vector_scale: f32,
-    ) -> f32 {
+    pub fn dot_i8_dequant(query: &[i8], query_scale: f32, vector: &[i8], vector_scale: f32) -> f32 {
         let int_dot = Self::dot_i8(query, vector);
         int_dot as f32 * query_scale * vector_scale
     }
@@ -424,7 +492,12 @@ impl UnifiedScorer {
     }
 
     /// Estimate recall at given candidate count for a level.
-    pub fn estimate_recall(&self, level: QuantLevel, candidates: usize, total_vectors: usize) -> f32 {
+    pub fn estimate_recall(
+        &self,
+        level: QuantLevel,
+        candidates: usize,
+        total_vectors: usize,
+    ) -> f32 {
         let base_recall = level.expected_recall();
         let coverage = (candidates as f32 / total_vectors as f32).min(1.0);
         base_recall * coverage.sqrt() // Rough model
@@ -557,54 +630,132 @@ mod tests {
     #[test]
     fn test_unified_vector_f32() {
         let data = vec![1.0, 2.0, 3.0, 4.0];
-        let vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::F32);
-        
+        let vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::F32).unwrap();
+
         assert_eq!(vec.level(), QuantLevel::F32);
         assert_eq!(vec.dimension(), 4);
-        assert_eq!(vec.to_f32(), data);
+        assert_eq!(vec.to_f32().unwrap(), data);
     }
 
     #[test]
     fn test_unified_vector_i8() {
         let data = vec![0.5, -0.3, 0.8, -0.1];
-        let vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::I8);
-        
+        let vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::I8).unwrap();
+
         assert_eq!(vec.level(), QuantLevel::I8);
         assert_eq!(vec.dimension(), 4);
-        
+
         // Check reconstruction accuracy
-        let reconstructed = vec.to_f32();
+        let reconstructed = vec.to_f32().unwrap();
         for (orig, recon) in data.iter().zip(reconstructed.iter()) {
-            assert!((orig - recon).abs() < 0.1, "I8 reconstruction error too large");
+            assert!(
+                (orig - recon).abs() < 0.1,
+                "I8 reconstruction error too large"
+            );
         }
+    }
+
+    #[test]
+    fn test_pq_fails_fast_without_codebook() {
+        // PQ construction must fail fast rather than produce all-zero codes.
+        let data = vec![0.5, -0.3, 0.8, -0.1, 0.2, 0.9, -0.4, 0.1];
+        let err = UnifiedQuantizedVector::from_f32(&data, QuantLevel::PQ).unwrap_err();
+        assert_eq!(err, QuantError::PqRequiresCodebook);
+    }
+
+    #[test]
+    fn test_bps_is_not_reconstructable() {
+        // A coarse sketch must not silently decode to zeros.
+        let data = vec![0.5, -0.3, 0.8, -0.1];
+        let sketch = UnifiedQuantizedVector::from_f32(&data, QuantLevel::BPS).unwrap();
+        let err = sketch.to_f32().unwrap_err();
+        assert_eq!(err, QuantError::NotReconstructable(QuantLevel::BPS));
+    }
+
+    #[test]
+    fn test_pq_roundtrip_with_codebook() {
+        use crate::product_quantization::PQCodebooks;
+        use ndarray::Array1;
+
+        // Train a tiny codebook on synthetic 16-dim data (subdim=8 → 2 subspaces).
+        let mut training: Vec<Array1<f32>> = Vec::new();
+        for i in 0..256 {
+            let base = (i % 8) as f32;
+            training.push(Array1::from_vec(
+                (0..16)
+                    .map(|d| base + 0.01 * (d as f32) + 0.001 * (i as f32))
+                    .collect(),
+            ));
+        }
+        let codebook = PQCodebooks::train(&training, 5, 8);
+
+        // Encode a vector that exists in the training distribution.
+        let original: Vec<f32> = (0..16).map(|d| 3.0 + 0.01 * (d as f32)).collect();
+        let pq = UnifiedQuantizedVector::from_f32_pq(&original, &codebook);
+        assert_eq!(pq.level(), QuantLevel::PQ);
+
+        // Codebook-aware decode must reconstruct an approximation (not zeros).
+        let recon = pq.to_f32_pq(&codebook).unwrap();
+        assert_eq!(recon.len(), original.len());
+        let nonzero = recon.iter().any(|&x| x.abs() > 1e-6);
+        assert!(nonzero, "PQ reconstruction must not be all zeros");
+
+        // Reconstruction should be reasonably close to the original for in-distribution data.
+        let mse: f32 = original
+            .iter()
+            .zip(recon.iter())
+            .map(|(o, r)| (o - r).powi(2))
+            .sum::<f32>()
+            / original.len() as f32;
+        assert!(mse < 1.0, "PQ reconstruction MSE too large: {mse}");
+    }
+
+    #[test]
+    fn test_to_f32_pq_rejects_non_pq() {
+        use crate::product_quantization::PQCodebooks;
+        use ndarray::Array1;
+
+        let training: Vec<Array1<f32>> = (0..256)
+            .map(|i| Array1::from_vec((0..16).map(|d| (i + d) as f32).collect()))
+            .collect();
+        let codebook = PQCodebooks::train(&training, 3, 8);
+
+        // An F32 value is not PQ-encoded; codebook decode must reject it.
+        let f32_vec = UnifiedQuantizedVector::from_f32(&[1.0; 16], QuantLevel::F32).unwrap();
+        let err = f32_vec.to_f32_pq(&codebook).unwrap_err();
+        assert_eq!(err, QuantError::NotReconstructable(QuantLevel::F32));
     }
 
     #[test]
     fn test_unified_vector_f16() {
         let data = vec![1.5, -2.25, 0.0, 100.0];
-        let vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::F16);
-        
+        let vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::F16).unwrap();
+
         assert_eq!(vec.level(), QuantLevel::F16);
-        
-        let reconstructed = vec.to_f32();
+
+        let reconstructed = vec.to_f32().unwrap();
         for (orig, recon) in data.iter().zip(reconstructed.iter()) {
-            assert!((orig - recon).abs() < 0.01 * orig.abs().max(1.0), 
-                "F16 reconstruction error too large");
+            assert!(
+                (orig - recon).abs() < 0.01 * orig.abs().max(1.0),
+                "F16 reconstruction error too large"
+            );
         }
     }
 
     #[test]
     fn test_unified_vector_bf16() {
         let data = vec![1.5, -2.25, 0.0, 100.0];
-        let vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::BF16);
-        
+        let vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::BF16).unwrap();
+
         assert_eq!(vec.level(), QuantLevel::BF16);
-        
-        let reconstructed = vec.to_f32();
+
+        let reconstructed = vec.to_f32().unwrap();
         for (orig, recon) in data.iter().zip(reconstructed.iter()) {
             // BF16 has lower precision than F16
-            assert!((orig - recon).abs() < 0.1 * orig.abs().max(1.0), 
-                "BF16 reconstruction error too large");
+            assert!(
+                (orig - recon).abs() < 0.1 * orig.abs().max(1.0),
+                "BF16 reconstruction error too large"
+            );
         }
     }
 
@@ -612,29 +763,36 @@ mod tests {
     fn test_dot_i8() {
         let a: Vec<i8> = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let b: Vec<i8> = vec![8, 7, 6, 5, 4, 3, 2, 1];
-        
+
         let result = UnifiedScorer::dot_i8(&a, &b);
-        let expected: i32 = a.iter().zip(b.iter())
+        let expected: i32 = a
+            .iter()
+            .zip(b.iter())
             .map(|(&x, &y)| (x as i32) * (y as i32))
             .sum();
-        
+
         assert_eq!(result, expected);
     }
 
     #[test]
     fn test_pipeline_planning() {
         let config = QuantPipelineConfig {
-            available_levels: vec![QuantLevel::F32, QuantLevel::I8, QuantLevel::BPS, QuantLevel::PQ],
+            available_levels: vec![
+                QuantLevel::F32,
+                QuantLevel::I8,
+                QuantLevel::BPS,
+                QuantLevel::PQ,
+            ],
             ..Default::default()
         };
-        
+
         let scorer = UnifiedScorer::new(config);
-        
+
         // Small dataset: should skip coarse and refine
         let stages_small = scorer.plan_pipeline(500);
         assert_eq!(stages_small.len(), 1);
         assert_eq!(stages_small[0].0, PipelineStage::Rerank);
-        
+
         // Large dataset: should use all stages
         let stages_large = scorer.plan_pipeline(100_000);
         assert!(stages_large.len() >= 2);
@@ -643,17 +801,21 @@ mod tests {
     #[test]
     fn test_f16_roundtrip() {
         let values = [0.0, 1.0, -1.0, 0.5, 100.0, -0.001, 65504.0]; // Max F16 value
-        
+
         for &v in &values {
             let f16_bits = f32_to_f16(v);
             let back = f16_to_f32(f16_bits);
-            
+
             if v == 0.0 {
                 assert_eq!(back, 0.0);
             } else {
                 let rel_error = ((v - back) / v).abs();
-                assert!(rel_error < 0.001 || (v - back).abs() < 0.001, 
-                    "F16 roundtrip failed for {}: got {}", v, back);
+                assert!(
+                    rel_error < 0.001 || (v - back).abs() < 0.001,
+                    "F16 roundtrip failed for {}: got {}",
+                    v,
+                    back
+                );
             }
         }
     }
@@ -661,17 +823,22 @@ mod tests {
     #[test]
     fn test_bf16_roundtrip() {
         let values = [0.0, 1.0, -1.0, 100.0, 1e10, -1e-10];
-        
+
         for &v in &values {
             let bf16_bits = f32_to_bf16(v);
             let back = bf16_to_f32(bf16_bits);
-            
+
             if v == 0.0 {
                 assert!(back.abs() < 1e-10);
             } else {
                 let rel_error = ((v - back) / v).abs();
-                assert!(rel_error < 0.01, 
-                    "BF16 roundtrip failed for {}: got {} (error {})", v, back, rel_error);
+                assert!(
+                    rel_error < 0.01,
+                    "BF16 roundtrip failed for {}: got {} (error {})",
+                    v,
+                    back,
+                    rel_error
+                );
             }
         }
     }
@@ -680,15 +847,15 @@ mod tests {
     fn test_memory_usage() {
         let dim = 768;
         let data: Vec<f32> = (0..dim).map(|i| i as f32 / 1000.0).collect();
-        
-        let f32_vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::F32);
-        let i8_vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::I8);
-        let f16_vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::F16);
-        
+
+        let f32_vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::F32).unwrap();
+        let i8_vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::I8).unwrap();
+        let f16_vec = UnifiedQuantizedVector::from_f32(&data, QuantLevel::F16).unwrap();
+
         assert_eq!(f32_vec.memory_bytes(), dim * 4);
         assert_eq!(i8_vec.memory_bytes(), dim + 5); // data + scale + zero
         assert_eq!(f16_vec.memory_bytes(), dim * 2);
-        
+
         // Verify compression ratios
         assert!(i8_vec.memory_bytes() < f32_vec.memory_bytes() / 3);
         assert!(f16_vec.memory_bytes() < f32_vec.memory_bytes());

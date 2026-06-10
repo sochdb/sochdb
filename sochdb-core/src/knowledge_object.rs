@@ -913,7 +913,13 @@ fn write_canonical_soch_value(buf: &mut Vec<u8>, value: &SochValue) {
         SochValue::Float(f) => {
             buf.push(4);
             // Normalize: NaN → 0.0, -0.0 → 0.0
-            let normalized = if f.is_nan() { 0.0 } else if *f == 0.0 { 0.0 } else { *f };
+            let normalized = if f.is_nan() {
+                0.0
+            } else if *f == 0.0 {
+                0.0
+            } else {
+                *f
+            };
             buf.extend_from_slice(&normalized.to_le_bytes());
         }
         SochValue::Text(s) => {
@@ -962,7 +968,8 @@ impl KnowledgeObject {
     /// Serialize this Knowledge Object to compact binary format.
     /// Uses serde_json for reliable HashMap serialization.
     pub fn to_bytes(&self) -> Result<Vec<u8>, KnowledgeObjectError> {
-        serde_json::to_vec(self).map_err(|e| KnowledgeObjectError::SerializationError(e.to_string()))
+        serde_json::to_vec(self)
+            .map_err(|e| KnowledgeObjectError::SerializationError(e.to_string()))
     }
 
     /// Deserialize a Knowledge Object from binary format.
@@ -1058,8 +1065,7 @@ impl KnowledgeObject {
         }
 
         let tag = bytes[0];
-        let original_len =
-            u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+        let original_len = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
         let payload = &bytes[5..];
 
         let raw = match tag {
@@ -1092,10 +1098,7 @@ impl KnowledgeObject {
 
     /// Returns the compression ratio for a given mode (compressed_size / original_size).
     /// Values < 1.0 indicate space savings.
-    pub fn compression_ratio(
-        &self,
-        mode: CompressionMode,
-    ) -> Result<f64, KnowledgeObjectError> {
+    pub fn compression_ratio(&self, mode: CompressionMode) -> Result<f64, KnowledgeObjectError> {
         let raw_len = self.to_bytes()?.len() as f64;
         let compressed_len = self.to_compressed_bytes(mode)?.len() as f64;
         Ok(compressed_len / raw_len)
@@ -1268,16 +1271,10 @@ impl KnowledgeObjectBuilder {
     }
 
     /// Add an embedding in a named space.
-    pub fn embedding(
-        mut self,
-        space: impl Into<String>,
-        vector: Vec<f32>,
-    ) -> Self {
+    pub fn embedding(mut self, space: impl Into<String>, vector: Vec<f32>) -> Self {
         let space_name = space.into();
-        self.embeddings.insert(
-            space_name,
-            EmbeddingSpace::new(vector, "unknown", 0),
-        );
+        self.embeddings
+            .insert(space_name, EmbeddingSpace::new(vector, "unknown", 0));
         self
     }
 
@@ -1290,10 +1287,8 @@ impl KnowledgeObjectBuilder {
         generated_at: u64,
     ) -> Self {
         let space_name = space.into();
-        self.embeddings.insert(
-            space_name,
-            EmbeddingSpace::new(vector, model, generated_at),
-        );
+        self.embeddings
+            .insert(space_name, EmbeddingSpace::new(vector, model, generated_at));
         self
     }
 
@@ -1347,12 +1342,8 @@ impl KnowledgeObjectBuilder {
 
     /// Build the Knowledge Object, computing the content-addressed OID.
     pub fn build(self) -> KnowledgeObject {
-        let oid = KnowledgeObject::compute_oid(
-            &self.kind,
-            &self.payload,
-            &self.edges,
-            &self.embeddings,
-        );
+        let oid =
+            KnowledgeObject::compute_oid(&self.kind, &self.payload, &self.edges, &self.embeddings);
 
         KnowledgeObject {
             oid,
@@ -1584,8 +1575,20 @@ mod tests {
         let target = ObjectId::from_content(b"target");
 
         let ko = KnowledgeObjectBuilder::new(ObjectKind::Entity)
-            .edge(Edge::with_validity(target, EdgeKind::typed("works_at"), 1.0, 100, 200))
-            .edge(Edge::with_validity(target, EdgeKind::typed("manages"), 0.8, 150, u64::MAX))
+            .edge(Edge::with_validity(
+                target,
+                EdgeKind::typed("works_at"),
+                1.0,
+                100,
+                200,
+            ))
+            .edge(Edge::with_validity(
+                target,
+                EdgeKind::typed("manages"),
+                0.8,
+                150,
+                u64::MAX,
+            ))
             .build();
 
         // At time 120: only "works_at" is valid
@@ -1653,7 +1656,10 @@ mod tests {
         let raw = ko.to_bytes().unwrap();
 
         // LZ4 should compress repetitive content
-        assert!(compressed.len() < raw.len(), "LZ4 should reduce size for repetitive data");
+        assert!(
+            compressed.len() < raw.len(),
+            "LZ4 should reduce size for repetitive data"
+        );
         assert_eq!(compressed[0], 1); // tag = Lz4
 
         let restored = KnowledgeObject::from_compressed_bytes(&compressed).unwrap();
@@ -1705,15 +1711,25 @@ mod tests {
             .build();
 
         let ratio = ko.compression_ratio(CompressionMode::Lz4).unwrap();
-        assert!(ratio < 1.0, "LZ4 should achieve < 1.0 ratio on repetitive data");
+        assert!(
+            ratio < 1.0,
+            "LZ4 should achieve < 1.0 ratio on repetitive data"
+        );
 
         let ratio_zstd = ko.compression_ratio(CompressionMode::zstd()).unwrap();
-        assert!(ratio_zstd < ratio, "ZSTD should beat LZ4 ratio at default level");
+        assert!(
+            ratio_zstd < ratio,
+            "ZSTD should beat LZ4 ratio at default level"
+        );
     }
 
     #[test]
     fn test_compression_mode_tag_roundtrip() {
-        for mode in [CompressionMode::None, CompressionMode::Lz4, CompressionMode::zstd()] {
+        for mode in [
+            CompressionMode::None,
+            CompressionMode::Lz4,
+            CompressionMode::zstd(),
+        ] {
             let tag = mode.tag();
             let recovered = CompressionMode::from_tag(tag).unwrap();
             assert_eq!(mode.tag(), recovered.tag());

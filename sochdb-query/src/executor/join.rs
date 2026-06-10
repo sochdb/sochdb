@@ -2,11 +2,11 @@
 
 //! Join operators: HashJoin, NestedLoopJoin, MergeJoin.
 
-use crate::soch_ql::SochValue;
-use crate::sql::ast::{Expr, JoinType};
-use super::eval::{eval_expr, eval_predicate, compare_values};
+use super::eval::{compare_values, eval_expr, eval_predicate};
 use super::node::PlanNode;
 use super::types::{Row, Schema};
+use crate::soch_ql::SochValue;
+use crate::sql::ast::{Expr, JoinType};
 use sochdb_core::Result;
 use std::collections::HashMap;
 
@@ -179,11 +179,8 @@ impl PlanNode for HashJoinNode {
                 // Get next probe row
                 match self.probe.next()? {
                     Some(probe_row) => {
-                        let key_val = eval_expr(
-                            &self.probe_key_expr,
-                            &probe_row,
-                            &self.probe_schema,
-                        )?;
+                        let key_val =
+                            eval_expr(&self.probe_key_expr, &probe_row, &self.probe_schema)?;
                         let key = HashKey::from(&key_val);
 
                         if let Some(ht) = &self.hash_table {
@@ -528,7 +525,9 @@ impl PlanNode for MergeJoinNode {
                 loop {
                     match self.advance_right()? {
                         Some((right_key, right_row)) => {
-                            if compare_values(&right_key, &left_key) == Some(std::cmp::Ordering::Equal) {
+                            if compare_values(&right_key, &left_key)
+                                == Some(std::cmp::Ordering::Equal)
+                            {
                                 self.right_buffer.push(right_row);
                             } else {
                                 self.pending_right = Some(right_row);

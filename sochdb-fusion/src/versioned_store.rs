@@ -71,14 +71,13 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 
 use sochdb_core::knowledge_object::{
-    BitemporalCoord, CompressionMode, KnowledgeObject, KnowledgeObjectBuilder,
-    KnowledgeObjectError, ObjectId, ObjectKind,
+    BitemporalCoord, CompressionMode, KnowledgeObject, KnowledgeObjectBuilder, ObjectId,
 };
 use sochdb_storage::epoch_mvcc::{EpochManager, EpochMvccStore};
 use sochdb_storage::hlc::HybridLogicalClock;
@@ -349,7 +348,7 @@ impl VersionedObjectStore {
     /// Find all objects valid at a given valid_time across the entire store.
     ///
     /// Scans all current objects and filters by `BitemporalCoord.valid_at()`.
-    /// For large stores, prefer using the [`FusionEngine`] with a temporal filter stage.
+    /// For large stores, prefer using the [`KnowledgeFusionEngine`] with a temporal filter stage.
     pub fn objects_valid_at(
         &self,
         valid_time: u64,
@@ -557,6 +556,7 @@ pub struct GcResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sochdb_core::knowledge_object::ObjectKind;
     use sochdb_core::soch::SochValue;
 
     fn make_entity(name: &str) -> KnowledgeObject {
@@ -757,11 +757,7 @@ mod tests {
     #[test]
     fn test_all_objects() {
         let store = VersionedObjectStore::with_config(StoreConfig::uncompressed());
-        let objects = vec![
-            make_entity("A"),
-            make_entity("B"),
-            make_entity("C"),
-        ];
+        let objects = vec![make_entity("A"), make_entity("B"), make_entity("C")];
         store.put_batch(objects).unwrap();
 
         let all = store.all_objects().unwrap();
@@ -791,8 +787,9 @@ mod tests {
         store.put(make_entity("B")).unwrap();
 
         let gc_result = store.gc();
-        // GC should not panic; results depend on timing
-        assert!(gc_result.versions_removed >= 0);
+        // GC should not panic; results depend on timing.
+        // versions_removed is unsigned, so just ensure the field is accessible.
+        let _ = gc_result.versions_removed;
     }
 
     #[test]

@@ -4,17 +4,17 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::executor::types::{Row, Schema, ColumnMeta};
-    use crate::executor::node::PlanNode;
-    use crate::executor::scan::{ValuesNode, EmptyNode};
+    use crate::executor::aggregate::{AggDef, AggFunc, HashAggregateNode};
     use crate::executor::filter::FilterNode;
-    use crate::executor::project::{ProjectNode, ProjectExpr, PassThroughNode};
-    use crate::executor::sort::{SortNode, SortKey};
-    use crate::executor::limit::LimitNode;
-    use crate::executor::aggregate::{HashAggregateNode, AggFunc, AggDef};
     use crate::executor::join::HashJoinNode;
+    use crate::executor::limit::LimitNode;
+    use crate::executor::node::PlanNode;
+    use crate::executor::project::{PassThroughNode, ProjectExpr, ProjectNode};
+    use crate::executor::scan::{EmptyNode, ValuesNode};
+    use crate::executor::sort::{SortKey, SortNode};
+    use crate::executor::types::{ColumnMeta, Row, Schema};
     use crate::soch_ql::SochValue;
-    use crate::sql::ast::{Expr, Literal, ColumnRef, BinaryOperator, JoinType};
+    use crate::sql::ast::{BinaryOperator, ColumnRef, Expr, JoinType, Literal};
 
     // ========================================================================
     // Helpers
@@ -38,11 +38,31 @@ mod tests {
 
     fn sample_rows() -> Vec<Row> {
         vec![
-            vec![SochValue::Int(1), SochValue::Text("Alice".into()), SochValue::Int(30)],
-            vec![SochValue::Int(2), SochValue::Text("Bob".into()), SochValue::Int(25)],
-            vec![SochValue::Int(3), SochValue::Text("Carol".into()), SochValue::Int(35)],
-            vec![SochValue::Int(4), SochValue::Text("Dave".into()), SochValue::Int(25)],
-            vec![SochValue::Int(5), SochValue::Text("Eve".into()), SochValue::Int(30)],
+            vec![
+                SochValue::Int(1),
+                SochValue::Text("Alice".into()),
+                SochValue::Int(30),
+            ],
+            vec![
+                SochValue::Int(2),
+                SochValue::Text("Bob".into()),
+                SochValue::Int(25),
+            ],
+            vec![
+                SochValue::Int(3),
+                SochValue::Text("Carol".into()),
+                SochValue::Int(35),
+            ],
+            vec![
+                SochValue::Int(4),
+                SochValue::Text("Dave".into()),
+                SochValue::Int(25),
+            ],
+            vec![
+                SochValue::Int(5),
+                SochValue::Text("Eve".into()),
+                SochValue::Int(30),
+            ],
         ]
     }
 
@@ -257,7 +277,10 @@ mod tests {
         assert_eq!(rows.len(), 5);
         assert_eq!(proj.schema().len(), 2);
         assert_eq!(proj.schema().column_names(), vec!["name", "age"]);
-        assert_eq!(rows[0], vec![SochValue::Text("Alice".into()), SochValue::Int(30)]);
+        assert_eq!(
+            rows[0],
+            vec![SochValue::Text("Alice".into()), SochValue::Int(30)]
+        );
     }
 
     #[test]
@@ -661,8 +684,14 @@ mod tests {
 
         let rows = proj.collect_all().unwrap();
         assert_eq!(rows.len(), 2); // id=1 (Alice) and id=2 (Bob)
-        assert_eq!(rows[0], vec![SochValue::Text("Alice".into()), SochValue::Int(31)]);
-        assert_eq!(rows[1], vec![SochValue::Text("Bob".into()), SochValue::Int(26)]);
+        assert_eq!(
+            rows[0],
+            vec![SochValue::Text("Alice".into()), SochValue::Int(31)]
+        );
+        assert_eq!(
+            rows[1],
+            vec![SochValue::Text("Bob".into()), SochValue::Int(26)]
+        );
     }
 
     #[test]
@@ -739,13 +768,7 @@ mod tests {
         let build_key = Expr::Column(ColumnRef::qualified("users", "id"));
         let probe_key = Expr::Column(ColumnRef::qualified("orders", "user_id"));
 
-        let mut join = HashJoinNode::new(
-            left,
-            right,
-            build_key,
-            probe_key,
-            JoinType::Inner,
-        );
+        let mut join = HashJoinNode::new(left, right, build_key, probe_key, JoinType::Inner);
 
         let mut rows = join.collect_all().unwrap();
         assert_eq!(rows.len(), 3); // Alice×Widget, Alice×Doohickey, Bob×Gadget
@@ -792,10 +815,7 @@ mod tests {
     #[test]
     fn test_eval_column_ref() {
         use crate::executor::eval::eval_expr;
-        let schema = Schema::new(vec![
-            ColumnMeta::new("x"),
-            ColumnMeta::new("y"),
-        ]);
+        let schema = Schema::new(vec![ColumnMeta::new("x"), ColumnMeta::new("y")]);
         let row = vec![SochValue::Int(10), SochValue::Text("hello".into())];
 
         assert_eq!(
@@ -977,10 +997,7 @@ mod tests {
         );
 
         // 2. Project: name, age
-        let project = ProjectNode::columns(
-            Box::new(filter),
-            vec!["name".into(), "age".into()],
-        );
+        let project = ProjectNode::columns(Box::new(filter), vec!["name".into(), "age".into()]);
 
         // 3. Sort: age DESC
         let sort = SortNode::new(

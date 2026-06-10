@@ -644,7 +644,9 @@ impl CostBasedOptimizer {
         size_bytes: u64,
         _predicate: Option<&Predicate>,
     ) -> f64 {
-        let blocks = (size_bytes as f64 / self.config.block_size as f64).ceil().max(1.0) as u64;
+        let blocks = (size_bytes as f64 / self.config.block_size as f64)
+            .ceil()
+            .max(1.0) as u64;
 
         // I/O cost: must read all blocks regardless of predicate
         let io_cost = blocks as f64 * self.config.c_seq;
@@ -769,12 +771,16 @@ impl CostBasedOptimizer {
     fn derive_key_range(predicate: &Predicate) -> KeyRange {
         match predicate {
             Predicate::Eq { value, .. } => KeyRange::point(value.as_bytes().to_vec()),
-            Predicate::Lt { value, .. } | Predicate::Le { value, .. } => {
-                KeyRange::range(None, Some(value.as_bytes().to_vec()), matches!(predicate, Predicate::Le { .. }))
-            }
-            Predicate::Gt { value, .. } | Predicate::Ge { value, .. } => {
-                KeyRange::range(Some(value.as_bytes().to_vec()), None, matches!(predicate, Predicate::Ge { .. }))
-            }
+            Predicate::Lt { value, .. } | Predicate::Le { value, .. } => KeyRange::range(
+                None,
+                Some(value.as_bytes().to_vec()),
+                matches!(predicate, Predicate::Le { .. }),
+            ),
+            Predicate::Gt { value, .. } | Predicate::Ge { value, .. } => KeyRange::range(
+                Some(value.as_bytes().to_vec()),
+                None,
+                matches!(predicate, Predicate::Ge { .. }),
+            ),
             Predicate::Between { min, max, .. } => KeyRange {
                 start: Some(min.as_bytes().to_vec()),
                 end: Some(max.as_bytes().to_vec()),
@@ -1203,9 +1209,10 @@ impl CostBasedOptimizer {
 
     /// Check if stats are stale (older than threshold)
     pub fn stats_age_us(&self, table: &str) -> Option<u64> {
-        self.stats_cache.read().get(table).map(|s| {
-            Self::now_us().saturating_sub(s.last_updated)
-        })
+        self.stats_cache
+            .read()
+            .get(table)
+            .map(|s| Self::now_us().saturating_sub(s.last_updated))
     }
 
     fn now_us() -> u64 {
@@ -1607,8 +1614,14 @@ mod tests {
 
         match plan {
             PhysicalPlan::IndexSeek { key_range, .. } => {
-                assert!(key_range.start.is_some(), "KeyRange must derive from Eq predicate");
-                assert_eq!(key_range.start, key_range.end, "Eq predicate → point key range");
+                assert!(
+                    key_range.start.is_some(),
+                    "KeyRange must derive from Eq predicate"
+                );
+                assert_eq!(
+                    key_range.start, key_range.end,
+                    "Eq predicate → point key range"
+                );
             }
             _ => panic!("Expected IndexSeek"),
         }
@@ -1657,18 +1670,18 @@ mod tests {
             vec![],
             Some(100),
         );
-        let plan_single = optimizer.optimize(
-            "users",
-            vec!["id".to_string()],
-            None,
-            vec![],
-            Some(100),
-        );
+        let plan_single =
+            optimizer.optimize("users", vec!["id".to_string()], None, vec![], Some(100));
 
         let cost_all = optimizer.get_plan_cost(&plan_all);
         let cost_single = optimizer.get_plan_cost(&plan_single);
         // Single column should cost less than or equal to all columns
-        assert!(cost_single <= cost_all, "Projection should reduce cost: {} vs {}", cost_single, cost_all);
+        assert!(
+            cost_single <= cost_all,
+            "Projection should reduce cost: {} vs {}",
+            cost_single,
+            cost_all
+        );
     }
 
     #[test]
@@ -1686,7 +1699,10 @@ mod tests {
         assert_eq!(stats.row_count, 100);
         let score_stats = stats.column_stats.get("score").unwrap();
         assert_eq!(score_stats.distinct_count, 100);
-        assert!(score_stats.histogram.is_some(), "Numeric column should get histogram");
+        assert!(
+            score_stats.histogram.is_some(),
+            "Numeric column should get histogram"
+        );
         assert!(!score_stats.mcv.is_empty(), "Should build MCV list");
     }
 
@@ -1806,7 +1822,10 @@ mod tests {
         );
         let sel = optimizer.estimate_selectivity(&and_pred, &stats);
         let eq_sel = optimizer.estimate_selectivity(
-            &Predicate::Eq { column: "id".to_string(), value: "1".to_string() },
+            &Predicate::Eq {
+                column: "id".to_string(),
+                value: "1".to_string(),
+            },
             &stats,
         );
         assert!(sel < eq_sel, "AND must be more selective than either child");
@@ -1849,7 +1868,12 @@ mod tests {
 
         let order = join_opt.find_optimal_order(
             &["orders".to_string(), "users".to_string()],
-            &[("orders".to_string(), "user_id".to_string(), "users".to_string(), "id".to_string())],
+            &[(
+                "orders".to_string(),
+                "user_id".to_string(),
+                "users".to_string(),
+                "id".to_string(),
+            )],
         );
         assert!(!order.is_empty(), "Should find a join order");
     }

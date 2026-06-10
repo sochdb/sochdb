@@ -106,9 +106,23 @@ fn insert_data(conn: &SochConnection) -> Result<(), Box<dyn Error>> {
     let posts = vec![
         (1, 1, "First Post", "Hello World!", 10, "2024-01-05"),
         (2, 1, "Second Post", "SochDB is awesome", 25, "2024-01-06"),
-        (3, 2, "Bob's Thoughts", "SQL queries are easy", 15, "2024-01-07"),
+        (
+            3,
+            2,
+            "Bob's Thoughts",
+            "SQL queries are easy",
+            15,
+            "2024-01-07",
+        ),
         (4, 3, "Charlie's Guide", "Database tips", 30, "2024-01-08"),
-        (5, 3, "Advanced Topics", "Performance tuning", 50, "2024-01-09"),
+        (
+            5,
+            3,
+            "Advanced Topics",
+            "Performance tuning",
+            50,
+            "2024-01-09",
+        ),
     ];
 
     for (id, user_id, title, content, likes, published_at) in posts {
@@ -135,8 +149,12 @@ fn select_queries(conn: &SochConnection) -> Result<(), Box<dyn Error>> {
             for row in &rows {
                 println!(
                     "   - {} ({})",
-                    row.get("name").map(|v| format!("{:?}", v)).unwrap_or_default(),
-                    row.get("email").map(|v| format!("{:?}", v)).unwrap_or_default()
+                    row.get("name")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default(),
+                    row.get("email")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default()
                 );
             }
         }
@@ -151,8 +169,12 @@ fn select_queries(conn: &SochConnection) -> Result<(), Box<dyn Error>> {
             for row in &rows {
                 println!(
                     "   - {}: {} years old",
-                    row.get("name").map(|v| format!("{:?}", v)).unwrap_or_default(),
-                    row.get("age").map(|v| format!("{:?}", v)).unwrap_or_default()
+                    row.get("name")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default(),
+                    row.get("age")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default()
                 );
             }
         }
@@ -167,8 +189,12 @@ fn select_queries(conn: &SochConnection) -> Result<(), Box<dyn Error>> {
             for row in &rows {
                 println!(
                     "   - {}: {} likes",
-                    row.get("title").map(|v| format!("{:?}", v)).unwrap_or_default(),
-                    row.get("likes").map(|v| format!("{:?}", v)).unwrap_or_default()
+                    row.get("title")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default(),
+                    row.get("likes")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default()
                 );
             }
         }
@@ -183,8 +209,12 @@ fn select_queries(conn: &SochConnection) -> Result<(), Box<dyn Error>> {
             for row in &rows {
                 println!(
                     "   - {}: {} likes",
-                    row.get("title").map(|v| format!("{:?}", v)).unwrap_or_default(),
-                    row.get("likes").map(|v| format!("{:?}", v)).unwrap_or_default()
+                    row.get("title")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default(),
+                    row.get("likes")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default()
                 );
             }
         }
@@ -220,8 +250,12 @@ fn update_operations(conn: &SochConnection) -> Result<(), Box<dyn Error>> {
             for row in &rows {
                 println!(
                     "   - {}: {} likes",
-                    row.get("title").map(|v| format!("{:?}", v)).unwrap_or_default(),
-                    row.get("likes").map(|v| format!("{:?}", v)).unwrap_or_default()
+                    row.get("title")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default(),
+                    row.get("likes")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default()
                 );
             }
         }
@@ -265,16 +299,22 @@ fn complex_queries(conn: &SochConnection) -> Result<(), Box<dyn Error>> {
     // SELECT with multiple conditions
     println!("\n1. Users aged 25-30:");
     let result = conn.query_sql(
-        "SELECT name, age, email FROM users WHERE age >= 25 AND age <= 30 ORDER BY age"
+        "SELECT name, age, email FROM users WHERE age >= 25 AND age <= 30 ORDER BY age",
     )?;
     match result {
         sochdb::ast_query::QueryResult::Select(rows) => {
             for row in &rows {
                 println!(
                     "   - {}: {} years ({})",
-                    row.get("name").map(|v| format!("{:?}", v)).unwrap_or_default(),
-                    row.get("age").map(|v| format!("{:?}", v)).unwrap_or_default(),
-                    row.get("email").map(|v| format!("{:?}", v)).unwrap_or_default()
+                    row.get("name")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default(),
+                    row.get("age")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default(),
+                    row.get("email")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default()
                 );
             }
         }
@@ -289,8 +329,12 @@ fn complex_queries(conn: &SochConnection) -> Result<(), Box<dyn Error>> {
             for row in &rows {
                 println!(
                     "   - {}: {} likes",
-                    row.get("title").map(|v| format!("{:?}", v)).unwrap_or_default(),
-                    row.get("likes").map(|v| format!("{:?}", v)).unwrap_or_default()
+                    row.get("title")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default(),
+                    row.get("likes")
+                        .map(|v| format!("{:?}", v))
+                        .unwrap_or_default()
                 );
             }
         }

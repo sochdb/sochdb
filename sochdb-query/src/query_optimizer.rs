@@ -237,7 +237,12 @@ impl QueryOptimizer {
             match pred {
                 QueryPredicate::Eq(_, _) => {
                     let cost = self.cost_model.index_lookup_cost;
-                    candidates.push((IndexSelection::PrimaryKey, QueryOperation::PointLookup, cost, 1));
+                    candidates.push((
+                        IndexSelection::PrimaryKey,
+                        QueryOperation::PointLookup,
+                        cost,
+                        1,
+                    ));
                 }
                 QueryPredicate::TimeRange(start, end) => {
                     let cost = est_rows as f64 * self.cost_model.row_read_cost;
@@ -269,7 +274,9 @@ impl QueryOptimizer {
                         est_rows,
                     ));
                 }
-                QueryPredicate::Tenant(_) | QueryPredicate::SpanType(_) | QueryPredicate::In(_, _) => {
+                QueryPredicate::Tenant(_)
+                | QueryPredicate::SpanType(_)
+                | QueryPredicate::In(_, _) => {
                     let cost = est_rows as f64 * self.cost_model.row_read_cost;
                     candidates.push((
                         IndexSelection::FullScan,
@@ -322,8 +329,12 @@ impl QueryOptimizer {
             QueryOperation::RangeScan => estimated_rows as f64 * self.cost_model.row_read_cost,
             QueryOperation::FullScan => self.total_edges as f64 * self.cost_model.seq_scan_cost,
             QueryOperation::VectorSearch { .. } => self.cost_model.vector_search_cost,
-            QueryOperation::LsmRangeScan { .. } => estimated_rows as f64 * self.cost_model.row_read_cost,
-            QueryOperation::GraphTraversal { .. } => estimated_rows as f64 * self.cost_model.row_read_cost,
+            QueryOperation::LsmRangeScan { .. } => {
+                estimated_rows as f64 * self.cost_model.row_read_cost
+            }
+            QueryOperation::GraphTraversal { .. } => {
+                estimated_rows as f64 * self.cost_model.row_read_cost
+            }
         };
 
         QueryPlan {

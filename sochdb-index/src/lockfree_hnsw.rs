@@ -103,8 +103,8 @@ use dashmap::DashMap;
 use smallvec::SmallVec;
 use sochdb_core::reclamation::UnifiedReclaimer;
 use std::cell::RefCell;
-use std::collections::BinaryHeap;
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
@@ -310,7 +310,9 @@ impl AtomicNeighborList {
     /// **DEPRECATED**: Use `update_reclaim` with a `UnifiedReclaimer` for
     /// production code. This method leaks old neighbor lists, which causes
     /// unbounded memory growth in long-running systems.
-    #[deprecated(note = "Use update_reclaim() with a UnifiedReclaimer instead — this method leaks memory")]
+    #[deprecated(
+        note = "Use update_reclaim() with a UnifiedReclaimer instead — this method leaks memory"
+    )]
     pub fn update<F>(&self, mutator: F) -> bool
     where
         F: FnOnce(&[NodeId]) -> SmallVec<[NodeId; MAX_M]>,
@@ -396,7 +398,9 @@ impl AtomicNeighborList {
     /// Atomically update with retry loop (legacy — leaks old lists)
     ///
     /// **DEPRECATED**: Use `update_with_retry_reclaim` for production code.
-    #[deprecated(note = "Use update_with_retry_reclaim() with a UnifiedReclaimer instead — this method leaks memory")]
+    #[deprecated(
+        note = "Use update_with_retry_reclaim() with a UnifiedReclaimer instead — this method leaks memory"
+    )]
     pub fn update_with_retry<F>(&self, mut mutator: F, max_retries: usize) -> bool
     where
         F: FnMut(&[NodeId]) -> SmallVec<[NodeId; MAX_M]>,
@@ -537,7 +541,12 @@ pub struct LockFreeNode {
 }
 
 impl LockFreeNode {
-    pub fn new(id: NodeId, dense_index: u32, vector: DynamicQuantizedVector, max_layer: usize) -> Self {
+    pub fn new(
+        id: NodeId,
+        dense_index: u32,
+        vector: DynamicQuantizedVector,
+        max_layer: usize,
+    ) -> Self {
         let mut layers = Vec::with_capacity(max_layer + 1);
         for _ in 0..=max_layer {
             layers.push(AtomicNeighborList::new());
@@ -791,17 +800,14 @@ impl LockFreeHnsw {
                 });
 
                 if candidates.len() > max_conn {
-                    let (_left, _nth, _right) = candidates.select_nth_unstable_by(
-                        max_conn,
-                        |a, b| a.distance.partial_cmp(&b.distance).unwrap(),
-                    );
+                    let (_left, _nth, _right) = candidates
+                        .select_nth_unstable_by(max_conn, |a, b| {
+                            a.distance.partial_cmp(&b.distance).unwrap()
+                        });
                     candidates.truncate(max_conn);
                 }
 
-                candidates
-                    .into_iter()
-                    .map(|c| c.id)
-                    .collect()
+                candidates.into_iter().map(|c| c.id).collect()
             },
             self.config.max_cas_retries,
             &self.reclaimer,
@@ -878,7 +884,12 @@ impl LockFreeHnsw {
                     let dist = self.distance(query, &neighbor_node.vector);
 
                     if scratch.results.len() < ef
-                        || dist < scratch.results.peek().map(|r| r.0.distance).unwrap_or(f32::MAX)
+                        || dist
+                            < scratch
+                                .results
+                                .peek()
+                                .map(|r| r.0.distance)
+                                .unwrap_or(f32::MAX)
                     {
                         scratch.candidates.push(SearchCandidate {
                             distance: dist,
@@ -896,11 +907,7 @@ impl LockFreeHnsw {
                 }
             }
 
-            let mut result: Vec<_> = scratch
-                .results
-                .drain()
-                .map(|r| r.0)
-                .collect();
+            let mut result: Vec<_> = scratch.results.drain().map(|r| r.0).collect();
             result.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
             scratch.candidates.clear();
             result
@@ -978,13 +985,16 @@ mod tests {
         assert!(list.read().is_empty());
 
         // Add some neighbors
-        let success = list.update_reclaim(|_| {
-            let mut v = SmallVec::new();
-            v.push(1);
-            v.push(2);
-            v.push(3);
-            v
-        }, &reclaimer);
+        let success = list.update_reclaim(
+            |_| {
+                let mut v = SmallVec::new();
+                v.push(1);
+                v.push(2);
+                v.push(3);
+                v
+            },
+            &reclaimer,
+        );
         assert!(success);
 
         let neighbors = list.read();
@@ -1270,7 +1280,9 @@ mod tests {
 
         assert_eq!(hnsw.len(), 10);
 
-        let query: Vec<f32> = (0..dim).map(|j| (j as f32 / dim as f32) * 2.0 - 1.0).collect();
+        let query: Vec<f32> = (0..dim)
+            .map(|j| (j as f32 / dim as f32) * 2.0 - 1.0)
+            .collect();
         let results = hnsw.search(&DynamicQuantizedVector::from_f32(&query), 3);
         assert!(!results.is_empty());
         assert!(results.len() <= 3);

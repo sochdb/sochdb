@@ -69,7 +69,7 @@
 //! let neighbors = graph.get_neighbors(node_id, layer);
 //! ```
 
-use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -94,13 +94,13 @@ pub const INVALID_NODE: NodeId = u32::MAX;
 pub struct ContiguousNode {
     /// Offset into vector arena (or vector ID)
     pub vector_offset: u64,
-    
+
     /// Maximum layer this node appears on (0 = bottom only)
     pub max_layer: u8,
-    
+
     /// Number of neighbors at each layer
     pub neighbor_counts: [u8; MAX_LAYERS],
-    
+
     /// Inline neighbor arrays for each layer
     /// neighbors[layer][0..neighbor_counts[layer]] are valid
     pub neighbors: [[NodeId; M_MAX]; MAX_LAYERS],
@@ -213,16 +213,16 @@ impl ContiguousNode {
 pub struct ContiguousGraph {
     /// Arena memory for nodes
     nodes: NonNull<ContiguousNode>,
-    
+
     /// Number of allocated nodes
     capacity: usize,
-    
+
     /// Number of active nodes
     len: AtomicU32,
-    
+
     /// Entry point (highest layer node)
     entry_point: AtomicU64,
-    
+
     /// Layout for deallocation
     layout: Layout,
 }
@@ -235,11 +235,11 @@ impl ContiguousGraph {
     /// Create a new contiguous graph with given capacity
     pub fn new(capacity: usize) -> Self {
         let layout = Layout::array::<ContiguousNode>(capacity).unwrap();
-        
+
         // Allocate zeroed memory
         let ptr = unsafe { alloc_zeroed(layout) as *mut ContiguousNode };
         let nodes = NonNull::new(ptr).expect("allocation failed");
-        
+
         Self {
             nodes,
             capacity,
@@ -253,16 +253,12 @@ impl ContiguousGraph {
     pub fn with_nodes(nodes: Vec<ContiguousNode>) -> Self {
         let capacity = nodes.len().max(1024);
         let graph = Self::new(capacity);
-        
+
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                nodes.as_ptr(),
-                graph.nodes.as_ptr(),
-                nodes.len(),
-            );
+            std::ptr::copy_nonoverlapping(nodes.as_ptr(), graph.nodes.as_ptr(), nodes.len());
         }
         graph.len.store(nodes.len() as u32, Ordering::Release);
-        
+
         graph
     }
 
@@ -306,19 +302,19 @@ impl ContiguousGraph {
     /// Returns None if at capacity
     pub fn add_node(&self, vector_offset: u64, max_layer: u8) -> Option<NodeId> {
         let id = self.len.fetch_add(1, Ordering::AcqRel);
-        
+
         if (id as usize) >= self.capacity {
             self.len.fetch_sub(1, Ordering::Release);
             return None;
         }
-        
+
         unsafe {
             let node = self.nodes.as_ptr().add(id as usize);
             (*node).vector_offset = vector_offset;
             (*node).max_layer = max_layer;
             (*node).neighbor_counts = [0; MAX_LAYERS];
         }
-        
+
         Some(id)
     }
 
@@ -336,6 +332,11 @@ impl ContiguousGraph {
     ///
     /// # Safety
     /// Caller must ensure exclusive access
+    // `mut_from_ref`: deliberate. This is a lock-free contiguous arena; mutable
+    // access goes through `&self` + raw pointers so neighbor updates stay
+    // wait-free. Exclusivity is the caller's contract (see Safety above), which
+    // is exactly what this `unsafe fn` documents.
+    #[allow(clippy::mut_from_ref)]
     #[inline]
     pub unsafe fn get_node_mut(&self, id: NodeId) -> Option<&mut ContiguousNode> {
         if (id as usize) < self.len() {
@@ -413,11 +414,11 @@ impl Drop for ContiguousGraph {
 /// Thread-safe graph builder for parallel HNSW construction
 pub struct ContiguousGraphBuilder {
     graph: ContiguousGraph,
-    
+
     /// Per-node locks for neighbor updates
     /// Uses striped locking to reduce contention
     locks: Vec<std::sync::Mutex<()>>,
-    
+
     /// Number of lock stripes
     num_stripes: usize,
 }
@@ -429,7 +430,7 @@ impl ContiguousGraphBuilder {
         let locks = (0..num_stripes)
             .map(|_| std::sync::Mutex::new(()))
             .collect();
-        
+
         Self {
             graph: ContiguousGraph::new(capacity),
             locks,
@@ -446,7 +447,7 @@ impl ContiguousGraphBuilder {
     pub fn add_neighbor_locked(&self, node_id: NodeId, layer: usize, neighbor: NodeId) -> bool {
         let stripe = (node_id as usize) % self.num_stripes;
         let _guard = self.locks[stripe].lock().unwrap();
-        
+
         self.graph.add_neighbor(node_id, layer, neighbor)
     }
 
@@ -454,7 +455,7 @@ impl ContiguousGraphBuilder {
     pub fn set_neighbors_locked(&self, node_id: NodeId, layer: usize, neighbors: &[NodeId]) {
         let stripe = (node_id as usize) % self.num_stripes;
         let _guard = self.locks[stripe].lock().unwrap();
-        
+
         self.graph.set_neighbors(node_id, layer, neighbors);
     }
 
@@ -511,7 +512,7 @@ impl ContiguousGraphBuilder {
 pub struct NeighborHeap<const K: usize> {
     /// (distance, node_id) pairs
     items: [(f32, NodeId); K],
-    
+
     /// Current number of items
     len: usize,
 }
@@ -559,18 +560,18 @@ impl<const K: usize> NeighborHeap<K> {
     /// Get all items sorted by distance (ascending)
     pub fn into_sorted(mut self) -> Vec<(f32, NodeId)> {
         let mut result = Vec::with_capacity(self.len);
-        
+
         while self.len > 0 {
             // Swap root with last
             self.len -= 1;
             self.items.swap(0, self.len);
             result.push(self.items[self.len]);
-            
+
             if self.len > 0 {
                 self.sift_down(0);
             }
         }
-        
+
         // Reverse because we extracted max first
         result.reverse();
         result
@@ -613,14 +614,14 @@ impl<const K: usize> NeighborHeap<K> {
             let left = 2 * idx + 1;
             let right = 2 * idx + 2;
             let mut largest = idx;
-            
+
             if left < self.len && self.items[left].0 > self.items[largest].0 {
                 largest = left;
             }
             if right < self.len && self.items[right].0 > self.items[largest].0 {
                 largest = right;
             }
-            
+
             if largest != idx {
                 self.items.swap(idx, largest);
                 idx = largest;
@@ -650,7 +651,7 @@ mod tests {
         // Ensure node fits nicely in cache lines
         let size = std::mem::size_of::<ContiguousNode>();
         println!("ContiguousNode size: {} bytes", size);
-        
+
         // Should be reasonably sized for cache efficiency
         assert!(size <= 8192, "Node too large: {} bytes", size);
     }
@@ -658,17 +659,17 @@ mod tests {
     #[test]
     fn test_node_neighbors() {
         let mut node = ContiguousNode::new(42, 3);
-        
+
         assert!(node.add_neighbor(0, 100));
         assert!(node.add_neighbor(0, 200));
         assert!(node.add_neighbor(1, 300));
-        
+
         let neighbors0 = node.get_neighbors(0);
         assert_eq!(neighbors0, &[100, 200]);
-        
+
         let neighbors1 = node.get_neighbors(1);
         assert_eq!(neighbors1, &[300]);
-        
+
         let neighbors2 = node.get_neighbors(2);
         assert!(neighbors2.is_empty());
     }
@@ -676,11 +677,11 @@ mod tests {
     #[test]
     fn test_node_capacity() {
         let mut node = ContiguousNode::new(0, 1);
-        
+
         for i in 0..M_MAX {
             assert!(node.add_neighbor(0, i as NodeId));
         }
-        
+
         // Should be at capacity
         assert!(!node.add_neighbor(0, 999));
         assert!(!node.has_capacity(0));
@@ -689,15 +690,15 @@ mod tests {
     #[test]
     fn test_graph_basic() {
         let graph = ContiguousGraph::new(100);
-        
+
         let id1 = graph.add_node(1000, 2).unwrap();
         let id2 = graph.add_node(2000, 1).unwrap();
-        
+
         assert_eq!(graph.len(), 2);
-        
+
         graph.add_neighbor(id1, 0, id2);
         graph.add_neighbor(id2, 0, id1);
-        
+
         assert_eq!(graph.get_neighbors(id1, 0), &[id2]);
         assert_eq!(graph.get_neighbors(id2, 0), &[id1]);
     }
@@ -705,16 +706,16 @@ mod tests {
     #[test]
     fn test_graph_builder() {
         let builder = ContiguousGraphBuilder::new(100);
-        
+
         let id1 = builder.add_node(1000, 2).unwrap();
         let id2 = builder.add_node(2000, 1).unwrap();
-        
+
         builder.add_neighbor_locked(id1, 0, id2);
         builder.add_neighbor_locked(id2, 0, id1);
         builder.set_entry_point(id1);
-        
+
         let graph = builder.build();
-        
+
         assert_eq!(graph.len(), 2);
         assert_eq!(graph.entry_point(), Some(id1));
         assert_eq!(graph.get_neighbors(id1, 0), &[id2]);
@@ -723,21 +724,21 @@ mod tests {
     #[test]
     fn test_neighbor_heap() {
         let mut heap = NeighborHeap::<4>::new();
-        
+
         heap.push(5.0, 5);
         heap.push(3.0, 3);
         heap.push(7.0, 7);
         heap.push(1.0, 1);
-        
+
         // Worst should be 7.0
         assert_eq!(heap.worst_distance(), 7.0);
-        
+
         // Push something better
         heap.push(2.0, 2);
-        
+
         // Now worst should be 5.0
         assert_eq!(heap.worst_distance(), 5.0);
-        
+
         let sorted = heap.into_sorted();
         let ids: Vec<_> = sorted.iter().map(|(_, id)| *id).collect();
         assert_eq!(ids, vec![1, 2, 3, 5]);
@@ -746,12 +747,12 @@ mod tests {
     #[test]
     fn test_graph_serialization() {
         let graph = ContiguousGraph::new(10);
-        
+
         let _ = graph.add_node(100, 1).unwrap();
         let _ = graph.add_node(200, 2).unwrap();
-        
+
         let bytes = graph.as_bytes();
-        
+
         // Should be 2 nodes worth of bytes
         let expected_size = 2 * std::mem::size_of::<ContiguousNode>();
         assert_eq!(bytes.len(), expected_size);

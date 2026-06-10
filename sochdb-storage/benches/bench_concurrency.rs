@@ -35,14 +35,14 @@ mod measurement_harness;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use measurement_harness::{
-    BenchConfig, Distribution, DurableStorageHarness, ZipfianGenerator,
-    generate_key, generate_value, next_key_index,
+    BenchConfig, Distribution, DurableStorageHarness, ZipfianGenerator, generate_key,
+    generate_value, next_key_index,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use sochdb_storage::{DurableStorage, TransactionMode};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Instant;
-use sochdb_storage::{DurableStorage, TransactionMode};
 
 /// Wrapper to share DurableStorage across threads
 struct SharedStorage {
@@ -84,9 +84,7 @@ fn run_concurrent_reads(
         );
         let key = generate_key(idx, key_size);
 
-        let txn_id = storage
-            .begin_with_mode(TransactionMode::ReadOnly)
-            .unwrap();
+        let txn_id = storage.begin_with_mode(TransactionMode::ReadOnly).unwrap();
         let _ = storage.read(txn_id, &key);
         storage.commit(txn_id).unwrap();
         completed += 1;
@@ -109,9 +107,7 @@ fn run_concurrent_writes(
         let key = generate_key(base_key + i, key_size);
         let value = generate_value(base_key + i, value_size, 42);
 
-        let txn_id = storage
-            .begin_with_mode(TransactionMode::WriteOnly)
-            .unwrap();
+        let txn_id = storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
         storage.write(txn_id, key, value).unwrap();
         storage.commit(txn_id).unwrap();
         completed += 1;
@@ -150,9 +146,7 @@ fn run_concurrent_mixed(
             );
             let key = generate_key(idx, key_size);
 
-            let txn_id = storage
-                .begin_with_mode(TransactionMode::ReadOnly)
-                .unwrap();
+            let txn_id = storage.begin_with_mode(TransactionMode::ReadOnly).unwrap();
             let _ = storage.read(txn_id, &key);
             storage.commit(txn_id).unwrap();
         } else {
@@ -160,9 +154,7 @@ fn run_concurrent_mixed(
             let value = generate_value(write_counter, value_size, 42);
             write_counter += 1;
 
-            let txn_id = storage
-                .begin_with_mode(TransactionMode::WriteOnly)
-                .unwrap();
+            let txn_id = storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
             storage.write(txn_id, key, value).unwrap();
             storage.commit(txn_id).unwrap();
         }
@@ -207,7 +199,13 @@ fn bench_read_scalability(c: &mut Criterion) {
                         .map(|t| {
                             let storage = shared.clone_storage();
                             thread::spawn(move || {
-                                run_concurrent_reads(storage, dataset_size, key_size, ops_per_thread, t)
+                                run_concurrent_reads(
+                                    storage,
+                                    dataset_size,
+                                    key_size,
+                                    ops_per_thread,
+                                    t,
+                                )
                             })
                         })
                         .collect();
@@ -251,7 +249,13 @@ fn bench_write_scalability(c: &mut Criterion) {
                             let counter = Arc::clone(&write_counter);
                             let base = counter.fetch_add(ops_per_thread, Ordering::SeqCst);
                             thread::spawn(move || {
-                                run_concurrent_writes(storage, base, key_size, value_size, ops_per_thread)
+                                run_concurrent_writes(
+                                    storage,
+                                    base,
+                                    key_size,
+                                    value_size,
+                                    ops_per_thread,
+                                )
                             })
                         })
                         .collect();
@@ -364,7 +368,13 @@ fn bench_direct_throughput(c: &mut Criterion) {
                         .map(|t| {
                             let storage = shared.clone_storage();
                             thread::spawn(move || {
-                                run_concurrent_reads(storage, dataset_size, key_size, ops_per_thread, t)
+                                run_concurrent_reads(
+                                    storage,
+                                    dataset_size,
+                                    key_size,
+                                    ops_per_thread,
+                                    t,
+                                )
                             })
                         })
                         .collect();

@@ -97,17 +97,27 @@ pub enum LockError {
 impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LockError::DatabaseLocked { holder_pid, lock_path } => {
+            LockError::DatabaseLocked {
+                holder_pid,
+                lock_path,
+            } => {
                 if let Some(pid) = holder_pid {
-                    write!(f, "Database is locked by process {} (lock file: {})", 
-                           pid, lock_path.display())
+                    write!(
+                        f,
+                        "Database is locked by process {} (lock file: {})",
+                        pid,
+                        lock_path.display()
+                    )
                 } else {
                     write!(f, "Database is locked (lock file: {})", lock_path.display())
                 }
             }
             LockError::Timeout { elapsed, timeout } => {
-                write!(f, "Lock acquisition timed out after {:?} (timeout: {:?})", 
-                       elapsed, timeout)
+                write!(
+                    f,
+                    "Lock acquisition timed out after {:?} (timeout: {:?})",
+                    elapsed, timeout
+                )
             }
             LockError::StaleLock { stale_pid } => {
                 write!(f, "Stale lock detected from crashed process {}", stale_pid)
@@ -135,21 +145,20 @@ impl From<std::io::Error> for LockError {
 impl From<LockError> for SochDBError {
     fn from(e: LockError) -> Self {
         match e {
-            LockError::DatabaseLocked { holder_pid, lock_path } => {
-                SochDBError::LockError(format!(
-                    "Database locked by PID {:?} (lock: {})", 
-                    holder_pid, lock_path.display()
-                ))
-            }
-            LockError::Timeout { elapsed, timeout } => {
-                SochDBError::LockError(format!(
-                    "Lock timeout after {:?} (max: {:?})", elapsed, timeout
-                ))
-            }
+            LockError::DatabaseLocked {
+                holder_pid,
+                lock_path,
+            } => SochDBError::LockError(format!(
+                "Database locked by PID {:?} (lock: {})",
+                holder_pid,
+                lock_path.display()
+            )),
+            LockError::Timeout { elapsed, timeout } => SochDBError::LockError(format!(
+                "Lock timeout after {:?} (max: {:?})",
+                elapsed, timeout
+            )),
             LockError::StaleLock { stale_pid } => {
-                SochDBError::LockError(format!(
-                    "Stale lock from crashed process {}", stale_pid
-                ))
+                SochDBError::LockError(format!("Stale lock from crashed process {}", stale_pid))
             }
             LockError::Io(e) => SochDBError::Io(e),
         }
@@ -276,8 +285,8 @@ impl DatabaseLock {
     /// * `db_path` - Path to the database directory
     /// * `timeout` - Maximum time to wait for lock
     pub fn acquire_with_timeout<P: AsRef<Path>>(
-        db_path: P, 
-        timeout: Duration
+        db_path: P,
+        timeout: Duration,
     ) -> std::result::Result<Self, LockError> {
         Self::acquire_with_config(db_path, &LockConfig::with_timeout(timeout))
     }
@@ -311,7 +320,7 @@ impl DatabaseLock {
                 Ok(()) => {
                     // Lock acquired! Write our PID
                     Self::write_pid(&file, our_pid)?;
-                    
+
                     return Ok(Self {
                         lock_file: file,
                         path: lock_path,
@@ -320,7 +329,7 @@ impl DatabaseLock {
                 }
                 Err(LockError::DatabaseLocked { .. }) => {
                     // Lock is held by another process
-                    
+
                     // Check for stale lock
                     let mut should_retry = false;
                     if config.detect_stale_locks {
@@ -329,7 +338,7 @@ impl DatabaseLock {
                                 // Process is dead - try to take over
                                 // We need to close and reopen to clear state
                                 drop(file);
-                                
+
                                 // Force remove the lock file
                                 if std::fs::remove_file(&lock_path).is_ok() {
                                     should_retry = true;
@@ -337,7 +346,7 @@ impl DatabaseLock {
                             }
                         }
                     }
-                    
+
                     if should_retry {
                         continue; // Retry acquisition
                     }
@@ -350,16 +359,16 @@ impl DatabaseLock {
                                 timeout: config.timeout.unwrap_or_default(),
                             });
                         }
-                        
+
                         // Wait and retry
                         std::thread::sleep(config.retry_interval);
                         continue;
                     } else {
                         // No timeout - fail immediately
                         // Note: file may have been dropped above, so we can't read PID
-                        return Err(LockError::DatabaseLocked { 
-                            holder_pid: None, 
-                            lock_path 
+                        return Err(LockError::DatabaseLocked {
+                            holder_pid: None,
+                            lock_path,
                         });
                     }
                 }
@@ -450,7 +459,7 @@ impl DatabaseLock {
     #[cfg(unix)]
     fn try_flock(file: &File, blocking: bool) -> std::result::Result<(), LockError> {
         use std::os::unix::io::AsRawFd;
-        
+
         let fd = file.as_raw_fd();
         let operation = if blocking {
             libc::LOCK_EX
@@ -459,7 +468,7 @@ impl DatabaseLock {
         };
 
         let result = unsafe { libc::flock(fd, operation) };
-        
+
         if result == 0 {
             Ok(())
         } else {
@@ -478,14 +487,19 @@ impl DatabaseLock {
     #[cfg(windows)]
     fn try_flock(file: &File, blocking: bool) -> std::result::Result<(), LockError> {
         use std::os::windows::io::AsRawHandle;
-        
+
         let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-        
+
         let flags = windows_sys::Win32::Storage::FileSystem::LOCKFILE_EXCLUSIVE_LOCK
-            | if blocking { 0 } else { windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY };
-        
-        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
-        
+            | if blocking {
+                0
+            } else {
+                windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY
+            };
+
+        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+            unsafe { std::mem::zeroed() };
+
         let result = unsafe {
             windows_sys::Win32::Storage::FileSystem::LockFileEx(
                 handle,
@@ -496,12 +510,14 @@ impl DatabaseLock {
                 &mut overlapped,
             )
         };
-        
+
         if result != 0 {
             Ok(())
         } else {
             let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32) {
+            if err.raw_os_error()
+                == Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32)
+            {
                 Err(LockError::DatabaseLocked {
                     holder_pid: None,
                     lock_path: PathBuf::new(),
@@ -531,15 +547,10 @@ impl DatabaseLock {
     fn release(&self) {
         use std::os::windows::io::AsRawHandle;
         let handle = self.lock_file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+            unsafe { std::mem::zeroed() };
         unsafe {
-            windows_sys::Win32::Storage::FileSystem::UnlockFileEx(
-                handle,
-                0,
-                1,
-                0,
-                &mut overlapped,
-            );
+            windows_sys::Win32::Storage::FileSystem::UnlockFileEx(handle, 0, 1, 0, &mut overlapped);
         }
     }
 
@@ -635,7 +646,7 @@ impl RwDatabaseLock {
     ) -> std::result::Result<Self, LockError> {
         let db_path = db_path.as_ref();
         let lock_path = db_path.join(&config.lock_file_name);
-        
+
         if !db_path.exists() {
             std::fs::create_dir_all(db_path)?;
         }
@@ -741,22 +752,27 @@ impl RwDatabaseLock {
     fn try_shared_lock(file: &File) -> std::result::Result<bool, LockError> {
         use std::os::windows::io::AsRawHandle;
         let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
-        
+        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+            unsafe { std::mem::zeroed() };
+
         let result = unsafe {
             windows_sys::Win32::Storage::FileSystem::LockFileEx(
                 handle,
                 windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY,
-                0, 1, 0,
+                0,
+                1,
+                0,
                 &mut overlapped,
             )
         };
-        
+
         if result != 0 {
             Ok(true)
         } else {
             let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32) {
+            if err.raw_os_error()
+                == Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32)
+            {
                 Ok(false)
             } else {
                 Err(LockError::Io(err))
@@ -768,23 +784,28 @@ impl RwDatabaseLock {
     fn try_exclusive_lock(file: &File) -> std::result::Result<bool, LockError> {
         use std::os::windows::io::AsRawHandle;
         let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
-        
+        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+            unsafe { std::mem::zeroed() };
+
         let result = unsafe {
             windows_sys::Win32::Storage::FileSystem::LockFileEx(
                 handle,
-                windows_sys::Win32::Storage::FileSystem::LOCKFILE_EXCLUSIVE_LOCK 
+                windows_sys::Win32::Storage::FileSystem::LOCKFILE_EXCLUSIVE_LOCK
                     | windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY,
-                0, 1, 0,
+                0,
+                1,
+                0,
                 &mut overlapped,
             )
         };
-        
+
         if result != 0 {
             Ok(true)
         } else {
             let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32) {
+            if err.raw_os_error()
+                == Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32)
+            {
                 Ok(false)
             } else {
                 Err(LockError::Io(err))
@@ -813,7 +834,8 @@ impl RwDatabaseLock {
     fn release(&self) {
         use std::os::windows::io::AsRawHandle;
         let handle = self.lock_file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { std::mem::zeroed() };
+        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+            unsafe { std::mem::zeroed() };
         unsafe {
             windows_sys::Win32::Storage::FileSystem::UnlockFileEx(handle, 0, 1, 0, &mut overlapped);
         }
@@ -880,8 +902,14 @@ mod tests {
         let result = DatabaseLock::acquire(&db_path2);
         let elapsed = start.elapsed();
 
-        assert!(result.is_ok(), "acquire() should succeed after lock is released");
-        assert!(elapsed >= Duration::from_millis(100), "should have waited for lock");
+        assert!(
+            result.is_ok(),
+            "acquire() should succeed after lock is released"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "should have waited for lock"
+        );
         assert!(elapsed < Duration::from_secs(2), "should not wait too long");
 
         handle.join().unwrap();
@@ -912,9 +940,9 @@ mod tests {
 
         let lock = DatabaseLock::acquire(db_path).unwrap();
         let our_pid = std::process::id();
-        
+
         assert_eq!(lock.pid(), our_pid);
-        
+
         // Check we can read the holder
         let holder = DatabaseLock::get_lock_holder(db_path);
         assert_eq!(holder, Some(our_pid));
@@ -947,7 +975,7 @@ mod tests {
             ConnectionMode::ReadOnly,
             &LockConfig::no_wait(),
         );
-        
+
         assert!(matches!(shared, Err(LockError::DatabaseLocked { .. })));
     }
 }

@@ -56,7 +56,7 @@ pub fn bmi2_fast() -> bool {
     // Check CPU vendor and model
     // AMD Zen/Zen2 have slow microcode implementation
     // Zen3+ have fast implementation
-    
+
     // For now, assume BMI2 is fast if available
     // A more complete implementation would check CPUID
     true
@@ -83,7 +83,7 @@ pub fn pext_u64(src: u64, mask: u64) -> u64 {
             return unsafe { pext_u64_bmi2(src, mask) };
         }
     }
-    
+
     pext_u64_scalar(src, mask)
 }
 
@@ -103,7 +103,7 @@ pub fn pdep_u64(src: u64, mask: u64) -> u64 {
             return unsafe { pdep_u64_bmi2(src, mask) };
         }
     }
-    
+
     pdep_u64_scalar(src, mask)
 }
 
@@ -131,7 +131,7 @@ fn pext_u64_scalar(src: u64, mask: u64) -> u64 {
     let mut result = 0u64;
     let mut bb = 1u64;
     let mut m = mask;
-    
+
     while m != 0 {
         if src & m & m.wrapping_neg() != 0 {
             result |= bb;
@@ -139,7 +139,7 @@ fn pext_u64_scalar(src: u64, mask: u64) -> u64 {
         m &= m - 1; // Clear lowest set bit
         bb <<= 1;
     }
-    
+
     result
 }
 
@@ -149,7 +149,7 @@ fn pdep_u64_scalar(src: u64, mask: u64) -> u64 {
     let mut result = 0u64;
     let mut bb = 1u64;
     let mut m = mask;
-    
+
     while m != 0 {
         let bit = m & m.wrapping_neg(); // Lowest set bit
         if src & bb != 0 {
@@ -158,7 +158,7 @@ fn pdep_u64_scalar(src: u64, mask: u64) -> u64 {
         m &= m - 1; // Clear lowest set bit
         bb <<= 1;
     }
-    
+
     result
 }
 
@@ -182,20 +182,20 @@ pub fn pdep_u32(src: u32, mask: u32) -> u32 {
 pub fn pack_4bit(values: &[u8]) -> Vec<u8> {
     let packed_len = (values.len() + 1) / 2;
     let mut packed = vec![0u8; packed_len];
-    
+
     for (i, chunk) in values.chunks(2).enumerate() {
         let lo = chunk[0] & 0x0F;
         let hi = chunk.get(1).map_or(0, |&v| v & 0x0F);
         packed[i] = lo | (hi << 4);
     }
-    
+
     packed
 }
 
 /// Unpack 4-bit values from a byte array.
 pub fn unpack_4bit(packed: &[u8], count: usize) -> Vec<u8> {
     let mut values = Vec::with_capacity(count);
-    
+
     for &byte in packed {
         if values.len() < count {
             values.push(byte & 0x0F);
@@ -204,28 +204,28 @@ pub fn unpack_4bit(packed: &[u8], count: usize) -> Vec<u8> {
             values.push(byte >> 4);
         }
     }
-    
+
     values
 }
 
 /// Pack N-bit values (1-8 bits per value).
 pub fn pack_nbits(values: &[u8], bits_per_value: u8) -> Vec<u8> {
     assert!(bits_per_value >= 1 && bits_per_value <= 8);
-    
+
     let total_bits = values.len() * bits_per_value as usize;
     let packed_len = (total_bits + 7) / 8;
     let mut packed = vec![0u8; packed_len];
-    
+
     let mask = (1u8 << bits_per_value) - 1;
     let mut bit_pos = 0usize;
-    
+
     for &value in values {
         let value = value & mask;
         let byte_idx = bit_pos / 8;
         let bit_offset = bit_pos % 8;
-        
+
         packed[byte_idx] |= value << bit_offset;
-        
+
         // Handle overflow to next byte
         if bit_offset + bits_per_value as usize > 8 {
             let overflow_bits = bit_offset + bits_per_value as usize - 8;
@@ -233,41 +233,41 @@ pub fn pack_nbits(values: &[u8], bits_per_value: u8) -> Vec<u8> {
                 packed[byte_idx + 1] |= value >> (bits_per_value as usize - overflow_bits);
             }
         }
-        
+
         bit_pos += bits_per_value as usize;
     }
-    
+
     packed
 }
 
 /// Unpack N-bit values (1-8 bits per value).
 pub fn unpack_nbits(packed: &[u8], bits_per_value: u8, count: usize) -> Vec<u8> {
     assert!(bits_per_value >= 1 && bits_per_value <= 8);
-    
+
     let mut values = Vec::with_capacity(count);
     let mask = (1u16 << bits_per_value) - 1;
     let mut bit_pos = 0usize;
-    
+
     for _ in 0..count {
         let byte_idx = bit_pos / 8;
         let bit_offset = bit_pos % 8;
-        
+
         if byte_idx >= packed.len() {
             break;
         }
-        
+
         // Read up to 16 bits to handle boundary
         let mut raw = packed[byte_idx] as u16;
         if byte_idx + 1 < packed.len() {
             raw |= (packed[byte_idx + 1] as u16) << 8;
         }
-        
+
         let value = ((raw >> bit_offset) & mask) as u8;
         values.push(value);
-        
+
         bit_pos += bits_per_value as usize;
     }
-    
+
     values
 }
 
@@ -280,29 +280,29 @@ pub fn unpack_nbits(packed: &[u8], bits_per_value: u8, count: usize) -> Vec<u8> 
 #[inline]
 pub fn extract_4bit_batch(packed: u64) -> [u8; 16] {
     let mut result = [0u8; 16];
-    
+
     #[cfg(target_arch = "x86_64")]
     if bmi2_available() {
         // Use PEXT to extract each nibble
         const NIBBLE_MASK: u64 = 0x0F0F_0F0F_0F0F_0F0F;
-        
+
         let even = unsafe { pext_u64_bmi2(packed, NIBBLE_MASK) };
         let odd = unsafe { pext_u64_bmi2(packed >> 4, NIBBLE_MASK) };
-        
+
         // Interleave even and odd nibbles
         for i in 0..8 {
             result[i * 2] = ((even >> (i * 4)) & 0x0F) as u8;
             result[i * 2 + 1] = ((odd >> (i * 4)) & 0x0F) as u8;
         }
-        
+
         return result;
     }
-    
+
     // Scalar fallback
     for i in 0..16 {
         result[i] = ((packed >> (i * 4)) & 0x0F) as u8;
     }
-    
+
     result
 }
 
@@ -315,20 +315,20 @@ pub fn deposit_4bit_batch(values: [u8; 16]) -> u64 {
         // Combine even and odd nibbles
         let mut even = 0u64;
         let mut odd = 0u64;
-        
+
         for i in 0..8 {
             even |= ((values[i * 2] & 0x0F) as u64) << (i * 4);
             odd |= ((values[i * 2 + 1] & 0x0F) as u64) << (i * 4);
         }
-        
+
         const NIBBLE_MASK: u64 = 0x0F0F_0F0F_0F0F_0F0F;
-        
+
         let packed_even = unsafe { pdep_u64_bmi2(even, NIBBLE_MASK) };
         let packed_odd = unsafe { pdep_u64_bmi2(odd, NIBBLE_MASK) } << 4;
-        
+
         return packed_even | packed_odd;
     }
-    
+
     // Scalar fallback
     let mut result = 0u64;
     for i in 0..16 {
@@ -369,10 +369,10 @@ mod tests {
         // Extract every other bit
         let src = 0b_1010_1010u64;
         let mask = 0b_0101_0101u64;
-        
+
         let result = pext_u64(src, mask);
         assert_eq!(result, 0b_0000_0000); // No bits at even positions
-        
+
         let result2 = pext_u64(src, 0b_1010_1010);
         assert_eq!(result2, 0b_0000_1111); // All bits at odd positions
     }
@@ -382,7 +382,7 @@ mod tests {
         // Deposit to every other position
         let src = 0b_0000_1111u64;
         let mask = 0b_0101_0101u64;
-        
+
         let result = pdep_u64(src, mask);
         assert_eq!(result, 0b_0101_0101); // All 1s at even positions
     }
@@ -391,10 +391,10 @@ mod tests {
     fn test_pext_pdep_roundtrip() {
         let original = 0b_1100_1010_0011_0101u64;
         let mask = 0b_1111_0000_1111_0000u64;
-        
+
         let extracted = pext_u64(original, mask);
         let restored = pdep_u64(extracted, mask);
-        
+
         assert_eq!(original & mask, restored);
     }
 
@@ -403,7 +403,7 @@ mod tests {
         let values: Vec<u8> = vec![0, 15, 7, 8, 3, 12];
         let packed = pack_4bit(&values);
         let unpacked = unpack_4bit(&packed, values.len());
-        
+
         assert_eq!(values, unpacked);
     }
 
@@ -413,7 +413,7 @@ mod tests {
         let values: Vec<u8> = vec![0, 7, 3, 5, 2, 6, 1, 4];
         let packed = pack_nbits(&values, 3);
         let unpacked = unpack_nbits(&packed, 3, values.len());
-        
+
         assert_eq!(values, unpacked);
     }
 
@@ -424,9 +424,9 @@ mod tests {
         for i in 0..16u64 {
             packed |= i << (i * 4);
         }
-        
+
         let result = extract_4bit_batch(packed);
-        
+
         for i in 0..16 {
             assert_eq!(result[i], i as u8, "nibble {} mismatch", i);
         }
@@ -436,7 +436,7 @@ mod tests {
     fn test_deposit_4bit_batch() {
         let values: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let packed = deposit_4bit_batch(values);
-        
+
         // Verify by extraction
         for i in 0..16 {
             assert_eq!(((packed >> (i * 4)) & 0x0F) as u8, i as u8);
@@ -456,10 +456,10 @@ mod tests {
         // Test scalar implementations directly
         let src = 0xDEAD_BEEF_CAFE_BABEu64;
         let mask = 0x5555_5555_5555_5555u64;
-        
+
         let extracted = pext_u64_scalar(src, mask);
         let deposited = pdep_u64_scalar(extracted, mask);
-        
+
         assert_eq!(src & mask, deposited);
     }
 
@@ -467,10 +467,10 @@ mod tests {
     fn test_32bit_versions() {
         let src = 0xABCD_1234u32;
         let mask = 0xFF00_FF00u32;
-        
+
         let extracted = pext_u32(src, mask);
         let deposited = pdep_u32(extracted, mask);
-        
+
         assert_eq!(src & mask, deposited);
     }
 
@@ -479,11 +479,11 @@ mod tests {
         // Zero mask
         assert_eq!(pext_u64(0xFFFF_FFFF, 0), 0);
         assert_eq!(pdep_u64(0xFFFF_FFFF, 0), 0);
-        
+
         // Full mask
         assert_eq!(pext_u64(0x1234, 0xFFFF), 0x1234);
         assert_eq!(pdep_u64(0x1234, 0xFFFF), 0x1234);
-        
+
         // Zero source
         assert_eq!(pext_u64(0, 0xFFFF), 0);
         assert_eq!(pdep_u64(0, 0xFFFF), 0);

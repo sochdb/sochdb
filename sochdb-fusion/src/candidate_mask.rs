@@ -26,29 +26,18 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum MaskSource {
     /// Produced by an ART attribute lookup.
-    AttributeFilter {
-        field: String,
-        selectivity: f64,
-    },
+    AttributeFilter { field: String, selectivity: f64 },
     /// Produced by an HNSW vector search.
-    VectorSearch {
-        space: String,
-        ef_search: usize,
-    },
+    VectorSearch { space: String, ef_search: usize },
     /// Produced by CSR graph traversal.
-    GraphTraversal {
-        edge_kind: String,
-        hops: u32,
-    },
+    GraphTraversal { edge_kind: String, hops: u32 },
     /// Produced by a temporal predicate.
     TemporalFilter {
         valid_time: Option<u64>,
         system_time: Option<u64>,
     },
     /// Produced by a tag filter.
-    TagFilter {
-        tag: String,
-    },
+    TagFilter { tag: String },
     /// Produced by composing other masks.
     Composed {
         operation: MaskOp,
@@ -117,7 +106,11 @@ impl CandidateMask {
     }
 
     /// Create a mask from an iterator of candidate IDs.
-    pub fn from_ids(capacity: usize, ids: impl IntoIterator<Item = usize>, source: MaskSource) -> Self {
+    pub fn from_ids(
+        capacity: usize,
+        ids: impl IntoIterator<Item = usize>,
+        source: MaskSource,
+    ) -> Self {
         Self {
             bits: BitSet::from_iter(capacity, ids),
             source,
@@ -297,13 +290,19 @@ mod tests {
         let semantic = CandidateMask::from_ids(
             100,
             vec![1, 5, 10],
-            MaskSource::VectorSearch { space: "semantic".into(), ef_search: 50 },
+            MaskSource::VectorSearch {
+                space: "semantic".into(),
+                ef_search: 50,
+            },
         );
 
         let code = CandidateMask::from_ids(
             100,
             vec![5, 10, 20],
-            MaskSource::VectorSearch { space: "code".into(), ef_search: 50 },
+            MaskSource::VectorSearch {
+                space: "code".into(),
+                ef_search: 50,
+            },
         );
 
         let result = semantic.union(&code);

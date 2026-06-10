@@ -151,27 +151,30 @@ impl IdMapper {
 
         // Slow path: register new ID (uses entry API to handle races)
         let entry = self.external_to_internal.entry(external_id);
-        
+
         match entry {
             dashmap::mapref::entry::Entry::Occupied(e) => *e.get(),
             dashmap::mapref::entry::Entry::Vacant(e) => {
                 // Allocate new internal ID atomically
                 let internal_id = self.next_id.fetch_add(1, Ordering::SeqCst);
-                
+
                 if internal_id >= MAX_INTERNAL_ID {
-                    panic!("Exceeded maximum internal ID capacity ({})", MAX_INTERNAL_ID);
+                    panic!(
+                        "Exceeded maximum internal ID capacity ({})",
+                        MAX_INTERNAL_ID
+                    );
                 }
-                
+
                 let internal = InternalId::new(internal_id);
                 e.insert(internal);
-                
+
                 // Update reverse mapping
                 let mut reverse = self.internal_to_external.write();
                 if (internal_id as usize) >= reverse.len() {
                     reverse.resize(internal_id as usize + 1, 0);
                 }
                 reverse[internal_id as usize] = external_id;
-                
+
                 internal
             }
         }
@@ -325,7 +328,7 @@ mod tests {
         let id = InternalId::new(42);
         assert_eq!(id.get(), 42);
         assert!(id.is_valid());
-        
+
         let invalid = InternalId::invalid();
         assert!(!invalid.is_valid());
     }
@@ -333,23 +336,23 @@ mod tests {
     #[test]
     fn test_id_mapper_basic() {
         let mapper = IdMapper::new();
-        
+
         // First registration
         let internal1 = mapper.register(1000);
         assert_eq!(internal1.get(), 0);
-        
+
         // Second unique ID
         let internal2 = mapper.register(2000);
         assert_eq!(internal2.get(), 1);
-        
+
         // Duplicate registration returns same ID
         let internal1_again = mapper.register(1000);
         assert_eq!(internal1_again, internal1);
-        
+
         // Verify reverse lookup
         assert_eq!(mapper.to_external(internal1), Some(1000));
         assert_eq!(mapper.to_external(internal2), Some(2000));
-        
+
         // Verify forward lookup
         assert_eq!(mapper.to_internal(1000), Some(internal1));
         assert_eq!(mapper.to_internal(2000), Some(internal2));
@@ -359,13 +362,13 @@ mod tests {
     #[test]
     fn test_id_mapper_bulk() {
         let mapper = IdMapper::new();
-        
+
         // Register many IDs
         for i in 0..1000u128 {
             let internal = mapper.register(i * 100);
             assert_eq!(internal.get(), i as u32);
         }
-        
+
         // Bulk conversion
         let internals: Vec<_> = (0..10).map(InternalId::new).collect();
         let externals = mapper.to_external_batch(&internals);
@@ -378,28 +381,28 @@ mod tests {
     #[test]
     fn test_visited_bitmap() {
         let mut visited = VisitedBitmap::new(1000);
-        
+
         // Initially empty
         assert!(!visited.contains(InternalId::new(0)));
         assert!(!visited.contains(InternalId::new(500)));
-        
+
         // Insert returns true for new, false for duplicate
         assert!(visited.insert(InternalId::new(42)));
         assert!(!visited.insert(InternalId::new(42)));
-        
+
         // Contains works
         assert!(visited.contains(InternalId::new(42)));
         assert!(!visited.contains(InternalId::new(43)));
-        
+
         // Insert multiple
         for i in 0..100 {
             visited.insert(InternalId::new(i * 10));
         }
-        
+
         for i in 0..100 {
             assert!(visited.contains(InternalId::new(i * 10)));
         }
-        
+
         // Clear works
         visited.clear();
         assert!(!visited.contains(InternalId::new(42)));
@@ -408,11 +411,11 @@ mod tests {
     #[test]
     fn test_visited_bitmap_edge_cases() {
         let mut visited = VisitedBitmap::new(64);
-        
+
         // Test boundary between words
         assert!(visited.insert(InternalId::new(63)));
         assert!(visited.contains(InternalId::new(63)));
-        
+
         // Out of bounds returns false
         assert!(!visited.insert(InternalId::new(64)));
         assert!(!visited.contains(InternalId::new(100)));

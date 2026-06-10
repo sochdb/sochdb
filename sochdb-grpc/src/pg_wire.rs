@@ -32,6 +32,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use sochdb_query::DatabaseSqlConnection;
+use sochdb_query::sql::{BridgeExecutionResult, SqlBridge};
+
 // ============================================================================
 // PG Wire Protocol Constants
 // ============================================================================
@@ -190,6 +193,138 @@ impl PgSqlExecutor for EchoPgExecutor {
             columns: vec![PgColumn::text("result")],
             rows: vec![vec![Some(format!("Executed: {}", trimmed))]],
         })
+    }
+}
+
+// ============================================================================
+// DatabasePgExecutor — real SQL execution over the persistent storage engine
+// ============================================================================
+
+/// A [`PgSqlExecutor`] backed by the real SQL engine (`SqlBridge` over a
+/// `sochdb_storage::Database`), so `psql` and PostgreSQL drivers can run actual
+/// SQL (SELECT/INSERT/UPDATE/DELETE/DDL, including JOINs) instead of the echo
+/// placeholder.
+///
+/// ## Storage scope
+///
+/// This opens its **own** persistent `Database` at the configured data
+/// directory. That store is independent of the in-memory gRPC services
+/// (vector/collection/KV) — the SQL surface and the gRPC surface do not
+/// currently share data. Unifying them onto one storage backend is a larger
+/// architectural change tracked separately.
+///
+/// ## Session model (v1 limitation)
+///
+/// All PG connections share a single `SqlBridge` behind a mutex, i.e. one
+/// global SQL session, so transaction state (`BEGIN`/`COMMIT`) is shared across
+/// connections. Per-connection isolation requires the wire layer to construct a
+/// session per connection (a follow-up change). For a single client, demo, or
+/// migration workload this is sufficient and correct.
+#[derive(Clone)]
+pub struct DatabasePgExecutor {
+    bridge: Arc<parking_lot::Mutex<SqlBridge<DatabaseSqlConnection>>>,
+}
+
+impl DatabasePgExecutor {
+    /// Build an executor over an already-open database handle.
+    pub fn new(db: Arc<sochdb_storage::Database>) -> Self {
+        let conn = DatabaseSqlConnection::new(db);
+        Self {
+            bridge: Arc::new(parking_lot::Mutex::new(SqlBridge::new(conn))),
+        }
+    }
+}
+
+impl PgSqlExecutor for DatabasePgExecutor {
+    fn execute(&self, sql: &str) -> Result<PgResult, String> {
+        let trimmed = sql.trim();
+        if trimmed.is_empty() {
+            return Ok(PgResult::Command {
+                tag: "EMPTY".to_string(),
+            });
+        }
+
+        // psql issues SET/RESET/SHOW during connection setup; the SQL engine
+        // does not model these, so acknowledge them like the echo executor.
+        let upper = trimmed.to_uppercase();
+        if upper.starts_with("SET ") || upper.starts_with("RESET ") {
+            return Ok(PgResult::Command {
+                tag: "SET".to_string(),
+            });
+        }
+        if upper.starts_with("SHOW ") {
+            let param = trimmed[5..].trim().trim_end_matches(';');
+            return Ok(PgResult::Rows {
+                columns: vec![PgColumn::text(param)],
+                rows: vec![vec![Some("on".to_string())]],
+            });
+        }
+
+        let mut bridge = self.bridge.lock();
+        match bridge.execute(trimmed) {
+            Ok(BridgeExecutionResult::Rows { columns, rows }) => {
+                let pg_columns: Vec<PgColumn> = columns.iter().map(|c| PgColumn::text(c)).collect();
+                let pg_rows: Vec<Vec<Option<String>>> = rows
+                    .iter()
+                    .map(|row| {
+                        columns
+                            .iter()
+                            .map(|c| row.get(c).and_then(soch_value_to_pg_text))
+                            .collect()
+                    })
+                    .collect();
+                Ok(PgResult::Rows {
+                    columns: pg_columns,
+                    rows: pg_rows,
+                })
+            }
+            Ok(BridgeExecutionResult::RowsAffected(n)) => Ok(PgResult::Command {
+                tag: pg_command_tag(trimmed, n),
+            }),
+            Ok(BridgeExecutionResult::Ok) | Ok(BridgeExecutionResult::TransactionOk) => {
+                Ok(PgResult::Command {
+                    tag: pg_command_tag(trimmed, 0),
+                })
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// Render a `SochValue` as PostgreSQL text-format cell content.
+/// Returns `None` for SQL NULL. Uses raw text (not the TOON-quoted `Display`).
+fn soch_value_to_pg_text(v: &sochdb_core::SochValue) -> Option<String> {
+    use sochdb_core::SochValue;
+    match v {
+        SochValue::Null => None,
+        SochValue::Bool(b) => Some(if *b { "t".to_string() } else { "f".to_string() }),
+        SochValue::Int(i) => Some(i.to_string()),
+        SochValue::UInt(u) => Some(u.to_string()),
+        SochValue::Float(fl) => Some(fl.to_string()),
+        SochValue::Text(s) => Some(s.clone()),
+        // Binary/Array/Object/Ref: fall back to the canonical text encoding.
+        other => Some(other.to_string()),
+    }
+}
+
+/// Build a PostgreSQL CommandComplete tag from the statement verb.
+fn pg_command_tag(sql: &str, affected: usize) -> String {
+    let mut words = sql.trim_start().split_whitespace();
+    let verb = words.next().unwrap_or("").to_uppercase();
+    match verb.as_str() {
+        "INSERT" => format!("INSERT 0 {}", affected),
+        "UPDATE" => format!("UPDATE {}", affected),
+        "DELETE" => format!("DELETE {}", affected),
+        "SELECT" => format!("SELECT {}", affected),
+        "CREATE" | "DROP" | "ALTER" => {
+            let obj = words.next().unwrap_or("").to_uppercase();
+            format!("{} {}", verb, obj).trim().to_string()
+        }
+        "BEGIN" => "BEGIN".to_string(),
+        "COMMIT" => "COMMIT".to_string(),
+        "ROLLBACK" => "ROLLBACK".to_string(),
+        "" => "EMPTY".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -754,6 +889,48 @@ mod tests {
     }
 
     #[test]
+    fn test_database_executor_real_sql() {
+        // Unique temp directory for an isolated database.
+        let dir = std::env::temp_dir().join(format!(
+            "sochdb_pg_exec_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = sochdb_storage::Database::open(&dir).expect("open db");
+        let exec = DatabasePgExecutor::new(db);
+
+        // SET is acknowledged (psql connection-setup compatibility).
+        match exec.execute("SET client_encoding TO 'UTF8'") {
+            Ok(PgResult::Command { tag }) => assert_eq!(tag, "SET"),
+            other => panic!("Expected SET Command, got {:?}", other),
+        }
+
+        // DDL + DML execute against real storage.
+        exec.execute("CREATE TABLE users (id INT, name TEXT)")
+            .expect("create table");
+        match exec.execute("INSERT INTO users (id, name) VALUES (1, 'alice')") {
+            Ok(PgResult::Command { tag }) => assert!(tag.starts_with("INSERT")),
+            other => panic!("Expected INSERT Command, got {:?}", other),
+        }
+
+        // SELECT returns real rows.
+        match exec.execute("SELECT id, name FROM users") {
+            Ok(PgResult::Rows { columns, rows }) => {
+                let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+                assert!(names.contains(&"id"));
+                assert!(names.contains(&"name"));
+                assert_eq!(rows.len(), 1);
+            }
+            other => panic!("Expected Rows, got {:?}", other),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_build_startup_message() {
         let msg = build_startup_message(&[("user", "test"), ("database", "mydb")]);
         assert!(msg.len() > 8);
@@ -787,11 +964,8 @@ mod tests {
         // Give server time to process and flush
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                client.read(&mut buf),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(100), client.read(&mut buf))
+                .await
             {
                 Ok(Ok(n)) if n > 0 => {
                     all.extend_from_slice(&buf[..n]);
@@ -872,10 +1046,7 @@ mod tests {
         // Send SSL request
         let ssl_len: i32 = 8;
         client.write_all(&ssl_len.to_be_bytes()).await.unwrap();
-        client
-            .write_all(&SSL_REQUEST.to_be_bytes())
-            .await
-            .unwrap();
+        client.write_all(&SSL_REQUEST.to_be_bytes()).await.unwrap();
         client.flush().await.unwrap();
 
         // Server should respond with 'N' (no SSL)

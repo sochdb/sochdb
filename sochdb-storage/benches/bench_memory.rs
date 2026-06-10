@@ -34,10 +34,10 @@ mod measurement_harness;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use measurement_harness::{generate_key, generate_value};
+use sochdb_storage::{DurableStorage, TransactionMode};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
-use sochdb_storage::{DurableStorage, TransactionMode};
 
 /// Simple memory tracking allocator
 struct TrackingAllocator;
@@ -105,7 +105,7 @@ fn bench_memory_loading(c: &mut Criterion) {
 
                     // Theoretical memory: keys + values in memtable
                     let expected_bytes = dataset_size * (key_size + value_size);
-                    
+
                     black_box(expected_bytes)
                 });
             },
@@ -144,7 +144,7 @@ fn bench_memory_value_sizes(c: &mut Criterion) {
                     // Memory per key
                     let bytes_per_key = key_size + value_size;
                     let total_expected = dataset_size * bytes_per_key;
-                    
+
                     black_box(total_expected)
                 });
             },
@@ -234,8 +234,9 @@ fn bench_memory_updates(c: &mut Criterion) {
 
                     // Expected versions per key: 1 + update_rounds
                     let versions_per_key = 1 + update_rounds;
-                    let expected_overhead = dataset_size * versions_per_key * (key_size + value_size);
-                    
+                    let expected_overhead =
+                        dataset_size * versions_per_key * (key_size + value_size);
+
                     black_box(expected_overhead)
                 });
             },
@@ -270,7 +271,7 @@ fn bench_memory_report(c: &mut Criterion) {
 
             // Theoretical minimum: data only
             let data_bytes = dataset_size * (key_size + value_size);
-            // With bloom filter: ~1.25 bytes per key  
+            // With bloom filter: ~1.25 bytes per key
             let bloom_bytes = (dataset_size as f64 * 1.25) as usize;
             // Total expected
             let expected_total = data_bytes + bloom_bytes;

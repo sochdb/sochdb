@@ -2,7 +2,7 @@
 
 //! Sort operator.
 
-use super::eval::{eval_expr, compare_values};
+use super::eval::{compare_values, eval_expr};
 use super::node::PlanNode;
 use super::types::{Row, Schema};
 use crate::sql::ast::Expr;
@@ -60,7 +60,10 @@ impl SortNode {
                 let keys: Vec<crate::soch_ql::SochValue> = self
                     .sort_keys
                     .iter()
-                    .map(|sk| eval_expr(&sk.expr, &row, &schema).unwrap_or(crate::soch_ql::SochValue::Null))
+                    .map(|sk| {
+                        eval_expr(&sk.expr, &row, &schema)
+                            .unwrap_or(crate::soch_ql::SochValue::Null)
+                    })
                     .collect();
                 (keys, row)
             })

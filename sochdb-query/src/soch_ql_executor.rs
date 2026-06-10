@@ -36,15 +36,15 @@
 //! ```
 
 use crate::soch_ql::{
-    ComparisonOp, LogicalOp, SelectQuery, SortDirection, SochQlParser, SochQuery, SochResult,
-    SochValue, WhereClause,
+    ComparisonOp, LogicalOp, SelectQuery, SochQlParser, SochQuery, SochResult, SochValue,
+    SortDirection, WhereClause,
 };
 #[cfg(test)]
 use crate::soch_ql::{Condition, OrderBy};
-use std::collections::HashMap;
 use sochdb_core::{Catalog, Result, SochDBError, SochRow, SochValue as CoreSochValue};
 #[cfg(test)]
 use sochdb_core::{SochSchema, SochType};
+use std::collections::HashMap;
 
 /// Query plan operators
 #[derive(Debug, Clone)]
@@ -201,11 +201,9 @@ impl PredicateCondition {
     fn like_match(value: &CoreSochValue, pattern: &CoreSochValue) -> bool {
         match (value, pattern) {
             (CoreSochValue::Text(v), CoreSochValue::Text(p)) => {
-                // Simple LIKE: % matches any, _ matches one char
-                let regex_pattern = p.replace('%', ".*").replace('_', ".");
-                regex::Regex::new(&format!("^{}$", regex_pattern))
-                    .map(|re| re.is_match(v))
-                    .unwrap_or(false)
+                // Canonical LIKE matcher: % matches any run, _ matches one char,
+                // all other characters (including regex metacharacters) literal.
+                crate::like::like_match(v, p)
             }
             _ => false,
         }

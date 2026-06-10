@@ -24,8 +24,8 @@
 //! this variability while still catching major regressions.
 
 use rand::Rng;
-use std::collections::HashSet;
 use sochdb_index::hnsw::{HnswConfig, HnswIndex};
+use std::collections::HashSet;
 
 fn generate_random_vector(dim: usize) -> Vec<f32> {
     let mut rng = rand::thread_rng();

@@ -83,12 +83,12 @@ pub enum IrInst {
     ConstBool(Reg, bool),
     ConstI64(Reg, i64),
     ConstF64(Reg, f64),
-    
+
     // Load from field (field index)
     LoadI64(Reg, u32),
     LoadF64(Reg, u32),
     LoadBool(Reg, u32),
-    
+
     // Integer comparisons
     EqI64(Reg, Reg, Reg),
     NeI64(Reg, Reg, Reg),
@@ -96,7 +96,7 @@ pub enum IrInst {
     LeI64(Reg, Reg, Reg),
     GtI64(Reg, Reg, Reg),
     GeI64(Reg, Reg, Reg),
-    
+
     // Float comparisons
     EqF64(Reg, Reg, Reg),
     NeF64(Reg, Reg, Reg),
@@ -104,12 +104,12 @@ pub enum IrInst {
     LeF64(Reg, Reg, Reg),
     GtF64(Reg, Reg, Reg),
     GeF64(Reg, Reg, Reg),
-    
+
     // Logical
     And(Reg, Reg, Reg),
     Or(Reg, Reg, Reg),
     Not(Reg, Reg),
-    
+
     // Arithmetic (for expression evaluation)
     AddI64(Reg, Reg, Reg),
     SubI64(Reg, Reg, Reg),
@@ -118,11 +118,11 @@ pub enum IrInst {
     SubF64(Reg, Reg, Reg),
     MulF64(Reg, Reg, Reg),
     DivF64(Reg, Reg, Reg),
-    
+
     // Type conversions
     I64ToF64(Reg, Reg),
     F64ToI64(Reg, Reg),
-    
+
     // Return result
     Ret(Reg),
 }
@@ -131,36 +131,36 @@ impl IrInst {
     /// Get destination register if any.
     pub fn dest(&self) -> Option<Reg> {
         match self {
-            IrInst::ConstBool(r, _) |
-            IrInst::ConstI64(r, _) |
-            IrInst::ConstF64(r, _) |
-            IrInst::LoadI64(r, _) |
-            IrInst::LoadF64(r, _) |
-            IrInst::LoadBool(r, _) |
-            IrInst::EqI64(r, _, _) |
-            IrInst::NeI64(r, _, _) |
-            IrInst::LtI64(r, _, _) |
-            IrInst::LeI64(r, _, _) |
-            IrInst::GtI64(r, _, _) |
-            IrInst::GeI64(r, _, _) |
-            IrInst::EqF64(r, _, _) |
-            IrInst::NeF64(r, _, _) |
-            IrInst::LtF64(r, _, _) |
-            IrInst::LeF64(r, _, _) |
-            IrInst::GtF64(r, _, _) |
-            IrInst::GeF64(r, _, _) |
-            IrInst::And(r, _, _) |
-            IrInst::Or(r, _, _) |
-            IrInst::Not(r, _) |
-            IrInst::AddI64(r, _, _) |
-            IrInst::SubI64(r, _, _) |
-            IrInst::MulI64(r, _, _) |
-            IrInst::AddF64(r, _, _) |
-            IrInst::SubF64(r, _, _) |
-            IrInst::MulF64(r, _, _) |
-            IrInst::DivF64(r, _, _) |
-            IrInst::I64ToF64(r, _) |
-            IrInst::F64ToI64(r, _) => Some(*r),
+            IrInst::ConstBool(r, _)
+            | IrInst::ConstI64(r, _)
+            | IrInst::ConstF64(r, _)
+            | IrInst::LoadI64(r, _)
+            | IrInst::LoadF64(r, _)
+            | IrInst::LoadBool(r, _)
+            | IrInst::EqI64(r, _, _)
+            | IrInst::NeI64(r, _, _)
+            | IrInst::LtI64(r, _, _)
+            | IrInst::LeI64(r, _, _)
+            | IrInst::GtI64(r, _, _)
+            | IrInst::GeI64(r, _, _)
+            | IrInst::EqF64(r, _, _)
+            | IrInst::NeF64(r, _, _)
+            | IrInst::LtF64(r, _, _)
+            | IrInst::LeF64(r, _, _)
+            | IrInst::GtF64(r, _, _)
+            | IrInst::GeF64(r, _, _)
+            | IrInst::And(r, _, _)
+            | IrInst::Or(r, _, _)
+            | IrInst::Not(r, _)
+            | IrInst::AddI64(r, _, _)
+            | IrInst::SubI64(r, _, _)
+            | IrInst::MulI64(r, _, _)
+            | IrInst::AddF64(r, _, _)
+            | IrInst::SubF64(r, _, _)
+            | IrInst::MulF64(r, _, _)
+            | IrInst::DivF64(r, _, _)
+            | IrInst::I64ToF64(r, _)
+            | IrInst::F64ToI64(r, _) => Some(*r),
             IrInst::Ret(_) => None,
         }
     }
@@ -168,39 +168,39 @@ impl IrInst {
     /// Get source registers.
     pub fn sources(&self) -> Vec<Reg> {
         match self {
-            IrInst::ConstBool(_, _) |
-            IrInst::ConstI64(_, _) |
-            IrInst::ConstF64(_, _) |
-            IrInst::LoadI64(_, _) |
-            IrInst::LoadF64(_, _) |
-            IrInst::LoadBool(_, _) => vec![],
-            
-            IrInst::Not(_, src) |
-            IrInst::I64ToF64(_, src) |
-            IrInst::F64ToI64(_, src) |
-            IrInst::Ret(src) => vec![*src],
-            
-            IrInst::EqI64(_, a, b) |
-            IrInst::NeI64(_, a, b) |
-            IrInst::LtI64(_, a, b) |
-            IrInst::LeI64(_, a, b) |
-            IrInst::GtI64(_, a, b) |
-            IrInst::GeI64(_, a, b) |
-            IrInst::EqF64(_, a, b) |
-            IrInst::NeF64(_, a, b) |
-            IrInst::LtF64(_, a, b) |
-            IrInst::LeF64(_, a, b) |
-            IrInst::GtF64(_, a, b) |
-            IrInst::GeF64(_, a, b) |
-            IrInst::And(_, a, b) |
-            IrInst::Or(_, a, b) |
-            IrInst::AddI64(_, a, b) |
-            IrInst::SubI64(_, a, b) |
-            IrInst::MulI64(_, a, b) |
-            IrInst::AddF64(_, a, b) |
-            IrInst::SubF64(_, a, b) |
-            IrInst::MulF64(_, a, b) |
-            IrInst::DivF64(_, a, b) => vec![*a, *b],
+            IrInst::ConstBool(_, _)
+            | IrInst::ConstI64(_, _)
+            | IrInst::ConstF64(_, _)
+            | IrInst::LoadI64(_, _)
+            | IrInst::LoadF64(_, _)
+            | IrInst::LoadBool(_, _) => vec![],
+
+            IrInst::Not(_, src)
+            | IrInst::I64ToF64(_, src)
+            | IrInst::F64ToI64(_, src)
+            | IrInst::Ret(src) => vec![*src],
+
+            IrInst::EqI64(_, a, b)
+            | IrInst::NeI64(_, a, b)
+            | IrInst::LtI64(_, a, b)
+            | IrInst::LeI64(_, a, b)
+            | IrInst::GtI64(_, a, b)
+            | IrInst::GeI64(_, a, b)
+            | IrInst::EqF64(_, a, b)
+            | IrInst::NeF64(_, a, b)
+            | IrInst::LtF64(_, a, b)
+            | IrInst::LeF64(_, a, b)
+            | IrInst::GtF64(_, a, b)
+            | IrInst::GeF64(_, a, b)
+            | IrInst::And(_, a, b)
+            | IrInst::Or(_, a, b)
+            | IrInst::AddI64(_, a, b)
+            | IrInst::SubI64(_, a, b)
+            | IrInst::MulI64(_, a, b)
+            | IrInst::AddF64(_, a, b)
+            | IrInst::SubF64(_, a, b)
+            | IrInst::MulF64(_, a, b)
+            | IrInst::DivF64(_, a, b) => vec![*a, *b],
         }
     }
 }
@@ -263,7 +263,7 @@ impl IrFunction {
     pub fn validate(&self) -> Result<(), String> {
         // Check that all used registers are defined
         let mut defined: std::collections::HashSet<Reg> = std::collections::HashSet::new();
-        
+
         for inst in &self.instructions {
             // Check sources are defined
             for src in inst.sources() {
@@ -271,7 +271,7 @@ impl IrFunction {
                     return Err(format!("register {:?} used before definition", src));
                 }
             }
-            
+
             // Mark destination as defined
             if let Some(dest) = inst.dest() {
                 defined.insert(dest);
@@ -316,7 +316,13 @@ impl RtValue {
 
     pub fn as_i64(&self) -> i64 {
         match self {
-            RtValue::Bool(b) => if *b { 1 } else { 0 },
+            RtValue::Bool(b) => {
+                if *b {
+                    1
+                } else {
+                    0
+                }
+            }
             RtValue::I64(i) => *i,
             RtValue::F64(f) => *f as i64,
         }
@@ -324,7 +330,13 @@ impl RtValue {
 
     pub fn as_f64(&self) -> f64 {
         match self {
-            RtValue::Bool(b) => if *b { 1.0 } else { 0.0 },
+            RtValue::Bool(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             RtValue::I64(i) => *i as f64,
             RtValue::F64(f) => *f,
         }
@@ -392,7 +404,10 @@ impl FieldAccess for ArrayFields {
     }
 
     fn get_bool(&self, field: u32) -> bool {
-        self.bool_fields.get(field as usize).copied().unwrap_or(false)
+        self.bool_fields
+            .get(field as usize)
+            .copied()
+            .unwrap_or(false)
     }
 }
 
@@ -494,15 +509,21 @@ impl IrInterpreter {
                     regs[dest.0 as usize] = RtValue::Bool(result);
                 }
                 IrInst::AddI64(dest, a, b) => {
-                    let result = regs[a.0 as usize].as_i64().wrapping_add(regs[b.0 as usize].as_i64());
+                    let result = regs[a.0 as usize]
+                        .as_i64()
+                        .wrapping_add(regs[b.0 as usize].as_i64());
                     regs[dest.0 as usize] = RtValue::I64(result);
                 }
                 IrInst::SubI64(dest, a, b) => {
-                    let result = regs[a.0 as usize].as_i64().wrapping_sub(regs[b.0 as usize].as_i64());
+                    let result = regs[a.0 as usize]
+                        .as_i64()
+                        .wrapping_sub(regs[b.0 as usize].as_i64());
                     regs[dest.0 as usize] = RtValue::I64(result);
                 }
                 IrInst::MulI64(dest, a, b) => {
-                    let result = regs[a.0 as usize].as_i64().wrapping_mul(regs[b.0 as usize].as_i64());
+                    let result = regs[a.0 as usize]
+                        .as_i64()
+                        .wrapping_mul(regs[b.0 as usize].as_i64());
                     regs[dest.0 as usize] = RtValue::I64(result);
                 }
                 IrInst::AddF64(dest, a, b) => {
@@ -676,7 +697,8 @@ impl CompiledFilter {
 
     /// Execute the filter.
     pub fn execute<F: FieldAccess>(&self, fields: &F) -> bool {
-        self.exec_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.exec_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.interpreter.execute(fields)
     }
 
@@ -762,7 +784,7 @@ mod tests {
         // Filter: age >= 18
         let mut builder = IrBuilder::new();
         let age_field = builder.define_field(IrType::I64);
-        
+
         let age = builder.load_i64(age_field);
         let threshold = builder.const_i64(18);
         let result = builder.ge_i64(age, threshold);
@@ -785,15 +807,15 @@ mod tests {
         let mut builder = IrBuilder::new();
         let age_field = builder.define_field(IrType::I64);
         let score_field = builder.define_field(IrType::F64);
-        
+
         let age = builder.load_i64(age_field);
         let age_threshold = builder.const_i64(18);
         let age_ok = builder.ge_i64(age, age_threshold);
-        
+
         let score = builder.load_f64(score_field);
         let score_threshold = builder.const_f64(50.0);
         let score_ok = builder.gt_f64(score, score_threshold);
-        
+
         let result = builder.and(age_ok, score_ok);
         builder.ret(result);
 
@@ -801,7 +823,7 @@ mod tests {
         let interp = IrInterpreter::new(func).unwrap();
 
         let mut fields = ArrayFields::new();
-        
+
         // Both pass - age at field 0, score at field 1
         fields.set_i64(age_field as usize, 21);
         fields.set_f64(score_field as usize, 75.0);
@@ -823,11 +845,11 @@ mod tests {
         // Filter: age < 18 OR age > 65
         let mut builder = IrBuilder::new();
         let age_field = builder.define_field(IrType::I64);
-        
+
         let age = builder.load_i64(age_field);
         let low = builder.const_i64(18);
         let high = builder.const_i64(65);
-        
+
         let too_young = builder.lt_i64(age, low);
         let too_old = builder.gt_i64(age, high);
         let result = builder.or(too_young, too_old);
@@ -837,7 +859,7 @@ mod tests {
         let interp = IrInterpreter::new(func).unwrap();
 
         let mut fields = ArrayFields::new();
-        
+
         fields.set_i64(0, 10);
         assert!(interp.execute(&fields)); // Too young
 
@@ -853,7 +875,7 @@ mod tests {
         // Filter: NOT (age < 18)
         let mut builder = IrBuilder::new();
         let age_field = builder.define_field(IrType::I64);
-        
+
         let age = builder.load_i64(age_field);
         let threshold = builder.const_i64(18);
         let too_young = builder.lt_i64(age, threshold);
@@ -864,7 +886,7 @@ mod tests {
         let interp = IrInterpreter::new(func).unwrap();
 
         let mut fields = ArrayFields::new();
-        
+
         fields.set_i64(0, 10);
         assert!(!interp.execute(&fields)); // Too young, NOT fails
 
@@ -909,10 +931,10 @@ mod tests {
 
         let mut fields = ArrayFields::new();
         fields.set_i64(0, 15);
-        
+
         assert!(filter.execute(&fields));
         assert_eq!(filter.exec_count(), 1);
-        
+
         filter.execute(&fields);
         filter.execute(&fields);
         assert_eq!(filter.exec_count(), 3);
@@ -922,19 +944,23 @@ mod tests {
     fn test_filter_cache() {
         let cache = FilterCache::new();
 
-        let filter1 = cache.get_or_compile("age_filter", || {
-            let mut builder = IrBuilder::new();
-            let field = builder.define_field(IrType::I64);
-            let val = builder.load_i64(field);
-            let threshold = builder.const_i64(18);
-            let result = builder.ge_i64(val, threshold);
-            builder.ret(result);
-            builder.build()
-        }).unwrap();
+        let filter1 = cache
+            .get_or_compile("age_filter", || {
+                let mut builder = IrBuilder::new();
+                let field = builder.define_field(IrType::I64);
+                let val = builder.load_i64(field);
+                let threshold = builder.const_i64(18);
+                let result = builder.ge_i64(val, threshold);
+                builder.ret(result);
+                builder.build()
+            })
+            .unwrap();
 
-        let filter2 = cache.get_or_compile("age_filter", || {
-            panic!("should not be called - filter should be cached");
-        }).unwrap();
+        let filter2 = cache
+            .get_or_compile("age_filter", || {
+                panic!("should not be called - filter should be cached");
+            })
+            .unwrap();
 
         assert!(Arc::ptr_eq(&filter1, &filter2));
         assert_eq!(cache.len(), 1);
@@ -964,6 +990,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is arbitrary test data, not PI
     fn test_rt_value_conversions() {
         assert!(RtValue::Bool(true).as_bool());
         assert!(!RtValue::Bool(false).as_bool());

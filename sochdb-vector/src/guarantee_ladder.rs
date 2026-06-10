@@ -49,13 +49,13 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GuaranteeMode {
     /// Fast approximate search - ignores quantization error
-    /// 
+    ///
     /// Returns top-k by proxy score (e.g., PQ/ADC distance).
     /// Fastest but may miss true nearest neighbors.
     Approximate,
-    
+
     /// Calibrated high-recall search - probabilistic guarantees
-    /// 
+    ///
     /// Uses learned error envelopes to bound approximation error.
     /// Guarantees P(recall@k ≥ ρ) ≥ 1-δ with configurable ρ and δ.
     Calibrated {
@@ -64,9 +64,9 @@ pub enum GuaranteeMode {
         /// Confidence level (1-δ)
         confidence: f32,
     },
-    
+
     /// Certified search - deterministic correctness
-    /// 
+    ///
     /// Uses lower/upper bound envelopes for all candidates.
     /// Guarantees exact top-k results (same as brute force).
     Certified,
@@ -89,17 +89,17 @@ impl GuaranteeMode {
             confidence,
         }
     }
-    
+
     /// Returns true if this mode requires rerank verification
     pub fn requires_rerank(&self) -> bool {
         matches!(self, GuaranteeMode::Certified)
     }
-    
+
     /// Returns true if this mode uses error envelopes
     pub fn uses_error_envelopes(&self) -> bool {
         !matches!(self, GuaranteeMode::Approximate)
     }
-    
+
     /// Get the error quantile to use for this mode
     pub fn error_quantile(&self) -> Option<f32> {
         match self {
@@ -118,12 +118,10 @@ impl GuaranteeMode {
 #[derive(Debug, Clone)]
 pub enum StoppingRule {
     /// Stop after scanning fixed number of lists/probes
-    FixedProbes {
-        n_probes: u32,
-    },
-    
+    FixedProbes { n_probes: u32 },
+
     /// Stop when kth best score exceeds best list bound
-    /// 
+    ///
     /// For approximate mode: compare proxy scores directly
     BoundBased {
         /// Minimum number of probes before considering early stop
@@ -131,9 +129,9 @@ pub enum StoppingRule {
         /// Maximum probes as safety limit
         max_probes: u32,
     },
-    
+
     /// Stop when probability of finding better candidates drops below threshold
-    /// 
+    ///
     /// For calibrated mode: uses error envelopes to estimate probability
     ProbabilisticBound {
         /// Probability threshold for stopping
@@ -145,15 +143,15 @@ pub enum StoppingRule {
         /// Maximum probes
         max_probes: u32,
     },
-    
+
     /// Stop when all candidates with possible better true scores are checked
-    /// 
+    ///
     /// For certified mode: uses deterministic LB/UB comparisons
     DeterministicBound {
         /// Maximum error bound (guaranteed upper bound on ε)
         max_error: f32,
     },
-    
+
     /// Combined budget and bound stopping
     BudgetConstrained {
         inner: Box<StoppingRule>,
@@ -180,7 +178,7 @@ impl StoppingRule {
             },
         }
     }
-    
+
     /// Wrap with budget constraints
     pub fn with_budget(self, max_ram_bytes: u64, max_latency: Duration) -> Self {
         Self::BudgetConstrained {
@@ -252,7 +250,7 @@ impl ScoreEnvelope {
             quantile_error: max_error,
         }
     }
-    
+
     /// Create from proxy with asymmetric bounds
     pub fn with_bounds(proxy: f32, lower_bound: f32, upper_bound: f32) -> Self {
         Self {
@@ -262,21 +260,21 @@ impl ScoreEnvelope {
             quantile_error: (upper_bound - lower_bound) / 2.0,
         }
     }
-    
+
     /// Check if this envelope definitely beats another
-    /// 
+    ///
     /// Returns true iff lower_bound(self) > upper_bound(other)
     pub fn definitely_beats(&self, other: &ScoreEnvelope) -> bool {
         self.lower_bound > other.upper_bound
     }
-    
+
     /// Check if this envelope might beat another
-    /// 
+    ///
     /// Returns true iff upper_bound(self) > lower_bound(other)
     pub fn might_beat(&self, other: &ScoreEnvelope) -> bool {
         self.upper_bound > other.lower_bound
     }
-    
+
     /// Get true score estimate (center of bounds)
     pub fn estimated_true(&self) -> f32 {
         (self.lower_bound + self.upper_bound) / 2.0
@@ -305,15 +303,15 @@ impl StoppingEvaluator {
             start_time: std::time::Instant::now(),
         }
     }
-    
+
     /// Record a probe
     pub fn record_probe(&mut self, ram_bytes: u64) {
         self.probes_done += 1;
         self.ram_bytes_used += ram_bytes;
     }
-    
+
     /// Evaluate stopping rule
-    /// 
+    ///
     /// # Arguments
     /// * `kth_score` - Score envelope of the kth best candidate
     /// * `best_remaining_bound` - Best upper bound of remaining lists
@@ -340,8 +338,11 @@ impl StoppingEvaluator {
                     }
                 }
             }
-            
-            StoppingRule::BoundBased { min_probes, max_probes } => {
+
+            StoppingRule::BoundBased {
+                min_probes,
+                max_probes,
+            } => {
                 if self.probes_done >= *max_probes {
                     return StopDecision {
                         should_stop: true,
@@ -350,7 +351,7 @@ impl StoppingEvaluator {
                         uncertain_candidates: 0,
                     };
                 }
-                
+
                 if self.probes_done < *min_probes {
                     return StopDecision {
                         should_stop: false,
@@ -359,7 +360,7 @@ impl StoppingEvaluator {
                         uncertain_candidates: 0,
                     };
                 }
-                
+
                 // Check bound condition: kth.proxy > best_remaining
                 if let (Some(kth), Some(bound)) = (kth_score, best_remaining_bound) {
                     if kth.proxy > bound {
@@ -371,7 +372,7 @@ impl StoppingEvaluator {
                         };
                     }
                 }
-                
+
                 StopDecision {
                     should_stop: false,
                     reason: StopReason::Continuing,
@@ -379,7 +380,7 @@ impl StoppingEvaluator {
                     uncertain_candidates: 0,
                 }
             }
-            
+
             StoppingRule::ProbabilisticBound {
                 probability_threshold,
                 error_quantile: _,
@@ -394,7 +395,7 @@ impl StoppingEvaluator {
                         uncertain_candidates: 0,
                     };
                 }
-                
+
                 if self.probes_done < *min_probes {
                     return StopDecision {
                         should_stop: false,
@@ -403,13 +404,13 @@ impl StoppingEvaluator {
                         uncertain_candidates: 0,
                     };
                 }
-                
+
                 // Use error envelopes to estimate miss probability
                 if let (Some(kth), Some(bound)) = (kth_score, best_remaining_bound) {
                     // Estimate: if kth.lower_bound > bound + error, we're confident
                     let margin = kth.lower_bound - bound;
                     let error_margin = kth.quantile_error;
-                    
+
                     // Simple probability model: linear decrease
                     let miss_prob = if margin > error_margin {
                         0.0
@@ -418,7 +419,7 @@ impl StoppingEvaluator {
                     } else {
                         0.5 - (margin / (2.0 * error_margin))
                     };
-                    
+
                     if miss_prob < *probability_threshold {
                         return StopDecision {
                             should_stop: true,
@@ -427,7 +428,7 @@ impl StoppingEvaluator {
                             uncertain_candidates: 0,
                         };
                     }
-                    
+
                     return StopDecision {
                         should_stop: false,
                         reason: StopReason::Continuing,
@@ -435,7 +436,7 @@ impl StoppingEvaluator {
                         uncertain_candidates: 0,
                     };
                 }
-                
+
                 StopDecision {
                     should_stop: false,
                     reason: StopReason::Continuing,
@@ -443,7 +444,7 @@ impl StoppingEvaluator {
                     uncertain_candidates: 0,
                 }
             }
-            
+
             StoppingRule::DeterministicBound { max_error } => {
                 if let (Some(kth), Some(bound)) = (kth_score, best_remaining_bound) {
                     // Definitely done: kth.lower_bound > best_remaining + max_error
@@ -456,7 +457,7 @@ impl StoppingEvaluator {
                         };
                     }
                 }
-                
+
                 StopDecision {
                     should_stop: false,
                     reason: StopReason::Continuing,
@@ -464,7 +465,7 @@ impl StoppingEvaluator {
                     uncertain_candidates: 0,
                 }
             }
-            
+
             StoppingRule::BudgetConstrained {
                 inner,
                 max_ram_bytes,
@@ -479,7 +480,7 @@ impl StoppingEvaluator {
                         uncertain_candidates: 0,
                     };
                 }
-                
+
                 if self.start_time.elapsed() > *max_latency {
                     return StopDecision {
                         should_stop: true,
@@ -488,7 +489,7 @@ impl StoppingEvaluator {
                         uncertain_candidates: 0,
                     };
                 }
-                
+
                 // Delegate to inner rule
                 let inner_eval = StoppingEvaluator {
                     rule: (**inner).clone(),
@@ -529,7 +530,7 @@ impl SearchContract {
             include_envelopes: false,
         }
     }
-    
+
     /// Create contract for calibrated search
     pub fn calibrated(k: usize, recall_target: f32, confidence: f32) -> Self {
         let mode = GuaranteeMode::calibrated(recall_target, confidence);
@@ -541,7 +542,7 @@ impl SearchContract {
             include_envelopes: true,
         }
     }
-    
+
     /// Create contract for certified search
     pub fn certified(k: usize) -> Self {
         Self {
@@ -551,7 +552,7 @@ impl SearchContract {
             include_envelopes: true,
         }
     }
-    
+
     /// Add budget constraints
     pub fn with_budget(mut self, max_ram_bytes: u64, max_latency: Duration) -> Self {
         self.stopping_rule = self.stopping_rule.with_budget(max_ram_bytes, max_latency);
@@ -562,54 +563,54 @@ impl SearchContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_guarantee_modes() {
         let approx = GuaranteeMode::Approximate;
         assert!(!approx.requires_rerank());
         assert!(!approx.uses_error_envelopes());
-        
+
         let calibrated = GuaranteeMode::calibrated(0.95, 0.99);
         assert!(!calibrated.requires_rerank());
         assert!(calibrated.uses_error_envelopes());
         assert_eq!(calibrated.error_quantile(), Some(0.99));
-        
+
         let certified = GuaranteeMode::Certified;
         assert!(certified.requires_rerank());
         assert!(certified.uses_error_envelopes());
     }
-    
+
     #[test]
     fn test_score_envelope() {
         let a = ScoreEnvelope::new(0.9, 0.05);
         let b = ScoreEnvelope::new(0.8, 0.05);
-        
+
         assert!(!a.definitely_beats(&b)); // a.lower=0.85, b.upper=0.85: not strictly greater
         assert!(a.might_beat(&b)); // a.proxy=0.9 > b.proxy=0.8
-        
+
         let c = ScoreEnvelope::new(0.9, 0.02);
         let d = ScoreEnvelope::new(0.8, 0.02);
         // c.lower = 0.88, d.upper = 0.82
         assert!(c.definitely_beats(&d)); // 0.88 > 0.82
     }
-    
+
     #[test]
     fn test_fixed_probes_stopping() {
         let rule = StoppingRule::FixedProbes { n_probes: 10 };
         let mut eval = StoppingEvaluator::new(rule);
-        
+
         for _ in 0..9 {
             eval.record_probe(1000);
             let decision = eval.evaluate(None, None);
             assert!(!decision.should_stop);
         }
-        
+
         eval.record_probe(1000);
         let decision = eval.evaluate(None, None);
         assert!(decision.should_stop);
         assert_eq!(decision.reason, StopReason::ProbesExhausted);
     }
-    
+
     #[test]
     fn test_bound_based_stopping() {
         let rule = StoppingRule::BoundBased {
@@ -617,13 +618,13 @@ mod tests {
             max_probes: 100,
         };
         let mut eval = StoppingEvaluator::new(rule);
-        
+
         // Before min_probes, shouldn't stop
         eval.record_probe(1000);
         let kth = ScoreEnvelope::new(0.9, 0.01);
         let decision = eval.evaluate(Some(&kth), Some(0.8));
         assert!(!decision.should_stop);
-        
+
         // After min_probes, should stop when kth > bound
         eval.record_probe(1000);
         let decision = eval.evaluate(Some(&kth), Some(0.8));

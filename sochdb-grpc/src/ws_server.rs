@@ -509,7 +509,8 @@ mod tests {
 
     #[test]
     fn test_parse_ws_request_kv_put() {
-        let json = r#"{"id":"k2","type":"kv_put","payload":{"key":"k","value":"v","ttl_seconds":60}}"#;
+        let json =
+            r#"{"id":"k2","type":"kv_put","payload":{"key":"k","value":"v","ttl_seconds":60}}"#;
         let req: WsRequest = serde_json::from_str(json).unwrap();
         let payload: KvPutPayload = serde_json::from_value(req.payload).unwrap();
         assert_eq!(payload.key, "k");
@@ -611,10 +612,12 @@ mod tests {
         .await;
 
         assert_eq!(resp.msg_type, "error");
-        assert!(resp.payload["message"]
-            .as_str()
-            .unwrap()
-            .contains("Unknown"));
+        assert!(
+            resp.payload["message"]
+                .as_str()
+                .unwrap()
+                .contains("Unknown")
+        );
     }
 
     #[tokio::test]
@@ -642,10 +645,7 @@ mod tests {
         .await;
 
         assert_eq!(resp.msg_type, "error");
-        assert!(resp.payload["message"]
-            .as_str()
-            .unwrap()
-            .contains("CDC"));
+        assert!(resp.payload["message"].as_str().unwrap().contains("CDC"));
     }
 
     #[tokio::test]

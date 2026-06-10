@@ -2,10 +2,10 @@
 
 //! Filter operator (WHERE clause).
 
-use crate::sql::ast::Expr;
 use super::eval::eval_predicate;
 use super::node::PlanNode;
 use super::types::{Row, Schema};
+use crate::sql::ast::Expr;
 use sochdb_core::Result;
 
 /// Filter operator: passes through only rows satisfying the predicate.

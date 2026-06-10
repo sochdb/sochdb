@@ -5,9 +5,9 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::format::*;
 use crate::error::{Error, Result};
 use crate::types::*;
-use super::format::*;
 
 /// An immutable segment backed by mmap
 pub struct Segment {
@@ -31,9 +31,8 @@ impl Segment {
         }
 
         // Parse header
-        let header: SegmentHeader = unsafe {
-            std::ptr::read_unaligned(mmap.as_ptr() as *const SegmentHeader)
-        };
+        let header: SegmentHeader =
+            unsafe { std::ptr::read_unaligned(mmap.as_ptr() as *const SegmentHeader) };
         header.validate()?;
 
         // Validate file length
@@ -79,9 +78,7 @@ impl Segment {
     /// Get BPS data slice
     pub fn bps_data(&self) -> &[u8] {
         let size = self.header.bps_size();
-        unsafe {
-            std::slice::from_raw_parts(self.bps_ptr(), size)
-        }
+        unsafe { std::slice::from_raw_parts(self.bps_ptr(), size) }
     }
 
     /// Get raw pointer to int8 embedding data
@@ -93,9 +90,7 @@ impl Segment {
     /// Get int8 embedding data slice
     pub fn i8_data(&self) -> &[i8] {
         let size = self.header.i8_size();
-        unsafe {
-            std::slice::from_raw_parts(self.i8_ptr(), size)
-        }
+        unsafe { std::slice::from_raw_parts(self.i8_ptr(), size) }
     }
 
     /// Get int8 vector for a specific ID
@@ -119,9 +114,7 @@ impl Segment {
         let num_blocks = self.header.num_bps_blocks() as usize;
         // One scale per block per vector
         let size = num_blocks * self.header.n_vec as usize;
-        unsafe {
-            std::slice::from_raw_parts(self.scales_ptr(), size)
-        }
+        unsafe { std::slice::from_raw_parts(self.scales_ptr(), size) }
     }
 
     /// Get raw pointer to outlier data
@@ -154,9 +147,7 @@ impl Segment {
     /// Get tombstone bitset
     pub fn tombstone_data(&self) -> &[u64] {
         let num_words = (self.header.n_vec as usize + 63) / 64;
-        unsafe {
-            std::slice::from_raw_parts(self.tombstone_ptr(), num_words)
-        }
+        unsafe { std::slice::from_raw_parts(self.tombstone_ptr(), num_words) }
     }
 
     /// Check if a vector is tombstoned
@@ -280,56 +271,56 @@ mod tests {
 
     fn create_test_segment() -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
-        
+
         let n_vec = 100u32;
         let dim = 64u32;
         let num_blocks = (dim + 15) / 16;
-        
+
         let mut header = SegmentHeader::new(n_vec, dim);
         header.flags.set(SegmentFlags::HAS_BPS);
-        
+
         // Calculate offsets
         let mut offset = SegmentHeader::SIZE as u64;
-        
+
         // BPS data
         header.off_bps = offset;
         let bps_size = (num_blocks as usize * n_vec as usize) as u64;
         offset += bps_size;
-        
+
         // i8 data
         header.off_i8 = offset;
         let i8_size = (n_vec as usize * dim as usize) as u64;
         offset += i8_size;
-        
+
         // Scales
         header.off_scales = offset;
         let scales_size = (num_blocks as usize * n_vec as usize * 4) as u64;
         offset += scales_size;
-        
+
         // Tombstone
         header.off_tombstone = offset;
         let tombstone_size = ((n_vec as usize + 63) / 64 * 8) as u64;
         offset += tombstone_size;
-        
+
         header.file_len = offset;
-        
+
         // Write header
         file.write_all(bytemuck::bytes_of(&header)).unwrap();
-        
+
         // Write BPS data (zeros)
         file.write_all(&vec![0u8; bps_size as usize]).unwrap();
-        
+
         // Write i8 data (zeros)
         file.write_all(&vec![0u8; i8_size as usize]).unwrap();
-        
+
         // Write scales (ones)
         for _ in 0..(num_blocks * n_vec) {
             file.write_all(&1.0f32.to_le_bytes()).unwrap();
         }
-        
+
         // Write tombstone (zeros = no tombstones)
         file.write_all(&vec![0u8; tombstone_size as usize]).unwrap();
-        
+
         file.flush().unwrap();
         file
     }
@@ -338,7 +329,7 @@ mod tests {
     fn test_segment_open() {
         let file = create_test_segment();
         let segment = Segment::open(file.path()).unwrap();
-        
+
         assert_eq!(segment.num_vectors(), 100);
         assert_eq!(segment.dim(), 64);
     }
@@ -347,12 +338,12 @@ mod tests {
     fn test_tombstone_check() {
         let file = create_test_segment();
         let segment = Segment::open(file.path()).unwrap();
-        
+
         // No tombstones set
         assert!(!segment.is_tombstoned(0));
         assert!(!segment.is_tombstoned(50));
         assert!(!segment.is_tombstoned(99));
-        
+
         // Out of range should return true
         assert!(segment.is_tombstoned(100));
     }

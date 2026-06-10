@@ -2,10 +2,10 @@
 
 //! Table scan and index seek operators.
 
+use super::node::PlanNode;
+use super::types::{ColumnMeta, Row, Schema};
 use crate::optimizer_integration::StorageBackend;
 use crate::soch_ql::SochValue;
-use super::types::{Row, Schema, ColumnMeta};
-use super::node::PlanNode;
 use sochdb_core::Result;
 use std::sync::Arc;
 
@@ -70,11 +70,17 @@ impl SeqScanNode {
             if let Some(first) = raw_rows.first() {
                 let mut col_names: Vec<String> = first.keys().cloned().collect();
                 col_names.sort(); // Deterministic column order
-                let tbl = self.schema.columns.first()
+                let tbl = self
+                    .schema
+                    .columns
+                    .first()
                     .and_then(|c| c.table.clone())
                     .unwrap_or_else(|| self.table.clone());
                 self.schema = Schema::new(
-                    col_names.iter().map(|c| ColumnMeta::qualified(tbl.clone(), c.clone())).collect(),
+                    col_names
+                        .iter()
+                        .map(|c| ColumnMeta::qualified(tbl.clone(), c.clone()))
+                        .collect(),
                 );
                 self.columns = col_names;
             }
@@ -152,7 +158,10 @@ impl IndexSeekNode {
         columns: Vec<String>,
     ) -> Self {
         let schema = Schema::new(
-            columns.iter().map(|c| ColumnMeta::qualified(table.clone(), c.clone())).collect(),
+            columns
+                .iter()
+                .map(|c| ColumnMeta::qualified(table.clone(), c.clone()))
+                .collect(),
         );
         Self {
             schema,
@@ -171,7 +180,9 @@ impl IndexSeekNode {
             return Ok(());
         }
 
-        let raw_rows = self.storage.secondary_index_seek(&self.table, &self.index, &self.key)?;
+        let raw_rows = self
+            .storage
+            .secondary_index_seek(&self.table, &self.index, &self.key)?;
         let rows = raw_rows
             .into_iter()
             .map(|row_map| {
@@ -227,7 +238,11 @@ pub struct ValuesNode {
 
 impl ValuesNode {
     pub fn new(schema: Schema, rows: Vec<Row>) -> Self {
-        Self { schema, rows, pos: 0 }
+        Self {
+            schema,
+            rows,
+            pos: 0,
+        }
     }
 }
 

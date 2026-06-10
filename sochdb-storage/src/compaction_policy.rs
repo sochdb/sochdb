@@ -30,10 +30,9 @@
 //! 3. **FIFO Compaction**: Age-based TTL with minimal overhead
 //! 4. **Tiered Compaction**: Hybrid approach balancing WA and SA
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
@@ -60,7 +59,7 @@ impl Default for RetentionConfig {
             max_version_age: Some(Duration::from_secs(7 * 24 * 60 * 60)), // 7 days
             max_versions_per_key: 10,
             tombstone_grace_period: Duration::from_secs(24 * 60 * 60), // 24 hours
-            min_file_age: Duration::from_secs(60), // 1 minute
+            min_file_age: Duration::from_secs(60),                     // 1 minute
         }
     }
 }
@@ -270,11 +269,19 @@ impl CompactionState {
     }
 
     /// Find overlapping files in a level
-    pub fn find_overlapping(&self, level: usize, smallest: &[u8], largest: &[u8]) -> Vec<&CompactionFile> {
+    pub fn find_overlapping(
+        &self,
+        level: usize,
+        smallest: &[u8],
+        largest: &[u8],
+    ) -> Vec<&CompactionFile> {
         self.files_by_level
             .get(level)
             .map(|files| {
-                files.iter().filter(|f| f.overlaps(smallest, largest)).collect()
+                files
+                    .iter()
+                    .filter(|f| f.overlaps(smallest, largest))
+                    .collect()
             })
             .unwrap_or_default()
     }
@@ -297,7 +304,7 @@ impl LeveledCompactionPicker {
     /// Pick L0 compaction
     fn pick_l0_compaction(&self, state: &CompactionState) -> Option<CompactionJob> {
         let l0_files = state.files_by_level.get(0)?;
-        
+
         if l0_files.len() < self.config.l0_compaction_trigger {
             return None;
         }
@@ -375,11 +382,8 @@ impl LeveledCompactionPicker {
 
         // Find overlapping files in next level
         let next_level = level + 1;
-        let overlapping = state.find_overlapping(
-            next_level,
-            &pick_file.smallest_key,
-            &pick_file.largest_key,
-        );
+        let overlapping =
+            state.find_overlapping(next_level, &pick_file.smallest_key, &pick_file.largest_key);
 
         let mut inputs = vec![pick_file];
         inputs.extend(overlapping.into_iter().cloned());
@@ -457,8 +461,8 @@ impl CompactionPicker for LeveledCompactionPicker {
 
         // Each subsequent level is multiplied
         for level in 2..targets.len() {
-            targets[level] = (targets[level - 1] as f64
-                * self.config.max_bytes_for_level_multiplier) as u64;
+            targets[level] =
+                (targets[level - 1] as f64 * self.config.max_bytes_for_level_multiplier) as u64;
         }
 
         targets

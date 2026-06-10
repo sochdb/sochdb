@@ -6,8 +6,8 @@
 //! - BPS stored as block-major SoA
 //! - RDF posting lists stored in VID-striped chunks
 
-use bytemuck::{Pod, Zeroable};
 use crate::types::*;
+use bytemuck::{Pod, Zeroable};
 
 /// Segment header - fixed size at file start
 #[repr(C)]
@@ -114,9 +114,7 @@ impl SegmentHeader {
 
     /// Size of BPS data in bytes
     pub fn bps_size(&self) -> usize {
-        self.num_bps_blocks() as usize 
-            * self.n_vec as usize 
-            * self.bps_proj as usize
+        self.num_bps_blocks() as usize * self.n_vec as usize * self.bps_proj as usize
     }
 
     /// Size of int8 embedding data in bytes
@@ -227,7 +225,7 @@ mod tests {
     fn test_flags() {
         let mut flags = SegmentFlags::empty();
         assert!(!flags.has(SegmentFlags::HAS_BPS));
-        
+
         flags.set(SegmentFlags::HAS_BPS);
         assert!(flags.has(SegmentFlags::HAS_BPS));
         assert!(!flags.has(SegmentFlags::HAS_RDF));

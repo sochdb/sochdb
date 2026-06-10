@@ -33,7 +33,7 @@ use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// SochDB — LLM-Optimized Embedded Database
 #[derive(Parser)]
@@ -166,7 +166,8 @@ fn main() {
 // =============================================================================
 
 fn open_db(path: &PathBuf) -> Result<Arc<sochdb_storage::Database>, String> {
-    sochdb_storage::Database::open(path.as_path()).map_err(|e| format!("Failed to open database: {}", e))
+    sochdb_storage::Database::open(path.as_path())
+        .map_err(|e| format!("Failed to open database: {}", e))
 }
 
 // =============================================================================
@@ -277,7 +278,11 @@ fn print_table(columns: &[String], rows: &[HashMap<String, sochdb_core::SochValu
         println!(" {} ", vals.join(" | "));
     }
 
-    println!("({} row{})", rows.len(), if rows.len() == 1 { "" } else { "s" });
+    println!(
+        "({} row{})",
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    );
 }
 
 fn print_csv(columns: &[String], rows: &[HashMap<String, sochdb_core::SochValue>]) {
@@ -347,8 +352,10 @@ fn value_to_json(v: &sochdb_core::SochValue) -> serde_json::Value {
             serde_json::Value::Array(a.iter().map(value_to_json).collect())
         }
         sochdb_core::SochValue::Object(m) => {
-            let map: serde_json::Map<String, serde_json::Value> =
-                m.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect();
+            let map: serde_json::Map<String, serde_json::Value> = m
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
             serde_json::Value::Object(map)
         }
         sochdb_core::SochValue::Ref { table, id } => {
@@ -358,10 +365,7 @@ fn value_to_json(v: &sochdb_core::SochValue) -> serde_json::Value {
 }
 
 // Simple REPL (no readline dep — keeps the binary small)
-fn run_sql_repl(
-    db: &Arc<sochdb_storage::Database>,
-    format: &OutputFormat,
-) -> Result<(), String> {
+fn run_sql_repl(db: &Arc<sochdb_storage::Database>, format: &OutputFormat) -> Result<(), String> {
     use std::io::{self, BufRead, Write};
 
     println!(
@@ -378,7 +382,12 @@ fn run_sql_repl(
         stdout.flush().unwrap();
 
         let mut line = String::new();
-        if stdin.lock().read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+        if stdin
+            .lock()
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
             // EOF
             println!();
             break;
@@ -502,25 +511,23 @@ fn cmd_schema(db_path: PathBuf, action: SchemaAction) -> Result<(), String> {
                 }
             }
         }
-        SchemaAction::Describe { table } => {
-            match db.get_table_schema(&table) {
-                Some(schema) => {
-                    println!("Table: {}", table);
-                    println!("{:-<50}", "");
-                    println!("{:<20} {:<15} {}", "Column", "Type", "Nullable");
-                    println!("{:-<50}", "");
-                    for col in &schema.columns {
-                        println!(
-                            "{:<20} {:<15} {}",
-                            col.name,
-                            format!("{:?}", col.col_type),
-                            if col.nullable { "YES" } else { "NO" }
-                        );
-                    }
+        SchemaAction::Describe { table } => match db.get_table_schema(&table) {
+            Some(schema) => {
+                println!("Table: {}", table);
+                println!("{:-<50}", "");
+                println!("{:<20} {:<15} {}", "Column", "Type", "Nullable");
+                println!("{:-<50}", "");
+                for col in &schema.columns {
+                    println!(
+                        "{:<20} {:<15} {}",
+                        col.name,
+                        format!("{:?}", col.col_type),
+                        if col.nullable { "YES" } else { "NO" }
+                    );
                 }
-                None => return Err(format!("Table '{}' not found", table)),
             }
-        }
+            None => return Err(format!("Table '{}' not found", table)),
+        },
     }
 
     Ok(())

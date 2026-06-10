@@ -349,8 +349,11 @@ impl<'a> Lexer<'a> {
                     // End of string
                     let span = self.make_span(start, start_line, start_col);
                     let literal = &self.input[start..self.pos];
-                    self.tokens
-                        .push(Token::new(TokenKind::String(Cow::Owned(value)), span, literal));
+                    self.tokens.push(Token::new(
+                        TokenKind::String(Cow::Owned(value)),
+                        span,
+                        literal,
+                    ));
                     return;
                 }
             } else if c == '\\' {
@@ -399,8 +402,11 @@ impl<'a> Lexer<'a> {
                 } else {
                     let span = self.make_span(start, start_line, start_col);
                     let literal = &self.input[start..self.pos];
-                    self.tokens
-                        .push(Token::new(TokenKind::QuotedIdentifier(Cow::Owned(value)), span, literal));
+                    self.tokens.push(Token::new(
+                        TokenKind::QuotedIdentifier(Cow::Owned(value)),
+                        span,
+                        literal,
+                    ));
                     return;
                 }
             } else {
@@ -484,8 +490,7 @@ impl<'a> Lexer<'a> {
         let span = self.make_span(start, start_line, start_col);
 
         // Check for keyword — zero allocation
-        let kind = TokenKind::from_keyword(literal)
-            .unwrap_or(TokenKind::Identifier(literal));
+        let kind = TokenKind::from_keyword(literal).unwrap_or(TokenKind::Identifier(literal));
 
         self.tokens.push(Token::new(kind, span, literal));
     }
@@ -619,7 +624,13 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn add_token(&mut self, kind: TokenKind<'a>, start: usize, start_line: usize, start_col: usize) {
+    fn add_token(
+        &mut self,
+        kind: TokenKind<'a>,
+        start: usize,
+        start_line: usize,
+        start_col: usize,
+    ) {
         let span = self.make_span(start, start_line, start_col);
         let literal = &self.input[start..self.pos];
         self.tokens.push(Token::new(kind, span, literal));
@@ -744,7 +755,9 @@ mod tests {
 
     #[test]
     fn test_relate_keyword() {
-        let tokens = Lexer::new("RELATE LIVE CONTENT EVENT DIFF").tokenize().unwrap();
+        let tokens = Lexer::new("RELATE LIVE CONTENT EVENT DIFF")
+            .tokenize()
+            .unwrap();
         assert_eq!(tokens[0].kind, TokenKind::Relate);
         assert_eq!(tokens[1].kind, TokenKind::Live);
         assert_eq!(tokens[2].kind, TokenKind::Content);

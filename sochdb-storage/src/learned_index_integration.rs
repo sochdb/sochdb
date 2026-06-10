@@ -48,9 +48,9 @@
 //! - **B-Tree**: For random/UUID keys (O(log N))
 //! - **Hash**: For exact-match only (O(1))
 
+use sochdb_core::learned_index::{LearnedSparseIndex, LookupResult};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
-use sochdb_core::learned_index::{LearnedSparseIndex, LookupResult};
 
 /// Index type based on key characteristics
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

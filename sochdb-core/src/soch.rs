@@ -99,21 +99,40 @@ impl SochValue {
 }
 
 fn needs_quoting(s: &str) -> bool {
-    if s.is_empty() { return true; }
-    if s.starts_with(' ') || s.ends_with(' ') { return true; }
-    if matches!(s, "true" | "false" | "null") { return true; }
-    
+    if s.is_empty() {
+        return true;
+    }
+    if s.starts_with(' ') || s.ends_with(' ') {
+        return true;
+    }
+    if matches!(s, "true" | "false" | "null") {
+        return true;
+    }
+
     // Check for number-like patterns
-    if s.parse::<f64>().is_ok() { return true; }
-    if s == "-" || s.starts_with('-') { return true; }
+    if s.parse::<f64>().is_ok() {
+        return true;
+    }
+    if s == "-" || s.starts_with('-') {
+        return true;
+    }
     // Leading zeros check (e.g. 05 usually treated as number in some contexts or invalid)
-    if s.len() > 1 && s.starts_with('0') && s.chars().nth(1).map_or(false, |c| c.is_ascii_digit()) && !s.contains('.') {
+    if s.len() > 1
+        && s.starts_with('0')
+        && s.chars().nth(1).map_or(false, |c| c.is_ascii_digit())
+        && !s.contains('.')
+    {
         return true;
     }
 
     // Check for special chars or delimiter (comma)
     // Spec §7.3: :, ", \, [, ], {, }, newline, return, tab, delimiter
-    s.contains(|c| matches!(c, ':' | '"' | '\\' | '[' | ']' | '{' | '}' | '\n' | '\r' | '\t' | ','))
+    s.contains(|c| {
+        matches!(
+            c,
+            ':' | '"' | '\\' | '[' | ']' | '{' | '}' | '\n' | '\r' | '\t' | ','
+        )
+    })
 }
 
 impl fmt::Display for SochValue {

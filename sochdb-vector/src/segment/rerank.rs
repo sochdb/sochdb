@@ -30,19 +30,19 @@ impl<'a> RerankBuilder<'a> {
         if n_vec == 0 {
             return (Vec::new(), Vec::new());
         }
-        
+
         let dim = self.vectors[0].len();
         let mut i8_data = Vec::with_capacity(n_vec * dim);
         let mut scales = Vec::with_capacity(n_vec);
-        
+
         for vec in self.vectors {
             // Find outlier indices (we'll zero them in i8)
             let outlier_indices = self.find_outlier_indices(vec);
-            
+
             // Compute scale using percentile (excluding outliers)
             let scale = self.compute_scale(vec, &outlier_indices);
             scales.push(scale);
-            
+
             // Quantize
             let inv_scale = if scale > 1e-10 { 1.0 / scale } else { 0.0 };
             for (i, &v) in vec.iter().enumerate() {
@@ -55,7 +55,7 @@ impl<'a> RerankBuilder<'a> {
                 }
             }
         }
-        
+
         (i8_data, scales)
     }
 
@@ -64,14 +64,14 @@ impl<'a> RerankBuilder<'a> {
         let n_vec = self.vectors.len();
         let num_outliers = self.config.num_outliers as usize;
         let mut outliers = Vec::with_capacity(n_vec * num_outliers);
-        
+
         for vec in self.vectors {
             let outlier_entries = self.extract_outliers(vec);
             for entry in outlier_entries {
                 outliers.push(entry);
             }
         }
-        
+
         outliers
     }
 
@@ -81,22 +81,18 @@ impl<'a> RerankBuilder<'a> {
         if num_outliers == 0 {
             return Vec::new();
         }
-        
-        let mut indexed: Vec<(usize, f32)> = vec
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| (i, v.abs()))
-            .collect();
-        
+
+        let mut indexed: Vec<(usize, f32)> =
+            vec.iter().enumerate().map(|(i, &v)| (i, v.abs())).collect();
+
         if indexed.len() <= num_outliers {
             return indexed.iter().map(|&(i, _)| i as DimIndex).collect();
         }
-        
-        indexed.select_nth_unstable_by(num_outliers - 1, |a, b| {
-            b.1.partial_cmp(&a.1).unwrap()
-        });
-        
-        indexed.iter()
+
+        indexed.select_nth_unstable_by(num_outliers - 1, |a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        indexed
+            .iter()
             .take(num_outliers)
             .map(|&(i, _)| i as DimIndex)
             .collect()
@@ -111,17 +107,17 @@ impl<'a> RerankBuilder<'a> {
             .filter(|&(i, _)| !outlier_indices.contains(&(i as DimIndex)))
             .map(|(_, &v)| v.abs())
             .collect();
-        
+
         if values.is_empty() {
             return 1.0;
         }
-        
+
         values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        
+
         // Use percentile
         let idx = ((values.len() as f32) * self.config.scale_percentile) as usize;
         let idx = idx.min(values.len() - 1);
-        
+
         values[idx].max(1e-10)
     }
 
@@ -129,25 +125,21 @@ impl<'a> RerankBuilder<'a> {
     fn extract_outliers(&self, vec: &[f32]) -> Vec<OutlierEntry> {
         let num_outliers = self.config.num_outliers as usize;
         let mut entries = Vec::with_capacity(num_outliers);
-        
-        let mut indexed: Vec<(usize, f32)> = vec
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| (i, v))
-            .collect();
-        
+
+        let mut indexed: Vec<(usize, f32)> = vec.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+
         // Sort by absolute value descending
         indexed.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap());
-        
+
         for &(dim_id, value) in indexed.iter().take(num_outliers) {
             entries.push(OutlierEntry::new(dim_id as DimIndex, f16::from_f32(value)));
         }
-        
+
         // Pad with zeros if needed
         while entries.len() < num_outliers {
             entries.push(OutlierEntry::new(0, f16::from_f32(0.0)));
         }
-        
+
         entries
     }
 }
@@ -190,7 +182,7 @@ impl<'a> Reranker<'a> {
         // This maintains backward compatibility while the approximation is used
         self.score_with_fp32(vid, query_i8, query_scale, None)
     }
-    
+
     /// Compute dot product score with optional fp32 query for accurate outlier computation.
     ///
     /// When `query_fp32` is provided, outlier contributions use exact fp32 values
@@ -203,39 +195,40 @@ impl<'a> Reranker<'a> {
     /// * `query_scale` - Query quantization scale
     /// * `query_fp32` - Optional original fp32 query (for accurate outlier scoring)
     pub fn score_with_fp32(
-        &self, 
-        vid: VectorId, 
-        query_i8: &[i8], 
+        &self,
+        vid: VectorId,
+        query_i8: &[i8],
         query_scale: f32,
         query_fp32: Option<&[f32]>,
     ) -> f32 {
         let vid = vid as usize;
         let offset = vid * self.dim;
-        
+
         if offset + self.dim > self.i8_data.len() {
             return f32::NEG_INFINITY;
         }
-        
+
         let vec_i8 = &self.i8_data[offset..offset + self.dim];
         let vec_scale = self.scales[vid];
-        
+
         // SIMD-accelerated int8 dot product via C++ FFI
         let dot_i8: i32 = DotI8Dispatcher::dot(&query_i8[..self.dim], vec_i8);
-        
+
         // Dequantize
         let mut score = (dot_i8 as f32) * query_scale * vec_scale / (127.0 * 127.0);
-        
+
         // Add outlier contributions
         if self.num_outliers > 0 {
             let outlier_offset = vid * self.num_outliers;
             if outlier_offset + self.num_outliers <= self.outliers.len() {
-                let vec_outliers = &self.outliers[outlier_offset..outlier_offset + self.num_outliers];
-                
+                let vec_outliers =
+                    &self.outliers[outlier_offset..outlier_offset + self.num_outliers];
+
                 for outlier in vec_outliers {
                     let dim_id = outlier.dim_id as usize;
                     if dim_id < self.dim {
                         let v_val = outlier.get_value().to_f32();
-                        
+
                         // Use fp32 query if available (accurate), otherwise approximate from int8
                         let q_val = if let Some(fp32) = query_fp32 {
                             // Exact fp32 value - no quantization error
@@ -244,13 +237,13 @@ impl<'a> Reranker<'a> {
                             // Approximate: reconstruct from int8 (introduces ~0.78% error per dim)
                             (query_i8[dim_id] as f32) * query_scale / 127.0
                         };
-                        
+
                         score += q_val * v_val;
                     }
                 }
             }
         }
-        
+
         score
     }
 
@@ -269,7 +262,7 @@ impl<'a> Reranker<'a> {
             })
             .collect()
     }
-    
+
     /// Score multiple candidates with fp32 query for accurate outlier computation
     pub fn score_batch_with_fp32(
         &self,
@@ -296,21 +289,19 @@ impl<'a> Reranker<'a> {
         r: usize,
     ) -> Vec<ScoredCandidate> {
         let mut scored = self.score_batch(candidates, query_i8, query_scale);
-        
+
         if scored.len() <= r {
             scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
             return scored;
         }
-        
-        scored.select_nth_unstable_by(r - 1, |a, b| {
-            b.score.partial_cmp(&a.score).unwrap()
-        });
+
+        scored.select_nth_unstable_by(r - 1, |a, b| b.score.partial_cmp(&a.score).unwrap());
         scored.truncate(r);
         scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        
+
         scored
     }
-    
+
     /// Rerank with fp32 query for accurate outlier computation
     pub fn rerank_with_fp32(
         &self,
@@ -321,18 +312,16 @@ impl<'a> Reranker<'a> {
         r: usize,
     ) -> Vec<ScoredCandidate> {
         let mut scored = self.score_batch_with_fp32(candidates, query_i8, query_scale, query_fp32);
-        
+
         if scored.len() <= r {
             scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
             return scored;
         }
-        
-        scored.select_nth_unstable_by(r - 1, |a, b| {
-            b.score.partial_cmp(&a.score).unwrap()
-        });
+
+        scored.select_nth_unstable_by(r - 1, |a, b| b.score.partial_cmp(&a.score).unwrap());
         scored.truncate(r);
         scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        
+
         scored
     }
 }
@@ -342,18 +331,18 @@ pub fn quantize_query(query: &[f32], config: &RerankConfig) -> (Vec<i8>, f32) {
     // Compute scale using percentile
     let mut abs_values: Vec<f32> = query.iter().map(|&v| v.abs()).collect();
     abs_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    
+
     let idx = ((abs_values.len() as f32) * config.scale_percentile) as usize;
     let idx = idx.min(abs_values.len() - 1);
     let scale = abs_values[idx].max(1e-10);
-    
+
     // Quantize
     let inv_scale = 1.0 / scale;
     let i8_data: Vec<i8> = query
         .iter()
         .map(|&v| (v * inv_scale * 127.0).clamp(-127.0, 127.0) as i8)
         .collect();
-    
+
     (i8_data, scale)
 }
 
@@ -371,10 +360,15 @@ mod tests {
 
         let vectors: Vec<Vec<f32>> = (0..100)
             .map(|i| {
-                (0..64).map(|j| {
-                    if j < 4 { (i as f32 + j as f32) * 0.1 }
-                    else { (j as f32 - 32.0) * 0.01 }
-                }).collect()
+                (0..64)
+                    .map(|j| {
+                        if j < 4 {
+                            (i as f32 + j as f32) * 0.1
+                        } else {
+                            (j as f32 - 32.0) * 0.01
+                        }
+                    })
+                    .collect()
             })
             .collect();
 

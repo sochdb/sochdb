@@ -10,25 +10,25 @@ use thiserror::Error;
 pub enum ToolsError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Invalid format: {0}")]
     InvalidFormat(String),
-    
+
     #[error("Dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
-    
+
     #[error("File too small: need {needed} bytes, got {actual}")]
     FileTooSmall { needed: usize, actual: usize },
-    
+
     #[error("Invalid NPY header: {0}")]
     InvalidNpyHeader(String),
-    
+
     #[error("HNSW error: {0}")]
     Hnsw(String),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(String),
-    
+
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 }

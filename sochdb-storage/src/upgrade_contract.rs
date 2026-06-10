@@ -33,6 +33,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use sochdb_core::SochDBError;
+
 /// Magic number for SochDB files (8 bytes)
 pub const SOCHDB_MAGIC: [u8; 8] = *b"SOCHDB\x00\x01";
 
@@ -272,6 +274,45 @@ impl FileHeader {
             })
         }
     }
+
+    /// Parse and validate a file header in a single fail-fast step.
+    ///
+    /// This is the canonical entry point for *opening* any persisted SochDB
+    /// file that uses the unified [`FileHeader`] contract. It guarantees that:
+    ///
+    /// 1. The magic bytes match [`SOCHDB_MAGIC`] (else the file is not a SochDB
+    ///    file, or is truncated/corrupt).
+    /// 2. The on-disk [`FormatType`] matches what the caller expects (else the
+    ///    caller is reading the wrong kind of file).
+    /// 3. The on-disk version is compatible with `current_version` (else the
+    ///    file was written by an incompatible — usually newer — release).
+    ///
+    /// Unlike [`from_bytes`](Self::from_bytes) + [`check_compatibility`], any
+    /// failure here is mapped to [`SochDBError::Corruption`] so callers across
+    /// the workspace can propagate a single, clear, fail-fast error instead of
+    /// silently misinterpreting bytes. A [`CompatibilityResult::NeedsMigration`]
+    /// outcome is returned as `Ok` so callers can run the migration pipeline;
+    /// an outright incompatible version is an error.
+    pub fn validate(
+        bytes: &[u8],
+        expected_type: FormatType,
+        current_version: FormatVersion,
+    ) -> Result<(Self, CompatibilityResult), SochDBError> {
+        let header = Self::from_bytes(bytes).map_err(SochDBError::from)?;
+        let compat = header
+            .check_compatibility(expected_type, current_version)
+            .map_err(SochDBError::from)?;
+        Ok((header, compat))
+    }
+}
+
+impl From<VersionError> for SochDBError {
+    /// All format-version violations are surfaced as corruption so that opening
+    /// an incompatible or malformed file fails fast with a clear, actionable
+    /// message rather than risking silent data misinterpretation.
+    fn from(err: VersionError) -> Self {
+        SochDBError::Corruption(format!("on-disk format contract violation: {err}"))
+    }
 }
 
 /// Compatibility check result
@@ -295,10 +336,7 @@ pub enum CompatibilityResult {
 #[derive(Debug, Clone)]
 pub enum VersionError {
     /// Invalid magic bytes
-    InvalidMagic {
-        expected: [u8; 8],
-        found: [u8; 8],
-    },
+    InvalidMagic { expected: [u8; 8], found: [u8; 8] },
     /// Unknown format type
     UnknownFormatType(u8),
     /// Format type mismatch
@@ -429,11 +467,7 @@ impl MigrationRegistry {
             current = next.to_version();
         }
 
-        if current == to {
-            Some(path)
-        } else {
-            None
-        }
+        if current == to { Some(path) } else { None }
     }
 
     /// Execute migration path
@@ -554,12 +588,72 @@ mod tests {
         let result = header
             .check_compatibility(FormatType::Manifest, FormatVersion::new(1, 1))
             .unwrap();
-        assert!(matches!(result, CompatibilityResult::BackwardCompatible { .. }));
+        assert!(matches!(
+            result,
+            CompatibilityResult::BackwardCompatible { .. }
+        ));
 
         // Needs migration
         let result = header
             .check_compatibility(FormatType::Manifest, FormatVersion::new(2, 0))
             .unwrap();
         assert!(matches!(result, CompatibilityResult::NeedsMigration { .. }));
+    }
+
+    #[test]
+    fn test_validate_accepts_exact_match() {
+        let header = FileHeader::new(FormatType::Sstable, FormatVersion::new(1, 0));
+        let bytes = header.to_bytes();
+
+        let (parsed, compat) =
+            FileHeader::validate(&bytes, FormatType::Sstable, FormatVersion::new(1, 0))
+                .expect("exact-version header must validate");
+        assert_eq!(parsed.format_type, FormatType::Sstable);
+        assert!(matches!(compat, CompatibilityResult::Exact));
+    }
+
+    #[test]
+    fn test_validate_rejects_bad_magic_as_corruption() {
+        let mut bytes = [0u8; FileHeader::SIZE];
+        bytes[0..8].copy_from_slice(b"NOTSOCH!");
+
+        let err = FileHeader::validate(&bytes, FormatType::WalSegment, FormatVersion::new(1, 0))
+            .expect_err("bad magic must fail fast");
+        assert!(matches!(err, SochDBError::Corruption(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_wrong_format_type_as_corruption() {
+        // Header written for a WAL segment, but caller expects an SSTable.
+        let header = FileHeader::new(FormatType::WalSegment, FormatVersion::new(1, 0));
+        let bytes = header.to_bytes();
+
+        let err = FileHeader::validate(&bytes, FormatType::Sstable, FormatVersion::new(1, 0))
+            .expect_err("wrong format type must fail fast");
+        assert!(matches!(err, SochDBError::Corruption(_)));
+    }
+
+    #[test]
+    fn test_validate_rejects_incompatible_future_version() {
+        // File written by a hypothetical future major release.
+        let header = FileHeader::new(FormatType::DataPage, FormatVersion::new(3, 0));
+        let bytes = header.to_bytes();
+
+        // Current code only understands major version 1.
+        let err = FileHeader::validate(&bytes, FormatType::DataPage, FormatVersion::new(1, 0))
+            .expect_err("incompatible future version must fail fast");
+        assert!(matches!(err, SochDBError::Corruption(_)));
+    }
+
+    #[test]
+    fn test_validate_allows_older_minor_via_migration() {
+        // File at 1.0, current code at 2.0 — an N → N+1 migration is allowed.
+        let header = FileHeader::new(FormatType::Manifest, FormatVersion::new(1, 0));
+        let bytes = header.to_bytes();
+
+        let (_parsed, compat) =
+            FileHeader::validate(&bytes, FormatType::Manifest, FormatVersion::new(2, 0))
+                .expect("migratable header must validate");
+        assert!(matches!(compat, CompatibilityResult::NeedsMigration { .. }));
     }
 }

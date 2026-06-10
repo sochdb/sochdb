@@ -63,11 +63,11 @@
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use sochdb_core::{Result, SochDBError};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use sochdb_core::{Result, SochDBError};
 
 use crate::txn_wal::TxnWal;
 
@@ -226,7 +226,8 @@ impl ColumnTemperatureTracker {
     /// participate in compaction merges. Lower threshold = more columns treated as hot.
     pub fn set_hot_threshold(&self, threshold: f64) {
         let clamped = threshold.clamp(0.0, 1.0);
-        self.hot_threshold.store(clamped.to_bits(), Ordering::Relaxed);
+        self.hot_threshold
+            .store(clamped.to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -1125,14 +1126,14 @@ impl Lscs {
     pub fn open(path: PathBuf, schema: TableSchema, config: LscsConfig) -> Result<Self> {
         let lscs = Self::new(path, schema, config)?;
         let stats = lscs.recover()?;
-        
+
         if stats.rows_recovered > 0 {
             eprintln!(
                 "LSCS Recovery: restored {} rows from {} transactions",
                 stats.rows_recovered, stats.transactions_recovered
             );
         }
-        
+
         Ok(lscs)
     }
 
@@ -1160,8 +1161,9 @@ impl Lscs {
 
                 // Deserialize row and insert into memtable
                 if let Ok(row_values) = Self::deserialize_row(value) {
-                    let value_refs: Vec<Option<&[u8]>> = row_values.iter().map(|v| v.as_deref()).collect();
-                    
+                    let value_refs: Vec<Option<&[u8]>> =
+                        row_values.iter().map(|v| v.as_deref()).collect();
+
                     let memtable = self.active_memtable.read();
                     if memtable.insert(row_id, &value_refs).is_ok() {
                         rows_recovered += 1;
@@ -1268,7 +1270,8 @@ impl Lscs {
 
         // Write the data record
         let row_data = self.serialize_row(&value_refs)?;
-        self.wal.write(wal_txn_id, row_id.to_le_bytes().to_vec(), row_data)?;
+        self.wal
+            .write(wal_txn_id, row_id.to_le_bytes().to_vec(), row_data)?;
 
         // Commit with fsync for durability guarantee
         self.wal.commit_transaction(wal_txn_id)?;
@@ -1598,11 +1601,8 @@ impl Lscs {
         let segment_refs: Vec<&ColumnGroup> = l0_segments.iter().collect();
 
         let hot_col_refs = if !hot_columns.is_empty() {
-            let refs = self.selective_merge_hot_columns(
-                &segment_refs,
-                &hot_columns,
-                &merged_path,
-            )?;
+            let refs =
+                self.selective_merge_hot_columns(&segment_refs, &hot_columns, &merged_path)?;
             // Tally I/O for merged hot columns
             for (_col, stripe) in &refs {
                 bytes_written += stripe.length;
@@ -1616,8 +1616,8 @@ impl Lscs {
         // Cold columns keep their existing L0 stripe addresses.
         let mut col_refs = hot_col_refs;
         let mut total_row_count = 0u64;
-        let mut min_row_id = u64::MAX;
-        let mut max_row_id = 0u64;
+        let min_row_id = u64::MAX;
+        let max_row_id = 0u64;
 
         for segment in &l0_segments {
             bytes_read += segment.row_count * 100; // Estimate per-row overhead
@@ -2326,8 +2326,14 @@ mod tests {
         let cold = tracker.get_cold_columns();
 
         // hot_col should be hot (temp = 0.1 × (2/2) + 0.9 × 0 = 0.1 > 0.05)
-        assert!(hot.contains("hot_col"), "hot_col should be classified as hot");
+        assert!(
+            hot.contains("hot_col"),
+            "hot_col should be classified as hot"
+        );
         // cold_col was never updated, temperature=0.0
-        assert!(cold.contains("cold_col"), "cold_col should be classified as cold");
+        assert!(
+            cold.contains("cold_col"),
+            "cold_col should be classified as cold"
+        );
     }
 }

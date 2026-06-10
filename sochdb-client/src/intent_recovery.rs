@@ -41,15 +41,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
-use crate::wal_atomic::{Lsn, WalConfig, WalPayload, WalReader, WalRecord, WalRecordType, WalWriter};
+use crate::wal_atomic::{Lsn, WalPayload, WalReader, WalRecord, WalRecordType, WalWriter};
 
 // ============================================================================
 // Intent Status
@@ -184,7 +184,7 @@ impl RecoveryEngine {
             undo_callback: None,
         }
     }
-    
+
     /// Set apply callback
     pub fn with_apply<F>(mut self, f: F) -> Self
     where
@@ -193,7 +193,7 @@ impl RecoveryEngine {
         self.apply_callback = Some(Box::new(f));
         self
     }
-    
+
     /// Set undo callback
     pub fn with_undo<F>(mut self, f: F) -> Self
     where
@@ -202,23 +202,23 @@ impl RecoveryEngine {
         self.undo_callback = Some(Box::new(f));
         self
     }
-    
+
     /// Run recovery
     pub fn recover(&self) -> io::Result<RecoveryResult> {
         let start = Instant::now();
-        
+
         // Phase 1: Scan WAL and build intent map
         let records = self.reader.read_all()?;
         let intents = self.build_intent_map(&records);
-        
+
         // Phase 2: Classify intents
         let (to_redo, to_undo) = self.classify_intents(&intents);
-        
+
         // Phase 3: Apply recovery
         let mut ops_redone = 0;
         let mut ops_undone = 0;
         let mut errors = Vec::new();
-        
+
         // Redo incomplete intents
         for intent in &to_redo {
             match self.redo_intent(intent) {
@@ -226,7 +226,7 @@ impl RecoveryEngine {
                 Err(e) => errors.push(format!("Redo intent {}: {}", intent.intent_id, e)),
             }
         }
-        
+
         // Undo aborted intents
         for intent in &to_undo {
             match self.undo_intent(intent) {
@@ -234,10 +234,10 @@ impl RecoveryEngine {
                 Err(e) => errors.push(format!("Undo intent {}: {}", intent.intent_id, e)),
             }
         }
-        
+
         // Find last LSN
         let last_lsn = records.last().map(|r| r.lsn).unwrap_or(Lsn::ZERO);
-        
+
         Ok(RecoveryResult {
             intents_recovered: intents.len(),
             intents_replayed: to_redo.len(),
@@ -249,27 +249,38 @@ impl RecoveryEngine {
             errors,
         })
     }
-    
+
     /// Build intent map from WAL records
     fn build_intent_map(&self, records: &[WalRecord]) -> HashMap<u64, RecoveryIntent> {
         let mut intents: HashMap<u64, RecoveryIntent> = HashMap::new();
-        
+
         for record in records {
             match &record.payload {
-                WalPayload::IntentStart { memory_id, op_count } => {
-                    intents.insert(record.intent_id, RecoveryIntent {
-                        intent_id: record.intent_id,
-                        memory_id: memory_id.clone(),
-                        start_lsn: record.lsn,
-                        expected_ops: *op_count,
-                        operations: Vec::new(),
-                        status: RecoveryIntentStatus::Started,
-                        commit_lsn: None,
-                        abort_lsn: None,
-                        timestamp: record.timestamp,
-                    });
+                WalPayload::IntentStart {
+                    memory_id,
+                    op_count,
+                } => {
+                    intents.insert(
+                        record.intent_id,
+                        RecoveryIntent {
+                            intent_id: record.intent_id,
+                            memory_id: memory_id.clone(),
+                            start_lsn: record.lsn,
+                            expected_ops: *op_count,
+                            operations: Vec::new(),
+                            status: RecoveryIntentStatus::Started,
+                            commit_lsn: None,
+                            abort_lsn: None,
+                            timestamp: record.timestamp,
+                        },
+                    );
                 }
-                WalPayload::Operation { op_index, op_type, key, value } => {
+                WalPayload::Operation {
+                    op_index,
+                    op_type,
+                    key,
+                    value,
+                } => {
                     if let Some(intent) = intents.get_mut(&record.intent_id) {
                         intent.operations.push(RecoveryOperation {
                             op_index: *op_index,
@@ -298,10 +309,10 @@ impl RecoveryEngine {
                 }
             }
         }
-        
+
         intents
     }
-    
+
     /// Classify intents into redo and undo sets
     fn classify_intents<'a>(
         &self,
@@ -309,7 +320,7 @@ impl RecoveryEngine {
     ) -> (Vec<&'a RecoveryIntent>, Vec<&'a RecoveryIntent>) {
         let mut to_redo = Vec::new();
         let mut to_undo = Vec::new();
-        
+
         for intent in intents.values() {
             match intent.status {
                 RecoveryIntentStatus::Started | RecoveryIntentStatus::InProgress => {
@@ -333,44 +344,44 @@ impl RecoveryEngine {
                 }
             }
         }
-        
+
         (to_redo, to_undo)
     }
-    
+
     /// Redo an intent (replay operations)
     fn redo_intent(&self, intent: &RecoveryIntent) -> io::Result<usize> {
         if let Some(ref callback) = self.apply_callback {
             let mut applied = 0;
-            
+
             // Sort operations by index
             let mut ops = intent.operations.clone();
             ops.sort_by_key(|op| op.op_index);
-            
+
             for op in &ops {
                 callback(op)?;
                 applied += 1;
             }
-            
+
             Ok(applied)
         } else {
             Ok(0)
         }
     }
-    
+
     /// Undo an intent (reverse operations)
     fn undo_intent(&self, intent: &RecoveryIntent) -> io::Result<usize> {
         if let Some(ref callback) = self.undo_callback {
             let mut undone = 0;
-            
+
             // Sort operations by index in reverse
             let mut ops = intent.operations.clone();
             ops.sort_by_key(|op| std::cmp::Reverse(op.op_index));
-            
+
             for op in &ops {
                 callback(op)?;
                 undone += 1;
             }
-            
+
             Ok(undone)
         } else {
             Ok(0)
@@ -444,54 +455,54 @@ impl GarbageCollector {
             stop_flag: AtomicU64::new(0),
         }
     }
-    
+
     /// Run GC once
     pub fn run_once(&self) -> io::Result<GcStats> {
         let start = Instant::now();
         let reader = WalReader::new(&self.config.wal_dir);
-        
+
         // Read all records
         let records = reader.read_all()?;
-        
+
         // Find committed intents
-        let committed: HashSet<u64> = records.iter()
+        let committed: HashSet<u64> = records
+            .iter()
             .filter(|r| r.record_type == WalRecordType::Commit)
             .map(|r| r.intent_id)
             .collect();
-        
+
         // Find LSN up to which all intents are committed
         let mut safe_lsn = Lsn::ZERO;
-        let mut all_committed = true;
-        
+
         for record in &records {
             if record.record_type == WalRecordType::Intent {
                 if !committed.contains(&record.intent_id) {
-                    all_committed = false;
+                    // First uncommitted intent: stop advancing the safe LSN.
                     break;
                 }
             }
-            if all_committed {
-                safe_lsn = record.lsn;
-            }
+            safe_lsn = record.lsn;
         }
-        
+
         // Write checkpoint
         let checkpoint_lsn = self.wal.write_checkpoint(safe_lsn, committed.len())?;
-        self.last_checkpoint_lsn.store(checkpoint_lsn.0, Ordering::SeqCst);
-        
+        self.last_checkpoint_lsn
+            .store(checkpoint_lsn.0, Ordering::SeqCst);
+
         // Find files that can be removed
         let files = reader.list_files()?;
         let mut files_removed = 0;
         let mut bytes_reclaimed = 0u64;
-        
+
         for file in &files {
             // Read file and check if all records are before safe_lsn
             if let Ok(file_records) = reader.read_file(file) {
-                let max_lsn = file_records.iter()
+                let max_lsn = file_records
+                    .iter()
                     .map(|r| r.lsn)
                     .max()
                     .unwrap_or(Lsn::ZERO);
-                
+
                 // Only remove if all records are safely checkpointed and old enough
                 if max_lsn <= safe_lsn {
                     // Check age
@@ -509,26 +520,26 @@ impl GarbageCollector {
                 }
             }
         }
-        
+
         let mut stats = self.stats.write();
         stats.intents_collected = committed.len();
         stats.files_removed += files_removed;
         stats.bytes_reclaimed += bytes_reclaimed;
         stats.last_gc = Some(start);
         stats.total_runs += 1;
-        
+
         Ok(stats.clone())
     }
-    
+
     /// Start background GC
     pub fn start_background(self: Arc<Self>) -> thread::JoinHandle<()> {
         let gc = self.clone();
-        
+
         thread::spawn(move || {
             while gc.stop_flag.load(Ordering::Relaxed) == 0 {
                 // Wait for interval
                 thread::sleep(gc.config.checkpoint_interval);
-                
+
                 // Run GC
                 if let Err(e) = gc.run_once() {
                     tracing::warn!("GC error: {}", e);
@@ -536,17 +547,17 @@ impl GarbageCollector {
             }
         })
     }
-    
+
     /// Stop background GC
     pub fn stop(&self) {
         self.stop_flag.store(1, Ordering::SeqCst);
     }
-    
+
     /// Get current stats
     pub fn stats(&self) -> GcStats {
         self.stats.read().clone()
     }
-    
+
     /// Get last checkpoint LSN
     pub fn last_checkpoint(&self) -> Lsn {
         Lsn(self.last_checkpoint_lsn.load(Ordering::SeqCst))
@@ -565,32 +576,28 @@ pub struct RecoveryManager {
 
 impl RecoveryManager {
     /// Create new recovery manager
-    pub fn new(
-        recovery_config: RecoveryConfig,
-        gc_config: GcConfig,
-        wal: Arc<WalWriter>,
-    ) -> Self {
+    pub fn new(recovery_config: RecoveryConfig, gc_config: GcConfig, wal: Arc<WalWriter>) -> Self {
         Self {
             recovery_engine: RecoveryEngine::new(recovery_config),
             gc: Arc::new(GarbageCollector::new(gc_config, wal)),
         }
     }
-    
+
     /// Run recovery
     pub fn recover(&self) -> io::Result<RecoveryResult> {
         self.recovery_engine.recover()
     }
-    
+
     /// Run GC
     pub fn gc(&self) -> io::Result<GcStats> {
         self.gc.run_once()
     }
-    
+
     /// Start background GC
     pub fn start_background_gc(&self) -> thread::JoinHandle<()> {
         self.gc.clone().start_background()
     }
-    
+
     /// Stop background GC
     pub fn stop_gc(&self) {
         self.gc.stop();
@@ -601,7 +608,7 @@ impl RecoveryManager {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_recovery_intent_classification() {
         let config = RecoveryConfig {
@@ -609,59 +616,68 @@ mod tests {
             redo_incomplete: true,
             ..Default::default()
         };
-        
+
         let engine = RecoveryEngine::new(config);
-        
+
         let mut intents = HashMap::new();
-        
+
         // Committed intent - should not be touched
-        intents.insert(1, RecoveryIntent {
-            intent_id: 1,
-            memory_id: "mem1".to_string(),
-            start_lsn: Lsn(1),
-            expected_ops: 2,
-            operations: vec![],
-            status: RecoveryIntentStatus::Committed,
-            commit_lsn: Some(Lsn(10)),
-            abort_lsn: None,
-            timestamp: 0,
-        });
-        
+        intents.insert(
+            1,
+            RecoveryIntent {
+                intent_id: 1,
+                memory_id: "mem1".to_string(),
+                start_lsn: Lsn(1),
+                expected_ops: 2,
+                operations: vec![],
+                status: RecoveryIntentStatus::Committed,
+                commit_lsn: Some(Lsn(10)),
+                abort_lsn: None,
+                timestamp: 0,
+            },
+        );
+
         // In-progress intent - should redo
-        intents.insert(2, RecoveryIntent {
-            intent_id: 2,
-            memory_id: "mem2".to_string(),
-            start_lsn: Lsn(11),
-            expected_ops: 2,
-            operations: vec![],
-            status: RecoveryIntentStatus::InProgress,
-            commit_lsn: None,
-            abort_lsn: None,
-            timestamp: 0,
-        });
-        
+        intents.insert(
+            2,
+            RecoveryIntent {
+                intent_id: 2,
+                memory_id: "mem2".to_string(),
+                start_lsn: Lsn(11),
+                expected_ops: 2,
+                operations: vec![],
+                status: RecoveryIntentStatus::InProgress,
+                commit_lsn: None,
+                abort_lsn: None,
+                timestamp: 0,
+            },
+        );
+
         // Aborted intent - should undo
-        intents.insert(3, RecoveryIntent {
-            intent_id: 3,
-            memory_id: "mem3".to_string(),
-            start_lsn: Lsn(20),
-            expected_ops: 2,
-            operations: vec![],
-            status: RecoveryIntentStatus::Aborted,
-            commit_lsn: None,
-            abort_lsn: Some(Lsn(25)),
-            timestamp: 0,
-        });
-        
+        intents.insert(
+            3,
+            RecoveryIntent {
+                intent_id: 3,
+                memory_id: "mem3".to_string(),
+                start_lsn: Lsn(20),
+                expected_ops: 2,
+                operations: vec![],
+                status: RecoveryIntentStatus::Aborted,
+                commit_lsn: None,
+                abort_lsn: Some(Lsn(25)),
+                timestamp: 0,
+            },
+        );
+
         let (to_redo, to_undo) = engine.classify_intents(&intents);
-        
+
         assert_eq!(to_redo.len(), 1);
         assert_eq!(to_redo[0].intent_id, 2);
-        
+
         assert_eq!(to_undo.len(), 1);
         assert_eq!(to_undo[0].intent_id, 3);
     }
-    
+
     #[test]
     fn test_gc_config() {
         let config = GcConfig::default();

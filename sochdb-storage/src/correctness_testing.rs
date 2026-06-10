@@ -39,11 +39,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Transaction operation for model checking
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TxnOp {
-    Begin { txn_id: u64 },
-    Read { key: Vec<u8>, expected: Option<Vec<u8>> },
-    Write { key: Vec<u8>, value: Vec<u8> },
-    Commit { txn_id: u64 },
-    Abort { txn_id: u64 },
+    Begin {
+        txn_id: u64,
+    },
+    Read {
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+    },
+    Write {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Commit {
+        txn_id: u64,
+    },
+    Abort {
+        txn_id: u64,
+    },
 }
 
 /// Transaction history for serializability checking
@@ -73,14 +85,14 @@ impl TxnHistory {
     }
 
     /// Check if history is serializable
-    /// 
+    ///
     /// Uses a simplified dependency graph analysis:
     /// - WW conflicts: two txns write same key
     /// - WR conflicts: txn reads value written by another
     /// - RW conflicts: txn writes key read by another (anti-dependency)
     pub fn is_serializable(&self) -> Result<bool, SerializabilityError> {
         let graph = self.build_dependency_graph()?;
-        
+
         // Check for cycles using DFS
         Ok(!graph.has_cycle())
     }
@@ -88,7 +100,7 @@ impl TxnHistory {
     /// Build a dependency graph from the history
     fn build_dependency_graph(&self) -> Result<DependencyGraph, SerializabilityError> {
         let mut graph = DependencyGraph::new();
-        
+
         // Track writes per transaction
         let mut txn_writes: HashMap<u64, HashSet<Vec<u8>>> = HashMap::new();
         let mut txn_reads: HashMap<u64, HashSet<Vec<u8>>> = HashMap::new();
@@ -120,7 +132,7 @@ impl TxnHistory {
         let committed: Vec<_> = self.commit_order.iter().copied().collect();
         let empty_set: HashSet<Vec<u8>> = HashSet::new();
         for (i, &t1) in committed.iter().enumerate() {
-            for &t2 in &committed[i+1..] {
+            for &t2 in &committed[i + 1..] {
                 let t1_writes = txn_writes.get(&t1).unwrap_or(&empty_set);
                 let t2_writes = txn_writes.get(&t2).unwrap_or(&empty_set);
                 let t1_reads = txn_reads.get(&t1).unwrap_or(&empty_set);
@@ -180,11 +192,14 @@ impl DependencyGraph {
     /// Check if graph has a cycle using DFS
     fn has_cycle(&self) -> bool {
         #[derive(Clone, Copy, PartialEq)]
-        enum Color { White, Gray, Black }
-        
-        let mut colors: HashMap<u64, Color> = self.nodes.iter()
-            .map(|&n| (n, Color::White))
-            .collect();
+        enum Color {
+            White,
+            Gray,
+            Black,
+        }
+
+        let mut colors: HashMap<u64, Color> =
+            self.nodes.iter().map(|&n| (n, Color::White)).collect();
 
         fn dfs(
             node: u64,
@@ -192,7 +207,7 @@ impl DependencyGraph {
             colors: &mut HashMap<u64, Color>,
         ) -> bool {
             colors.insert(node, Color::Gray);
-            
+
             if let Some(neighbors) = edges.get(&node) {
                 for &neighbor in neighbors {
                     match colors.get(&neighbor) {
@@ -206,7 +221,7 @@ impl DependencyGraph {
                     }
                 }
             }
-            
+
             colors.insert(node, Color::Black);
             false
         }
@@ -443,7 +458,9 @@ pub enum LinearOpType {
 impl LinearizabilityChecker {
     /// Create a new checker
     pub fn new() -> Self {
-        Self { history: Vec::new() }
+        Self {
+            history: Vec::new(),
+        }
     }
 
     /// Add an operation
@@ -452,7 +469,7 @@ impl LinearizabilityChecker {
     }
 
     /// Check if history is linearizable (simplified algorithm)
-    /// 
+    ///
     /// For a full implementation, use Wing & Gong's algorithm or similar.
     /// This simplified version checks basic consistency.
     pub fn is_linearizable(&self) -> bool {
@@ -477,8 +494,7 @@ impl LinearizabilityChecker {
                     // Read should see either current value or a pending write
                     if op.value != current_value {
                         // Check if it matches any pending write
-                        let matches_pending = pending_writes.iter()
-                            .any(|w| w.value == op.value);
+                        let matches_pending = pending_writes.iter().any(|w| w.value == op.value);
                         if !matches_pending && op.value != current_value {
                             return false;
                         }
@@ -504,15 +520,21 @@ mod tests {
     #[test]
     fn test_serializable_history_no_conflict() {
         let mut history = TxnHistory::default();
-        
+
         // T1: write(x, 1)
         history.push(TxnOp::Begin { txn_id: 1 });
-        history.push(TxnOp::Write { key: b"x".to_vec(), value: b"1".to_vec() });
+        history.push(TxnOp::Write {
+            key: b"x".to_vec(),
+            value: b"1".to_vec(),
+        });
         history.push(TxnOp::Commit { txn_id: 1 });
 
         // T2: write(y, 2)
         history.push(TxnOp::Begin { txn_id: 2 });
-        history.push(TxnOp::Write { key: b"y".to_vec(), value: b"2".to_vec() });
+        history.push(TxnOp::Write {
+            key: b"y".to_vec(),
+            value: b"2".to_vec(),
+        });
         history.push(TxnOp::Commit { txn_id: 2 });
 
         assert!(history.is_serializable().unwrap());
@@ -521,16 +543,16 @@ mod tests {
     #[test]
     fn test_kv_model_basic() {
         let mut model = KvModel::new();
-        
+
         let txn = model.begin();
         model.write(txn, b"key1".to_vec(), b"value1".to_vec());
-        
+
         // Read own write
         assert_eq!(model.read(txn, b"key1"), Some(b"value1".to_vec()));
-        
+
         // Commit
         assert!(model.commit(txn));
-        
+
         // Read after commit from new txn
         let txn2 = model.begin();
         assert_eq!(model.read(txn2, b"key1"), Some(b"value1".to_vec()));
@@ -544,10 +566,10 @@ mod tests {
         // Should not crash yet
         assert!(!sim.maybe_crash(CrashPoint::AfterWalWriteBeforeFsync));
         assert!(!sim.maybe_crash(CrashPoint::AfterWalWriteBeforeFsync));
-        
+
         // Should crash now
         assert!(sim.maybe_crash(CrashPoint::AfterWalWriteBeforeFsync));
-        
+
         // Should not crash again (already triggered)
         assert!(!sim.maybe_crash(CrashPoint::AfterWalWriteBeforeFsync));
 
@@ -592,5 +614,189 @@ mod tests {
         // Add cycle
         graph.add_edge(3, 1);
         assert!(graph.has_cycle());
+    }
+}
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// A small alphabet of keys keeps the state space dense enough that random
+    /// schedules actually overlap (and exercise isolation), instead of every
+    /// transaction touching a unique key.
+    fn key_strategy() -> impl Strategy<Value = Vec<u8>> {
+        prop::sample::select(vec![
+            b"a".to_vec(),
+            b"b".to_vec(),
+            b"c".to_vec(),
+            b"d".to_vec(),
+        ])
+    }
+
+    fn writes_strategy() -> impl Strategy<Value = Vec<(Vec<u8>, Vec<u8>)>> {
+        prop::collection::vec(
+            (key_strategy(), prop::collection::vec(any::<u8>(), 0..4)),
+            0..8,
+        )
+    }
+
+    proptest! {
+        /// Atomicity (commit): after a transaction commits, every key it wrote is
+        /// visible to a later transaction with the last-write-wins value, and no
+        /// other key is affected.
+        #[test]
+        fn prop_commit_is_all_or_nothing(writes in writes_strategy()) {
+            let mut model = KvModel::new();
+            let txn = model.begin();
+            for (k, v) in &writes {
+                model.write(txn, k.clone(), v.clone());
+            }
+            prop_assert!(model.commit(txn));
+
+            // Expected last-write-wins per key.
+            let mut expected: std::collections::BTreeMap<Vec<u8>, Vec<u8>> =
+                std::collections::BTreeMap::new();
+            for (k, v) in &writes {
+                expected.insert(k.clone(), v.clone());
+            }
+            prop_assert_eq!(model.snapshot(), expected.clone());
+
+            // A fresh reader observes exactly the committed values.
+            let reader = model.begin();
+            for (k, v) in &expected {
+                prop_assert_eq!(model.read(reader, k), Some(v.clone()));
+            }
+        }
+
+        /// Atomicity (abort): an aborted transaction leaves no trace, regardless of
+        /// how many keys it touched.
+        #[test]
+        fn prop_abort_leaves_no_trace(writes in writes_strategy()) {
+            let mut model = KvModel::new();
+            let before = model.snapshot();
+
+            let txn = model.begin();
+            for (k, v) in &writes {
+                model.write(txn, k.clone(), v.clone());
+            }
+            prop_assert!(model.abort(txn));
+
+            // Store is byte-for-byte unchanged.
+            prop_assert_eq!(model.snapshot(), before);
+
+            // None of the aborted writes are visible to a new reader.
+            let reader = model.begin();
+            for (k, _v) in &writes {
+                prop_assert_eq!(model.read(reader, k), None);
+            }
+        }
+
+        /// Isolation: a writer's uncommitted writes are invisible to a concurrent
+        /// transaction (no dirty reads), but are visible to the writer itself
+        /// (read-your-writes).
+        #[test]
+        fn prop_no_dirty_reads(k in key_strategy(), v in prop::collection::vec(any::<u8>(), 1..4)) {
+            let mut model = KvModel::new();
+            let observer = model.begin(); // started before any write
+            let writer = model.begin();
+
+            model.write(writer, k.clone(), v.clone());
+
+            // Writer sees its own write.
+            prop_assert_eq!(model.read(writer, &k), Some(v.clone()));
+            // Concurrent observer must NOT see the uncommitted write.
+            prop_assert_eq!(model.read(observer, &k), None);
+
+            // After commit, a brand-new reader sees it.
+            prop_assert!(model.commit(writer));
+            let later = model.begin();
+            prop_assert_eq!(model.read(later, &k), Some(v));
+        }
+
+        /// Fault injection is deterministic: a crash scheduled after N operations
+        /// fires exactly once, exactly on the Nth probe of the matching crash
+        /// point, and never for a non-matching point.
+        #[test]
+        fn prop_crash_injection_is_exact(after_ops in 1u64..12, probes in 1u64..20) {
+            let mut sim = CrashSimulator::new();
+            sim.schedule_crash(CrashPoint::AfterWalWriteBeforeFsync, after_ops);
+
+            let mut fire_count = 0u64;
+            let mut fired_at = None;
+            for i in 1..=probes {
+                // A non-matching crash point must never fire.
+                prop_assert!(!sim.maybe_crash(CrashPoint::BeforeWalWrite));
+                if sim.maybe_crash(CrashPoint::AfterWalWriteBeforeFsync) {
+                    fire_count += 1;
+                    fired_at = Some(i);
+                }
+            }
+
+            if probes >= after_ops {
+                prop_assert_eq!(fire_count, 1);
+                prop_assert_eq!(fired_at, Some(after_ops));
+                prop_assert_eq!(sim.triggered_crashes().len(), 1);
+            } else {
+                prop_assert_eq!(fire_count, 0);
+                prop_assert!(sim.triggered_crashes().is_empty());
+            }
+        }
+    }
+
+    // --- WAL durability/ordering properties against the REAL segment manager ---
+    //
+    // The properties above exercise the reference `KvModel`; these drive the
+    // actual on-disk `WalSegmentManager` so that recovery, segment rotation, and
+    // LSN assignment are validated end-to-end rather than against a mock.
+
+    use crate::wal_segment::{SegmentConfig, WalSegmentManager};
+    use tempfile::tempdir;
+
+    /// Arbitrary, non-empty WAL payloads. Entries are kept small but varied so a
+    /// modest `max_size` forces multiple segment rotations within a single case.
+    fn wal_payloads_strategy() -> impl Strategy<Value = Vec<Vec<u8>>> {
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 1..48), 1..40)
+    }
+
+    proptest! {
+        // Each case touches the filesystem (tempdir + fsync), so cap the case
+        // count to keep the suite fast while still covering many schedules.
+        #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+
+        /// Durability + ordering: every appended record is recovered, in the
+        /// exact order written, byte-for-byte — even across segment rotation.
+        /// LSNs are dense and monotonic starting at 0.
+        #[test]
+        fn prop_wal_recovers_all_entries_in_order(payloads in wal_payloads_strategy()) {
+            let dir = tempdir().unwrap();
+            // A small max_size guarantees the payload set spans several segments,
+            // exercising rotation + multi-segment recovery.
+            let config = SegmentConfig::default()
+                .with_wal_dir(dir.path())
+                .with_max_size(256);
+
+            // Write phase: append everything, then shut down cleanly.
+            {
+                let manager = WalSegmentManager::new(config.clone()).unwrap();
+                for (i, p) in payloads.iter().enumerate() {
+                    let lsn = manager.append(p).unwrap();
+                    // LSNs are assigned densely and monotonically from 0.
+                    prop_assert_eq!(lsn, i as u64);
+                }
+                manager.shutdown().unwrap();
+            }
+
+            // Recovery phase: a fresh manager must replay the identical sequence.
+            {
+                let manager = WalSegmentManager::new(config).unwrap();
+                let mut iter = manager.recovery_iterator(0);
+                let mut recovered: Vec<Vec<u8>> = Vec::new();
+                while let Some(entry) = iter.next_entry().unwrap() {
+                    recovered.push(entry.data);
+                }
+                prop_assert_eq!(recovered, payloads);
+            }
+        }
     }
 }

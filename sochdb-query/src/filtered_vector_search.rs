@@ -44,8 +44,8 @@
 //!
 //! The crossover point is when |S| * d < ef_required * C for some constant C.
 
-use std::collections::BinaryHeap;
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 use crate::candidate_gate::{AllowedSet, CandidateGate};
@@ -59,19 +59,19 @@ use crate::candidate_gate::{AllowedSet, CandidateGate};
 pub struct FilteredSearchConfig {
     /// Target number of results
     pub k: usize,
-    
+
     /// Base ef_search for HNSW traversal
     pub ef_search: usize,
-    
+
     /// Maximum ef_search (to prevent death spiral)
     pub max_ef: usize,
-    
+
     /// Selectivity threshold for HNSW vs scan fallback
     pub scan_threshold: f64,
-    
+
     /// Maximum allowed set size for scan (above this, use HNSW)
     pub max_scan_size: usize,
-    
+
     /// Whether to use adaptive ef based on acceptance rate
     pub adaptive_ef: bool,
 }
@@ -98,14 +98,18 @@ impl FilteredSearchConfig {
             ..Default::default()
         }
     }
-    
+
     /// Choose execution strategy based on selectivity and allowed set size
-    pub fn choose_strategy(&self, selectivity: f64, allowed_set_size: Option<usize>) -> FilteredSearchStrategy {
+    pub fn choose_strategy(
+        &self,
+        selectivity: f64,
+        allowed_set_size: Option<usize>,
+    ) -> FilteredSearchStrategy {
         // If no constraint (All), use standard HNSW
         if selectivity >= 1.0 {
             return FilteredSearchStrategy::StandardHnsw;
         }
-        
+
         // Very low selectivity or small allowed set → scan
         if selectivity < self.scan_threshold {
             if let Some(size) = allowed_set_size {
@@ -114,13 +118,13 @@ impl FilteredSearchConfig {
                 }
             }
         }
-        
+
         // Medium selectivity → filter-aware HNSW with adaptive ef
         FilteredSearchStrategy::FilterAwareHnsw {
             target_ef: self.compute_target_ef(selectivity),
         }
     }
-    
+
     /// Compute target ef based on selectivity
     ///
     /// To get K valid results with acceptance rate p, we need ~K/p candidates.
@@ -128,7 +132,7 @@ impl FilteredSearchConfig {
         if selectivity <= 0.0 {
             return self.max_ef;
         }
-        
+
         // ef ≈ k / selectivity, with margins
         let target = ((self.k as f64 / selectivity) * 1.5) as usize;
         target.clamp(self.ef_search, self.max_ef)
@@ -140,18 +144,16 @@ impl FilteredSearchConfig {
 pub enum FilteredSearchStrategy {
     /// Standard HNSW search (no filter or very high selectivity)
     StandardHnsw,
-    
+
     /// Filter-aware HNSW walk with adaptive ef
-    FilterAwareHnsw {
-        target_ef: usize,
-    },
-    
+    FilterAwareHnsw { target_ef: usize },
+
     /// Scan over allowed IDs and compute distances
     ScanAllowedSet,
-    
+
     /// Brute-force exact search over allowed IDs
     ExactScan,
-    
+
     /// Empty result (allowed set is empty)
     EmptyResult,
 }
@@ -179,7 +181,10 @@ impl ScoredResult {
 impl Ord for ScoredResult {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse order for min-heap behavior (we keep top-k)
-        other.score.partial_cmp(&self.score).unwrap_or(Ordering::Equal)
+        other
+            .score
+            .partial_cmp(&self.score)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -206,16 +211,16 @@ impl PartialEq for ScoredResult {
 pub struct FilteredSearchResult {
     /// Top-k results (sorted by score, descending)
     pub results: Vec<ScoredResult>,
-    
+
     /// Strategy used
     pub strategy: FilteredSearchStrategy,
-    
+
     /// Number of candidates evaluated
     pub candidates_evaluated: usize,
-    
+
     /// Number of candidates rejected by filter
     pub candidates_rejected: usize,
-    
+
     /// Effective ef used (for HNSW strategies)
     pub effective_ef: usize,
 }
@@ -240,13 +245,13 @@ impl FilteredSearchResult {
 pub trait FilteredVectorStore {
     /// Get a vector by document ID
     fn get_vector(&self, doc_id: u64) -> Option<&[f32]>;
-    
+
     /// Get the vector dimension
     fn dimension(&self) -> usize;
-    
+
     /// Get total vector count
     fn count(&self) -> usize;
-    
+
     /// Compute distance between query and a document
     fn distance(&self, query: &[f32], doc_id: u64) -> Option<f32>;
 }
@@ -262,7 +267,7 @@ pub trait FilteredVectorStore {
 pub struct FilterAwareSearch<V: FilteredVectorStore> {
     /// The underlying vector store
     vectors: Arc<V>,
-    
+
     /// Configuration
     config: FilteredSearchConfig,
 }
@@ -272,17 +277,15 @@ impl<V: FilteredVectorStore> FilterAwareSearch<V> {
     pub fn new(vectors: Arc<V>, config: FilteredSearchConfig) -> Self {
         Self { vectors, config }
     }
-    
+
     /// Search with a filter constraint
-    pub fn search(
-        &self,
-        query: &[f32],
-        allowed_set: &AllowedSet,
-    ) -> FilteredSearchResult {
+    pub fn search(&self, query: &[f32], allowed_set: &AllowedSet) -> FilteredSearchResult {
         // Determine strategy
         let selectivity = allowed_set.selectivity(self.vectors.count());
-        let strategy = self.config.choose_strategy(selectivity, allowed_set.cardinality());
-        
+        let strategy = self
+            .config
+            .choose_strategy(selectivity, allowed_set.cardinality());
+
         match strategy {
             FilteredSearchStrategy::EmptyResult | FilteredSearchStrategy::StandardHnsw => {
                 if allowed_set.is_empty() {
@@ -294,24 +297,24 @@ impl<V: FilteredVectorStore> FilterAwareSearch<V> {
                         effective_ef: 0,
                     };
                 }
-                
+
                 // For standard HNSW, we'd delegate to the actual HNSW index
                 // Here we fall back to scan for demonstration
                 self.scan_allowed_set(query, allowed_set, FilteredSearchStrategy::StandardHnsw)
             }
-            
+
             FilteredSearchStrategy::FilterAwareHnsw { target_ef: _ } => {
                 // For filter-aware HNSW, we'd do the walk with filter checks
                 // Here we simulate with scan
                 self.scan_allowed_set(query, allowed_set, strategy)
             }
-            
+
             FilteredSearchStrategy::ScanAllowedSet | FilteredSearchStrategy::ExactScan => {
                 self.scan_allowed_set(query, allowed_set, strategy)
             }
         }
     }
-    
+
     /// Scan over allowed IDs and find top-k
     fn scan_allowed_set(
         &self,
@@ -322,27 +325,27 @@ impl<V: FilteredVectorStore> FilterAwareSearch<V> {
         let k = self.config.k;
         let mut heap: BinaryHeap<ScoredResult> = BinaryHeap::with_capacity(k + 1);
         let mut candidates_evaluated = 0;
-        
+
         for doc_id in allowed_set.iter() {
             if let Some(dist) = self.vectors.distance(query, doc_id) {
                 candidates_evaluated += 1;
-                
+
                 // Convert distance to score (lower distance = higher score for L2)
                 let score = -dist; // Negate for max-heap behavior
-                
+
                 heap.push(ScoredResult::new(doc_id, score));
-                
+
                 // Keep only top-k
                 if heap.len() > k {
                     heap.pop();
                 }
             }
         }
-        
+
         // Extract results in sorted order
         let mut results: Vec<_> = heap.into_sorted_vec();
         results.reverse(); // Highest scores first
-        
+
         FilteredSearchResult {
             results,
             strategy,
@@ -357,7 +360,7 @@ impl<V: FilteredVectorStore> CandidateGate for FilterAwareSearch<V> {
     type Query = Vec<f32>;
     type Result = FilteredSearchResult;
     type Error = std::convert::Infallible;
-    
+
     fn execute_with_gate(
         &self,
         query: &Self::Query,
@@ -381,7 +384,7 @@ pub trait HnswFilteredSearch {
         allowed_set: &AllowedSet,
         config: &FilteredSearchConfig,
     ) -> FilteredSearchResult;
-    
+
     /// Search with filter-aware graph traversal
     fn search_filter_aware(
         &self,
@@ -411,23 +414,19 @@ pub fn l2_distance(a: &[f32], b: &[f32]) -> f32 {
 #[inline]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
-    
+
     let mut dot = 0.0f32;
     let mut norm_a = 0.0f32;
     let mut norm_b = 0.0f32;
-    
+
     for (x, y) in a.iter().zip(b.iter()) {
         dot += x * y;
         norm_a += x * x;
         norm_b += y * y;
     }
-    
+
     let denom = (norm_a * norm_b).sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot / denom
-    }
+    if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
 // ============================================================================
@@ -437,24 +436,24 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_strategy_selection() {
         let config = FilteredSearchConfig::default();
-        
+
         // High selectivity → filter-aware HNSW
         let s1 = config.choose_strategy(0.5, Some(50000));
         assert!(matches!(s1, FilteredSearchStrategy::FilterAwareHnsw { .. }));
-        
+
         // Low selectivity, small set → scan
         let s2 = config.choose_strategy(0.01, Some(1000));
         assert_eq!(s2, FilteredSearchStrategy::ScanAllowedSet);
-        
+
         // Very high selectivity → standard HNSW
         let s3 = config.choose_strategy(1.0, None);
         assert_eq!(s3, FilteredSearchStrategy::StandardHnsw);
     }
-    
+
     #[test]
     fn test_target_ef_computation() {
         let config = FilteredSearchConfig {
@@ -463,35 +462,35 @@ mod tests {
             max_ef: 1000,
             ..Default::default()
         };
-        
+
         // High selectivity → low ef
         let ef1 = config.compute_target_ef(0.5);
         assert!(ef1 <= 100);
-        
+
         // Low selectivity → high ef
         let ef2 = config.compute_target_ef(0.01);
         assert!(ef2 >= 500);
-        
+
         // Very low selectivity → max ef
         let ef3 = config.compute_target_ef(0.001);
         assert_eq!(ef3, 1000);
     }
-    
+
     #[test]
     fn test_l2_distance() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        
+
         let dist = l2_distance(&a, &b);
         assert!((dist - std::f32::consts::SQRT_2).abs() < 0.0001);
     }
-    
+
     #[test]
     fn test_cosine_similarity() {
         let a = vec![1.0, 0.0];
         let b = vec![1.0, 0.0];
         let c = vec![0.0, 1.0];
-        
+
         assert!((cosine_similarity(&a, &b) - 1.0).abs() < 0.0001);
         assert!(cosine_similarity(&a, &c).abs() < 0.0001);
     }

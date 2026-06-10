@@ -50,6 +50,7 @@
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use parking_lot::Mutex;
+use sochdb_core::{Result, SochDBError, WalRecordType};
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
@@ -57,7 +58,6 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use sochdb_core::{Result, SochDBError, WalRecordType};
 
 // =============================================================================
 // Coarse-Grained Timestamp Caching (Recommendation 5)
@@ -93,7 +93,7 @@ pub fn cached_timestamp_us() -> u64 {
     TS_CACHE.with(|cache| {
         let (instant, ts) = cache.get();
         let elapsed_ns = instant.elapsed().as_nanos() as u64;
-        
+
         if elapsed_ns < CACHE_VALIDITY_NS {
             // Fast path: return cached + monotonic offset
             // This is pure arithmetic, no syscall
@@ -900,20 +900,20 @@ impl TxnWal {
         let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
 
-        let mut committed_txns: HashSet<u64> = HashSet::new();
         let mut pending_writes: std::collections::HashMap<u64, Vec<(Vec<u8>, Vec<u8>)>> =
             std::collections::HashMap::new();
+        let mut result = Vec::new();
+        let mut txn_count = 0;
 
-        // Single pass: collect all entries
+        // Single pass in WAL order. Transaction ids are process-local and
+        // short-lived CLI processes can reuse the same ids after restart, so
+        // grouping the entire WAL by txn_id would merge unrelated transactions
+        // and replay older writes after newer ones.
         loop {
             match TxnWalEntry::from_reader(&mut reader) {
                 Ok(entry) => match entry.record_type {
                     WalRecordType::TxnBegin => {
-                        // Use entry() to avoid overwriting existing data if a
-                        // duplicate TxnBegin appears (e.g., from PID recycling).
-                        pending_writes
-                            .entry(entry.txn_id)
-                            .or_insert_with(Vec::new);
+                        pending_writes.insert(entry.txn_id, Vec::new());
                     }
                     WalRecordType::Data => {
                         // Accept data for any txn_id we've seen a Begin for,
@@ -925,7 +925,10 @@ impl TxnWal {
                             .push((entry.key, entry.value));
                     }
                     WalRecordType::TxnCommit => {
-                        committed_txns.insert(entry.txn_id);
+                        if let Some(writes) = pending_writes.remove(&entry.txn_id) {
+                            result.extend(writes);
+                            txn_count += 1;
+                        }
                     }
                     WalRecordType::TxnAbort => {
                         pending_writes.remove(&entry.txn_id);
@@ -939,18 +942,6 @@ impl TxnWal {
                     break;
                 }
             }
-        }
-
-        // Collect committed writes
-        let mut result = Vec::new();
-        let mut txn_count = 0;
-
-        for (txn_id, writes) in pending_writes {
-            if committed_txns.contains(&txn_id) {
-                result.extend(writes);
-                txn_count += 1;
-            }
-            // Uncommitted transactions are discarded (rollback)
         }
 
         Ok((result, txn_count))

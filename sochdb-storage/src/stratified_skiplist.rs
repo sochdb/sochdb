@@ -43,8 +43,8 @@
 
 use std::cmp::Ordering;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 
 /// Maximum skiplist height
 const MAX_HEIGHT: usize = 16;
@@ -73,27 +73,27 @@ impl<K, V> Tower<K, V> {
     fn new(height: usize) -> Self {
         let mut next: [AtomicPtr<SkipNode<K, V>>; MAX_HEIGHT] =
             std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut()));
-        
+
         // Initialize all pointers to null
         for ptr in next.iter_mut().take(height) {
             *ptr = AtomicPtr::new(ptr::null_mut());
         }
-        
+
         Self { height, next }
     }
-    
+
     /// Get the forward pointer at a level
     #[inline]
     fn get(&self, level: usize) -> *mut SkipNode<K, V> {
         self.next[level].load(AtomicOrdering::Acquire)
     }
-    
+
     /// Set the forward pointer at a level
     #[inline]
     fn set(&self, level: usize, node: *mut SkipNode<K, V>) {
         self.next[level].store(node, AtomicOrdering::Release);
     }
-    
+
     /// CAS the forward pointer at a level
     #[inline]
     fn cas(
@@ -102,8 +102,12 @@ impl<K, V> Tower<K, V> {
         expected: *mut SkipNode<K, V>,
         new: *mut SkipNode<K, V>,
     ) -> Result<*mut SkipNode<K, V>, *mut SkipNode<K, V>> {
-        self.next[level]
-            .compare_exchange(expected, new, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+        self.next[level].compare_exchange(
+            expected,
+            new,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        )
     }
 }
 
@@ -132,13 +136,13 @@ impl<K, V> SkipNode<K, V> {
         });
         Box::into_raw(node)
     }
-    
+
     /// Get the current value
     #[inline]
     unsafe fn get_value(&self) -> &V {
         unsafe { &*self.value.load(AtomicOrdering::Acquire) }
     }
-    
+
     /// Update the value (CAS-based)
     #[inline]
     unsafe fn update_value(&self, new_value: V) -> V {
@@ -165,7 +169,7 @@ fn random_height() -> usize {
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0),
         );
-    
+
     while height < MAX_HEIGHT {
         state = state.wrapping_mul(1103515245).wrapping_add(12345);
         if (state >> 17) % (P as u64) != 0 {
@@ -203,12 +207,12 @@ where
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_HOT_CAPACITY)
     }
-    
+
     /// Create with custom capacity
     pub fn with_capacity(capacity: usize) -> Self {
         // Create head sentinel with default values
         let head = SkipNode::new(K::default(), V::default(), MAX_HEIGHT);
-        
+
         Self {
             head,
             max_height: AtomicUsize::new(1),
@@ -217,7 +221,7 @@ where
             promoter: None,
         }
     }
-    
+
     /// Set the promotion callback
     pub fn set_promoter<F>(&mut self, promoter: F)
     where
@@ -225,7 +229,7 @@ where
     {
         self.promoter = Some(Arc::new(promoter));
     }
-    
+
     /// Insert or update a key-value pair (CAS-based)
     ///
     /// Returns the old value if the key existed.
@@ -234,15 +238,15 @@ where
         if self.len() >= self.capacity {
             self.try_promote();
         }
-        
+
         let height = random_height();
         let mut prev = [ptr::null_mut::<SkipNode<K, V>>(); MAX_HEIGHT];
         let mut next = [ptr::null_mut::<SkipNode<K, V>>(); MAX_HEIGHT];
-        
+
         loop {
             // Find position
             self.find_position(&key, &mut prev, &mut next);
-            
+
             // Check if key exists
             if !next[0].is_null() {
                 let existing = unsafe { &*next[0] };
@@ -252,17 +256,21 @@ where
                     return Some(old);
                 }
             }
-            
+
             // Create new node
             let new_node = SkipNode::new(key.clone(), value.clone(), height);
-            
+
             // Link at level 0 first
             unsafe {
                 (*new_node).tower.set(0, next[0]);
             }
-            
+
             // CAS at level 0
-            let prev_ptr = if prev[0].is_null() { self.head } else { prev[0] };
+            let prev_ptr = if prev[0].is_null() {
+                self.head
+            } else {
+                prev[0]
+            };
             match unsafe { (*prev_ptr).tower.cas(0, next[0], new_node) } {
                 Ok(_) => {
                     // Successfully inserted at level 0
@@ -272,31 +280,43 @@ where
                             unsafe {
                                 (*new_node).tower.set(level, next[level]);
                             }
-                            
-                            let prev_at_level = if prev[level].is_null() { self.head } else { prev[level] };
-                            if unsafe { (*prev_at_level).tower.cas(level, next[level], new_node) }.is_ok() {
+
+                            let prev_at_level = if prev[level].is_null() {
+                                self.head
+                            } else {
+                                prev[level]
+                            };
+                            if unsafe { (*prev_at_level).tower.cas(level, next[level], new_node) }
+                                .is_ok()
+                            {
                                 break;
                             }
-                            
+
                             // Re-find position at this level
                             self.find_position(&key, &mut prev, &mut next);
                         }
                     }
-                    
+
                     // Update max height
                     loop {
                         let current_max = self.max_height.load(AtomicOrdering::Relaxed);
                         if height <= current_max {
                             break;
                         }
-                        if self.max_height
-                            .compare_exchange_weak(current_max, height, AtomicOrdering::Release, AtomicOrdering::Relaxed)
+                        if self
+                            .max_height
+                            .compare_exchange_weak(
+                                current_max,
+                                height,
+                                AtomicOrdering::Release,
+                                AtomicOrdering::Relaxed,
+                            )
                             .is_ok()
                         {
                             break;
                         }
                     }
-                    
+
                     self.len.fetch_add(1, AtomicOrdering::Release);
                     return None;
                 }
@@ -313,7 +333,7 @@ where
             }
         }
     }
-    
+
     /// Find the position for a key
     fn find_position(
         &self,
@@ -323,14 +343,14 @@ where
     ) {
         let max_height = self.max_height.load(AtomicOrdering::Acquire);
         let mut current = self.head;
-        
+
         for level in (0..max_height).rev() {
             loop {
                 let next_node = unsafe { (*current).tower.get(level) };
                 if next_node.is_null() {
                     break;
                 }
-                
+
                 let next_key = unsafe { &(*next_node).key };
                 match next_key.cmp(key) {
                     Ordering::Less => {
@@ -341,24 +361,28 @@ where
                     }
                 }
             }
-            
-            prev[level] = if current == self.head { ptr::null_mut() } else { current };
+
+            prev[level] = if current == self.head {
+                ptr::null_mut()
+            } else {
+                current
+            };
             next[level] = unsafe { (*current).tower.get(level) };
         }
     }
-    
+
     /// Get a value by key
     pub fn get(&self, key: &K) -> Option<V> {
         let max_height = self.max_height.load(AtomicOrdering::Acquire);
         let mut current = self.head;
-        
+
         for level in (0..max_height).rev() {
             loop {
                 let next_node = unsafe { (*current).tower.get(level) };
                 if next_node.is_null() {
                     break;
                 }
-                
+
                 let next_key = unsafe { &(*next_node).key };
                 match next_key.cmp(key) {
                     Ordering::Less => {
@@ -374,22 +398,22 @@ where
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// Get the number of elements
     #[inline]
     pub fn len(&self) -> usize {
         self.len.load(AtomicOrdering::Acquire)
     }
-    
+
     /// Check if empty
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    
+
     /// Try to promote entries to the underlying storage
     fn try_promote(&self) {
         if let Some(ref promoter) = self.promoter {
@@ -399,12 +423,12 @@ where
             }
         }
     }
-    
+
     /// Drain all entries for promotion
     pub fn drain(&self) -> Vec<(K, V)> {
         let mut entries = Vec::with_capacity(self.len());
         let mut current = unsafe { (*self.head).tower.get(0) };
-        
+
         while !current.is_null() {
             let node = unsafe { &*current };
             let key = node.key.clone();
@@ -412,14 +436,14 @@ where
             entries.push((key, value));
             current = node.tower.get(0);
         }
-        
+
         // Note: In production, we'd use proper marking for deletion
         // For now, just reset the count (simplified)
         self.len.store(0, AtomicOrdering::Release);
-        
+
         entries
     }
-    
+
     /// Iterate over all entries (read-only)
     pub fn iter(&self) -> impl Iterator<Item = (K, V)> + '_ {
         SkipListIter {
@@ -446,7 +470,7 @@ where
 {
     fn drop(&mut self) {
         let mut current = unsafe { (*self.head).tower.get(0) };
-        
+
         while !current.is_null() {
             let next = unsafe { (*current).tower.get(0) };
             unsafe {
@@ -456,7 +480,7 @@ where
             }
             current = next;
         }
-        
+
         // Free head
         unsafe {
             let value_ptr = (*self.head).value.load(AtomicOrdering::Relaxed);
@@ -467,8 +491,14 @@ where
 }
 
 // Safety: StratifiedSkipList uses atomic operations for all mutations
-unsafe impl<K: Send + Sync + Ord + Clone, V: Send + Sync + Clone> Send for StratifiedSkipList<K, V> {}
-unsafe impl<K: Send + Sync + Ord + Clone, V: Send + Sync + Clone> Sync for StratifiedSkipList<K, V> {}
+unsafe impl<K: Send + Sync + Ord + Clone, V: Send + Sync + Clone> Send
+    for StratifiedSkipList<K, V>
+{
+}
+unsafe impl<K: Send + Sync + Ord + Clone, V: Send + Sync + Clone> Sync
+    for StratifiedSkipList<K, V>
+{
+}
 
 /// Iterator over skip list entries
 struct SkipListIter<'a, K, V> {
@@ -478,17 +508,17 @@ struct SkipListIter<'a, K, V> {
 
 impl<'a, K: Clone, V: Clone> Iterator for SkipListIter<'a, K, V> {
     type Item = (K, V);
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.current.is_null() {
             return None;
         }
-        
+
         let node = unsafe { &*self.current };
         let key = node.key.clone();
         let value = unsafe { node.get_value().clone() };
         self.current = node.tower.get(0);
-        
+
         Some((key, value))
     }
 }
@@ -538,39 +568,39 @@ where
             stats: std::sync::Mutex::new(PromotionStats::default()),
             _background: None,
         });
-        
+
         promoter
     }
-    
+
     /// Insert a hot key
     pub fn insert_hot(&self, key: K, value: V) -> Option<V> {
         self.hot_buffer.insert(key, value)
     }
-    
+
     /// Get a value (checks hot buffer first)
     pub fn get(&self, key: &K) -> Option<V> {
         self.hot_buffer.get(key)
     }
-    
+
     /// Force promotion of all hot entries
     pub fn force_promote(&self) -> Vec<(K, V)> {
         let entries = self.hot_buffer.drain();
-        
+
         if !entries.is_empty() {
             let mut stats = self.stats.lock().unwrap();
             stats.promotion_count += 1;
             stats.entries_promoted += entries.len() as u64;
             stats.avg_batch_size = stats.entries_promoted as f64 / stats.promotion_count as f64;
         }
-        
+
         entries
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> PromotionStats {
         self.stats.lock().unwrap().clone()
     }
-    
+
     /// Get hot buffer size
     pub fn hot_size(&self) -> usize {
         self.hot_buffer.len()
@@ -612,40 +642,40 @@ where
             insert_count: AtomicUsize::new(0),
         }
     }
-    
+
     /// Insert a key-value pair
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         let count = self.insert_count.fetch_add(1, AtomicOrdering::Relaxed);
-        
+
         // Check if we need to promote
         if count >= self.promotion_threshold {
             self.promote();
         }
-        
+
         self.hot.insert(key, value)
     }
-    
+
     /// Get a value (hot tier first, then cold)
     pub fn get(&self, key: &K) -> Option<V> {
         // Check hot tier first
         if let Some(value) = self.hot.get(key) {
             return Some(value);
         }
-        
+
         // Fall back to cold tier
         self.cold.get(key)
     }
-    
+
     /// Promote hot entries to cold storage
     pub fn promote(&self) {
         let entries = self.hot.drain();
-        
+
         if !entries.is_empty() {
             self.cold.insert_batch(entries);
             self.insert_count.store(0, AtomicOrdering::Release);
         }
     }
-    
+
     /// Get hot tier size
     pub fn hot_size(&self) -> usize {
         self.hot.len()
@@ -656,7 +686,7 @@ where
 pub trait ColdStorage<K, V>: Send + Sync {
     /// Get a value
     fn get(&self, key: &K) -> Option<V>;
-    
+
     /// Insert a batch of entries
     fn insert_batch(&self, entries: Vec<(K, V)>);
 }
@@ -699,7 +729,7 @@ where
     fn get(&self, key: &K) -> Option<V> {
         self.data.read().get(key).cloned()
     }
-    
+
     fn insert_batch(&self, entries: Vec<(K, V)>) {
         let mut data = self.data.write();
         for (k, v) in entries {
@@ -713,38 +743,38 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
-    
+
     #[test]
     fn test_skiplist_basic() {
         let list: StratifiedSkipList<i32, String> = StratifiedSkipList::new();
-        
+
         assert!(list.insert(1, "one".to_string()).is_none());
         assert!(list.insert(2, "two".to_string()).is_none());
         assert!(list.insert(3, "three".to_string()).is_none());
-        
+
         assert_eq!(list.len(), 3);
         assert_eq!(list.get(&1), Some("one".to_string()));
         assert_eq!(list.get(&2), Some("two".to_string()));
         assert_eq!(list.get(&3), Some("three".to_string()));
         assert_eq!(list.get(&4), None);
     }
-    
+
     #[test]
     fn test_skiplist_update() {
         let list: StratifiedSkipList<i32, String> = StratifiedSkipList::new();
-        
+
         assert!(list.insert(1, "one".to_string()).is_none());
         assert_eq!(list.insert(1, "ONE".to_string()), Some("one".to_string()));
-        
+
         assert_eq!(list.len(), 1);
         assert_eq!(list.get(&1), Some("ONE".to_string()));
     }
-    
+
     #[test]
     fn test_skiplist_concurrent() {
         let list = Arc::new(StratifiedSkipList::<i32, i32>::with_capacity(100000));
         let mut handles = vec![];
-        
+
         for t in 0..4 {
             let list_clone = list.clone();
             handles.push(thread::spawn(move || {
@@ -754,88 +784,88 @@ mod tests {
                 }
             }));
         }
-        
+
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         assert_eq!(list.len(), 4000);
-        
+
         // Verify some values
         assert_eq!(list.get(&0), Some(0));
         assert_eq!(list.get(&1000), Some(2000));
         assert_eq!(list.get(&2000), Some(4000));
     }
-    
+
     #[test]
     fn test_skiplist_drain() {
         let list: StratifiedSkipList<i32, i32> = StratifiedSkipList::new();
-        
+
         for i in 0..100 {
             list.insert(i, i * 2);
         }
-        
+
         let entries = list.drain();
         assert_eq!(entries.len(), 100);
-        
+
         // Should be sorted
         for (i, (k, v)) in entries.iter().enumerate() {
             assert_eq!(*k, i as i32);
             assert_eq!(*v, (i * 2) as i32);
         }
     }
-    
+
     #[test]
     fn test_batch_promoter() {
         let promoter = BatchPromoter::<i32, i32>::new(100);
-        
+
         for i in 0..50 {
             promoter.insert_hot(i, i * 2);
         }
-        
+
         assert_eq!(promoter.hot_size(), 50);
         assert_eq!(promoter.get(&10), Some(20));
-        
+
         let promoted = promoter.force_promote();
         assert_eq!(promoted.len(), 50);
-        
+
         let stats = promoter.stats();
         assert_eq!(stats.promotion_count, 1);
         assert_eq!(stats.entries_promoted, 50);
     }
-    
+
     #[test]
     fn test_deferred_index() {
         let cold = HashMapCold::<i32, i32>::new();
         let index = DeferredIndex::new(cold, 10);
-        
+
         // Insert hot keys
         for i in 0..5 {
             index.insert(i, i * 10);
         }
-        
+
         // Get from hot tier
         assert_eq!(index.get(&3), Some(30));
-        
+
         // Insert more to trigger promotion
         for i in 5..15 {
             index.insert(i, i * 10);
         }
-        
+
         // After promotion, should still find values
         assert_eq!(index.get(&0), Some(0)); // Was promoted
         assert_eq!(index.get(&12), Some(120)); // Was promoted or still hot
     }
-    
+
     #[test]
     fn test_hot_key_absorption() {
         let list: StratifiedSkipList<String, i32> = StratifiedSkipList::new();
-        
+
         // Simulate hot key pattern
         for _ in 0..100 {
             list.insert("hot_key".to_string(), 42);
         }
-        
+
         // Should only have one entry (absorbed)
         assert_eq!(list.len(), 1);
         assert_eq!(list.get(&"hot_key".to_string()), Some(42));

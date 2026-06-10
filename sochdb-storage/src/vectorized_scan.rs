@@ -78,7 +78,7 @@ pub const MAX_BATCH_SIZE: usize = 8192;
 // =============================================================================
 
 /// Typed column vector for SIMD-friendly access
-/// 
+///
 /// Each variant stores contiguous values for vectorized operations.
 #[derive(Debug, Clone)]
 pub enum ColumnVector {
@@ -91,15 +91,9 @@ pub enum ColumnVector {
     /// 64-bit floats
     Float64(Vec<f64>),
     /// Variable-length strings (Arrow-style: offsets + data)
-    String {
-        offsets: Vec<u32>,
-        data: Vec<u8>,
-    },
+    String { offsets: Vec<u32>, data: Vec<u8> },
     /// Binary data (Arrow-style: offsets + data)
-    Binary {
-        offsets: Vec<u32>,
-        data: Vec<u8>,
-    },
+    Binary { offsets: Vec<u32>, data: Vec<u8> },
     /// Null bitmap for any column (packed bits)
     Null(Vec<u64>),
 }
@@ -160,7 +154,7 @@ impl ColumnVector {
                 if values.is_empty() {
                     return Some(0);
                 }
-                
+
                 // Use SIMD for large vectors
                 if values.len() >= 16 {
                     Some(simd_sum_i64(values))
@@ -188,7 +182,7 @@ impl ColumnVector {
                 if values.is_empty() {
                     return Some(0.0);
                 }
-                
+
                 if values.len() >= 8 {
                     Some(simd_sum_f64(values))
                 } else {
@@ -218,27 +212,27 @@ fn simd_sum_i64(values: &[i64]) -> i64 {
     #[cfg(target_feature = "avx2")]
     {
         use std::arch::x86_64::*;
-        
+
         unsafe {
             let mut sum = _mm256_setzero_si256();
             let chunks = values.len() / 4;
             let ptr = values.as_ptr();
-            
+
             for i in 0..chunks {
                 let v = _mm256_loadu_si256(ptr.add(i * 4) as *const __m256i);
                 sum = _mm256_add_epi64(sum, v);
             }
-            
+
             // Horizontal add
             let arr: [i64; 4] = std::mem::transmute(sum);
             let simd_total: i64 = arr.iter().sum();
-            
+
             // Add remaining elements
             let remaining: i64 = values[chunks * 4..].iter().sum();
             simd_total + remaining
         }
     }
-    
+
     #[cfg(not(target_feature = "avx2"))]
     {
         values.iter().sum()
@@ -251,27 +245,27 @@ fn simd_sum_f64(values: &[f64]) -> f64 {
     #[cfg(target_feature = "avx")]
     {
         use std::arch::x86_64::*;
-        
+
         unsafe {
             let mut sum = _mm256_setzero_pd();
             let chunks = values.len() / 4;
             let ptr = values.as_ptr();
-            
+
             for i in 0..chunks {
                 let v = _mm256_loadu_pd(ptr.add(i * 4));
                 sum = _mm256_add_pd(sum, v);
             }
-            
+
             // Horizontal add
             let arr: [f64; 4] = std::mem::transmute(sum);
             let simd_total: f64 = arr.iter().sum();
-            
+
             // Add remaining elements
             let remaining: f64 = values[chunks * 4..].iter().sum();
             simd_total + remaining
         }
     }
-    
+
     #[cfg(not(target_feature = "avx"))]
     {
         values.iter().sum()
@@ -283,7 +277,7 @@ fn simd_sum_f64(values: &[f64]) -> f64 {
 // =============================================================================
 
 /// A batch of rows for vectorized processing
-/// 
+///
 /// Instead of processing one row at a time, we accumulate rows into
 /// batches and process them together for better cache utilization
 /// and SIMD opportunities.
@@ -349,10 +343,7 @@ impl VectorBatch {
 
     /// Get column by name
     pub fn column(&self, name: &str) -> Option<&ColumnVector> {
-        self.columns
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, c)| c)
+        self.columns.iter().find(|(n, _)| n == name).map(|(_, c)| c)
     }
 
     /// Get column by index
@@ -436,7 +427,7 @@ impl VectorizedScanStats {
 pub trait VectorPredicate: Send + Sync {
     /// Apply predicate to a column vector, returning selection bitmap
     fn evaluate(&self, column: &ColumnVector) -> Vec<bool>;
-    
+
     /// Get the column name this predicate operates on
     fn column_name(&self) -> &str;
 }
@@ -509,31 +500,31 @@ impl VectorPredicate for Int64Comparison {
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 pub fn simd_compare_i64_gt(values: &[i64], threshold: i64) -> Vec<bool> {
     use std::arch::x86_64::*;
-    
+
     let mut result = vec![false; values.len()];
     let chunks = values.len() / 4;
-    
+
     unsafe {
         let threshold_vec = _mm256_set1_epi64x(threshold);
-        
+
         for i in 0..chunks {
             let v = _mm256_loadu_si256(values.as_ptr().add(i * 4) as *const __m256i);
             let cmp = _mm256_cmpgt_epi64(v, threshold_vec);
             let mask = _mm256_movemask_epi8(cmp) as u32;
-            
+
             // Each i64 occupies 8 bytes, so bits 0-7, 8-15, 16-23, 24-31
             result[i * 4] = (mask & 0xFF) != 0;
             result[i * 4 + 1] = (mask & 0xFF00) != 0;
             result[i * 4 + 2] = (mask & 0xFF0000) != 0;
             result[i * 4 + 3] = (mask & 0xFF000000) != 0;
         }
-        
+
         // Handle remaining
         for i in (chunks * 4)..values.len() {
             result[i] = values[i] > threshold;
         }
     }
-    
+
     result
 }
 
@@ -892,7 +883,11 @@ where
                 &mut self.visibility,
             );
         } else {
-            SimdVisibilityFilter::filter_batch_into(&commit_ts, self.snapshot_ts, &mut self.visibility);
+            SimdVisibilityFilter::filter_batch_into(
+                &commit_ts,
+                self.snapshot_ts,
+                &mut self.visibility,
+            );
         }
 
         true
@@ -984,7 +979,11 @@ pub enum ValueHandle<'a> {
     /// Direct reference (zero-copy for inmemory data)
     Direct(&'a [u8]),
     /// Offset in a data block (for disk-resident data)
-    BlockOffset { block_id: u32, offset: u32, len: u32 },
+    BlockOffset {
+        block_id: u32,
+        offset: u32,
+        len: u32,
+    },
     /// Deferred load from arena
     ArenaSlot { arena_id: u32, slot: u32 },
 }
@@ -1078,7 +1077,11 @@ impl<'a> SoaBatch<'a> {
                 &mut self.visibility,
             );
         } else {
-            SimdVisibilityFilter::filter_batch_into(&self.commit_ts, snapshot_ts, &mut self.visibility);
+            SimdVisibilityFilter::filter_batch_into(
+                &self.commit_ts,
+                snapshot_ts,
+                &mut self.visibility,
+            );
         }
 
         // Build selection vector (indices of visible rows)
@@ -1237,7 +1240,8 @@ where
         self.stats.batches_processed += 1;
 
         // SIMD visibility filtering on contiguous arrays
-        self.batch.filter_visibility(self.snapshot_ts, self.current_txn_id);
+        self.batch
+            .filter_visibility(self.snapshot_ts, self.current_txn_id);
         self.stats.rows_visible += self.batch.visible_count();
 
         true
@@ -1256,25 +1260,23 @@ where
     type Item = (&'a [u8], Option<&'a [u8]>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            // Need new batch?
-            while self.pos >= self.batch.selection.len() {
-                if !self.fetch_batch() {
-                    return None;
-                }
+        // Refill batches until we have a visible row (or the source is drained).
+        while self.pos >= self.batch.selection.len() {
+            if !self.fetch_batch() {
+                return None;
             }
-
-            // Get next visible row (late materialization)
-            let sel_idx = self.pos;
-            self.pos += 1;
-            let row_idx = self.batch.selection[sel_idx];
-
-            let key = self.batch.keys[row_idx];
-            let value = self.batch.value_handles[row_idx].and_then(|h| h.materialize());
-            self.stats.values_materialized += 1;
-
-            return Some((key, value));
         }
+
+        // Get next visible row (late materialization)
+        let sel_idx = self.pos;
+        self.pos += 1;
+        let row_idx = self.batch.selection[sel_idx];
+
+        let key = self.batch.keys[row_idx];
+        let value = self.batch.value_handles[row_idx].and_then(|h| h.materialize());
+        self.stats.values_materialized += 1;
+
+        Some((key, value))
     }
 }
 
@@ -1301,7 +1303,7 @@ mod tests {
         let mut batch = VectorBatch::with_capacity(1024);
         batch.add_column("id", ColumnVector::Int64(vec![1, 2, 3]));
         batch.add_column("value", ColumnVector::Float64(vec![1.5, 2.5, 3.5]));
-        
+
         assert_eq!(batch.row_count(), 3);
         assert_eq!(batch.column_count(), 2);
         assert!(batch.column("id").is_some());
@@ -1312,7 +1314,7 @@ mod tests {
         let col = ColumnVector::Int64(vec![1, 5, 10, 15, 20]);
         let pred = Int64Comparison::gt("test", 10);
         let result = pred.evaluate(&col);
-        
+
         assert_eq!(result, vec![false, false, false, true, true]);
     }
 
@@ -1321,7 +1323,7 @@ mod tests {
         // Test with enough elements to trigger SIMD path
         let values: Vec<i64> = (0..1000).collect();
         let expected: i64 = (0..1000).sum();
-        
+
         let col = ColumnVector::Int64(values);
         assert_eq!(col.sum_i64(), Some(expected));
     }
@@ -1330,7 +1332,10 @@ mod tests {
     fn test_simd_compare_gt() {
         let values: Vec<i64> = vec![1, 5, 10, 15, 20, 25, 30, 35];
         let result = simd_compare_i64_gt(&values, 12);
-        assert_eq!(result, vec![false, false, false, true, true, true, true, true]);
+        assert_eq!(
+            result,
+            vec![false, false, false, true, true, true, true, true]
+        );
     }
 
     #[test]
@@ -1338,7 +1343,7 @@ mod tests {
         let config = VectorizedScanConfig::new()
             .with_batch_size(2048)
             .with_prefetch(true);
-        
+
         assert_eq!(config.batch_size, 2048);
         assert!(config.prefetch_enabled);
     }
@@ -1348,9 +1353,9 @@ mod tests {
         // commit_ts: 0 = uncommitted, others = commit time
         let commit_ts = vec![0, 10, 20, 30, 40];
         let snapshot_ts = 25;
-        
+
         let result = SimdVisibilityFilter::filter_batch(&commit_ts, snapshot_ts);
-        
+
         // Visible: ts != 0 AND ts < 25
         // ts=0: not visible (uncommitted)
         // ts=10: visible (10 < 25)
@@ -1363,10 +1368,10 @@ mod tests {
     #[test]
     fn test_simd_visibility_filter_with_txn() {
         let commit_ts = vec![0, 10, 0, 30, 40];
-        let txn_ids = vec![1, 2, 1, 4, 5];  // txn_id 1 appears twice
+        let txn_ids = vec![1, 2, 1, 4, 5]; // txn_id 1 appears twice
         let snapshot_ts = 25;
         let current_txn_id = 1;
-        
+
         let mut result = vec![false; 5];
         SimdVisibilityFilter::filter_batch_with_txn(
             &commit_ts,
@@ -1375,7 +1380,7 @@ mod tests {
             current_txn_id,
             &mut result,
         );
-        
+
         // Visible:
         // [0]: uncommitted but own txn -> visible
         // [1]: committed at 10 < 25 -> visible
@@ -1391,9 +1396,9 @@ mod tests {
         let n = 1000;
         let commit_ts: Vec<u64> = (1..=n as u64).collect();
         let snapshot_ts = 500;
-        
+
         let result = SimdVisibilityFilter::filter_batch(&commit_ts, snapshot_ts);
-        
+
         // First 499 should be visible (1..500 < 500)
         let visible_count = result.iter().filter(|&&v| v).count();
         assert_eq!(visible_count, 499);
@@ -1407,7 +1412,7 @@ mod tests {
             commit_ts: 100,
             txn_id: 1,
         };
-        
+
         assert!(slice.is_visible(200, None));
         assert!(!slice.is_visible(50, None));
         assert!(slice.is_visible(50, Some(1))); // Self-visibility
@@ -1416,15 +1421,35 @@ mod tests {
     #[test]
     fn test_streaming_scan_iterator() {
         let entries: Vec<VersionedSlice<'static>> = vec![
-            VersionedSlice { key: b"a", value: Some(b"1"), commit_ts: 10, txn_id: 1 },
-            VersionedSlice { key: b"b", value: Some(b"2"), commit_ts: 0, txn_id: 2 },  // Uncommitted
-            VersionedSlice { key: b"c", value: Some(b"3"), commit_ts: 30, txn_id: 3 },  // After snapshot
-            VersionedSlice { key: b"d", value: Some(b"4"), commit_ts: 15, txn_id: 4 },
+            VersionedSlice {
+                key: b"a",
+                value: Some(b"1"),
+                commit_ts: 10,
+                txn_id: 1,
+            },
+            VersionedSlice {
+                key: b"b",
+                value: Some(b"2"),
+                commit_ts: 0,
+                txn_id: 2,
+            }, // Uncommitted
+            VersionedSlice {
+                key: b"c",
+                value: Some(b"3"),
+                commit_ts: 30,
+                txn_id: 3,
+            }, // After snapshot
+            VersionedSlice {
+                key: b"d",
+                value: Some(b"4"),
+                commit_ts: 15,
+                txn_id: 4,
+            },
         ];
-        
+
         let iter = StreamingScanIterator::new(entries.into_iter(), 25, None);
         let visible: Vec<_> = iter.collect();
-        
+
         // Only entries with commit_ts 10 and 15 should be visible
         assert_eq!(visible.len(), 2);
         assert_eq!(visible[0].key, b"a");
@@ -1434,12 +1459,12 @@ mod tests {
     #[test]
     fn test_soa_batch_basic() {
         let mut batch = SoaBatch::with_capacity(100);
-        
+
         batch.push(b"key1", Some(b"value1"), 10, 1);
         batch.push(b"key2", Some(b"value2"), 20, 2);
-        batch.push(b"key3", None, 30, 3);  // Tombstone
-        batch.push(b"key4", Some(b"value4"), 0, 4);  // Uncommitted
-        
+        batch.push(b"key3", None, 30, 3); // Tombstone
+        batch.push(b"key4", Some(b"value4"), 0, 4); // Uncommitted
+
         assert_eq!(batch.len(), 4);
         assert_eq!(batch.commit_ts, vec![10, 20, 30, 0]);
         assert_eq!(batch.txn_ids, vec![1, 2, 3, 4]);
@@ -1448,30 +1473,30 @@ mod tests {
     #[test]
     fn test_soa_batch_visibility_filter() {
         let mut batch = SoaBatch::with_capacity(100);
-        
-        batch.push(b"k1", Some(b"v1"), 10, 1);  // Visible (10 < 25)
-        batch.push(b"k2", Some(b"v2"), 0, 2);   // Not visible (uncommitted)
-        batch.push(b"k3", Some(b"v3"), 20, 3);  // Visible (20 < 25)
-        batch.push(b"k4", Some(b"v4"), 30, 4);  // Not visible (30 >= 25)
-        batch.push(b"k5", Some(b"v5"), 0, 5);   // Not visible (uncommitted)
-        
+
+        batch.push(b"k1", Some(b"v1"), 10, 1); // Visible (10 < 25)
+        batch.push(b"k2", Some(b"v2"), 0, 2); // Not visible (uncommitted)
+        batch.push(b"k3", Some(b"v3"), 20, 3); // Visible (20 < 25)
+        batch.push(b"k4", Some(b"v4"), 30, 4); // Not visible (30 >= 25)
+        batch.push(b"k5", Some(b"v5"), 0, 5); // Not visible (uncommitted)
+
         batch.filter_visibility(25, None);
-        
+
         assert_eq!(batch.visibility, vec![true, false, true, false, false]);
-        assert_eq!(batch.selection, vec![0, 2]);  // Indices of visible rows
+        assert_eq!(batch.selection, vec![0, 2]); // Indices of visible rows
         assert_eq!(batch.visible_count(), 2);
     }
 
     #[test]
     fn test_soa_batch_self_visibility() {
         let mut batch = SoaBatch::with_capacity(100);
-        
-        batch.push(b"k1", Some(b"v1"), 0, 42);  // Own uncommitted -> visible
-        batch.push(b"k2", Some(b"v2"), 10, 1);  // Committed -> visible
-        batch.push(b"k3", Some(b"v3"), 0, 99);  // Other's uncommitted -> not visible
-        
+
+        batch.push(b"k1", Some(b"v1"), 0, 42); // Own uncommitted -> visible
+        batch.push(b"k2", Some(b"v2"), 10, 1); // Committed -> visible
+        batch.push(b"k3", Some(b"v3"), 0, 99); // Other's uncommitted -> not visible
+
         batch.filter_visibility(25, Some(42));
-        
+
         assert_eq!(batch.visibility, vec![true, true, false]);
         assert_eq!(batch.selection, vec![0, 1]);
     }
@@ -1479,16 +1504,16 @@ mod tests {
     #[test]
     fn test_soa_batch_late_materialization() {
         let mut batch = SoaBatch::with_capacity(100);
-        
+
         batch.push(b"key1", Some(b"val1"), 10, 1);
-        batch.push(b"key2", Some(b"val2"), 0, 2);   // Filtered out
+        batch.push(b"key2", Some(b"val2"), 0, 2); // Filtered out
         batch.push(b"key3", Some(b"val3"), 15, 3);
-        
+
         batch.filter_visibility(25, None);
-        
+
         // Iterate visible - values materialized only now
         let visible: Vec<_> = batch.iter_visible().collect();
-        
+
         assert_eq!(visible.len(), 2);
         assert_eq!(visible[0], (b"key1".as_slice(), Some(b"val1".as_slice())));
         assert_eq!(visible[1], (b"key3".as_slice(), Some(b"val3".as_slice())));
@@ -1497,38 +1522,38 @@ mod tests {
     #[test]
     fn test_soa_scan_stats() {
         let mut batch = SoaBatch::with_capacity(100);
-        
+
         // 10 rows, 3 visible
         for i in 0..10u64 {
-            let ts = if i < 3 { 10 } else { 0 };  // First 3 committed, rest uncommitted
+            let ts = if i < 3 { 10 } else { 0 }; // First 3 committed, rest uncommitted
             batch.push(b"key", Some(b"val"), ts, i);
         }
-        
+
         batch.filter_visibility(25, None);
-        
+
         let selectivity = batch.visible_count() as f64 / batch.len() as f64;
-        assert!((selectivity - 0.3).abs() < 0.01);  // 30% selectivity
+        assert!((selectivity - 0.3).abs() < 0.01); // 30% selectivity
     }
 
     #[test]
     fn test_soa_batch_simd_large() {
         // Test with enough entries to trigger SIMD paths
         let mut batch = SoaBatch::with_capacity(2000);
-        
+
         for i in 0..1000u64 {
             // Alternating visible/not visible
             let ts = if i % 2 == 0 { 10 } else { 50 };
             batch.push(b"k", Some(b"v"), ts, i);
         }
-        
+
         batch.filter_visibility(25, None);
-        
+
         // Should have 500 visible (even indices with ts=10)
         assert_eq!(batch.visible_count(), 500);
-        
+
         // Verify selection indices are correct
         for (i, &idx) in batch.selection.iter().enumerate() {
-            assert_eq!(idx, i * 2);  // 0, 2, 4, 6, ...
+            assert_eq!(idx, i * 2); // 0, 2, 4, 6, ...
         }
     }
 }

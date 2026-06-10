@@ -46,14 +46,14 @@
 //! Note: Semantic similarity ≠ query equivalence. Similar queries may have
 //! different correct answers, so semantic cache hits are marked as "approximate".
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ClientError, Result};
 use crate::ConnectionTrait;
+use crate::error::{ClientError, Result};
 
 // ============================================================================
 // Cache Types
@@ -79,20 +79,21 @@ impl CacheKey {
             allowed_set_hash,
         }
     }
-    
+
     fn hash_query(query: &str) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         let mut hasher = DefaultHasher::new();
         query.trim().to_lowercase().hash(&mut hasher);
         hasher.finish()
     }
-    
+
     /// Convert to storage key
     pub fn to_storage_key(&self) -> Vec<u8> {
         format!(
             "_cache/exact/{}/{:016x}/{:016x}",
             self.namespace, self.query_hash, self.allowed_set_hash
-        ).into_bytes()
+        )
+        .into_bytes()
     }
 }
 
@@ -137,7 +138,7 @@ impl CacheMatchType {
     pub fn is_hit(&self) -> bool {
         !matches!(self, Self::Miss)
     }
-    
+
     /// Check if this is an exact match
     pub fn is_exact(&self) -> bool {
         matches!(self, Self::Exact)
@@ -160,7 +161,7 @@ impl CacheLookupResult {
     pub fn is_hit(&self) -> bool {
         self.entry.is_some()
     }
-    
+
     /// Get the cached result bytes
     pub fn result(&self) -> Option<&[u8]> {
         self.entry.as_ref().map(|e| e.result.as_slice())
@@ -190,7 +191,7 @@ impl Default for SemanticCacheConfig {
     fn default() -> Self {
         Self {
             default_ttl: Duration::from_secs(3600), // 1 hour
-            similarity_threshold: 0.95, // 95% similarity required
+            similarity_threshold: 0.95,             // 95% similarity required
             max_entries: 10000,
             enable_semantic_search: true,
             track_hits: true,
@@ -219,49 +220,50 @@ impl<C: ConnectionTrait> SemanticCache<C> {
             config: SemanticCacheConfig::default(),
         }
     }
-    
+
     /// Create with custom configuration
     pub fn with_config(conn: C, config: SemanticCacheConfig) -> Self {
         Self { conn, config }
     }
-    
+
     fn now_millis() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
     }
-    
+
     fn now_micros() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_micros() as u64
     }
-    
+
     fn semantic_index_key(&self, namespace: &str, id: u64) -> Vec<u8> {
         format!("{}semantic/{}/{:016x}", CACHE_PREFIX, namespace, id).into_bytes()
     }
-    
+
     fn semantic_index_prefix(&self, namespace: &str) -> Vec<u8> {
         format!("{}semantic/{}/", CACHE_PREFIX, namespace).into_bytes()
     }
-    
+
     fn provenance_key(&self, cache_key_hash: u64, doc_id: &str) -> Vec<u8> {
         format!(
             "{}provenance/{:016x}/{}",
             CACHE_PREFIX, cache_key_hash, doc_id
-        ).into_bytes()
+        )
+        .into_bytes()
     }
-    
+
     fn provenance_prefix(&self, cache_key_hash: u64) -> Vec<u8> {
         format!("{}provenance/{:016x}/", CACHE_PREFIX, cache_key_hash).into_bytes()
     }
-    
+
     // ========================================================================
     // Core Operations
     // ========================================================================
-    
+
     /// Look up a cache entry
     ///
     /// First tries exact match, then (optionally) semantic search.
@@ -273,7 +275,7 @@ impl<C: ConnectionTrait> SemanticCache<C> {
         query_embedding: Option<&[f32]>,
     ) -> Result<CacheLookupResult> {
         let start = Self::now_micros();
-        
+
         // Try exact match first
         let key = CacheKey::new(query, namespace, allowed_set_hash);
         if let Some(entry) = self.get_exact(&key)? {
@@ -283,7 +285,7 @@ impl<C: ConnectionTrait> SemanticCache<C> {
                 if self.config.track_hits {
                     let _ = self.increment_hits(&key);
                 }
-                
+
                 return Ok(CacheLookupResult {
                     entry: Some(entry),
                     match_type: CacheMatchType::Exact,
@@ -293,20 +295,18 @@ impl<C: ConnectionTrait> SemanticCache<C> {
             // Expired - treat as miss and clean up
             let _ = self.delete(&key);
         }
-        
+
         // Try semantic match if enabled and embedding provided
         if self.config.enable_semantic_search {
             if let Some(embedding) = query_embedding {
-                if let Some((entry, similarity)) = self.search_semantic(
-                    namespace,
-                    embedding,
-                    allowed_set_hash,
-                )? {
+                if let Some((entry, similarity)) =
+                    self.search_semantic(namespace, embedding, allowed_set_hash)?
+                {
                     if similarity >= self.config.similarity_threshold {
                         if self.config.track_hits {
                             let _ = self.increment_hits(&entry.key);
                         }
-                        
+
                         return Ok(CacheLookupResult {
                             entry: Some(entry),
                             match_type: CacheMatchType::Semantic { similarity },
@@ -316,7 +316,7 @@ impl<C: ConnectionTrait> SemanticCache<C> {
                 }
             }
         }
-        
+
         // Cache miss
         Ok(CacheLookupResult {
             entry: None,
@@ -324,7 +324,7 @@ impl<C: ConnectionTrait> SemanticCache<C> {
             latency_us: Self::now_micros() - start,
         })
     }
-    
+
     /// Store a result in the cache
     pub fn store(
         &self,
@@ -339,7 +339,7 @@ impl<C: ConnectionTrait> SemanticCache<C> {
         let key = CacheKey::new(query, namespace, allowed_set_hash);
         let now = Self::now_millis();
         let ttl = ttl.unwrap_or(self.config.default_ttl);
-        
+
         let entry = CacheEntry {
             key: key.clone(),
             query: query.to_string(),
@@ -352,50 +352,50 @@ impl<C: ConnectionTrait> SemanticCache<C> {
             match_type: CacheMatchType::Exact, // Stored entries are exact
             metadata: HashMap::new(),
         };
-        
+
         // Store exact key entry
         let storage_key = key.to_storage_key();
-        let value = serde_json::to_vec(&entry)
-            .map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let value =
+            serde_json::to_vec(&entry).map_err(|e| ClientError::Serialization(e.to_string()))?;
         self.conn.put(&storage_key, &value)?;
-        
+
         // Store semantic index if embedding provided
         if let Some(ref emb) = embedding {
             self.store_semantic_index(namespace, &key, emb)?;
         }
-        
+
         // Store provenance edges
         let key_hash = key.query_hash ^ key.allowed_set_hash;
         for doc_id in &source_docs {
             let prov_key = self.provenance_key(key_hash, doc_id);
             self.conn.put(&prov_key, storage_key.as_slice())?;
         }
-        
+
         Ok(key)
     }
-    
+
     /// Delete a cache entry
     pub fn delete(&self, key: &CacheKey) -> Result<bool> {
         let storage_key = key.to_storage_key();
-        
+
         // Check if exists
         if self.conn.get(&storage_key)?.is_none() {
             return Ok(false);
         }
-        
+
         // Delete main entry
         self.conn.delete(&storage_key)?;
-        
+
         // Delete provenance edges
         let key_hash = key.query_hash ^ key.allowed_set_hash;
         let prov_prefix = self.provenance_prefix(key_hash);
         for (prov_key, _) in self.conn.scan(&prov_prefix)? {
             self.conn.delete(&prov_key)?;
         }
-        
+
         Ok(true)
     }
-    
+
     /// Invalidate all cache entries derived from a document
     ///
     /// This is called when a source document is updated.
@@ -403,7 +403,7 @@ impl<C: ConnectionTrait> SemanticCache<C> {
         // Scan all provenance entries for this doc
         let prefix = format!("{}provenance/", CACHE_PREFIX).into_bytes();
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut invalidated = 0;
         for (prov_key, cache_key) in results {
             let key_str = String::from_utf8_lossy(&prov_key);
@@ -414,16 +414,16 @@ impl<C: ConnectionTrait> SemanticCache<C> {
                 invalidated += 1;
             }
         }
-        
+
         Ok(invalidated)
     }
-    
+
     /// Get provenance (source documents) for a cache entry
     pub fn get_provenance(&self, key: &CacheKey) -> Result<Vec<String>> {
         let key_hash = key.query_hash ^ key.allowed_set_hash;
         let prefix = self.provenance_prefix(key_hash);
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut sources = Vec::new();
         for (prov_key, _) in results {
             let key_str = String::from_utf8_lossy(&prov_key);
@@ -431,14 +431,14 @@ impl<C: ConnectionTrait> SemanticCache<C> {
                 sources.push(doc_id.to_string());
             }
         }
-        
+
         Ok(sources)
     }
-    
+
     // ========================================================================
     // Internal Methods
     // ========================================================================
-    
+
     fn get_exact(&self, key: &CacheKey) -> Result<Option<CacheEntry>> {
         let storage_key = key.to_storage_key();
         if let Some(data) = self.conn.get(&storage_key)? {
@@ -449,7 +449,7 @@ impl<C: ConnectionTrait> SemanticCache<C> {
             Ok(None)
         }
     }
-    
+
     fn store_semantic_index(
         &self,
         namespace: &str,
@@ -466,7 +466,7 @@ impl<C: ConnectionTrait> SemanticCache<C> {
         self.conn.put(&index_key, &value)?;
         Ok(())
     }
-    
+
     fn search_semantic(
         &self,
         namespace: &str,
@@ -475,23 +475,23 @@ impl<C: ConnectionTrait> SemanticCache<C> {
     ) -> Result<Option<(CacheEntry, f32)>> {
         let prefix = self.semantic_index_prefix(namespace);
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut best_match: Option<(CacheEntry, f32)> = None;
-        
+
         for (_, value) in results {
             let index_entry: SemanticIndexEntry = match serde_json::from_slice(&value) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            
+
             // Check if AllowedSet matches
             if index_entry.cache_key.allowed_set_hash != allowed_set_hash {
                 continue;
             }
-            
+
             // Calculate similarity
             let similarity = cosine_similarity(query_embedding, &index_entry.embedding);
-            
+
             if similarity >= self.config.similarity_threshold {
                 // Get the actual cache entry
                 if let Some(entry) = self.get_exact(&index_entry.cache_key)? {
@@ -508,10 +508,10 @@ impl<C: ConnectionTrait> SemanticCache<C> {
                 }
             }
         }
-        
+
         Ok(best_match)
     }
-    
+
     fn increment_hits(&self, key: &CacheKey) -> Result<()> {
         let storage_key = key.to_storage_key();
         if let Some(data) = self.conn.get(&storage_key)? {
@@ -524,35 +524,35 @@ impl<C: ConnectionTrait> SemanticCache<C> {
         }
         Ok(())
     }
-    
+
     /// Clean up expired entries
     pub fn cleanup_expired(&self) -> Result<usize> {
         let prefix = format!("{}exact/", CACHE_PREFIX).into_bytes();
         let results = self.conn.scan(&prefix)?;
-        
+
         let now = Self::now_millis();
         let mut cleaned = 0;
-        
+
         for (key, value) in results {
             let entry: CacheEntry = match serde_json::from_slice(&value) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            
+
             if entry.expires_at < now {
                 self.conn.delete(&key)?;
-                
+
                 // Clean up provenance
                 let key_hash = entry.key.query_hash ^ entry.key.allowed_set_hash;
                 let prov_prefix = self.provenance_prefix(key_hash);
                 for (prov_key, _) in self.conn.scan(&prov_prefix)? {
                     self.conn.delete(&prov_key)?;
                 }
-                
+
                 cleaned += 1;
             }
         }
-        
+
         Ok(cleaned)
     }
 }
@@ -572,23 +572,19 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
-    
+
     let mut dot = 0.0f32;
     let mut norm_a = 0.0f32;
     let mut norm_b = 0.0f32;
-    
+
     for i in 0..a.len() {
         dot += a[i] * b[i];
         norm_a += a[i] * a[i];
         norm_b += b[i] * b[i];
     }
-    
-    let norm = (norm_a.sqrt() * norm_b.sqrt());
-    if norm == 0.0 {
-        0.0
-    } else {
-        dot / norm
-    }
+
+    let norm = norm_a.sqrt() * norm_b.sqrt();
+    if norm == 0.0 { 0.0 } else { dot / norm }
 }
 
 /// Compute a hash of an AllowedSet for cache keying
@@ -598,60 +594,60 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 pub fn hash_allowed_set<'a>(ids: impl Iterator<Item = &'a u64>) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     let mut hasher = DefaultHasher::new();
-    
+
     // Sort for deterministic hashing
     let mut sorted: Vec<_> = ids.collect();
     sorted.sort();
-    
+
     for id in sorted {
         id.hash(&mut hasher);
     }
-    
+
     hasher.finish()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_cache_key_creation() {
         let key1 = CacheKey::new("What is SochDB?", "default", 12345);
         let key2 = CacheKey::new("what is sochdb?", "default", 12345);
         let key3 = CacheKey::new("What is SochDB?", "default", 54321);
-        
+
         // Same query (case-insensitive) same hash
         assert_eq!(key1.query_hash, key2.query_hash);
-        
+
         // Different AllowedSet = different key
         assert_ne!(key1.allowed_set_hash, key3.allowed_set_hash);
     }
-    
+
     #[test]
     fn test_cosine_similarity() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
         let c = vec![0.0, 1.0, 0.0];
         let d = vec![0.707, 0.707, 0.0];
-        
+
         assert!((cosine_similarity(&a, &b) - 1.0).abs() < 0.001);
         assert!((cosine_similarity(&a, &c) - 0.0).abs() < 0.001);
         assert!((cosine_similarity(&a, &d) - 0.707).abs() < 0.01);
     }
-    
+
     #[test]
     fn test_hash_allowed_set() {
         let ids1: Vec<u64> = vec![1, 2, 3, 5, 8];
         let ids2: Vec<u64> = vec![8, 5, 3, 2, 1]; // Same set, different order
         let ids3: Vec<u64> = vec![1, 2, 3, 5, 9]; // Different set
-        
+
         let hash1 = hash_allowed_set(ids1.iter());
         let hash2 = hash_allowed_set(ids2.iter());
         let hash3 = hash_allowed_set(ids3.iter());
-        
+
         // Same set = same hash
         assert_eq!(hash1, hash2);
-        
+
         // Different set = different hash
         assert_ne!(hash1, hash3);
     }

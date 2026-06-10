@@ -60,10 +60,9 @@
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::ConnectionTrait;
-use crate::error::{ClientError, Result};
 
 /// Action to take when a policy is triggered.
 #[derive(Debug, Clone, PartialEq)]
@@ -157,7 +156,7 @@ impl PatternPolicy {
             .replace("**", ".*")
             .replace("*", "[^/]*");
         let regex_str = format!("^{}$", regex_str);
-        
+
         Self {
             pattern: pattern.to_string(),
             trigger,
@@ -288,7 +287,11 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
         policies
             .get_mut(&PolicyTrigger::BeforeWrite)
             .unwrap()
-            .push(PatternPolicy::new(pattern, PolicyTrigger::BeforeWrite, Arc::new(handler)));
+            .push(PatternPolicy::new(
+                pattern,
+                PolicyTrigger::BeforeWrite,
+                Arc::new(handler),
+            ));
     }
 
     /// Register a post-write policy handler.
@@ -300,7 +303,11 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
         policies
             .get_mut(&PolicyTrigger::AfterWrite)
             .unwrap()
-            .push(PatternPolicy::new(pattern, PolicyTrigger::AfterWrite, Arc::new(handler)));
+            .push(PatternPolicy::new(
+                pattern,
+                PolicyTrigger::AfterWrite,
+                Arc::new(handler),
+            ));
     }
 
     /// Register a pre-read policy handler.
@@ -312,7 +319,11 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
         policies
             .get_mut(&PolicyTrigger::BeforeRead)
             .unwrap()
-            .push(PatternPolicy::new(pattern, PolicyTrigger::BeforeRead, Arc::new(handler)));
+            .push(PatternPolicy::new(
+                pattern,
+                PolicyTrigger::BeforeRead,
+                Arc::new(handler),
+            ));
     }
 
     /// Register a post-read policy handler.
@@ -324,7 +335,11 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
         policies
             .get_mut(&PolicyTrigger::AfterRead)
             .unwrap()
-            .push(PatternPolicy::new(pattern, PolicyTrigger::AfterRead, Arc::new(handler)));
+            .push(PatternPolicy::new(
+                pattern,
+                PolicyTrigger::AfterRead,
+                Arc::new(handler),
+            ));
     }
 
     /// Register a pre-delete policy handler.
@@ -336,7 +351,11 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
         policies
             .get_mut(&PolicyTrigger::BeforeDelete)
             .unwrap()
-            .push(PatternPolicy::new(pattern, PolicyTrigger::BeforeDelete, Arc::new(handler)));
+            .push(PatternPolicy::new(
+                pattern,
+                PolicyTrigger::BeforeDelete,
+                Arc::new(handler),
+            ));
     }
 
     /// Add a rate limit policy.
@@ -379,9 +398,18 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
 
             let scope_key = match config.scope.as_str() {
                 "global" => "global".to_string(),
-                "agent_id" => ctx.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                "session_id" => ctx.session_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                _ => ctx.get(&config.scope).cloned().unwrap_or_else(|| "unknown".to_string()),
+                "agent_id" => ctx
+                    .agent_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                "session_id" => ctx
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                _ => ctx
+                    .get(&config.scope)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string()),
             };
 
             let limiter_key = format!("{}:{}", config.operation, config.scope);
@@ -461,14 +489,18 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
                 });
             }
             PolicyAction::Modify(modified) => {
-                self.conn.put(key, &modified).map_err(|_| PolicyViolationError {
-                    message: "Write failed".to_string(),
-                })?;
+                self.conn
+                    .put(key, &modified)
+                    .map_err(|_| PolicyViolationError {
+                        message: "Write failed".to_string(),
+                    })?;
             }
             _ => {
-                self.conn.put(key, value).map_err(|_| PolicyViolationError {
-                    message: "Write failed".to_string(),
-                })?;
+                self.conn
+                    .put(key, value)
+                    .map_err(|_| PolicyViolationError {
+                        message: "Write failed".to_string(),
+                    })?;
             }
         }
 
@@ -478,7 +510,11 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
     }
 
     /// Get a value with policy enforcement.
-    pub fn get(&self, key: &[u8], ctx: Option<&PolicyContext>) -> std::result::Result<Option<Vec<u8>>, PolicyViolationError> {
+    pub fn get(
+        &self,
+        key: &[u8],
+        ctx: Option<&PolicyContext>,
+    ) -> std::result::Result<Option<Vec<u8>>, PolicyViolationError> {
         let default_ctx = PolicyContext::new("read", key);
         let ctx = ctx.unwrap_or(&default_ctx);
 
@@ -522,7 +558,11 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
     }
 
     /// Delete a value with policy enforcement.
-    pub fn delete(&self, key: &[u8], ctx: Option<&PolicyContext>) -> std::result::Result<(), PolicyViolationError> {
+    pub fn delete(
+        &self,
+        key: &[u8],
+        ctx: Option<&PolicyContext>,
+    ) -> std::result::Result<(), PolicyViolationError> {
         let default_ctx = PolicyContext::new("delete", key);
         let ctx = ctx.unwrap_or(&default_ctx);
 
@@ -583,10 +623,10 @@ pub fn redact_value(replacement: Vec<u8>) -> impl Fn(&PolicyContext) -> PolicyAc
 // ============================================================================
 
 /// Policy outcome with deterministic precedence.
-/// 
+///
 /// The precedence order forms a semilattice:
 /// `Deny > Modify > Allow` with `Log` as a side-effect.
-/// 
+///
 /// This ensures:
 /// 1. Deterministic conflict resolution
 /// 2. Associative composition
@@ -668,29 +708,30 @@ impl CompiledPolicySet {
         }
         Self { rules_by_trigger }
     }
-    
+
     /// Add a rule to the set
     pub fn add_rule(&mut self, rule: PolicyRule, handler: Option<PolicyHandler>) {
-        let regex_str = rule.pattern
+        let regex_str = rule
+            .pattern
             .replace(".", "\\.")
             .replace("**", ".*")
             .replace("*", "[^/]*");
         let regex_str = format!("^{}$", regex_str);
         let regex = Regex::new(&regex_str).unwrap_or_else(|_| Regex::new("^$").unwrap());
-        
+
         let compiled = CompiledRule {
             rule: rule.clone(),
             regex,
             handler,
         };
-        
+
         if let Some(rules) = self.rules_by_trigger.get_mut(&rule.trigger) {
             rules.push(compiled);
             // Sort by priority descending
             rules.sort_by(|a, b| b.rule.priority.cmp(&a.rule.priority));
         }
     }
-    
+
     /// Evaluate all applicable rules and return the final outcome
     ///
     /// Uses semilattice join for deterministic composition.
@@ -698,7 +739,7 @@ impl CompiledPolicySet {
         let mut final_outcome = PolicyOutcome::Allow;
         let mut applied_rules = Vec::new();
         let mut modifications = Vec::new();
-        
+
         if let Some(rules) = self.rules_by_trigger.get(&trigger) {
             for compiled in rules {
                 // Check namespace filter
@@ -709,13 +750,13 @@ impl CompiledPolicySet {
                         }
                     }
                 }
-                
+
                 // Check pattern match
                 let key_str = String::from_utf8_lossy(&ctx.key);
                 if !compiled.regex.is_match(&key_str) {
                     continue;
                 }
-                
+
                 // Evaluate handler if present, otherwise use rule's static outcome
                 let outcome = if let Some(ref handler) = compiled.handler {
                     let action = handler(ctx);
@@ -729,17 +770,17 @@ impl CompiledPolicySet {
                 } else {
                     compiled.rule.outcome.clone()
                 };
-                
+
                 applied_rules.push(compiled.rule.id.clone());
                 final_outcome = final_outcome.join(outcome);
-                
+
                 // Short-circuit on Deny (highest precedence, nothing can override)
                 if final_outcome == PolicyOutcome::Deny {
                     break;
                 }
             }
         }
-        
+
         EvaluationResult {
             outcome: final_outcome,
             applied_rules,
@@ -770,9 +811,9 @@ impl EvaluationResult {
     pub fn is_allowed(&self) -> bool {
         !matches!(self.outcome, PolicyOutcome::Deny)
     }
-    
+
     /// Get the modification to apply (if any)
-    /// 
+    ///
     /// If multiple modifications exist, they are concatenated.
     /// For more complex composition, use a custom modification handler.
     pub fn get_modification(&self) -> Option<Vec<u8>> {
@@ -808,16 +849,16 @@ impl<C: ConnectionTrait> PolicyEngine<C> {
         base_ctx: &PolicyContext,
     ) -> Vec<Vec<u8>> {
         let mut denied = Vec::new();
-        
+
         for key in candidate_ids {
             let mut ctx = base_ctx.clone();
             ctx.key = key.clone();
-            
+
             if let PolicyAction::Deny = self.evaluate_policies(trigger, &ctx) {
                 denied.push(key.clone());
             }
         }
-        
+
         denied
     }
 }

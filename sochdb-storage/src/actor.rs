@@ -55,12 +55,12 @@
 //! - Natural backpressure through message queue
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use parking_lot::Mutex;
 
 /// Actor ID
@@ -217,9 +217,7 @@ impl<M: Send + 'static, R: Send + 'static> ActorRef<M, R> {
         let id = self.next_message_id.fetch_add(1, Ordering::SeqCst);
         let msg = Message::new(id, message);
 
-        self.inbox
-            .send(msg)
-            .map_err(|_| ActorError::ActorStopped)?;
+        self.inbox.send(msg).map_err(|_| ActorError::ActorStopped)?;
 
         // Wait for response
         match self.responses.recv_timeout(timeout) {
@@ -237,12 +235,10 @@ impl<M: Send + 'static, R: Send + 'static> ActorRef<M, R> {
         let id = self.next_message_id.fetch_add(1, Ordering::SeqCst);
         let msg = Message::new(id, message);
 
-        self.inbox
-            .try_send(msg)
-            .map_err(|e| match e {
-                crossbeam_channel::TrySendError::Full(_) => ActorError::MailboxFull,
-                crossbeam_channel::TrySendError::Disconnected(_) => ActorError::ActorStopped,
-            })
+        self.inbox.try_send(msg).map_err(|e| match e {
+            crossbeam_channel::TrySendError::Full(_) => ActorError::MailboxFull,
+            crossbeam_channel::TrySendError::Disconnected(_) => ActorError::ActorStopped,
+        })
     }
 
     /// Check if actor is still running
@@ -266,7 +262,11 @@ pub struct Actor;
 
 impl Actor {
     /// Spawn a new actor with the given handler
-    pub fn spawn<M, R, H>(id: ActorId, handler: H, mailbox_size: usize) -> (ActorRef<M, R>, JoinHandle<()>)
+    pub fn spawn<M, R, H>(
+        id: ActorId,
+        handler: H,
+        mailbox_size: usize,
+    ) -> (ActorRef<M, R>, JoinHandle<()>)
     where
         M: Send + 'static,
         R: Send + 'static,
@@ -422,9 +422,9 @@ impl<M: Send + Clone + 'static, R: Send + 'static> RequestRouter<M, R> {
         let actor_idx = match hint {
             AffinityHint::KeyBased(key) => {
                 let mut mapping = self.key_to_actor.lock();
-                *mapping.entry(key).or_insert_with(|| {
-                    (key as usize) % self.pool.size()
-                })
+                *mapping
+                    .entry(key)
+                    .or_insert_with(|| (key as usize) % self.pool.size())
             }
             AffinityHint::LeastLoaded => {
                 // Simple round-robin as proxy for least loaded
@@ -434,9 +434,7 @@ impl<M: Send + Clone + 'static, R: Send + 'static> RequestRouter<M, R> {
                 // Let the pool handle round-robin
                 return self.pool.ask(message);
             }
-            AffinityHint::Specific(id) => {
-                (id as usize) % self.pool.size()
-            }
+            AffinityHint::Specific(id) => (id as usize) % self.pool.size(),
         };
 
         self.pool.ask_actor(actor_idx, message)
@@ -524,8 +522,12 @@ mod tests {
         let router = RequestRouter::new(Arc::clone(&pool));
 
         // Key-based routing should be consistent
-        let result1 = router.route("Test1".to_string(), AffinityHint::KeyBased(42)).unwrap();
-        let result2 = router.route("Test2".to_string(), AffinityHint::KeyBased(42)).unwrap();
+        let result1 = router
+            .route("Test1".to_string(), AffinityHint::KeyBased(42))
+            .unwrap();
+        let result2 = router
+            .route("Test2".to_string(), AffinityHint::KeyBased(42))
+            .unwrap();
 
         assert!(result1.starts_with("Echo:"));
         assert!(result2.starts_with("Echo:"));

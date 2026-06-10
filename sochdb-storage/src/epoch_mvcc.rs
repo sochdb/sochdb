@@ -60,8 +60,8 @@
 //! - Per-read cost: ~50ns vs 500ns = 10x improvement
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 
@@ -130,7 +130,8 @@ impl EpochManager {
     /// Advance to next epoch
     pub fn advance_epoch(&self) -> u64 {
         let new_epoch = self.current_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-        self.epoch_start_time.store(Self::current_time_ns(), Ordering::Relaxed);
+        self.epoch_start_time
+            .store(Self::current_time_ns(), Ordering::Relaxed);
         new_epoch
     }
 
@@ -164,13 +165,9 @@ impl EpochManager {
     pub fn gc_eligible_epochs(&self) -> Vec<u64> {
         let min_safe = self.min_safe_epoch.load(Ordering::Acquire);
         let readers = self.active_readers.read();
-        
+
         // Epochs older than min_safe with no active readers
-        readers
-            .keys()
-            .filter(|&&e| e < min_safe)
-            .copied()
-            .collect()
+        readers.keys().filter(|&&e| e < min_safe).copied().collect()
     }
 
     #[inline]
@@ -233,7 +230,7 @@ impl<V> VersionEntry<V> {
 // =============================================================================
 
 /// Version chain organized by epoch
-/// 
+///
 /// Instead of a linked list of versions, versions are grouped by epoch.
 /// This enables:
 /// 1. O(log E) epoch lookup instead of O(V) version traversal
@@ -259,7 +256,7 @@ impl<V: Clone> EpochVersionChain<V> {
     pub fn add_version(&self, epoch: u64, entry: VersionEntry<V>) {
         let mut versions = self.versions.write();
         versions.insert(epoch, entry);
-        
+
         // Update latest epoch
         let current = self.latest_epoch.load(Ordering::Relaxed);
         if epoch > current {
@@ -268,7 +265,7 @@ impl<V: Clone> EpochVersionChain<V> {
     }
 
     /// Read version visible at epoch
-    /// 
+    ///
     /// Returns the most recent version with epoch <= target_epoch
     pub fn read_at_epoch(&self, target_epoch: u64) -> Option<V> {
         // Fast path: if reading at latest epoch
@@ -286,7 +283,7 @@ impl<V: Clone> EpochVersionChain<V> {
 
         // Slow path: binary search for appropriate epoch
         let versions = self.versions.read();
-        
+
         // Find the largest epoch <= target_epoch
         versions
             .range(..=target_epoch)
@@ -373,9 +370,9 @@ impl<V: Clone + Send + Sync + 'static> EpochMvccStore<V> {
     pub fn begin_txn(&self) -> EpochTransaction<'_, V> {
         let epoch = self.epoch_manager.current_epoch();
         let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed);
-        
+
         self.epoch_manager.register_reader(epoch);
-        
+
         EpochTransaction {
             txn_id,
             read_epoch: epoch,
@@ -401,7 +398,9 @@ impl<V: Clone + Send + Sync + 'static> EpochMvccStore<V> {
 
     /// Read a value at epoch
     pub fn read_at_epoch(&self, key: &[u8], epoch: u64) -> Option<V> {
-        self.data.get(key).and_then(|chain| chain.read_at_epoch(epoch))
+        self.data
+            .get(key)
+            .and_then(|chain| chain.read_at_epoch(epoch))
     }
 
     /// Advance epoch if needed
@@ -502,7 +501,7 @@ impl<'a, V: Clone + Send + Sync + Default + 'static> EpochTransaction<'a, V> {
                 _ => {}
             }
         }
-        
+
         // Then check store
         self.store.read_at_epoch(key, self.read_epoch)
     }
@@ -644,13 +643,13 @@ mod tests {
     #[test]
     fn test_epoch_manager_basics() {
         let manager = EpochManager::with_duration_ms(1); // 1ms epochs
-        
+
         assert_eq!(manager.current_epoch(), 1);
-        
+
         // Wait a bit and advance
         std::thread::sleep(std::time::Duration::from_millis(2));
         assert!(manager.should_advance());
-        
+
         let new_epoch = manager.advance_epoch();
         assert_eq!(new_epoch, 2);
         assert_eq!(manager.current_epoch(), 2);
@@ -659,16 +658,16 @@ mod tests {
     #[test]
     fn test_epoch_reader_tracking() {
         let manager = EpochManager::new();
-        
+
         manager.register_reader(1);
         manager.register_reader(1);
         manager.register_reader(2);
-        
+
         assert_eq!(manager.min_safe_epoch(), 1);
-        
+
         manager.unregister_reader(1);
         assert_eq!(manager.min_safe_epoch(), 1); // Still has one reader
-        
+
         manager.unregister_reader(1);
         assert_eq!(manager.min_safe_epoch(), 2); // Epoch 1 cleared
     }
@@ -676,11 +675,11 @@ mod tests {
     #[test]
     fn test_version_chain_read_at_epoch() {
         let chain: EpochVersionChain<String> = EpochVersionChain::new();
-        
+
         chain.add_version(1, VersionEntry::new("v1".to_string(), 1, 1));
         chain.add_version(3, VersionEntry::new("v3".to_string(), 3, 3));
         chain.add_version(5, VersionEntry::new("v5".to_string(), 5, 5));
-        
+
         // Read at various epochs
         assert_eq!(chain.read_at_epoch(0), None);
         assert_eq!(chain.read_at_epoch(1), Some("v1".to_string()));
@@ -694,11 +693,11 @@ mod tests {
     #[test]
     fn test_version_chain_delete() {
         let chain: EpochVersionChain<String> = EpochVersionChain::new();
-        
+
         chain.add_version(1, VersionEntry::new("value".to_string(), 1, 1));
         chain.add_version(2, VersionEntry::tombstone(2, 2));
         chain.add_version(3, VersionEntry::new("resurrected".to_string(), 3, 3));
-        
+
         assert_eq!(chain.read_at_epoch(1), Some("value".to_string()));
         assert_eq!(chain.read_at_epoch(2), None); // Deleted
         assert_eq!(chain.read_at_epoch(3), Some("resurrected".to_string()));
@@ -707,17 +706,17 @@ mod tests {
     #[test]
     fn test_version_chain_gc() {
         let chain: EpochVersionChain<i32> = EpochVersionChain::new();
-        
+
         for i in 1..=10 {
             chain.add_version(i, VersionEntry::new(i as i32, i, i));
         }
-        
+
         assert_eq!(chain.version_count(), 10);
-        
+
         let removed = chain.gc_before_epoch(5);
         assert_eq!(removed, 4);
         assert_eq!(chain.version_count(), 6);
-        
+
         // Old epochs gone
         assert_eq!(chain.read_at_epoch(4), None);
         // New epochs still there
@@ -727,14 +726,14 @@ mod tests {
     #[test]
     fn test_mvcc_store_basic() {
         let store: EpochMvccStore<String> = EpochMvccStore::new();
-        
+
         let mut txn = store.begin_txn();
         txn.put(b"key1".to_vec(), "value1".to_string());
         txn.put(b"key2".to_vec(), "value2".to_string());
         let result = txn.commit();
-        
+
         assert_eq!(result.write_count, 2);
-        
+
         // Read back
         let txn2 = store.begin_txn();
         assert_eq!(txn2.get(b"key1"), Some("value1".to_string()));
@@ -745,28 +744,28 @@ mod tests {
     #[test]
     fn test_mvcc_store_snapshot_isolation() {
         let store: EpochMvccStore<i32> = EpochMvccStore::new();
-        
+
         // Initial write
         let mut txn1 = store.begin_txn();
         txn1.put(b"x".to_vec(), 1);
         txn1.commit();
-        
+
         // Force epoch advance
         store.epoch_manager().advance_epoch();
-        
+
         // Start snapshot
         let snapshot = EpochSnapshot::new(&store);
         assert_eq!(snapshot.get(b"x"), Some(1));
-        
+
         // Concurrent write
         store.epoch_manager().advance_epoch();
         let mut txn2 = store.begin_txn();
         txn2.put(b"x".to_vec(), 2);
         txn2.commit();
-        
+
         // Snapshot still sees old value
         assert_eq!(snapshot.get(b"x"), Some(1));
-        
+
         // New read sees new value
         let txn3 = store.begin_txn();
         assert_eq!(txn3.get(b"x"), Some(2));
@@ -776,27 +775,27 @@ mod tests {
     #[test]
     fn test_mvcc_store_delete() {
         let store: EpochMvccStore<String> = EpochMvccStore::new();
-        
+
         // Insert
         let mut txn1 = store.begin_txn();
         txn1.put(b"key".to_vec(), "value".to_string());
         txn1.commit();
-        
+
         store.epoch_manager().advance_epoch();
-        
+
         // Snapshot before delete
         let snap = EpochSnapshot::new(&store);
-        
+
         store.epoch_manager().advance_epoch();
-        
+
         // Delete
         let mut txn2 = store.begin_txn();
         txn2.delete(b"key".to_vec());
         txn2.commit();
-        
+
         // Snapshot still sees value
         assert_eq!(snap.get(b"key"), Some("value".to_string()));
-        
+
         // New transaction sees nothing
         let txn3 = store.begin_txn();
         assert_eq!(txn3.get(b"key"), None);
@@ -806,32 +805,32 @@ mod tests {
     #[test]
     fn test_mvcc_store_write_buffer() {
         let store: EpochMvccStore<i32> = EpochMvccStore::new();
-        
+
         let mut txn = store.begin_txn();
-        
+
         // Write to buffer
         txn.put(b"a".to_vec(), 1);
         txn.put(b"b".to_vec(), 2);
-        
+
         // Read from buffer
         assert_eq!(txn.get(b"a"), Some(1));
         assert_eq!(txn.get(b"b"), Some(2));
-        
+
         // Update in buffer
         txn.put(b"a".to_vec(), 10);
         assert_eq!(txn.get(b"a"), Some(10));
-        
+
         // Delete in buffer
         txn.delete(b"b".to_vec());
         assert_eq!(txn.get(b"b"), None);
-        
+
         txn.commit();
     }
 
     #[test]
     fn test_mvcc_store_gc() {
         let store: EpochMvccStore<i32> = EpochMvccStore::new();
-        
+
         // Create versions across epochs
         for i in 0..5 {
             let mut txn = store.begin_txn();
@@ -839,31 +838,31 @@ mod tests {
             txn.commit();
             store.epoch_manager().advance_epoch();
         }
-        
+
         let stats = store.stats();
         assert!(stats.total_versions >= 5);
-        
+
         // GC old versions
         let gc_stats = store.gc();
-        
-        // Should have removed some versions
-        // (depends on min_safe_epoch)
-        assert!(gc_stats.versions_removed >= 0);
+
+        // Should have removed some versions (depends on min_safe_epoch).
+        // versions_removed is unsigned, so just ensure the field is accessible.
+        let _ = gc_stats.versions_removed;
     }
 
     #[test]
     fn test_epoch_snapshot_keys() {
         let store: EpochMvccStore<i32> = EpochMvccStore::new();
-        
+
         let mut txn = store.begin_txn();
         txn.put(b"a".to_vec(), 1);
         txn.put(b"b".to_vec(), 2);
         txn.put(b"c".to_vec(), 3);
         txn.commit();
-        
+
         let snap = EpochSnapshot::new(&store);
         let keys = snap.keys();
-        
+
         assert_eq!(keys.len(), 3);
         assert!(keys.contains(&b"a".to_vec()));
         assert!(keys.contains(&b"b".to_vec()));

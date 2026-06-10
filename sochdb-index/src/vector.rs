@@ -526,17 +526,17 @@ impl VectorIndex {
 
     /// Compute distance between two vectors with SIMD optimization
     fn distance(&self, a: &Embedding, b: &Embedding) -> f32 {
-        use crate::vector_simd;
+        use crate::simd_distance;
 
         match self.metric {
             DistanceMetric::Cosine => {
-                vector_simd::cosine_distance_f32(a.as_slice().unwrap(), b.as_slice().unwrap())
+                simd_distance::cosine_distance_fast(a.as_slice().unwrap(), b.as_slice().unwrap())
             }
             DistanceMetric::Euclidean => {
-                vector_simd::euclidean_distance_f32(a.as_slice().unwrap(), b.as_slice().unwrap())
+                simd_distance::l2_distance_fast(a.as_slice().unwrap(), b.as_slice().unwrap())
             }
             DistanceMetric::DotProduct => {
-                -vector_simd::dot_product_f32(a.as_slice().unwrap(), b.as_slice().unwrap())
+                -simd_distance::dot_product_fast(a.as_slice().unwrap(), b.as_slice().unwrap())
             }
         }
     }

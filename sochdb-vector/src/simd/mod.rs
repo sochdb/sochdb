@@ -25,21 +25,21 @@
 //! that intrinsics are only called when the CPU supports them.
 
 pub mod bps_scan;
+pub mod dispatch;
 pub mod dot_i8;
 pub mod visibility;
-pub mod dispatch;
 
 #[cfg(feature = "portable-simd")]
 pub mod portable;
 
 // Re-export main types and functions
-pub use dispatch::{CpuFeatures, SimdLevel, cpu_features, simd_level};
 pub use bps_scan::{bps_scan, bps_scan_u32};
+pub use dispatch::{CpuFeatures, SimdLevel, cpu_features, simd_level};
 pub use dot_i8::{dot_i8, dot_i8_batch};
 pub use visibility::{visibility_check, visibility_check_with_txn};
 
 /// Trait for SIMD backend abstraction.
-/// 
+///
 /// This allows the algorithm code to be generic over the backend,
 /// enabling A/B testing and gradual migration to `core::simd`.
 pub trait SimdBackend {
@@ -51,13 +51,13 @@ pub trait SimdBackend {
     type F32x8;
     /// 4 x u64 vector type
     type U64x4;
-    
+
     /// Compute L1 distance between two u8 vectors
     fn l1_distance_u8(a: Self::U8x32, b: Self::U8x32) -> Self::U8x32;
-    
+
     /// Compute dot product of two i8 vectors
     fn dot_i8(a: Self::I8x32, b: Self::I8x32) -> i32;
-    
+
     /// Compute dot product of two f32 vectors
     fn dot_f32(a: Self::F32x8, b: Self::F32x8) -> f32;
 }

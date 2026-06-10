@@ -20,11 +20,11 @@
 //! Run with: cargo bench -p sochdb-index --bench vector_bench
 
 use ndarray::Array1;
-use std::hint::black_box;
-use std::time::{Duration, Instant};
+use sochdb_index::simd_distance;
 use sochdb_index::vector::{DistanceMetric, VectorIndex};
 use sochdb_index::vector_quantized::{Precision, QuantizedVector};
-use sochdb_index::vector_simd;
+use std::hint::black_box;
+use std::time::{Duration, Instant};
 
 /// Minimum time threshold to avoid timer resolution issues
 const MIN_MEASUREMENT_TIME: Duration = Duration::from_millis(100);
@@ -115,14 +115,24 @@ fn benchmark_simd_distance() {
     let b_slice = b.as_slice().unwrap();
 
     // Benchmark scalar (baseline) with proper black_box usage
-    let scalar_stats = run_benchmark("scalar", || {
-        a_slice.iter().zip(b_slice.iter()).map(|(x, y)| x * y).sum::<f32>()
-    }, iterations_per_sample);
+    let scalar_stats = run_benchmark(
+        "scalar",
+        || {
+            a_slice
+                .iter()
+                .zip(b_slice.iter())
+                .map(|(x, y)| x * y)
+                .sum::<f32>()
+        },
+        iterations_per_sample,
+    );
 
     // Benchmark SIMD with proper black_box usage
-    let simd_stats = run_benchmark("simd", || {
-        vector_simd::dot_product_f32(a_slice, b_slice)
-    }, iterations_per_sample);
+    let simd_stats = run_benchmark(
+        "simd",
+        || simd_distance::dot_product_fast(a_slice, b_slice),
+        iterations_per_sample,
+    );
 
     // Safe speedup calculation - guard against zero/very small times
     let speedup = if simd_stats.mean_ns > 0.0 {
@@ -133,7 +143,7 @@ fn benchmark_simd_distance() {
 
     // Validate results are correct (non-zero and matching)
     let scalar_result: f32 = a_slice.iter().zip(b_slice.iter()).map(|(x, y)| x * y).sum();
-    let simd_result = vector_simd::dot_product_f32(a_slice, b_slice);
+    let simd_result = simd_distance::dot_product_fast(a_slice, b_slice);
     let result_diff = (scalar_result - simd_result).abs();
     let results_match = result_diff < 1e-4;
 
@@ -146,14 +156,19 @@ fn benchmark_simd_distance() {
     } else if speedup < 0.5 || speedup > 100.0 {
         println!("Speedup: {:.2}x (SUSPICIOUS - check measurement)", speedup);
     } else {
-        println!("Speedup: {:.2}x ± {:.2}x", speedup, 
-            (scalar_stats.std_dev_ns / simd_stats.mean_ns).abs());
+        println!(
+            "Speedup: {:.2}x ± {:.2}x",
+            speedup,
+            (scalar_stats.std_dev_ns / simd_stats.mean_ns).abs()
+        );
     }
 
     // Verify correctness
     if !results_match {
-        println!("WARNING: Results mismatch! scalar={}, simd={}, diff={}", 
-            scalar_result, simd_result, result_diff);
+        println!(
+            "WARNING: Results mismatch! scalar={}, simd={}, diff={}",
+            scalar_result, simd_result, result_diff
+        );
     } else {
         println!("Results verified: scalar ≈ simd (diff={:.2e})", result_diff);
     }

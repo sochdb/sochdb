@@ -8,20 +8,19 @@
 //! Provides graph overlay operations for agent memory via gRPC.
 
 use crate::auth_interceptor::{extract_principal, require_capability, require_namespace_access};
-use crate::proto::{
-    graph_service_server::{GraphService, GraphServiceServer},
-    AddEdgeRequest, AddEdgeResponse, AddNodeRequest, AddNodeResponse,
-    AddTemporalEdgeRequest, AddTemporalEdgeResponse,
-    DeleteEdgeRequest, DeleteEdgeResponse, DeleteNodeRequest, DeleteNodeResponse,
-    GetEdgesRequest, GetEdgesResponse, GetNeighborsRequest, GetNeighborsResponse,
-    GetNodeRequest, GetNodeResponse, GraphEdge, GraphNode, ShortestPathRequest,
-    ShortestPathResponse, TraverseRequest, TraverseResponse,
-    QueryTemporalGraphRequest, QueryTemporalGraphResponse, TemporalEdge,
-};
 use crate::namespace_server::NamespaceServer;
+use crate::proto::{
+    AddEdgeRequest, AddEdgeResponse, AddNodeRequest, AddNodeResponse, AddTemporalEdgeRequest,
+    AddTemporalEdgeResponse, DeleteEdgeRequest, DeleteEdgeResponse, DeleteNodeRequest,
+    DeleteNodeResponse, GetEdgesRequest, GetEdgesResponse, GetNeighborsRequest,
+    GetNeighborsResponse, GetNodeRequest, GetNodeResponse, GraphEdge, GraphNode,
+    QueryTemporalGraphRequest, QueryTemporalGraphResponse, ShortestPathRequest,
+    ShortestPathResponse, TemporalEdge, TraverseRequest, TraverseResponse,
+    graph_service_server::{GraphService, GraphServiceServer},
+};
 use crate::security::Capability;
 use dashmap::DashMap;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -174,14 +173,8 @@ impl GraphService for GraphServer {
             let from_id = edge.from_id.clone();
             let to_id = edge.to_id.clone();
 
-            ns.edges
-                .entry(from_id)
-                .or_default()
-                .push(edge.clone());
-            ns.reverse_edges
-                .entry(to_id)
-                .or_default()
-                .push(edge);
+            ns.edges.entry(from_id).or_default().push(edge.clone());
+            ns.reverse_edges.entry(to_id).or_default().push(edge);
 
             Ok(Response::new(AddEdgeResponse {
                 success: true,
@@ -258,9 +251,7 @@ impl GraphService for GraphServer {
 
         // Remove from reverse edges
         if let Some(mut edges) = ns.reverse_edges.get_mut(&req.to_id) {
-            edges.retain(|e| {
-                !(e.edge_type == req.edge_type && e.from_id == req.from_id)
-            });
+            edges.retain(|e| !(e.edge_type == req.edge_type && e.from_id == req.from_id));
         }
 
         Ok(Response::new(DeleteEdgeResponse {
@@ -311,8 +302,8 @@ impl GraphService for GraphServer {
 
             if let Some(edges) = ns.edges.get(&node_id) {
                 for edge in edges.iter() {
-                    let type_matches = req.edge_types.is_empty()
-                        || req.edge_types.contains(&edge.edge_type);
+                    let type_matches =
+                        req.edge_types.is_empty() || req.edge_types.contains(&edge.edge_type);
                     if type_matches && !seen.contains(&edge.to_id) {
                         visited_edges.push(edge.clone());
                         queue.push_back((edge.to_id.clone(), depth + 1));
@@ -364,8 +355,8 @@ impl GraphService for GraphServer {
 
             if let Some(node_edges) = ns.edges.get(&current) {
                 for edge in node_edges.iter() {
-                    let type_matches = req.edge_types.is_empty()
-                        || req.edge_types.contains(&edge.edge_type);
+                    let type_matches =
+                        req.edge_types.is_empty() || req.edge_types.contains(&edge.edge_type);
                     if type_matches && !visited.contains(&edge.to_id) {
                         let mut new_path = path.clone();
                         new_path.push(edge.to_id.clone());
@@ -402,8 +393,8 @@ impl GraphService for GraphServer {
         if req.direction == 0 || req.direction == 2 {
             if let Some(edges) = ns.edges.get(&req.node_id) {
                 for edge in edges.iter() {
-                    let type_matches = req.edge_types.is_empty()
-                        || req.edge_types.contains(&edge.edge_type);
+                    let type_matches =
+                        req.edge_types.is_empty() || req.edge_types.contains(&edge.edge_type);
                     if type_matches && !seen.contains(&edge.to_id) {
                         seen.insert(edge.to_id.clone());
                         neighbor_edges.push(edge.clone());
@@ -419,8 +410,8 @@ impl GraphService for GraphServer {
         if req.direction == 1 || req.direction == 2 {
             if let Some(edges) = ns.reverse_edges.get(&req.node_id) {
                 for edge in edges.iter() {
-                    let type_matches = req.edge_types.is_empty()
-                        || req.edge_types.contains(&edge.edge_type);
+                    let type_matches =
+                        req.edge_types.is_empty() || req.edge_types.contains(&edge.edge_type);
                     if type_matches && !seen.contains(&edge.from_id) {
                         seen.insert(edge.from_id.clone());
                         neighbor_edges.push(edge.clone());

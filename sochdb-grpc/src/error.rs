@@ -25,19 +25,19 @@ use tonic::Status;
 pub enum GrpcError {
     #[error("Index not found: {0}")]
     IndexNotFound(String),
-    
+
     #[error("Index already exists: {0}")]
     IndexAlreadyExists(String),
-    
+
     #[error("Invalid dimension: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
-    
+
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
-    
+
     #[error("HNSW error: {0}")]
     HnswError(String),
-    
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -51,12 +51,10 @@ impl From<GrpcError> for Status {
             GrpcError::IndexAlreadyExists(name) => {
                 Status::already_exists(format!("Index already exists: {}", name))
             }
-            GrpcError::DimensionMismatch { expected, actual } => {
-                Status::invalid_argument(format!(
-                    "Dimension mismatch: expected {}, got {}",
-                    expected, actual
-                ))
-            }
+            GrpcError::DimensionMismatch { expected, actual } => Status::invalid_argument(format!(
+                "Dimension mismatch: expected {}, got {}",
+                expected, actual
+            )),
             GrpcError::InvalidRequest(msg) => Status::invalid_argument(msg),
             GrpcError::HnswError(msg) => Status::internal(format!("HNSW error: {}", msg)),
             GrpcError::Internal(msg) => Status::internal(msg),

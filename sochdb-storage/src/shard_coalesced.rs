@@ -74,12 +74,12 @@ impl<K: Clone + Eq + Hash, V: Clone> Shard<K, V> {
             count: AtomicUsize::new(0),
         }
     }
-    
+
     fn insert(&mut self, key: K, value: V) -> Option<V> {
         let hash = hash_key(&key);
         let capacity = self.buckets.len();
         let mut idx = (hash as usize) % capacity;
-        
+
         // Linear probing
         for _ in 0..capacity {
             match &mut self.buckets[idx] {
@@ -97,16 +97,16 @@ impl<K: Clone + Eq + Hash, V: Clone> Shard<K, V> {
                 }
             }
         }
-        
+
         // Table full - should not happen with proper sizing
         None
     }
-    
+
     fn get(&self, key: &K) -> Option<&V> {
         let hash = hash_key(key);
         let capacity = self.buckets.len();
         let mut idx = (hash as usize) % capacity;
-        
+
         for _ in 0..capacity {
             match &self.buckets[idx] {
                 None => return None,
@@ -116,12 +116,12 @@ impl<K: Clone + Eq + Hash, V: Clone> Shard<K, V> {
         }
         None
     }
-    
+
     fn remove(&mut self, key: &K) -> Option<V> {
         let hash = hash_key(key);
         let capacity = self.buckets.len();
         let mut idx = (hash as usize) % capacity;
-        
+
         for _ in 0..capacity {
             match &mut self.buckets[idx] {
                 None => return None,
@@ -137,15 +137,15 @@ impl<K: Clone + Eq + Hash, V: Clone> Shard<K, V> {
         }
         None
     }
-    
+
     fn rehash_from(&mut self, start: usize) {
         let capacity = self.buckets.len();
         let mut idx = (start + 1) % capacity;
-        
+
         while let Some((k, v)) = self.buckets[idx].take() {
             let hash = hash_key(&k);
             let mut new_idx = (hash as usize) % capacity;
-            
+
             while self.buckets[new_idx].is_some() {
                 new_idx = (new_idx + 1) % capacity;
             }
@@ -153,7 +153,7 @@ impl<K: Clone + Eq + Hash, V: Clone> Shard<K, V> {
             idx = (idx + 1) % capacity;
         }
     }
-    
+
     fn len(&self) -> usize {
         self.count.load(Ordering::Relaxed)
     }
@@ -177,11 +177,11 @@ fn shard_index(hash: u64) -> usize {
 fn prefetch<T>(ptr: *const T) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        use std::arch::x86_64::_mm_prefetch;
         use std::arch::x86_64::_MM_HINT_T0;
+        use std::arch::x86_64::_mm_prefetch;
         _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
     }
-    
+
     // aarch64 prefetch requires nightly, use volatile read as fallback
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -202,7 +202,7 @@ fn prefetch<T>(ptr: *const T) {
 ///
 /// ```ignore
 /// let map = ShardCoalescedMap::<String, i32>::new();
-/// 
+///
 /// // Batch insert (3.8× faster than individual inserts)
 /// let batch = vec![
 ///     ("key1".to_string(), 1),
@@ -221,19 +221,19 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_BUCKET_COUNT)
     }
-    
+
     /// Create with custom per-shard capacity
     pub fn with_capacity(per_shard_capacity: usize) -> Self {
         let shards = (0..NUM_SHARDS)
             .map(|_| RwLock::new(Shard::new(per_shard_capacity)))
             .collect();
-        
+
         Self {
             shards,
             version: AtomicU64::new(0),
         }
     }
-    
+
     /// Insert a single key-value pair
     #[inline]
     pub fn insert(&self, key: K, value: V) -> Option<V> {
@@ -244,7 +244,7 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
         self.version.fetch_add(1, Ordering::Relaxed);
         result
     }
-    
+
     /// Get a value by key
     #[inline]
     pub fn get(&self, key: &K) -> Option<V> {
@@ -253,7 +253,7 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
         let shard = self.shards[shard_idx].read();
         shard.get(key).cloned()
     }
-    
+
     /// Remove a key-value pair
     #[inline]
     pub fn remove(&self, key: &K) -> Option<V> {
@@ -266,7 +266,7 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
         }
         result
     }
-    
+
     /// Batch insert with shard coalescing and prefetch
     ///
     /// Groups keys by shard, then processes each shard with a single lock.
@@ -279,26 +279,27 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
         if batch.is_empty() {
             return 0;
         }
-        
+
         // Group keys by shard
-        let mut shard_batches: [Vec<(K, V)>; NUM_SHARDS] = 
-            std::array::from_fn(|_| Vec::new());
-        
+        let mut shard_batches: [Vec<(K, V)>; NUM_SHARDS] = std::array::from_fn(|_| Vec::new());
+
         for (key, value) in batch {
             let hash = hash_key(&key);
             let shard_idx = shard_index(hash);
             shard_batches[shard_idx].push((key, value));
         }
-        
+
         let mut inserted = 0;
-        
+
         // Process shards with prefetching
         for i in 0..NUM_SHARDS {
             // Prefetch upcoming shards
-            if i + PREFETCH_DISTANCE < NUM_SHARDS && !shard_batches[i + PREFETCH_DISTANCE].is_empty() {
+            if i + PREFETCH_DISTANCE < NUM_SHARDS
+                && !shard_batches[i + PREFETCH_DISTANCE].is_empty()
+            {
                 prefetch(self.shards[i + PREFETCH_DISTANCE].data_ptr());
             }
-            
+
             // Process current shard
             if !shard_batches[i].is_empty() {
                 let mut shard = self.shards[i].write();
@@ -309,11 +310,11 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
                 }
             }
         }
-        
+
         self.version.fetch_add(inserted as u64, Ordering::Relaxed);
         inserted
     }
-    
+
     /// Batch get with shard coalescing
     ///
     /// Returns values in the same order as keys, with None for missing keys.
@@ -321,25 +322,26 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
         if keys.is_empty() {
             return Vec::new();
         }
-        
+
         // Group by shard with original indices
-        let mut shard_queries: [Vec<(usize, &K)>; NUM_SHARDS] =
-            std::array::from_fn(|_| Vec::new());
-        
+        let mut shard_queries: [Vec<(usize, &K)>; NUM_SHARDS] = std::array::from_fn(|_| Vec::new());
+
         for (idx, key) in keys.iter().enumerate() {
             let hash = hash_key(key);
             let shard_idx = shard_index(hash);
             shard_queries[shard_idx].push((idx, key));
         }
-        
+
         let mut results = vec![None; keys.len()];
-        
+
         // Process shards with prefetching
         for i in 0..NUM_SHARDS {
-            if i + PREFETCH_DISTANCE < NUM_SHARDS && !shard_queries[i + PREFETCH_DISTANCE].is_empty() {
+            if i + PREFETCH_DISTANCE < NUM_SHARDS
+                && !shard_queries[i + PREFETCH_DISTANCE].is_empty()
+            {
                 prefetch(self.shards[i + PREFETCH_DISTANCE].data_ptr());
             }
-            
+
             if !shard_queries[i].is_empty() {
                 let shard = self.shards[i].read();
                 for (idx, key) in &shard_queries[i] {
@@ -347,33 +349,34 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
                 }
             }
         }
-        
+
         results
     }
-    
+
     /// Batch remove with shard coalescing
     pub fn batch_remove(&self, keys: &[K]) -> Vec<Option<V>> {
         if keys.is_empty() {
             return Vec::new();
         }
-        
-        let mut shard_removes: [Vec<(usize, &K)>; NUM_SHARDS] =
-            std::array::from_fn(|_| Vec::new());
-        
+
+        let mut shard_removes: [Vec<(usize, &K)>; NUM_SHARDS] = std::array::from_fn(|_| Vec::new());
+
         for (idx, key) in keys.iter().enumerate() {
             let hash = hash_key(key);
             let shard_idx = shard_index(hash);
             shard_removes[shard_idx].push((idx, key));
         }
-        
+
         let mut results = vec![None; keys.len()];
         let mut removed = 0;
-        
+
         for i in 0..NUM_SHARDS {
-            if i + PREFETCH_DISTANCE < NUM_SHARDS && !shard_removes[i + PREFETCH_DISTANCE].is_empty() {
+            if i + PREFETCH_DISTANCE < NUM_SHARDS
+                && !shard_removes[i + PREFETCH_DISTANCE].is_empty()
+            {
                 prefetch(self.shards[i + PREFETCH_DISTANCE].data_ptr());
             }
-            
+
             if !shard_removes[i].is_empty() {
                 let mut shard = self.shards[i].write();
                 for (idx, key) in &shard_removes[i] {
@@ -384,29 +387,29 @@ impl<K: Clone + Eq + Hash, V: Clone> ShardCoalescedMap<K, V> {
                 }
             }
         }
-        
+
         if removed > 0 {
             self.version.fetch_add(removed as u64, Ordering::Relaxed);
         }
-        
+
         results
     }
-    
+
     /// Get total count across all shards
     pub fn len(&self) -> usize {
         self.shards.iter().map(|s| s.read().len()).sum()
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    
+
     /// Get version (number of modifications)
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::Relaxed)
     }
-    
+
     /// Clear all entries
     pub fn clear(&self) {
         for shard in &self.shards {
@@ -444,29 +447,29 @@ impl<K: Clone + Eq + Hash, V: Clone> BatchBuilder<K, V> {
             capacity,
         }
     }
-    
+
     /// Add an entry to the batch
     pub fn push(&mut self, key: K, value: V) {
         self.entries.push((key, value));
     }
-    
+
     /// Check if batch is full
     pub fn is_full(&self) -> bool {
         self.entries.len() >= self.capacity
     }
-    
+
     /// Flush batch to map
     pub fn flush_to(&mut self, map: &ShardCoalescedMap<K, V>) -> usize {
         let entries = std::mem::take(&mut self.entries);
         self.entries = Vec::with_capacity(self.capacity);
         map.batch_insert(entries)
     }
-    
+
     /// Get current batch size
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -496,19 +499,19 @@ impl<'a, K: Clone + Eq + Hash, V: Clone> ShardIterator<'a, K, V> {
         iter.advance_to_valid();
         iter
     }
-    
+
     fn advance_to_valid(&mut self) {
         loop {
             if self.current_shard >= NUM_SHARDS {
                 self.guard = None;
                 return;
             }
-            
+
             if self.guard.is_none() {
                 self.guard = Some(self.map.shards[self.current_shard].read());
                 self.current_bucket = 0;
             }
-            
+
             let guard = self.guard.as_ref().unwrap();
             while self.current_bucket < guard.buckets.len() {
                 if guard.buckets[self.current_bucket].is_some() {
@@ -516,7 +519,7 @@ impl<'a, K: Clone + Eq + Hash, V: Clone> ShardIterator<'a, K, V> {
                 }
                 self.current_bucket += 1;
             }
-            
+
             self.current_shard += 1;
             self.guard = None;
         }
@@ -525,19 +528,19 @@ impl<'a, K: Clone + Eq + Hash, V: Clone> ShardIterator<'a, K, V> {
 
 impl<'a, K: Clone + Eq + Hash, V: Clone> Iterator for ShardIterator<'a, K, V> {
     type Item = (K, V);
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.current_shard >= NUM_SHARDS {
             return None;
         }
-        
+
         let guard = self.guard.as_ref()?;
         let entry = guard.buckets[self.current_bucket].as_ref()?;
         let result = entry.clone();
-        
+
         self.current_bucket += 1;
         self.advance_to_valid();
-        
+
         Some(result)
     }
 }
@@ -554,58 +557,58 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
-    
+
     #[test]
     fn test_basic_operations() {
         let map = ShardCoalescedMap::<String, i32>::new();
-        
+
         // Insert
         assert!(map.insert("key1".to_string(), 1).is_none());
         assert!(map.insert("key2".to_string(), 2).is_none());
-        
+
         // Get
         assert_eq!(map.get(&"key1".to_string()), Some(1));
         assert_eq!(map.get(&"key2".to_string()), Some(2));
         assert_eq!(map.get(&"key3".to_string()), None);
-        
+
         // Update
         assert_eq!(map.insert("key1".to_string(), 10), Some(1));
         assert_eq!(map.get(&"key1".to_string()), Some(10));
-        
+
         // Remove
         assert_eq!(map.remove(&"key1".to_string()), Some(10));
         assert_eq!(map.get(&"key1".to_string()), None);
     }
-    
+
     #[test]
     fn test_batch_insert() {
         let map = ShardCoalescedMap::<i32, i32>::new();
-        
+
         let batch: Vec<_> = (0..1000).map(|i| (i, i * 10)).collect();
         let inserted = map.batch_insert(batch);
-        
+
         assert_eq!(inserted, 1000);
         assert_eq!(map.len(), 1000);
-        
+
         // Verify all entries
         for i in 0..1000 {
             assert_eq!(map.get(&i), Some(i * 10));
         }
     }
-    
+
     #[test]
     fn test_batch_get() {
         let map = ShardCoalescedMap::<i32, i32>::new();
-        
+
         // Insert some entries
         for i in 0..100i32 {
             map.insert(i, i * 2);
         }
-        
+
         // Batch get with some missing keys
         let keys: Vec<i32> = (0..150i32).collect();
         let results = map.batch_get(&keys);
-        
+
         assert_eq!(results.len(), 150);
         for i in 0..100usize {
             assert_eq!(results[i], Some((i * 2) as i32));
@@ -614,18 +617,18 @@ mod tests {
             assert_eq!(results[i], None);
         }
     }
-    
+
     #[test]
     fn test_batch_remove() {
         let map = ShardCoalescedMap::<i32, i32>::new();
-        
+
         for i in 0..100i32 {
             map.insert(i, i);
         }
-        
+
         let to_remove: Vec<i32> = (50..150i32).collect();
         let results = map.batch_remove(&to_remove);
-        
+
         assert_eq!(results.len(), 100);
         for i in 0..50usize {
             assert_eq!(results[i], Some((i + 50) as i32));
@@ -633,16 +636,16 @@ mod tests {
         for i in 50..100usize {
             assert_eq!(results[i], None);
         }
-        
+
         assert_eq!(map.len(), 50);
     }
-    
+
     #[test]
     fn test_concurrent_batch_insert() {
         let map = Arc::new(ShardCoalescedMap::<i32, i32>::new());
         let num_threads: usize = 8;
         let batch_size: usize = 1000;
-        
+
         let handles: Vec<_> = (0..num_threads)
             .map(|t| {
                 let map = Arc::clone(&map);
@@ -654,63 +657,63 @@ mod tests {
                 })
             })
             .collect();
-        
+
         let total: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
         assert_eq!(total, num_threads * batch_size);
         assert_eq!(map.len(), num_threads * batch_size);
     }
-    
+
     #[test]
     fn test_batch_builder() {
         let map = ShardCoalescedMap::<i32, i32>::new();
         let mut builder = BatchBuilder::with_capacity(100);
-        
+
         for i in 0..100i32 {
             builder.push(i, i * 2);
         }
-        
+
         assert!(builder.is_full());
-        
+
         let inserted = builder.flush_to(&map);
         assert_eq!(inserted, 100);
         assert!(builder.is_empty());
-        
+
         for i in 0..100i32 {
             assert_eq!(map.get(&i), Some(i * 2));
         }
     }
-    
+
     #[test]
     fn test_iterator() {
         let map = ShardCoalescedMap::<i32, i32>::new();
-        
+
         for i in 0..100i32 {
             map.insert(i, i * 2);
         }
-        
+
         let mut entries: Vec<_> = map.iter().collect();
         entries.sort_by_key(|(k, _)| *k);
-        
+
         assert_eq!(entries.len(), 100);
         for (i, (k, v)) in entries.iter().enumerate() {
             assert_eq!(*k, i as i32);
             assert_eq!(*v, (i * 2) as i32);
         }
     }
-    
+
     #[test]
     fn test_clear() {
         let map = ShardCoalescedMap::<i32, i32>::new();
-        
+
         for i in 0..100i32 {
             map.insert(i, i);
         }
         assert_eq!(map.len(), 100);
-        
+
         map.clear();
         assert_eq!(map.len(), 0);
         assert!(map.is_empty());
-        
+
         for i in 0..100i32 {
             assert!(map.get(&i).is_none());
         }

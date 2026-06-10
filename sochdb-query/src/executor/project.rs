@@ -2,10 +2,10 @@
 
 //! Project operator (column selection and expression evaluation).
 
-use crate::sql::ast::Expr;
 use super::eval::eval_expr;
 use super::node::PlanNode;
-use super::types::{Row, Schema, ColumnMeta};
+use super::types::{ColumnMeta, Row, Schema};
+use crate::sql::ast::Expr;
 use sochdb_core::Result;
 
 /// Projection expression: an expression and its output alias.
@@ -29,9 +29,16 @@ pub struct ProjectNode {
 impl ProjectNode {
     pub fn new(input: Box<dyn PlanNode>, exprs: Vec<ProjectExpr>) -> Self {
         let output_schema = Schema::new(
-            exprs.iter().map(|e| ColumnMeta::new(e.alias.clone())).collect(),
+            exprs
+                .iter()
+                .map(|e| ColumnMeta::new(e.alias.clone()))
+                .collect(),
         );
-        Self { input, exprs, output_schema }
+        Self {
+            input,
+            exprs,
+            output_schema,
+        }
     }
 
     /// Create a simple column-selection projection (no expressions).
@@ -39,25 +46,30 @@ impl ProjectNode {
         let input_schema = input.schema().clone();
         let exprs: Vec<ProjectExpr> = columns
             .iter()
-            .map(|c| {
-                ProjectExpr {
-                    expr: Expr::Column(crate::sql::ast::ColumnRef::new(c.clone())),
-                    alias: c.clone(),
-                }
+            .map(|c| ProjectExpr {
+                expr: Expr::Column(crate::sql::ast::ColumnRef::new(c.clone())),
+                alias: c.clone(),
             })
             .collect();
         let output_schema = Schema::new(
-            columns.iter().map(|c| {
-                // Preserve table qualification from input schema
-                input_schema
-                    .columns
-                    .iter()
-                    .find(|cm| cm.name == *c)
-                    .cloned()
-                    .unwrap_or_else(|| ColumnMeta::new(c.clone()))
-            }).collect()
+            columns
+                .iter()
+                .map(|c| {
+                    // Preserve table qualification from input schema
+                    input_schema
+                        .columns
+                        .iter()
+                        .find(|cm| cm.name == *c)
+                        .cloned()
+                        .unwrap_or_else(|| ColumnMeta::new(c.clone()))
+                })
+                .collect(),
         );
-        Self { input, exprs, output_schema }
+        Self {
+            input,
+            exprs,
+            output_schema,
+        }
     }
 }
 

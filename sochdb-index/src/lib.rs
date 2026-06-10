@@ -59,12 +59,15 @@
 // Novel data structures
 // LearnedSparseIndex is now in sochdb-core to avoid cyclic dependencies
 pub use sochdb_core::learned_index;
+#[macro_use]
+pub mod ffi_firewall; // FFI panic firewall (ffi_guard! + FfiDefault) — must precede FFI modules
 pub mod adaptive_ef; // Adaptive ef_construction with quality feedback (Task 9)
 pub mod hybrid_learned_index;
 pub mod trie_columnar; // PGM-style learned index with B-tree fallback (mm.md Task 7)
 
 // Vector indexing
 pub mod aosoa_tiles; // AoSoA vector tiles for cache-line aligned SIMD access (P0 optimization)
+pub mod buffered_hnsw; // Buffered HNSW with delta buffer (Task 6)
 pub mod compression;
 pub mod csr_graph; // CSR packed adjacency for cache-efficient traversal (P0 optimization)
 pub mod distance_cache; // LRU distance computation cache (Task 11)
@@ -74,43 +77,45 @@ pub mod hnsw;
 pub mod hnsw_pq;
 pub mod hnsw_staged; // Staged parallel HNSW construction with waves + deferred backedges
 pub mod hot_buffer_hnsw; // Hot buffer + background flush for ultra-fast inserts
-pub mod buffered_hnsw; // Buffered HNSW with delta buffer (Task 6)
 pub mod internal_id; // Dense u32 ID mapping for cache-friendly traversal (P0 optimization)
 pub mod johnson_lindenstrauss; // Low-dimensional projection pre-filter (Task 5)
-pub mod lockfree_hnsw; // Lock-free HNSW with CAS operations (mm.md Task 5)
+#[cfg(feature = "experimental")]
+pub mod lockfree_hnsw; // Lock-free HNSW with CAS operations (mm.md Task 5) [quarantined: unwired]
 pub mod metrics;
 pub mod node_ordering; // Locality-driven node ordering: BFS/RCM/Hilbert (P0 optimization)
 pub mod optimized_search; // Optimized HNSW search with CSR + internal IDs + batched expansion
-pub mod unified_search; // Unified production search path: CSR + bitmap + AoSoA + batched expansion
 pub mod parallel_waves; // Wave-based parallel graph construction (Task 3)
 pub mod persistence;
 pub mod product_quantization;
 pub mod scratch_buffers; // Thread-local scratch buffer pool (Task 10)
 pub mod storage; // Contiguous node storage (Task 4)
 pub mod unified_quant; // Unified quantization contract: F32/F16/BF16/I8/PQ/BPS (P0 optimization)
+pub mod unified_search; // Unified production search path: CSR + bitmap + AoSoA + batched expansion
 pub mod vamana;
 pub mod vector;
 pub mod vector_arena; // Arena-based vector storage (Task 3)
 pub mod vector_quantized;
-pub mod vector_simd;
 pub mod vector_storage;
 
 // Performance optimization modules
 pub mod atomic_entry_point; // Lock-free entry point + max_layer via packed atomic CAS
-pub mod prefetch_scan;
 pub mod predicated_simd; // Predicated SIMD kernels with masked operations (P0 optimization)
+pub mod prefetch_scan;
 pub mod simd_batch_distance; // SIMD batch distance with tiled processing (Task 8)
 pub mod simd_scan; // SIMD-accelerated column scans (Task 5)
+pub mod vector_simd {
+    pub use crate::simd_distance::l2_squared as l2_squared_f32;
+}
 
 // Performance optimization modules (jj.txt optimizations)
-pub mod simd_distance; // SIMD Distance Kernels for HNSW (AVX2/AVX-512/NEON)
 pub mod contiguous_graph; // Contiguous Graph Memory Layout (flattened neighbor lists)
+pub mod simd_distance; // SIMD Distance Kernels for HNSW (AVX2/AVX-512/NEON)
 pub mod zero_copy_batch;
 
 // Test modules
+pub mod profiling;
 #[cfg(test)]
-pub mod rng_optimization_tests; // Zero-Copy Batch Ingest (arena-based storage)
-pub mod profiling; // End-to-end profiling (SOCHDB_PROFILING=1)
+pub mod rng_optimization_tests; // Zero-Copy Batch Ingest (arena-based storage) // End-to-end profiling (SOCHDB_PROFILING=1)
 
 // FFI bindings for Python and other languages
 pub mod ffi;
@@ -131,7 +136,13 @@ pub use trie_columnar::{
 };
 
 // Re-exports for vector indexing
+pub use aosoa_tiles::{
+    AlignedBlock, DEFAULT_TILE_SIZE, TiledStoreStats, TiledVectorStore, VectorTile,
+};
+pub use atomic_entry_point::{AtomicNavigationState, AtomicNavigationStateU128};
+pub use buffered_hnsw::{BufferStats, BufferedHnsw, BufferedHnswConfig, BufferedHnswStats};
 pub use compression::{CompressionLevel, QuantizedVectorI8, StoredVector};
+pub use csr_graph::{CsrGraph, CsrGraphBuilder, CsrGraphStats, CsrLayer, InternalSearchCandidate};
 pub use embedding::{
     EmbeddingError, EmbeddingIntegration, EmbeddingPipeline, EmbeddingProvider, EmbeddingRegistry,
     EmbeddingRequest, EmbeddingStorage, EmbeddingStorageConfig, IntegrationConfig,
@@ -139,26 +150,27 @@ pub use embedding::{
     PipelineConfig, SemanticSearchResult,
 };
 pub use hnsw::{HnswConfig, HnswIndex, HnswStats, MemoryStats};
-pub use hnsw_staged::{StagedBuilder, StagedConfig, StagedStats};
-pub use hot_buffer_hnsw::{HotBufferHnsw, HotBufferConfig, HotBufferStats};
-pub use atomic_entry_point::{AtomicNavigationState, AtomicNavigationStateU128};
 pub use hnsw_pq::{ADCTable, PQSearchConfig, PQSearchResult, PQVectorStore};
-pub use internal_id::{IdMapper, InternalId, VisitedBitmap, INVALID_INTERNAL_ID, MAX_INTERNAL_ID};
-pub use csr_graph::{CsrGraph, CsrGraphBuilder, CsrLayer, CsrGraphStats, InternalSearchCandidate};
-pub use buffered_hnsw::{BufferedHnsw, BufferedHnswConfig, BufferedHnswStats, BufferStats};
+pub use hnsw_staged::{StagedBuilder, StagedConfig, StagedStats};
+pub use hot_buffer_hnsw::{HotBufferConfig, HotBufferHnsw, HotBufferStats};
+pub use internal_id::{INVALID_INTERNAL_ID, IdMapper, InternalId, MAX_INTERNAL_ID, VisitedBitmap};
+pub use node_ordering::{
+    NodeOrderer, NodePermutation, OrderingStats, OrderingStrategy, reorder_csr_graph,
+};
 pub use product_quantization::{DistanceTable, PQCodebooks, PQCodes};
-pub use unified_quant::{QuantLevel, UnifiedQuantizedVector, QuantPipelineConfig, PipelineStage, StageCandidates, UnifiedScorer};
-pub use node_ordering::{NodeOrderer, NodePermutation, OrderingStats, OrderingStrategy, reorder_csr_graph};
-pub use aosoa_tiles::{VectorTile, TiledVectorStore, TiledStoreStats, AlignedBlock, DEFAULT_TILE_SIZE};
+pub use unified_quant::{
+    PipelineStage, QuantError, QuantLevel, QuantPipelineConfig, StageCandidates,
+    UnifiedQuantizedVector, UnifiedScorer,
+};
 pub use vamana::{VamanaConfig, VamanaIndex, VamanaStats};
 pub use vector::{DistanceMetric, Embedding, VectorIndex};
 pub use vector_quantized::{Precision, QuantizedVector};
 pub use vector_storage::{MemoryVectorStorage, MmapVectorStorage, VectorStorage};
 
 // Re-exports for performance optimization modules
+pub use predicated_simd::{PredicatedSimd, PredicatedSimd8, SimdMask};
 pub use prefetch_scan::{
     CACHE_LINE_SIZE, DEFAULT_PREFETCH_DISTANCE, GenericPrefetchScanner, PrefetchHint,
     PrefetchScanner, ScatterPrefetcher, aggregates as prefetch_aggregates, prefetch,
 };
-pub use predicated_simd::{PredicatedSimd, PredicatedSimd8, SimdMask};
 pub use simd_scan::{BitVec, SimdLevel, SimdScanner, scalar as simd_scalar};

@@ -79,7 +79,7 @@ impl OutlierSet {
         }
 
         let density = dims.len() as f32 / dimension as f32;
-        
+
         if density > BITVEC_THRESHOLD {
             OutlierSet::Dense(DenseOutliers::from_dims(dims, dimension))
         } else {
@@ -209,7 +209,7 @@ impl DenseOutliers {
     pub fn from_dims(dims: &[u16], dimension: usize) -> Self {
         let num_words = (dimension + 63) / 64;
         let mut bits = vec![0u64; num_words];
-        
+
         for &dim in dims {
             let word_idx = dim as usize / 64;
             let bit_idx = dim as usize % 64;
@@ -229,11 +229,11 @@ impl DenseOutliers {
     pub fn contains(&self, dim: u16) -> bool {
         let word_idx = dim as usize / 64;
         let bit_idx = dim as usize % 64;
-        
+
         if word_idx >= self.bits.len() {
             return false;
         }
-        
+
         (self.bits[word_idx] >> bit_idx) & 1 == 1
     }
 
@@ -245,7 +245,7 @@ impl DenseOutliers {
         let bit_idx = dim as usize % 64;
 
         let mut count = 0usize;
-        
+
         // Count all bits in previous words
         for i in 0..word_idx.min(self.bits.len()) {
             count += self.bits[i].count_ones() as usize;
@@ -392,9 +392,7 @@ impl OutlierStorage {
     pub fn get(&self, dim: u16) -> Option<f32> {
         match &self.set {
             OutlierSet::Empty => None,
-            OutlierSet::Sparse(s) => {
-                s.position(dim).map(|pos| self.values[pos])
-            }
+            OutlierSet::Sparse(s) => s.position(dim).map(|pos| self.values[pos]),
             OutlierSet::Dense(d) => {
                 if d.contains(dim) {
                     Some(self.values[d.rank(dim)])
@@ -486,7 +484,7 @@ mod tests {
     #[test]
     fn test_empty_outlier_set() {
         let set = OutlierSet::empty();
-        
+
         assert!(set.is_empty());
         assert_eq!(set.len(), 0);
         assert!(!set.contains(0));
@@ -497,15 +495,15 @@ mod tests {
     fn test_sparse_outliers() {
         let dims = vec![5, 10, 100, 200];
         let set = OutlierSet::from_dims(&dims, 768);
-        
+
         assert!(!set.is_dense());
         assert_eq!(set.len(), 4);
-        
+
         assert!(set.contains(5));
         assert!(set.contains(10));
         assert!(set.contains(100));
         assert!(set.contains(200));
-        
+
         assert!(!set.contains(0));
         assert!(!set.contains(6));
         assert!(!set.contains(99));
@@ -516,10 +514,10 @@ mod tests {
         // Create enough outliers to trigger dense representation
         let dims: Vec<u16> = (0..100).collect(); // 100 outliers for D=768 → ~13%
         let set = OutlierSet::from_dims(&dims, 768);
-        
+
         assert!(set.is_dense());
         assert_eq!(set.len(), 100);
-        
+
         for d in 0..100 {
             assert!(set.contains(d));
         }
@@ -530,7 +528,7 @@ mod tests {
     #[test]
     fn test_sparse_binary_search() {
         let sparse = SparseOutliers::from_dims(&[10, 20, 30, 40, 50]);
-        
+
         assert_eq!(sparse.position(10), Some(0));
         assert_eq!(sparse.position(30), Some(2));
         assert_eq!(sparse.position(50), Some(4));
@@ -540,7 +538,7 @@ mod tests {
     #[test]
     fn test_dense_rank() {
         let dense = DenseOutliers::from_dims(&[0, 1, 2, 10, 20], 768);
-        
+
         assert_eq!(dense.rank(0), 0); // No bits before position 0
         assert_eq!(dense.rank(1), 1); // One bit (position 0)
         assert_eq!(dense.rank(2), 2); // Two bits (0, 1)
@@ -551,19 +549,25 @@ mod tests {
     #[test]
     fn test_outlier_storage() {
         let entries = vec![
-            OutlierValue { dim: 10, value: 1.5 },
-            OutlierValue { dim: 20, value: -2.0 },
+            OutlierValue {
+                dim: 10,
+                value: 1.5,
+            },
+            OutlierValue {
+                dim: 20,
+                value: -2.0,
+            },
             OutlierValue { dim: 5, value: 0.5 },
         ];
-        
+
         let storage = OutlierStorage::from_entries(&entries, 768);
-        
+
         assert_eq!(storage.len(), 3);
         assert!(storage.contains(5));
         assert!(storage.contains(10));
         assert!(storage.contains(20));
         assert!(!storage.contains(15));
-        
+
         assert_eq!(storage.get(5), Some(0.5));
         assert_eq!(storage.get(10), Some(1.5));
         assert_eq!(storage.get(20), Some(-2.0));
@@ -578,9 +582,9 @@ mod tests {
         ];
         let storage = OutlierStorage::from_entries(&entries, 768);
         let lookup = BatchOutlierLookup::new(&storage);
-        
+
         let (is_outlier, values) = lookup.lookup_4([0, 1, 2, 3]);
-        
+
         assert_eq!(is_outlier, [true, false, true, false]);
         assert_eq!(values[0], 1.0);
         assert_eq!(values[1], 0.0);
@@ -592,7 +596,7 @@ mod tests {
     fn test_outlier_iteration() {
         let dims = vec![5, 10, 100];
         let set = OutlierSet::from_dims(&dims, 768);
-        
+
         let collected: Vec<u16> = set.iter().collect();
         assert_eq!(collected, vec![5, 10, 100]);
     }
@@ -601,7 +605,7 @@ mod tests {
     fn test_dense_iteration() {
         let dims: Vec<u16> = (0..100).collect();
         let set = OutlierSet::from_dims(&dims, 768);
-        
+
         let collected: Vec<u16> = set.iter().collect();
         assert_eq!(collected.len(), 100);
         assert_eq!(collected[0], 0);
@@ -614,7 +618,7 @@ mod tests {
         let sparse_dims: Vec<u16> = (0..40).collect(); // ~5% for D=768
         let sparse_set = OutlierSet::from_dims(&sparse_dims, 768);
         assert!(!sparse_set.is_dense());
-        
+
         // Above threshold: should be dense
         let dense_dims: Vec<u16> = (0..60).collect(); // ~8% for D=768
         let dense_set = OutlierSet::from_dims(&dense_dims, 768);
@@ -624,12 +628,12 @@ mod tests {
     #[test]
     fn test_memory_efficiency() {
         let dimension = 768;
-        
+
         // Sparse: 10 outliers
         let sparse_dims: Vec<u16> = (0..10).collect();
         let sparse_set = OutlierSet::from_dims(&sparse_dims, dimension);
         assert!(sparse_set.memory_bytes() < 100); // ~20 bytes
-        
+
         // Dense: 100 outliers
         let dense_dims: Vec<u16> = (0..100).collect();
         let dense_set = OutlierSet::from_dims(&dense_dims, dimension);
@@ -641,7 +645,7 @@ mod tests {
     fn test_unsorted_input() {
         let dims = vec![100, 5, 50, 10, 200];
         let set = OutlierSet::from_dims(&dims, 768);
-        
+
         // Should work regardless of input order
         for &d in &dims {
             assert!(set.contains(d));
@@ -652,7 +656,7 @@ mod tests {
     fn test_duplicate_dims() {
         let dims = vec![5, 5, 10, 10, 10];
         let set = OutlierSet::from_dims(&dims, 768);
-        
+
         // Should deduplicate
         assert_eq!(set.len(), 2);
         assert!(set.contains(5));

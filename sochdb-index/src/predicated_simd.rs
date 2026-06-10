@@ -52,7 +52,7 @@ pub struct SimdMask {
 impl SimdMask {
     /// All lanes active.
     pub const ALL: SimdMask = SimdMask { bits: 0x0F };
-    
+
     /// No lanes active.
     pub const NONE: SimdMask = SimdMask { bits: 0x00 };
 
@@ -119,19 +119,25 @@ impl SimdMask {
     /// AND two masks.
     #[inline]
     pub const fn and(self, other: Self) -> Self {
-        Self { bits: self.bits & other.bits }
+        Self {
+            bits: self.bits & other.bits,
+        }
     }
 
     /// OR two masks.
     #[inline]
     pub const fn or(self, other: Self) -> Self {
-        Self { bits: self.bits | other.bits }
+        Self {
+            bits: self.bits | other.bits,
+        }
     }
 
     /// NOT mask.
     #[inline]
     pub const fn not(self) -> Self {
-        Self { bits: (!self.bits) & 0x0F }
+        Self {
+            bits: (!self.bits) & 0x0F,
+        }
     }
 }
 
@@ -188,9 +194,9 @@ impl PredicatedSimd {
         let va = _mm_loadu_ps(a.as_ptr());
         let vb = _mm_loadu_ps(b.as_ptr());
         let vm = _mm_loadu_si128(mask_expanded.as_ptr() as *const __m128i);
-        
+
         let result = _mm_blendv_ps(va, vb, _mm_castsi128_ps(vm));
-        
+
         let mut out = [0.0f32; 4];
         _mm_storeu_ps(out.as_mut_ptr(), result);
         out
@@ -255,7 +261,12 @@ impl PredicatedSimd {
             return unsafe { Self::min_neon(a, b) };
         }
 
-        [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2]), a[3].min(b[3])]
+        [
+            a[0].min(b[0]),
+            a[1].min(b[1]),
+            a[2].min(b[2]),
+            a[3].min(b[3]),
+        ]
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -302,7 +313,12 @@ impl PredicatedSimd {
             return unsafe { Self::max_neon(a, b) };
         }
 
-        [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2]), a[3].max(b[3])]
+        [
+            a[0].max(b[0]),
+            a[1].max(b[1]),
+            a[2].max(b[2]),
+            a[3].max(b[3]),
+        ]
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -387,10 +403,10 @@ impl PredicatedSimd {
         new_indices: [u32; 4],
     ) -> SimdMask {
         let mask = Self::cmp_lt(new_distances, *distances);
-        
+
         if mask.any() {
             *distances = Self::blend(*distances, new_distances, mask);
-            
+
             // Update indices using mask
             for i in 0..4 {
                 if mask.is_active(i) {
@@ -398,17 +414,14 @@ impl PredicatedSimd {
                 }
             }
         }
-        
+
         mask
     }
 
     /// Batch distance comparison with threshold.
     /// Returns mask of lanes where distance < threshold.
     #[inline]
-    pub fn filter_by_distance(
-        distances: [f32; 4],
-        threshold: f32,
-    ) -> SimdMask {
+    pub fn filter_by_distance(distances: [f32; 4], threshold: f32) -> SimdMask {
         Self::cmp_lt_scalar(distances, threshold)
     }
 
@@ -417,14 +430,14 @@ impl PredicatedSimd {
     pub fn compact(values: [f32; 4], indices: [u32; 4], mask: SimdMask) -> (Vec<f32>, Vec<u32>) {
         let mut compact_vals = Vec::with_capacity(4);
         let mut compact_idxs = Vec::with_capacity(4);
-        
+
         for i in 0..4 {
             if mask.is_active(i) {
                 compact_vals.push(values[i]);
                 compact_idxs.push(indices[i]);
             }
         }
-        
+
         (compact_vals, compact_idxs)
     }
 }
@@ -564,7 +577,7 @@ mod tests {
     #[test]
     fn test_mask_basic() {
         let mask = SimdMask::from_bits(0b1010);
-        
+
         assert!(!mask.is_active(0));
         assert!(mask.is_active(1));
         assert!(!mask.is_active(2));
@@ -576,9 +589,9 @@ mod tests {
     fn test_mask_from_cmp() {
         let a = [1.0, 5.0, 3.0, 7.0];
         let b = [2.0, 4.0, 4.0, 6.0];
-        
+
         let mask = SimdMask::from_cmp_lt(a, b);
-        
+
         assert!(mask.is_active(0)); // 1 < 2
         assert!(!mask.is_active(1)); // 5 > 4
         assert!(mask.is_active(2)); // 3 < 4
@@ -590,23 +603,23 @@ mod tests {
         let a = [1.0, 2.0, 3.0, 4.0];
         let b = [10.0, 20.0, 30.0, 40.0];
         let mask = SimdMask::from_bits(0b0101);
-        
+
         let result = PredicatedSimd::blend(a, b, mask);
-        
+
         assert_eq!(result[0], 10.0); // mask[0] = 1, use b
-        assert_eq!(result[1], 2.0);  // mask[1] = 0, use a
+        assert_eq!(result[1], 2.0); // mask[1] = 0, use a
         assert_eq!(result[2], 30.0); // mask[2] = 1, use b
-        assert_eq!(result[3], 4.0);  // mask[3] = 0, use a
+        assert_eq!(result[3], 4.0); // mask[3] = 0, use a
     }
 
     #[test]
     fn test_min_max() {
         let a = [1.0, 5.0, 3.0, 7.0];
         let b = [2.0, 4.0, 4.0, 6.0];
-        
+
         let min_result = PredicatedSimd::min(a, b);
         let max_result = PredicatedSimd::max(a, b);
-        
+
         assert_eq!(min_result, [1.0, 4.0, 3.0, 6.0]);
         assert_eq!(max_result, [2.0, 5.0, 4.0, 7.0]);
     }
@@ -616,9 +629,9 @@ mod tests {
         let a = [5.0, 5.0, 5.0, 5.0];
         let b = [1.0, 2.0, 3.0, 4.0];
         let mask = SimdMask::from_bits(0b0110); // Only lanes 1 and 2
-        
+
         let result = PredicatedSimd::min_pred(a, b, mask);
-        
+
         assert_eq!(result[0], 5.0); // mask[0] = 0, keep a
         assert_eq!(result[1], 2.0); // mask[1] = 1, min(5, 2) = 2
         assert_eq!(result[2], 3.0); // mask[2] = 1, min(5, 3) = 3
@@ -629,9 +642,9 @@ mod tests {
     fn test_horizontal_min_masked() {
         let v = [10.0, 1.0, 100.0, 5.0];
         let mask = SimdMask::from_bits(0b1001); // Only lanes 0 and 3
-        
+
         let min = PredicatedSimd::horizontal_min_masked(v, mask);
-        
+
         assert_eq!(min, 5.0); // min(10.0, 5.0)
     }
 
@@ -639,9 +652,9 @@ mod tests {
     fn test_argmin_masked() {
         let v = [10.0, 1.0, 100.0, 5.0];
         let mask = SimdMask::from_bits(0b1101); // Lanes 0, 2, 3 (not 1)
-        
+
         let idx = PredicatedSimd::argmin_masked(v, mask);
-        
+
         assert_eq!(idx, Some(3)); // Lane 3 has 5.0, smallest among active
     }
 
@@ -651,20 +664,20 @@ mod tests {
         let mut indices = [0u32, 1, 2, 3];
         let new_distances = [5.0, 25.0, 15.0, 35.0];
         let new_indices = [100u32, 101, 102, 103];
-        
+
         let mask = PredicatedSimd::update_best_candidates(
             &mut distances,
             &mut indices,
             new_distances,
             new_indices,
         );
-        
+
         // 5 < 10, 25 > 20, 15 < 30, 35 < 40
         assert!(mask.is_active(0));
         assert!(!mask.is_active(1));
         assert!(mask.is_active(2));
         assert!(mask.is_active(3));
-        
+
         assert_eq!(distances, [5.0, 20.0, 15.0, 35.0]);
         assert_eq!(indices, [100, 1, 102, 103]);
     }
@@ -674,9 +687,9 @@ mod tests {
         let values = [1.0, 2.0, 3.0, 4.0];
         let indices = [10u32, 20, 30, 40];
         let mask = SimdMask::from_bits(0b1010); // Lanes 1 and 3
-        
+
         let (compact_vals, compact_idxs) = PredicatedSimd::compact(values, indices, mask);
-        
+
         assert_eq!(compact_vals, vec![2.0, 4.0]);
         assert_eq!(compact_idxs, vec![20, 40]);
     }
@@ -686,9 +699,9 @@ mod tests {
         let a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let b = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0];
         let mask = 0b10101010u8; // Lanes 1, 3, 5, 7
-        
+
         let result = PredicatedSimd8::blend(a, b, mask);
-        
+
         assert_eq!(result, [1.0, 20.0, 3.0, 40.0, 5.0, 60.0, 7.0, 80.0]);
     }
 
@@ -696,9 +709,9 @@ mod tests {
     fn test_simd8_cmp_lt() {
         let a = [1.0, 5.0, 3.0, 7.0, 2.0, 8.0, 4.0, 9.0];
         let b = [2.0, 4.0, 4.0, 6.0, 3.0, 7.0, 5.0, 8.0];
-        
+
         let mask = PredicatedSimd8::cmp_lt(a, b);
-        
+
         // a[i] < b[i]: 1<2, 5>4, 3<4, 7>6, 2<3, 8>7, 4<5, 9>8
         assert_eq!(mask, 0b01010101);
     }
@@ -707,9 +720,9 @@ mod tests {
     fn test_filter_by_distance() {
         let distances = [0.5, 1.5, 0.3, 2.0];
         let threshold = 1.0;
-        
+
         let mask = PredicatedSimd::filter_by_distance(distances, threshold);
-        
+
         assert!(mask.is_active(0)); // 0.5 < 1.0
         assert!(!mask.is_active(1)); // 1.5 > 1.0
         assert!(mask.is_active(2)); // 0.3 < 1.0

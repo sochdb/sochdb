@@ -73,16 +73,18 @@ pub struct PostingSet {
 impl PostingSet {
     /// Create a new empty posting set
     pub fn new() -> Self {
-        Self { doc_ids: Vec::new() }
+        Self {
+            doc_ids: Vec::new(),
+        }
     }
-    
+
     /// Create from a vec of doc IDs
     pub fn from_vec(mut ids: Vec<u64>) -> Self {
         ids.sort_unstable();
         ids.dedup();
         Self { doc_ids: ids }
     }
-    
+
     /// Add a document ID
     pub fn add(&mut self, doc_id: u64) {
         // Maintain sorted order
@@ -91,29 +93,29 @@ impl PostingSet {
             Err(pos) => self.doc_ids.insert(pos, doc_id),
         }
     }
-    
+
     /// Remove a document ID
     pub fn remove(&mut self, doc_id: u64) {
         if let Ok(pos) = self.doc_ids.binary_search(&doc_id) {
             self.doc_ids.remove(pos);
         }
     }
-    
+
     /// Check if contains a doc ID
     pub fn contains(&self, doc_id: u64) -> bool {
         self.doc_ids.binary_search(&doc_id).is_ok()
     }
-    
+
     /// Get count
     pub fn len(&self) -> usize {
         self.doc_ids.len()
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.doc_ids.is_empty()
     }
-    
+
     /// Convert to AllowedSet
     pub fn to_allowed_set(&self) -> AllowedSet {
         if self.doc_ids.is_empty() {
@@ -122,13 +124,13 @@ impl PostingSet {
             AllowedSet::from_sorted_vec(self.doc_ids.clone())
         }
     }
-    
+
     /// Intersect with another posting set
     pub fn intersect(&self, other: &PostingSet) -> PostingSet {
         let mut result = Vec::with_capacity(self.doc_ids.len().min(other.doc_ids.len()));
         let mut i = 0;
         let mut j = 0;
-        
+
         while i < self.doc_ids.len() && j < other.doc_ids.len() {
             match self.doc_ids[i].cmp(&other.doc_ids[j]) {
                 std::cmp::Ordering::Less => i += 1,
@@ -140,16 +142,16 @@ impl PostingSet {
                 }
             }
         }
-        
+
         PostingSet { doc_ids: result }
     }
-    
+
     /// Union with another posting set
     pub fn union(&self, other: &PostingSet) -> PostingSet {
         let mut result = Vec::with_capacity(self.doc_ids.len() + other.doc_ids.len());
         let mut i = 0;
         let mut j = 0;
-        
+
         while i < self.doc_ids.len() && j < other.doc_ids.len() {
             match self.doc_ids[i].cmp(&other.doc_ids[j]) {
                 std::cmp::Ordering::Less => {
@@ -167,13 +169,13 @@ impl PostingSet {
                 }
             }
         }
-        
+
         result.extend_from_slice(&self.doc_ids[i..]);
         result.extend_from_slice(&other.doc_ids[j..]);
-        
+
         PostingSet { doc_ids: result }
     }
-    
+
     /// Get iterator
     pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
         self.doc_ids.iter().copied()
@@ -206,7 +208,7 @@ impl EqualityIndex {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Add a document with a string value
     pub fn add_string(&mut self, value: &str, doc_id: u64) {
         self.string_postings
@@ -214,23 +216,17 @@ impl EqualityIndex {
             .or_default()
             .add(doc_id);
     }
-    
+
     /// Add a document with an integer value
     pub fn add_int(&mut self, value: i64, doc_id: u64) {
-        self.int_postings
-            .entry(value)
-            .or_default()
-            .add(doc_id);
+        self.int_postings.entry(value).or_default().add(doc_id);
     }
-    
+
     /// Add a document with an unsigned integer value
     pub fn add_uint(&mut self, value: u64, doc_id: u64) {
-        self.uint_postings
-            .entry(value)
-            .or_default()
-            .add(doc_id);
+        self.uint_postings.entry(value).or_default().add(doc_id);
     }
-    
+
     /// Remove a document with a string value
     pub fn remove_string(&mut self, value: &str, doc_id: u64) {
         if let Some(posting) = self.string_postings.get_mut(value) {
@@ -240,7 +236,7 @@ impl EqualityIndex {
             }
         }
     }
-    
+
     /// Lookup documents with a string value
     pub fn lookup_string(&self, value: &str) -> AllowedSet {
         self.string_postings
@@ -248,7 +244,7 @@ impl EqualityIndex {
             .map(|p| p.to_allowed_set())
             .unwrap_or(AllowedSet::None)
     }
-    
+
     /// Lookup documents with an integer value
     pub fn lookup_int(&self, value: i64) -> AllowedSet {
         self.int_postings
@@ -256,7 +252,7 @@ impl EqualityIndex {
             .map(|p| p.to_allowed_set())
             .unwrap_or(AllowedSet::None)
     }
-    
+
     /// Lookup documents with a uint value
     pub fn lookup_uint(&self, value: u64) -> AllowedSet {
         self.uint_postings
@@ -264,56 +260,62 @@ impl EqualityIndex {
             .map(|p| p.to_allowed_set())
             .unwrap_or(AllowedSet::None)
     }
-    
+
     /// Lookup documents in a set of string values (OR)
     pub fn lookup_string_in(&self, values: &[String]) -> AllowedSet {
-        let sets: Vec<_> = values.iter()
+        let sets: Vec<_> = values
+            .iter()
             .filter_map(|v| self.string_postings.get(v))
             .collect();
-        
+
         if sets.is_empty() {
             return AllowedSet::None;
         }
-        
+
         // Union all posting sets
         let mut result = sets[0].clone();
         for set in &sets[1..] {
             result = result.union(set);
         }
-        
+
         result.to_allowed_set()
     }
-    
+
     /// Lookup documents in a set of uint values (OR)
     pub fn lookup_uint_in(&self, values: &[u64]) -> AllowedSet {
-        let sets: Vec<_> = values.iter()
+        let sets: Vec<_> = values
+            .iter()
             .filter_map(|v| self.uint_postings.get(v))
             .collect();
-        
+
         if sets.is_empty() {
             return AllowedSet::None;
         }
-        
+
         let mut result = sets[0].clone();
         for set in &sets[1..] {
             result = result.union(set);
         }
-        
+
         result.to_allowed_set()
     }
-    
+
     /// Get all unique values for this field
     pub fn string_values(&self) -> impl Iterator<Item = &str> {
         self.string_postings.keys().map(|s| s.as_str())
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> EqualityIndexStats {
         EqualityIndexStats {
             unique_string_values: self.string_postings.len(),
             unique_int_values: self.int_postings.len(),
             unique_uint_values: self.uint_postings.len(),
-            total_postings: self.string_postings.values().map(|p| p.len()).sum::<usize>()
+            total_postings: self
+                .string_postings
+                .values()
+                .map(|p| p.len())
+                .sum::<usize>()
                 + self.int_postings.values().map(|p| p.len()).sum::<usize>()
                 + self.uint_postings.values().map(|p| p.len()).sum::<usize>(),
         }
@@ -348,18 +350,18 @@ impl RangeIndex {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Add a document with a timestamp/value
     pub fn add(&mut self, value: i64, doc_id: u64) {
         self.entries.entry(value).or_default().add(doc_id);
         self.doc_count += 1;
     }
-    
+
     /// Add a document with an unsigned value
     pub fn add_uint(&mut self, value: u64, doc_id: u64) {
         self.add(value as i64, doc_id);
     }
-    
+
     /// Remove a document
     pub fn remove(&mut self, value: i64, doc_id: u64) {
         if let Some(posting) = self.entries.get_mut(&value) {
@@ -370,7 +372,7 @@ impl RangeIndex {
             self.doc_count -= 1;
         }
     }
-    
+
     /// Query a range [min, max] (inclusive)
     pub fn range_query(
         &self,
@@ -380,38 +382,38 @@ impl RangeIndex {
         max_inclusive: bool,
     ) -> AllowedSet {
         use std::ops::Bound;
-        
+
         let start = match min {
             Some(v) if min_inclusive => Bound::Included(v),
             Some(v) => Bound::Excluded(v),
             None => Bound::Unbounded,
         };
-        
+
         let end = match max {
             Some(v) if max_inclusive => Bound::Included(v),
             Some(v) => Bound::Excluded(v),
             None => Bound::Unbounded,
         };
-        
+
         // Collect all doc IDs in range
         let mut result = PostingSet::new();
         for (_, posting) in self.entries.range((start, end)) {
             result = result.union(posting);
         }
-        
+
         result.to_allowed_set()
     }
-    
+
     /// Query for values greater than a threshold
     pub fn greater_than(&self, value: i64, inclusive: bool) -> AllowedSet {
         self.range_query(Some(value), None, inclusive, true)
     }
-    
+
     /// Query for values less than a threshold
     pub fn less_than(&self, value: i64, inclusive: bool) -> AllowedSet {
         self.range_query(None, Some(value), true, inclusive)
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> RangeIndexStats {
         let values: Vec<_> = self.entries.keys().collect();
@@ -453,13 +455,11 @@ impl MetadataIndex {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Add an equality field value
     pub fn add_equality(&mut self, field: &str, value: &FilterValue, doc_id: u64) {
-        let index = self.equality_indexes
-            .entry(field.to_string())
-            .or_default();
-        
+        let index = self.equality_indexes.entry(field.to_string()).or_default();
+
         match value {
             FilterValue::String(s) => index.add_string(s, doc_id),
             FilterValue::Int64(i) => index.add_int(*i, doc_id),
@@ -467,7 +467,7 @@ impl MetadataIndex {
             _ => {} // Ignore other types
         }
     }
-    
+
     /// Add a string equality field
     pub fn add_string(&mut self, field: &str, value: &str, doc_id: u64) {
         self.equality_indexes
@@ -475,7 +475,7 @@ impl MetadataIndex {
             .or_default()
             .add_string(value, doc_id);
     }
-    
+
     /// Add a range field value (for time, scores, etc.)
     pub fn add_range(&mut self, field: &str, value: i64, doc_id: u64) {
         self.range_indexes
@@ -483,27 +483,27 @@ impl MetadataIndex {
             .or_default()
             .add(value, doc_id);
     }
-    
+
     /// Add a timestamp (convenience for u64 timestamps)
     pub fn add_timestamp(&mut self, field: &str, timestamp: u64, doc_id: u64) {
         self.add_range(field, timestamp as i64, doc_id);
     }
-    
+
     /// Update document count
     pub fn set_doc_count(&mut self, count: usize) {
         self.doc_count = count;
     }
-    
+
     /// Increment document count
     pub fn inc_doc_count(&mut self) {
         self.doc_count += 1;
     }
-    
+
     /// Get document count
     pub fn doc_count(&self) -> usize {
         self.doc_count
     }
-    
+
     /// Evaluate a filter atom
     pub fn evaluate_atom(&self, atom: &FilterAtom) -> AllowedSet {
         match atom {
@@ -519,37 +519,45 @@ impl MetadataIndex {
                     AllowedSet::All // No index, can't filter
                 }
             }
-            
+
             FilterAtom::In { field, values } => {
                 if let Some(index) = self.equality_indexes.get(field) {
                     // Check if all values are strings
-                    let strings: Vec<String> = values.iter()
+                    let strings: Vec<String> = values
+                        .iter()
                         .filter_map(|v| match v {
                             FilterValue::String(s) => Some(s.clone()),
                             _ => None,
                         })
                         .collect();
-                    
+
                     if strings.len() == values.len() {
                         return index.lookup_string_in(&strings);
                     }
-                    
+
                     // Check if all values are uints
-                    let uints: Vec<u64> = values.iter()
+                    let uints: Vec<u64> = values
+                        .iter()
                         .filter_map(|v| match v {
                             FilterValue::Uint64(u) => Some(*u),
                             _ => None,
                         })
                         .collect();
-                    
+
                     if uints.len() == values.len() {
                         return index.lookup_uint_in(&uints);
                     }
                 }
                 AllowedSet::All // Can't evaluate with index
             }
-            
-            FilterAtom::Range { field, min, max, min_inclusive, max_inclusive } => {
+
+            FilterAtom::Range {
+                field,
+                min,
+                max,
+                min_inclusive,
+                max_inclusive,
+            } => {
                 if let Some(index) = self.range_indexes.get(field) {
                     let min_val = min.as_ref().and_then(|v| match v {
                         FilterValue::Int64(i) => Some(*i),
@@ -561,21 +569,21 @@ impl MetadataIndex {
                         FilterValue::Uint64(u) => Some(*u as i64),
                         _ => None,
                     });
-                    
+
                     index.range_query(min_val, max_val, *min_inclusive, *max_inclusive)
                 } else {
                     AllowedSet::All
                 }
             }
-            
+
             FilterAtom::True => AllowedSet::All,
             FilterAtom::False => AllowedSet::None,
-            
+
             // Other atoms fall through to All (post-filter if needed)
             _ => AllowedSet::All,
         }
     }
-    
+
     /// Evaluate a complete filter IR
     ///
     /// This is the main entry point for computing AllowedSet from FilterIR.
@@ -586,53 +594,53 @@ impl MetadataIndex {
         if filter.is_none() {
             return AllowedSet::None;
         }
-        
+
         // Start with All, intersect with each clause
         let mut result = AllowedSet::All;
-        
+
         for clause in &filter.clauses {
             // Evaluate disjunction: OR of atoms
             let clause_result = self.evaluate_disjunction(clause);
-            
+
             // Intersect with running result (AND of clauses)
             result = result.intersect(&clause_result);
-            
+
             // Short-circuit if empty
             if result.is_empty() {
                 return AllowedSet::None;
             }
         }
-        
+
         result
     }
-    
+
     /// Evaluate a disjunction (OR of atoms)
     fn evaluate_disjunction(&self, clause: &crate::filter_ir::Disjunction) -> AllowedSet {
         if clause.atoms.len() == 1 {
             return self.evaluate_atom(&clause.atoms[0]);
         }
-        
+
         // Union all atom results
         let mut result = AllowedSet::None;
         for atom in &clause.atoms {
             let atom_result = self.evaluate_atom(atom);
             result = result.union(&atom_result);
-            
+
             // Short-circuit if All
             if result.is_all() {
                 return AllowedSet::All;
             }
         }
-        
+
         result
     }
-    
+
     /// Get selectivity estimate for a filter
     pub fn estimate_selectivity(&self, filter: &FilterIR) -> f64 {
         if self.doc_count == 0 {
             return 1.0;
         }
-        
+
         let allowed = self.evaluate(filter);
         allowed.selectivity(self.doc_count)
     }
@@ -654,22 +662,25 @@ impl ConcurrentMetadataIndex {
             inner: RwLock::new(MetadataIndex::new()),
         }
     }
-    
+
     /// Add a string field
     pub fn add_string(&self, field: &str, value: &str, doc_id: u64) {
         self.inner.write().unwrap().add_string(field, value, doc_id);
     }
-    
+
     /// Add a timestamp
     pub fn add_timestamp(&self, field: &str, timestamp: u64, doc_id: u64) {
-        self.inner.write().unwrap().add_timestamp(field, timestamp, doc_id);
+        self.inner
+            .write()
+            .unwrap()
+            .add_timestamp(field, timestamp, doc_id);
     }
-    
+
     /// Evaluate a filter
     pub fn evaluate(&self, filter: &FilterIR) -> AllowedSet {
         self.inner.read().unwrap().evaluate(filter)
     }
-    
+
     /// Update document count
     pub fn set_doc_count(&self, count: usize) {
         self.inner.write().unwrap().set_doc_count(count);
@@ -690,50 +701,50 @@ impl Default for ConcurrentMetadataIndex {
 mod tests {
     use super::*;
     use crate::filter_ir::FilterBuilder;
-    
+
     #[test]
     fn test_posting_set_basic() {
         let mut ps = PostingSet::new();
         ps.add(1);
         ps.add(5);
         ps.add(3);
-        
+
         assert!(ps.contains(1));
         assert!(ps.contains(3));
         assert!(ps.contains(5));
         assert!(!ps.contains(2));
         assert_eq!(ps.len(), 3);
     }
-    
+
     #[test]
     fn test_posting_set_intersection() {
         let a = PostingSet::from_vec(vec![1, 2, 3, 4, 5]);
         let b = PostingSet::from_vec(vec![3, 4, 5, 6, 7]);
-        
+
         let c = a.intersect(&b);
         assert_eq!(c.len(), 3);
         assert!(c.contains(3));
         assert!(c.contains(4));
         assert!(c.contains(5));
     }
-    
+
     #[test]
     fn test_equality_index() {
         let mut idx = EqualityIndex::new();
         idx.add_string("production", 1);
         idx.add_string("production", 2);
         idx.add_string("staging", 3);
-        
+
         let result = idx.lookup_string("production");
         assert_eq!(result.cardinality(), Some(2));
-        
+
         let result2 = idx.lookup_string("staging");
         assert_eq!(result2.cardinality(), Some(1));
-        
+
         let result3 = idx.lookup_string("dev");
         assert!(result3.is_empty());
     }
-    
+
     #[test]
     fn test_range_index() {
         let mut idx = RangeIndex::new();
@@ -742,24 +753,24 @@ mod tests {
         idx.add(300, 3);
         idx.add(400, 4);
         idx.add(500, 5);
-        
+
         // Range [200, 400]
         let result = idx.range_query(Some(200), Some(400), true, true);
         assert_eq!(result.cardinality(), Some(3));
-        
+
         // Greater than 300
         let result2 = idx.greater_than(300, false);
         assert_eq!(result2.cardinality(), Some(2));
-        
+
         // Less than 300
         let result3 = idx.less_than(300, true);
         assert_eq!(result3.cardinality(), Some(3));
     }
-    
+
     #[test]
     fn test_metadata_index_evaluation() {
         let mut idx = MetadataIndex::new();
-        
+
         // Add documents
         for i in 0..10 {
             idx.add_string("namespace", "production", i);
@@ -770,42 +781,40 @@ mod tests {
             idx.add_timestamp("created_at", 1000 + i * 100, i);
         }
         idx.set_doc_count(20);
-        
+
         // Filter: namespace = production
-        let filter = FilterBuilder::new()
-            .namespace("production")
-            .build();
-        
+        let filter = FilterBuilder::new().namespace("production").build();
+
         let result = idx.evaluate(&filter);
         assert_eq!(result.cardinality(), Some(10));
-        
+
         // Filter: namespace = production AND created_at >= 1500
         let filter2 = FilterBuilder::new()
             .namespace("production")
             .gte("created_at", 1500i64)
             .build();
-        
+
         let result2 = idx.evaluate(&filter2);
         // Docs 5-9 have timestamps 1500-1900
         assert_eq!(result2.cardinality(), Some(5));
     }
-    
+
     #[test]
     fn test_selectivity_estimate() {
         let mut idx = MetadataIndex::new();
-        
+
         for i in 0..100 {
             let ns = if i % 10 == 0 { "rare" } else { "common" };
             idx.add_string("namespace", ns, i);
         }
         idx.set_doc_count(100);
-        
+
         let common_filter = FilterBuilder::new().namespace("common").build();
         let rare_filter = FilterBuilder::new().namespace("rare").build();
-        
+
         let common_selectivity = idx.estimate_selectivity(&common_filter);
         let rare_selectivity = idx.estimate_selectivity(&rare_filter);
-        
+
         assert!(common_selectivity > rare_selectivity);
         assert!((common_selectivity - 0.9).abs() < 0.01);
         assert!((rare_selectivity - 0.1).abs() < 0.01);

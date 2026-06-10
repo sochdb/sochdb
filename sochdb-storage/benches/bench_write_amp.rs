@@ -34,10 +34,10 @@ mod measurement_harness;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use measurement_harness::{generate_key, generate_value};
+use sochdb_storage::{DurableStorage, TransactionMode};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
-use sochdb_storage::{DurableStorage, TransactionMode};
 
 /// Calculate total size of files in a directory recursively
 fn dir_size(path: &Path) -> u64 {
@@ -202,7 +202,8 @@ fn bench_write_amp_updates(c: &mut Criterion) {
 
                         // Update rounds
                         for round in 0..update_rounds {
-                            let txn_id = storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
+                            let txn_id =
+                                storage.begin_with_mode(TransactionMode::WriteOnly).unwrap();
                             for i in 0..dataset_size {
                                 let key = generate_key(i, key_size);
                                 let value = generate_value(i, value_size, round as u64 + 100);

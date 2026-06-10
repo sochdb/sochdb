@@ -96,11 +96,11 @@ pub struct DatabaseConfig {
     pub sync_mode: SyncMode,
     /// Read-only mode
     pub read_only: bool,
-    
+
     /// Enable ordered index for O(log N) prefix scans
     ///
     /// # Deprecation Notice
-    /// 
+    ///
     /// **DEPRECATED since 0.2.0**: Use `default_index_policy` instead for per-table control.
     /// This field will be removed in v0.3.0.
     ///
@@ -122,7 +122,7 @@ pub struct DatabaseConfig {
     ///
     /// When false, saves ~134 ns/op on writes (20% speedup)
     /// but scan_prefix becomes O(N) instead of O(log N + K).
-    /// 
+    ///
     /// Set to false for write-heavy workloads without range scans.
     #[deprecated(
         since = "0.2.0",
@@ -295,7 +295,7 @@ impl DatabaseConfig {
     }
 
     /// Get effective ordered index setting, derived from `default_index_policy`.
-    /// 
+    ///
     /// This is the shim method for the deprecated `enable_ordered_index` field.
     /// It returns `true` if the policy requires an ordered index (ScanOptimized),
     /// and `false` otherwise (WriteOptimized, Balanced, AppendOnly).
@@ -1108,7 +1108,10 @@ impl Database {
 
         // Open storage WITHOUT exclusive lock (concurrent MVCC handles coordination)
         // We use a special internal method that skips the file lock
-        let storage = Arc::new(DurableStorage::open_for_concurrent(&path, config.default_index_policy)?);
+        let storage = Arc::new(DurableStorage::open_for_concurrent(
+            &path,
+            config.default_index_policy,
+        )?);
 
         // Propagate sync_mode from config to storage engine
         storage.set_sync_mode(config.sync_mode as u64);
@@ -1130,7 +1133,8 @@ impl Database {
             stats: DatabaseStats::new(),
             shutdown: AtomicU64::new(0),
             is_concurrent: true,
-            cdc_log: None,        });
+            cdc_log: None,
+        });
 
         // Perform crash recovery if needed
         db.recover()?;
@@ -1336,9 +1340,8 @@ impl Database {
     /// db.set_table_index_policy("users", IndexPolicy::Balanced);
     /// ```
     pub fn set_table_index_policy(&self, table: &str, policy: IndexPolicy) {
-        self.index_registry.configure_table(
-            TableIndexConfig::new(table, policy)
-        );
+        self.index_registry
+            .configure_table(TableIndexConfig::new(table, policy));
     }
 
     /// Get the index policy for a table
@@ -1395,10 +1398,7 @@ impl Database {
     /// db.put_batch(txn, &writes)?;
     /// ```
     pub fn put_batch(&self, txn: TxnHandle, writes: &[(&[u8], &[u8])]) -> Result<()> {
-        let bytes: u64 = writes
-            .iter()
-            .map(|(k, v)| (k.len() + v.len()) as u64)
-            .sum();
+        let bytes: u64 = writes.iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
         self.stats.bytes_written.fetch_add(bytes, Ordering::Relaxed);
 
         // In concurrent mode, acquire cross-process writer lock
@@ -1434,7 +1434,7 @@ impl Database {
     /// Scan keys with a prefix (enforces minimum prefix length for safety).
     ///
     /// # Prefix Safety
-    /// 
+    ///
     /// To prevent accidental full-table scans, this method requires a minimum
     /// prefix length of 2 bytes. Use `scan_unchecked` for internal operations
     /// that need empty/short prefixes.
@@ -1488,19 +1488,19 @@ impl Database {
     }
 
     /// Streaming scan for very large result sets
-    /// 
+    ///
     /// Returns an iterator that yields (key, value) pairs without
     /// materializing the entire result set. Use this for large scans
     /// where memory efficiency is important.
-    /// 
+    ///
     /// ## Performance
-    /// 
+    ///
     /// - Memory: O(1) per iteration vs O(N) for scan_range
     /// - Latency: First result available immediately vs waiting for all results
     /// - Throughput: Slightly lower due to per-item overhead
-    /// 
+    ///
     /// ## Usage
-    /// 
+    ///
     /// ```ignore
     /// for result in db.scan_range_iter(txn, b"start", b"end") {
     ///     let (key, value) = result?;
@@ -1517,10 +1517,9 @@ impl Database {
         self.storage
             .scan_range_iter(txn.txn_id, start, end)
             .map(move |item| {
-                stats.bytes_read.fetch_add(
-                    (item.0.len() + item.1.len()) as u64,
-                    Ordering::Relaxed,
-                );
+                stats
+                    .bytes_read
+                    .fetch_add((item.0.len() + item.1.len()) as u64, Ordering::Relaxed);
                 Ok(item)
             })
     }
@@ -1983,8 +1982,24 @@ impl<'a> QueryBuilder<'a> {
             .unwrap_or(&self.path_prefix);
         let schema = self.db.tables.get(table_name).map(|s| s.clone());
 
+        // When querying a registered table by its bare name, scan the row-key
+        // prefix "table/" rather than the bare name. Row keys are "table/row_id"
+        // (see KeyBuffer::format_row_key), so scanning the bare name would:
+        //   (1) bleed across sibling tables whose names share a prefix — e.g.
+        //       querying "user" would also match "users/123"; and
+        //   (2) trip the scan minimum-prefix guard for single-character table
+        //       names ("t" is 1 byte, below the 2-byte minimum).
+        // Appending the separator fixes both. Path-style prefixes that already
+        // contain '/' (e.g. "users/123" to fetch one row's columns) are left
+        // unchanged so field-prefix scans keep working.
+        let scan_prefix = if schema.is_some() && !self.path_prefix.contains('/') {
+            format!("{}/", self.path_prefix)
+        } else {
+            self.path_prefix.clone()
+        };
+
         // Scan the path prefix
-        let results = self.db.scan_path(self.txn, &self.path_prefix)?;
+        let results = self.db.scan_path(self.txn, &scan_prefix)?;
 
         let mut rows: Vec<HashMap<String, SochValue>> = Vec::new();
         let mut bytes_read = 0usize;
@@ -2739,6 +2754,69 @@ mod tests {
         assert_eq!(row.get("name"), Some(&SochValue::Text("Alice".to_string())));
 
         db.abort(txn2).unwrap();
+    }
+
+    #[test]
+    fn test_query_does_not_bleed_across_prefix_sibling_tables() {
+        // Regression: row keys are "table/row_id", so a bare-name prefix scan of
+        // "user" used to also match "users/..." (cross-table bleed), and a
+        // single-character table name like "t" tripped the 2-byte scan guard.
+        // Querying a registered table by name must scan exactly "table/".
+        let dir = tempdir().unwrap();
+        let db = Database::open(dir.path()).unwrap();
+
+        let col = || ColumnDef {
+            name: "name".to_string(),
+            col_type: ColumnType::Text,
+            nullable: false,
+        };
+
+        // Two sibling tables whose names share a prefix, plus a 1-char table.
+        for table in ["user", "users", "t"] {
+            db.register_table(TableSchema {
+                name: table.to_string(),
+                columns: vec![col()],
+            })
+            .unwrap();
+        }
+
+        let txn = db.begin_transaction().unwrap();
+        let mut v_user = HashMap::new();
+        v_user.insert("name".to_string(), SochValue::Text("in_user".to_string()));
+        db.insert_row(txn, "user", 1, &v_user).unwrap();
+
+        let mut v_users = HashMap::new();
+        v_users.insert("name".to_string(), SochValue::Text("in_users".to_string()));
+        db.insert_row(txn, "users", 1, &v_users).unwrap();
+        db.insert_row(txn, "users", 2, &v_users).unwrap();
+
+        let mut v_t = HashMap::new();
+        v_t.insert("name".to_string(), SochValue::Text("in_t".to_string()));
+        db.insert_row(txn, "t", 1, &v_t).unwrap();
+        db.commit(txn).unwrap();
+
+        // "user" must return exactly its one row — no bleed from "users".
+        let txn_r = db.begin_read_only_fast();
+        let user_rows = db.query(txn_r, "user").execute().unwrap().rows;
+        assert_eq!(user_rows.len(), 1, "querying 'user' bled into 'users'");
+        assert_eq!(
+            user_rows[0].get("name"),
+            Some(&SochValue::Text("in_user".to_string()))
+        );
+
+        // "users" must return its two rows.
+        let users_rows = db.query(txn_r, "users").execute().unwrap().rows;
+        assert_eq!(users_rows.len(), 2);
+
+        // Single-character table name must be queryable (was rejected by the
+        // 2-byte scan guard before the "table/" prefix fix).
+        let t_rows = db.query(txn_r, "t").execute().unwrap().rows;
+        assert_eq!(t_rows.len(), 1);
+        assert_eq!(
+            t_rows[0].get("name"),
+            Some(&SochValue::Text("in_t".to_string()))
+        );
+        db.abort_read_only_fast(txn_r);
     }
 
     #[test]

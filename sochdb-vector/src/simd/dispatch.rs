@@ -57,18 +57,18 @@ impl CpuFeatures {
         {
             Self::detect_x86()
         }
-        
+
         #[cfg(target_arch = "aarch64")]
         {
             Self::detect_arm()
         }
-        
+
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             Self::default()
         }
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     fn detect_x86() -> Self {
         Self {
@@ -82,7 +82,7 @@ impl CpuFeatures {
             has_dotprod: false,
         }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     fn detect_arm() -> Self {
         // NEON is mandatory on aarch64
@@ -99,7 +99,7 @@ impl CpuFeatures {
             has_dotprod: cfg!(target_feature = "dotprod"),
         }
     }
-    
+
     /// Get the best SIMD level available.
     pub fn best_level(&self) -> SimdLevel {
         if self.has_avx512f && self.has_avx512bw {
@@ -114,7 +114,7 @@ impl CpuFeatures {
             SimdLevel::Scalar
         }
     }
-    
+
     /// Check if any SIMD acceleration is available.
     pub fn has_simd(&self) -> bool {
         self.has_avx2 || self.has_neon || self.has_sse4_1
@@ -148,7 +148,7 @@ impl SimdLevel {
             SimdLevel::Avx512 => 64,
         }
     }
-    
+
     /// Elements per SIMD register for u64 operations.
     pub const fn u64_width(self) -> usize {
         match self {
@@ -159,7 +159,7 @@ impl SimdLevel {
             SimdLevel::Avx512 => 8,
         }
     }
-    
+
     /// Elements per SIMD register for f32 operations.
     pub const fn f32_width(self) -> usize {
         match self {
@@ -170,7 +170,7 @@ impl SimdLevel {
             SimdLevel::Avx512 => 16,
         }
     }
-    
+
     /// Register width in bits.
     pub const fn width_bits(self) -> usize {
         match self {
@@ -181,12 +181,12 @@ impl SimdLevel {
             SimdLevel::Avx512 => 512,
         }
     }
-    
+
     /// Theoretical speedup factor over scalar for byte operations.
     pub const fn speedup_factor(self) -> usize {
         self.u8_width()
     }
-    
+
     /// Human-readable name.
     pub const fn name(self) -> &'static str {
         match self {
@@ -230,13 +230,13 @@ pub fn simd_available() -> bool {
 pub fn dispatch_info() -> String {
     let features = cpu_features();
     let level = features.best_level();
-    
+
     let mut info = format!(
         "SIMD Level: {} ({}-bit)\n",
         level.name(),
         level.width_bits()
     );
-    
+
     #[cfg(target_arch = "x86_64")]
     {
         info.push_str(&format!("  SSE4.1: {}\n", features.has_sse4_1));
@@ -245,33 +245,33 @@ pub fn dispatch_info() -> String {
         info.push_str(&format!("  AVX-512BW: {}\n", features.has_avx512bw));
         info.push_str(&format!("  VNNI: {}\n", features.has_vnni));
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     {
         info.push_str(&format!("  NEON: {}\n", features.has_neon));
         info.push_str(&format!("  SVE: {}\n", features.has_sve));
         info.push_str(&format!("  DOTPROD: {}\n", features.has_dotprod));
     }
-    
+
     info
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_cpu_detection() {
         let features = cpu_features();
         let level = features.best_level();
-        
+
         println!("Detected SIMD level: {:?}", level);
         println!("Features: {:?}", features);
-        
+
         // At minimum, detection should work without panicking
         assert!(level >= SimdLevel::Scalar);
     }
-    
+
     #[test]
     fn test_simd_widths() {
         assert_eq!(SimdLevel::Scalar.u8_width(), 1);
@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(SimdLevel::Neon.u8_width(), 16);
         assert_eq!(SimdLevel::Avx512.u8_width(), 64);
     }
-    
+
     #[test]
     fn test_dispatch_info() {
         let info = dispatch_info();

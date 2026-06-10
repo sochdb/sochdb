@@ -114,12 +114,7 @@ pub fn node_table_prefix(namespace: &str, table: &str) -> Vec<u8> {
 /// Build an edge storage key.
 ///
 /// Format: `[0x02][ns_hash: 4B][from_key_len: 2B][from_key][et_hash: 4B][to_key_len: 2B][to_key]`
-pub fn edge_key(
-    namespace: &str,
-    from_id: &RecordId,
-    edge_type: &str,
-    to_id: &RecordId,
-) -> Vec<u8> {
+pub fn edge_key(namespace: &str, from_id: &RecordId, edge_type: &str, to_id: &RecordId) -> Vec<u8> {
     let ns_hash = fnv1a_32(namespace.as_bytes());
     let et_hash = fnv1a_32(edge_type.as_bytes());
     let from_key = from_id.to_key();
@@ -149,11 +144,7 @@ pub fn edge_from_prefix(namespace: &str, from_id: &RecordId) -> Vec<u8> {
 /// Build an edge prefix for scanning edges of a specific type from a node.
 ///
 /// Format: `[0x02][ns_hash: 4B][from_key_len: 2B][from_key][et_hash: 4B]`
-pub fn edge_from_type_prefix(
-    namespace: &str,
-    from_id: &RecordId,
-    edge_type: &str,
-) -> Vec<u8> {
+pub fn edge_from_type_prefix(namespace: &str, from_id: &RecordId, edge_type: &str) -> Vec<u8> {
     let ns_hash = fnv1a_32(namespace.as_bytes());
     let et_hash = fnv1a_32(edge_type.as_bytes());
     let from_key = from_id.to_key();
@@ -201,11 +192,7 @@ pub fn reverse_key(
 /// Build a reverse index prefix for all edges of a given type pointing to a node.
 ///
 /// Format: `[0x03][ns_hash: 4B][et_hash: 4B][to_key_len: 2B][to_key]`
-pub fn reverse_type_to_prefix(
-    namespace: &str,
-    edge_type: &str,
-    to_id: &RecordId,
-) -> Vec<u8> {
+pub fn reverse_type_to_prefix(namespace: &str, edge_type: &str, to_id: &RecordId) -> Vec<u8> {
     let ns_hash = fnv1a_32(namespace.as_bytes());
     let et_hash = fnv1a_32(edge_type.as_bytes());
     let to_key = to_id.to_key();
@@ -337,13 +324,20 @@ pub fn decode_properties(data: &[u8]) -> Option<std::collections::HashMap<String
         if offset + key_len > data.len() {
             return None;
         }
-        let key = std::str::from_utf8(&data[offset..offset + key_len]).ok()?.to_string();
+        let key = std::str::from_utf8(&data[offset..offset + key_len])
+            .ok()?
+            .to_string();
         offset += key_len;
 
         if offset + 4 > data.len() {
             return None;
         }
-        let val_len = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+        let val_len = u32::from_be_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
         if offset + val_len > data.len() {
             return None;
@@ -360,7 +354,10 @@ pub fn decode_properties(data: &[u8]) -> Option<std::collections::HashMap<String
 /// Encode a node value (node_type + properties) as binary.
 ///
 /// Format: `[type_len: u16 BE][type_utf8][properties_bytes]`
-pub fn encode_node_value(node_type: &str, props: &std::collections::HashMap<String, SochValue>) -> Vec<u8> {
+pub fn encode_node_value(
+    node_type: &str,
+    props: &std::collections::HashMap<String, SochValue>,
+) -> Vec<u8> {
     let type_bytes = node_type.as_bytes();
     let props_bytes = encode_properties(props);
     let mut buf = Vec::with_capacity(2 + type_bytes.len() + props_bytes.len());
@@ -371,7 +368,9 @@ pub fn encode_node_value(node_type: &str, props: &std::collections::HashMap<Stri
 }
 
 /// Decode a node value into (node_type, properties).
-pub fn decode_node_value(data: &[u8]) -> Option<(String, std::collections::HashMap<String, SochValue>)> {
+pub fn decode_node_value(
+    data: &[u8],
+) -> Option<(String, std::collections::HashMap<String, SochValue>)> {
     if data.len() < 2 {
         return None;
     }
@@ -379,7 +378,9 @@ pub fn decode_node_value(data: &[u8]) -> Option<(String, std::collections::HashM
     if data.len() < 2 + type_len {
         return None;
     }
-    let node_type = std::str::from_utf8(&data[2..2 + type_len]).ok()?.to_string();
+    let node_type = std::str::from_utf8(&data[2..2 + type_len])
+        .ok()?
+        .to_string();
     let props = decode_properties(&data[2 + type_len..])?;
     Some((node_type, props))
 }
@@ -403,7 +404,9 @@ pub fn encode_edge_value(
     let to_bytes = to_str.as_bytes();
     let props_bytes = encode_properties(props);
 
-    let mut buf = Vec::with_capacity(2 + et_bytes.len() + 2 + from_bytes.len() + 2 + to_bytes.len() + props_bytes.len());
+    let mut buf = Vec::with_capacity(
+        2 + et_bytes.len() + 2 + from_bytes.len() + 2 + to_bytes.len() + props_bytes.len(),
+    );
     buf.extend_from_slice(&(et_bytes.len() as u16).to_be_bytes());
     buf.extend_from_slice(et_bytes);
     buf.extend_from_slice(&(from_bytes.len() as u16).to_be_bytes());
@@ -428,27 +431,41 @@ pub fn decode_edge_value(data: &[u8]) -> Option<DecodedEdgeValue> {
     let mut offset = 0;
 
     // edge_type
-    if offset + 2 > data.len() { return None; }
+    if offset + 2 > data.len() {
+        return None;
+    }
     let et_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
     offset += 2;
-    if offset + et_len > data.len() { return None; }
-    let edge_type = std::str::from_utf8(&data[offset..offset + et_len]).ok()?.to_string();
+    if offset + et_len > data.len() {
+        return None;
+    }
+    let edge_type = std::str::from_utf8(&data[offset..offset + et_len])
+        .ok()?
+        .to_string();
     offset += et_len;
 
     // from_id
-    if offset + 2 > data.len() { return None; }
+    if offset + 2 > data.len() {
+        return None;
+    }
     let from_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
     offset += 2;
-    if offset + from_len > data.len() { return None; }
+    if offset + from_len > data.len() {
+        return None;
+    }
     let from_str = std::str::from_utf8(&data[offset..offset + from_len]).ok()?;
     let from_id = RecordId::parse(from_str)?;
     offset += from_len;
 
     // to_id
-    if offset + 2 > data.len() { return None; }
+    if offset + 2 > data.len() {
+        return None;
+    }
     let to_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
     offset += 2;
-    if offset + to_len > data.len() { return None; }
+    if offset + to_len > data.len() {
+        return None;
+    }
     let to_str = std::str::from_utf8(&data[offset..offset + to_len]).ok()?;
     let to_id = RecordId::parse(to_str)?;
     offset += to_len;
@@ -548,7 +565,10 @@ mod tests {
         let decoded = decode_properties(&encoded).unwrap();
 
         assert_eq!(decoded.len(), 3);
-        assert_eq!(decoded.get("name"), Some(&SochValue::Text("Alice".to_string())));
+        assert_eq!(
+            decoded.get("name"),
+            Some(&SochValue::Text("Alice".to_string()))
+        );
         assert_eq!(decoded.get("age"), Some(&SochValue::Int(30)));
         assert_eq!(decoded.get("active"), Some(&SochValue::Bool(true)));
     }
@@ -561,7 +581,10 @@ mod tests {
         let encoded = encode_node_value("User", &props);
         let (node_type, decoded_props) = decode_node_value(&encoded).unwrap();
         assert_eq!(node_type, "User");
-        assert_eq!(decoded_props.get("email"), Some(&SochValue::Text("a@b.com".to_string())));
+        assert_eq!(
+            decoded_props.get("email"),
+            Some(&SochValue::Text("a@b.com".to_string()))
+        );
     }
 
     #[test]
@@ -576,7 +599,10 @@ mod tests {
         assert_eq!(decoded.edge_type, "STARTED");
         assert_eq!(decoded.from_id, from);
         assert_eq!(decoded.to_id, to);
-        assert_eq!(decoded.properties.get("weight"), Some(&SochValue::Float(0.95)));
+        assert_eq!(
+            decoded.properties.get("weight"),
+            Some(&SochValue::Float(0.95))
+        );
     }
 
     #[test]

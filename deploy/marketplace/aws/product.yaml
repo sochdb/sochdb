@@ -1,0 +1,80 @@
+# AWS Marketplace — Container Product with Helm Deployment
+#
+# SochDB is published as a container product on AWS Marketplace with
+# Helm-based deployment on Amazon EKS.
+#
+# Reference: https://docs.aws.amazon.com/marketplace/latest/userguide/container-product-getting-started.html
+
+# === Prerequisites ===
+# 1. AWS Marketplace Seller account
+# 2. ECR repository for marketplace images
+# 3. AWS Marketplace Metering SDK integration (for paid plans)
+
+# === Image Publishing ===
+# Push to AWS Marketplace ECR:
+#   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <marketplace-ecr>
+#   docker tag sochdb/sochdb-grpc:latest <marketplace-ecr>/sochdb-grpc:2.0.3
+#   docker push <marketplace-ecr>/sochdb-grpc:2.0.3
+
+# === Metering Integration ===
+# For paid plans, the SochDB server integrates with AWS Marketplace Metering API:
+#   - RegisterUsage: called on container start
+#   - MeterUsage: periodic usage reporting (vectors stored, queries/hour)
+#
+# Environment variables for metering:
+#   AWS_MARKETPLACE_PRODUCT_CODE: <from-marketplace>
+#   AWS_MARKETPLACE_PUBLIC_KEY_VERSION: 1
+#   SOCHDB_METERING_ENABLED: true
+
+product:
+  title: "SochDB — LLM-Optimized Database"
+  short_description: >
+    Token-aware embedded database with vector search for LLM agents.
+  long_description: |
+    SochDB is purpose-built for LLM agent memory and RAG pipelines.
+    Features HNSW vector search, Context Queries with token budgeting,
+    multi-model API (KV, graph, SQL, vector), and Prometheus observability.
+
+    Deploys on Amazon EKS via Helm chart with StatefulSet, persistent
+    storage, NetworkPolicy, and production-ready security defaults.
+
+  categories:
+    - Databases
+    - Machine Learning
+
+  highlights:
+    - "HNSW vector search with in-graph metadata filtering"
+    - "Context Queries: token-aware result assembly for LLMs"
+    - "Multi-model: KV + Graph + SQL + Vector in one engine"
+    - "Production Helm chart: StatefulSet, PDB, NetworkPolicy"
+
+delivery:
+  helm_chart: deploy/helm/sochdb/
+  container_images:
+    - name: sochdb-grpc
+      repository: "<marketplace-ecr>/sochdb-grpc"
+      tag: "2.0.3"
+
+pricing_models:
+  - type: free
+    description: "Free tier — single node, 1M vectors"
+
+  - type: byol
+    description: "Bring your own license"
+
+  - type: hourly
+    dimensions:
+      - name: sochdb_node_hour
+        description: "SochDB node-hour"
+        unit: Hrs
+
+  - type: annual
+    dimensions:
+      - name: sochdb_node_annual
+        description: "SochDB node (annual commitment)"
+
+support:
+  url: https://sochdb.dev/support
+  email: support@sochdb.dev
+  upgrade_instructions: |
+    helm upgrade sochdb oci://<marketplace-ecr>/helm/sochdb --version <new-version>

@@ -31,8 +31,8 @@ mod measurement_harness;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use measurement_harness::{generate_key, generate_value};
-use tempfile::TempDir;
 use sochdb_storage::{DurableStorage, TransactionMode};
+use tempfile::TempDir;
 
 const DATASET_SIZE: usize = 10_000;
 const KEY_SIZE: usize = 16;

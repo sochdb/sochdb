@@ -44,12 +44,12 @@
 //! for easy integration with existing observability tooling.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ClientError, Result};
 use crate::ConnectionTrait;
+use crate::error::{ClientError, Result};
 
 // ============================================================================
 // Core Types
@@ -304,7 +304,7 @@ impl<C: ConnectionTrait> TraceStore<C> {
             sample_rate: 1.0,
         }
     }
-    
+
     /// Create with sampling
     pub fn with_sampling(conn: C, sample_rate: f64) -> Self {
         Self {
@@ -312,7 +312,7 @@ impl<C: ConnectionTrait> TraceStore<C> {
             sample_rate: sample_rate.clamp(0.0, 1.0),
         }
     }
-    
+
     fn should_sample(&self) -> bool {
         if self.sample_rate >= 1.0 {
             return true;
@@ -322,41 +322,42 @@ impl<C: ConnectionTrait> TraceStore<C> {
         }
         rand::random::<f64>() < self.sample_rate
     }
-    
+
     fn now_micros() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_micros() as u64
     }
-    
+
     fn run_key(trace_id: &TraceId) -> Vec<u8> {
         format!("{}runs/{}", TRACE_PREFIX, trace_id).into_bytes()
     }
-    
+
     fn span_key(trace_id: &TraceId, span_id: &SpanId) -> Vec<u8> {
         format!("{}spans/{}/{}", TRACE_PREFIX, trace_id, span_id).into_bytes()
     }
-    
+
     fn spans_prefix(trace_id: &TraceId) -> Vec<u8> {
         format!("{}spans/{}/", TRACE_PREFIX, trace_id).into_bytes()
     }
-    
+
     fn event_key(trace_id: &TraceId, timestamp: u64, seq: u64) -> Vec<u8> {
         format!(
             "{}events/{}/{:016x}_{:08x}",
             TRACE_PREFIX, trace_id, timestamp, seq
-        ).into_bytes()
+        )
+        .into_bytes()
     }
-    
+
     fn events_prefix(trace_id: &TraceId) -> Vec<u8> {
         format!("{}events/{}/", TRACE_PREFIX, trace_id).into_bytes()
     }
-    
+
     // ========================================================================
     // Run Operations
     // ========================================================================
-    
+
     /// Start a new trace run
     pub fn start_run(
         &self,
@@ -365,7 +366,7 @@ impl<C: ConnectionTrait> TraceStore<C> {
     ) -> Result<TraceRun> {
         let trace_id = generate_trace_id();
         let now = Self::now_micros();
-        
+
         let run = TraceRun {
             trace_id: trace_id.clone(),
             name: name.into(),
@@ -377,17 +378,17 @@ impl<C: ConnectionTrait> TraceStore<C> {
             total_tokens: 0,
             cost_millicents: 0,
         };
-        
+
         if self.should_sample() {
             let key = Self::run_key(&trace_id);
-            let value = serde_json::to_vec(&run)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&run).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
-        
+
         Ok(run)
     }
-    
+
     /// End a trace run
     pub fn end_run(&self, trace_id: &TraceId, status: TraceStatus) -> Result<()> {
         let key = Self::run_key(trace_id);
@@ -396,13 +397,13 @@ impl<C: ConnectionTrait> TraceStore<C> {
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
             run.end_time = Some(Self::now_micros());
             run.status = status;
-            let value = serde_json::to_vec(&run)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&run).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
         Ok(())
     }
-    
+
     /// Get a trace run
     pub fn get_run(&self, trace_id: &TraceId) -> Result<Option<TraceRun>> {
         let key = Self::run_key(trace_id);
@@ -414,7 +415,7 @@ impl<C: ConnectionTrait> TraceStore<C> {
             Ok(None)
         }
     }
-    
+
     /// Update run metrics
     pub fn update_run_metrics(
         &self,
@@ -428,17 +429,17 @@ impl<C: ConnectionTrait> TraceStore<C> {
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
             run.total_tokens += tokens;
             run.cost_millicents += cost_millicents;
-            let value = serde_json::to_vec(&run)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&run).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
         Ok(())
     }
-    
+
     // ========================================================================
     // Span Operations
     // ========================================================================
-    
+
     /// Start a new span
     pub fn start_span(
         &self,
@@ -449,7 +450,7 @@ impl<C: ConnectionTrait> TraceStore<C> {
     ) -> Result<TraceSpan> {
         let span_id = generate_span_id();
         let now = Self::now_micros();
-        
+
         let span = TraceSpan {
             trace_id: trace_id.clone(),
             span_id: span_id.clone(),
@@ -466,17 +467,17 @@ impl<C: ConnectionTrait> TraceStore<C> {
             attributes: HashMap::new(),
             events: Vec::new(),
         };
-        
+
         if self.should_sample() {
             let key = Self::span_key(trace_id, &span_id);
-            let value = serde_json::to_vec(&span)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&span).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
-        
+
         Ok(span)
     }
-    
+
     /// End a span
     pub fn end_span(
         &self,
@@ -496,13 +497,13 @@ impl<C: ConnectionTrait> TraceStore<C> {
                 code: status,
                 message,
             };
-            let value = serde_json::to_vec(&span)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&span).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
         Ok(())
     }
-    
+
     /// Add an event to a span
     pub fn add_span_event(
         &self,
@@ -520,13 +521,13 @@ impl<C: ConnectionTrait> TraceStore<C> {
                 timestamp: Self::now_micros(),
                 attributes,
             });
-            let value = serde_json::to_vec(&span)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&span).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
         Ok(())
     }
-    
+
     /// Set span attributes
     pub fn set_span_attributes(
         &self,
@@ -539,34 +540,34 @@ impl<C: ConnectionTrait> TraceStore<C> {
             let mut span: TraceSpan = serde_json::from_slice(&data)
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
             span.attributes.extend(attributes);
-            let value = serde_json::to_vec(&span)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&span).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
         Ok(())
     }
-    
+
     /// Get all spans for a trace
     pub fn get_spans(&self, trace_id: &TraceId) -> Result<Vec<TraceSpan>> {
         let prefix = Self::spans_prefix(trace_id);
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut spans = Vec::new();
         for (_, value) in results {
             let span: TraceSpan = serde_json::from_slice(&value)
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
             spans.push(span);
         }
-        
+
         // Sort by start time
         spans.sort_by_key(|s| s.start_time);
         Ok(spans)
     }
-    
+
     // ========================================================================
     // Domain Events
     // ========================================================================
-    
+
     /// Log a retrieval hit
     pub fn log_retrieval_hit(
         &self,
@@ -581,10 +582,10 @@ impl<C: ConnectionTrait> TraceStore<C> {
         attrs.insert("rank".to_string(), TraceValue::Int(hit.rank as i64));
         attrs.insert("filtered".to_string(), TraceValue::Bool(hit.filtered));
         attrs.insert("collection".to_string(), TraceValue::String(hit.collection));
-        
+
         self.add_span_event(trace_id, span_id, "retrieval_hit", attrs)
     }
-    
+
     /// Log a tool call
     pub fn log_tool_call(
         &self,
@@ -595,9 +596,12 @@ impl<C: ConnectionTrait> TraceStore<C> {
         let mut attrs = HashMap::new();
         attrs.insert("tool_name".to_string(), TraceValue::String(call.tool_name));
         attrs.insert("arguments".to_string(), TraceValue::String(call.arguments));
-        attrs.insert("duration_us".to_string(), TraceValue::Int(call.duration_us as i64));
+        attrs.insert(
+            "duration_us".to_string(),
+            TraceValue::Int(call.duration_us as i64),
+        );
         attrs.insert("success".to_string(), TraceValue::Bool(call.success));
-        
+
         if let Some(result) = call.result {
             // Truncate result if too long
             let truncated = if result.len() > 1000 {
@@ -607,14 +611,14 @@ impl<C: ConnectionTrait> TraceStore<C> {
             };
             attrs.insert("result".to_string(), TraceValue::String(truncated));
         }
-        
+
         if let Some(error) = call.error {
             attrs.insert("error".to_string(), TraceValue::String(error));
         }
-        
+
         self.add_span_event(trace_id, span_id, "tool_call", attrs)
     }
-    
+
     /// Log context packaging
     pub fn log_context_packaging(
         &self,
@@ -623,20 +627,22 @@ impl<C: ConnectionTrait> TraceStore<C> {
         event: ContextPackagingEvent,
     ) -> Result<()> {
         let mut attrs = HashMap::new();
-        attrs.insert("sections".to_string(), TraceValue::StringArray(event.sections));
-        attrs.insert("total_tokens".to_string(), TraceValue::Int(event.total_tokens as i64));
+        attrs.insert(
+            "sections".to_string(),
+            TraceValue::StringArray(event.sections),
+        );
+        attrs.insert(
+            "total_tokens".to_string(),
+            TraceValue::Int(event.total_tokens as i64),
+        );
         attrs.insert("budget".to_string(), TraceValue::Int(event.budget as i64));
         attrs.insert("truncated".to_string(), TraceValue::Bool(event.truncated));
-        
+
         self.add_span_event(trace_id, span_id, "context_packaging", attrs)
     }
-    
+
     /// Log a cost event
-    pub fn log_cost(
-        &self,
-        trace_id: &TraceId,
-        event: CostEvent,
-    ) -> Result<()> {
+    pub fn log_cost(&self, trace_id: &TraceId, event: CostEvent) -> Result<()> {
         // Update run metrics
         self.update_run_metrics(trace_id, event.amount, event.total_millicents)?;
         Ok(())
@@ -667,7 +673,7 @@ fn generate_span_id() -> String {
 mod rand {
     use std::cell::Cell;
     use std::time::SystemTime;
-    
+
     thread_local! {
         static SEED: Cell<u64> = Cell::new(
             SystemTime::now()
@@ -676,15 +682,15 @@ mod rand {
                 .as_nanos() as u64
         );
     }
-    
+
     pub fn random<T: Random>() -> T {
         T::random()
     }
-    
+
     pub trait Random {
         fn random() -> Self;
     }
-    
+
     impl Random for u64 {
         fn random() -> Self {
             SEED.with(|seed| {
@@ -697,7 +703,7 @@ mod rand {
             })
         }
     }
-    
+
     impl Random for u128 {
         fn random() -> Self {
             let high = u64::random() as u128;
@@ -705,7 +711,7 @@ mod rand {
             (high << 64) | low
         }
     }
-    
+
     impl Random for f64 {
         fn random() -> Self {
             (u64::random() as f64) / (u64::MAX as f64)

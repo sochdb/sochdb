@@ -17,7 +17,7 @@ from __future__ import annotations
 import grpc
 from typing import Any, Dict, List, Optional, Sequence
 
-__version__ = "2.0.0"
+__version__ = "2.0.3"
 __all__ = ["SochDB", "VectorClient", "KvClient", "GraphClient", "SqlClient"]
 
 

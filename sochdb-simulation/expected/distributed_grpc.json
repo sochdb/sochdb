@@ -1,0 +1,14 @@
+{
+  "source": "sochdb-bench BENCHMARK_RESULTS.md sections 7-8 (Hetzner AX41, gRPC)",
+  "topology": "distributed",
+  "targets": [
+    { "workload": "grpc_kv_put", "throughput_ops_sec": 10000, "p50_us": 5000, "p99_us": 15000, "tolerance_pct": 40 },
+    { "workload": "grpc_kv_get", "throughput_ops_sec": 50000, "p50_us": 500, "p99_us": 10000, "tolerance_pct": 40 },
+    { "workload": "grpc_vector_insert_10k", "throughput_ops_sec": 5033, "p50_us": 200, "p99_us": 500, "tolerance_pct": 35 },
+    { "workload": "grpc_hnsw_search_10k", "throughput_ops_sec": 581, "p50_us": 1700, "p99_us": 6250, "tolerance_pct": 35 },
+    { "workload": "grpc_hnsw_search_50k", "throughput_ops_sec": 374, "p50_us": 2600, "p99_us": 8000, "tolerance_pct": 35 },
+    { "workload": "grpc_hnsw_search_3_5m", "throughput_ops_sec": 507, "p50_us": 1870, "p99_us": 6250, "tolerance_pct": 35 },
+    { "workload": "grpc_hnsw_search_concurrent_8", "throughput_ops_sec": 1964, "p50_us": 4000, "p99_us": 12000, "tolerance_pct": 40 },
+    { "workload": "grpc_hnsw_search_concurrent_32", "throughput_ops_sec": 2072, "p50_us": 15000, "p99_us": 30000, "tolerance_pct": 40 }
+  ]
+}

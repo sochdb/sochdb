@@ -81,20 +81,19 @@
 //!       └────────────────┴──────────────────┘
 //! ```
 
+use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
-use std::cmp::{Ordering, Reverse};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
 // ============================================================================
 // Key Encoding - Big-Endian for Lexicographic Ordering
 // ============================================================================
 
 /// Encode a u64 as big-endian bytes for lexicographic ordering
-/// 
+///
 /// Big-endian encoding ensures that lexicographic byte comparison
 /// matches numeric comparison: smaller numbers come first.
 #[inline]
@@ -111,7 +110,7 @@ pub fn decode_u64_be(bytes: &[u8]) -> u64 {
 }
 
 /// Encode a priority with inversion for min-heap behavior
-/// 
+///
 /// For ascending order (lower priority = higher urgency),
 /// we store `u64::MAX - priority` so smaller values come first.
 #[inline]
@@ -145,7 +144,7 @@ pub fn decode_priority(bytes: &[u8], ascending: bool) -> i64 {
 // ============================================================================
 
 /// Composite key for queue entries
-/// 
+///
 /// Layout ensures lexicographic order matches desired queue order:
 /// 1. Queue ID (namespace separation)
 /// 2. Priority (big-endian, optionally inverted)
@@ -185,31 +184,31 @@ impl QueueKey {
     }
 
     /// Encode key to bytes for storage
-    /// 
+    ///
     /// Format: `queue/<queue_id>/<priority_be>/<ready_ts_be>/<seq_be>/<task_id>`
     pub fn encode(&self, ascending_priority: bool) -> Vec<u8> {
         let mut key = Vec::with_capacity(64);
-        
+
         // Prefix
         key.extend_from_slice(b"queue/");
         key.extend_from_slice(self.queue_id.as_bytes());
         key.push(b'/');
-        
+
         // Priority (big-endian encoded)
         key.extend_from_slice(&encode_priority(self.priority, ascending_priority));
         key.push(b'/');
-        
+
         // Ready timestamp (big-endian)
         key.extend_from_slice(&encode_u64_be(self.ready_ts));
         key.push(b'/');
-        
+
         // Sequence number (big-endian)
         key.extend_from_slice(&encode_u64_be(self.sequence));
         key.push(b'/');
-        
+
         // Task ID
         key.extend_from_slice(self.task_id.as_bytes());
-        
+
         key
     }
 
@@ -226,7 +225,8 @@ impl QueueKey {
 impl Ord for QueueKey {
     fn cmp(&self, other: &Self) -> Ordering {
         // First by queue_id
-        self.queue_id.cmp(&other.queue_id)
+        self.queue_id
+            .cmp(&other.queue_id)
             // Then by priority (ascending: lower = first)
             .then(self.priority.cmp(&other.priority))
             // Then by ready_ts
@@ -291,7 +291,7 @@ impl Task {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        
+
         Self {
             key,
             payload,
@@ -355,7 +355,7 @@ impl Claim {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        
+
         Self {
             task_id: task_id.into(),
             owner: owner.into(),
@@ -468,7 +468,7 @@ impl QueueConfig {
 // ============================================================================
 
 /// In-memory priority queue implementation
-/// 
+///
 /// This serves as a reference implementation and for testing.
 /// Production use should integrate with SochDB's storage layer.
 pub struct PriorityQueue {
@@ -499,24 +499,24 @@ impl PriorityQueue {
     }
 
     /// Enqueue a task with the given priority and payload
-    /// 
+    ///
     /// Complexity: O(log N) insertion into ordered structure
     pub fn enqueue(&self, priority: i64, payload: Vec<u8>) -> Task {
         self.enqueue_delayed(priority, payload, 0)
     }
 
     /// Enqueue a task with a delay before it becomes visible
-    /// 
+    ///
     /// Complexity: O(log N)
     pub fn enqueue_delayed(&self, priority: i64, payload: Vec<u8>, delay_ms: u64) -> Task {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        
+
         let sequence = self.sequence.fetch_add(1, AtomicOrdering::SeqCst);
         let task_id = format!("{:016x}{:016x}", now, sequence);
-        
+
         let key = QueueKey::new(
             &self.config.queue_id,
             priority,
@@ -524,22 +524,21 @@ impl PriorityQueue {
             sequence,
             task_id,
         );
-        
-        let task = Task::new(key.clone(), payload)
-            .with_max_attempts(self.config.max_attempts);
-        
+
+        let task = Task::new(key.clone(), payload).with_max_attempts(self.config.max_attempts);
+
         self.tasks.write().insert(key, task.clone());
-        
+
         task
     }
 
     /// Dequeue the next visible task
-    /// 
+    ///
     /// This implements the atomic claim protocol:
     /// 1. Find first visible task
     /// 2. Attempt to claim it (CAS semantics)
     /// 3. If claimed, return task; otherwise retry with next candidate
-    /// 
+    ///
     /// Complexity: O(log N) to find first visible + O(1) claim
     pub fn dequeue(&self, worker_id: impl Into<String>) -> DequeueResult {
         self.dequeue_with_timeout(worker_id, self.config.default_visibility_timeout_ms)
@@ -556,20 +555,20 @@ impl PriorityQueue {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        
+
         // Clean up expired claims first
         self.cleanup_expired_claims(now);
-        
+
         let mut tasks = self.tasks.write();
         let mut claims = self.claims.write();
         let mut contention_count = 0;
-        
+
         // Find first visible, unclaimed task
         for (key, task) in tasks.iter_mut() {
             if !task.is_visible(now) {
                 continue;
             }
-            
+
             // Check if already claimed (by another worker whose claim hasn't expired)
             if let Some(claim) = claims.get(&key.task_id) {
                 if !claim.is_expired(now) && claim.owner != worker {
@@ -577,23 +576,23 @@ impl PriorityQueue {
                     continue;
                 }
             }
-            
+
             // Attempt to claim
             let claim = Claim::new(&key.task_id, &worker, visibility_timeout_ms);
-            
+
             // Update task state
             task.state = TaskState::Claimed;
             task.attempts += 1;
             task.claimed_at = Some(now);
             task.claimed_by = Some(worker.clone());
             task.lease_expires_at = Some(claim.expires_at);
-            
+
             // Store claim
             claims.insert(key.task_id.clone(), claim);
-            
+
             return DequeueResult::Success(task.clone());
         }
-        
+
         if contention_count > 0 {
             DequeueResult::Contention(contention_count)
         } else {
@@ -602,17 +601,18 @@ impl PriorityQueue {
     }
 
     /// Acknowledge successful processing of a task (delete it)
-    /// 
+    ///
     /// Complexity: O(log N)
     pub fn ack(&self, task_id: &str) -> Result<(), String> {
         let mut tasks = self.tasks.write();
         let mut claims = self.claims.write();
-        
+
         // Find and remove the task
-        let key = tasks.iter()
+        let key = tasks
+            .iter()
             .find(|(_, t)| t.key.task_id == task_id)
             .map(|(k, _)| k.clone());
-        
+
         if let Some(key) = key {
             tasks.remove(&key);
             claims.remove(task_id);
@@ -623,24 +623,30 @@ impl PriorityQueue {
     }
 
     /// Negative acknowledgment - return task to queue
-    /// 
+    ///
     /// Optionally adjust priority or add delay for retry
-    /// 
+    ///
     /// Complexity: O(log N) for reposition
-    pub fn nack(&self, task_id: &str, new_priority: Option<i64>, delay_ms: Option<u64>) -> Result<(), String> {
+    pub fn nack(
+        &self,
+        task_id: &str,
+        new_priority: Option<i64>,
+        delay_ms: Option<u64>,
+    ) -> Result<(), String> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        
+
         let mut tasks = self.tasks.write();
         let mut claims = self.claims.write();
-        
+
         // Find the task
-        let entry = tasks.iter()
+        let entry = tasks
+            .iter()
             .find(|(_, t)| t.key.task_id == task_id)
             .map(|(k, t)| (k.clone(), t.clone()));
-        
+
         if let Some((old_key, mut task)) = entry {
             // Check if should dead-letter
             if task.should_dead_letter() {
@@ -648,14 +654,17 @@ impl PriorityQueue {
                 // In real implementation, move to DLQ
                 tasks.remove(&old_key);
                 claims.remove(task_id);
-                return Err(format!("Task dead-lettered after {} attempts", task.attempts));
+                return Err(format!(
+                    "Task dead-lettered after {} attempts",
+                    task.attempts
+                ));
             }
-            
+
             // Create new key with updated priority/ready_ts
             let new_priority = new_priority.unwrap_or(task.key.priority);
             let new_ready_ts = delay_ms.map(|d| now + d).unwrap_or(now);
             let new_sequence = self.sequence.fetch_add(1, AtomicOrdering::SeqCst);
-            
+
             let new_key = QueueKey::new(
                 &self.config.queue_id,
                 new_priority,
@@ -663,19 +672,19 @@ impl PriorityQueue {
                 new_sequence,
                 &task.key.task_id,
             );
-            
+
             // Update task state
             task.key = new_key.clone();
             task.state = TaskState::Pending;
             task.claimed_at = None;
             task.claimed_by = None;
             task.lease_expires_at = None;
-            
+
             // Remove old entry, insert new
             tasks.remove(&old_key);
             tasks.insert(new_key, task);
             claims.remove(task_id);
-            
+
             Ok(())
         } else {
             Err(format!("Task not found: {}", task_id))
@@ -683,23 +692,22 @@ impl PriorityQueue {
     }
 
     /// Extend the visibility timeout for a task
-    /// 
+    ///
     /// Useful when processing takes longer than expected
     pub fn extend_visibility(&self, task_id: &str, additional_ms: u64) -> Result<(), String> {
         let mut claims = self.claims.write();
         let mut tasks = self.tasks.write();
-        
+
         if let Some(claim) = claims.get_mut(task_id) {
             claim.expires_at += additional_ms;
-            
+
             // Also update the task's lease
-            let entry = tasks.iter_mut()
-                .find(|(_, t)| t.key.task_id == task_id);
-            
+            let entry = tasks.iter_mut().find(|(_, t)| t.key.task_id == task_id);
+
             if let Some((_, task)) = entry {
                 task.lease_expires_at = Some(claim.expires_at);
             }
-            
+
             Ok(())
         } else {
             Err(format!("No active claim for task: {}", task_id))
@@ -712,14 +720,14 @@ impl PriorityQueue {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        
+
         let tasks = self.tasks.read();
         let claims = self.claims.read();
-        
+
         let mut pending = 0;
         let mut delayed = 0;
         let mut inflight = 0;
-        
+
         for task in tasks.values() {
             match task.state {
                 TaskState::Pending => {
@@ -739,7 +747,7 @@ impl PriorityQueue {
                 _ => {}
             }
         }
-        
+
         QueueStats {
             queue_id: self.config.queue_id.clone(),
             pending,
@@ -754,18 +762,19 @@ impl PriorityQueue {
     fn cleanup_expired_claims(&self, now_millis: u64) {
         let expired: Vec<_> = {
             let claims = self.claims.read();
-            claims.iter()
+            claims
+                .iter()
                 .filter(|(_, c)| c.is_expired(now_millis))
                 .map(|(id, _)| id.clone())
                 .collect()
         };
-        
+
         let mut tasks = self.tasks.write();
         let mut claims = self.claims.write();
-        
+
         for task_id in expired {
             claims.remove(&task_id);
-            
+
             // Find and reset the task
             for (_, task) in tasks.iter_mut() {
                 if task.key.task_id == task_id && task.state == TaskState::Claimed {
@@ -802,23 +811,23 @@ pub struct QueueStats {
 // ============================================================================
 
 /// Streaming Top-K collector using a bounded heap
-/// 
+///
 /// This implements correct ORDER BY ... LIMIT K semantics without
 /// requiring O(N) memory or O(N log N) full sort.
-/// 
+///
 /// ## Complexity
-/// 
+///
 /// - Space: O(K)
 /// - Time: O(N log K) for N insertions
 /// - For K=1: O(N) comparisons with O(1) memory
-/// 
+///
 /// ## Algorithm
-/// 
+///
 /// For ascending order (smallest K elements):
 /// - Maintain a max-heap of size K
 /// - For each element, if heap is full and element < heap.max, replace max
 /// - At end, drain heap in sorted order
-/// 
+///
 /// For descending order (largest K elements):
 /// - Maintain a min-heap of size K
 /// - For each element, if heap is full and element > heap.min, replace min
@@ -865,7 +874,7 @@ impl<T: Ord> Ord for HeapEntry<T> {
 
 impl<T: Ord + Clone> StreamingTopK<T> {
     /// Create a new streaming top-K collector
-    /// 
+    ///
     /// - `k`: Number of elements to keep
     /// - `ascending`: If true, keep smallest K; if false, keep largest K
     pub fn new(k: usize, ascending: bool) -> Self {
@@ -877,7 +886,7 @@ impl<T: Ord + Clone> StreamingTopK<T> {
     }
 
     /// Push a value into the collector
-    /// 
+    ///
     /// Complexity: O(log K)
     pub fn push(&mut self, value: T) {
         if self.k == 0 {
@@ -913,7 +922,7 @@ impl<T: Ord + Clone> StreamingTopK<T> {
     }
 
     /// Get the current threshold (for early termination with sorted input)
-    /// 
+    ///
     /// Returns the value that new elements must beat to be included.
     pub fn threshold(&self) -> Option<&T> {
         self.heap.peek().map(|e| &e.value)
@@ -925,17 +934,17 @@ impl<T: Ord + Clone> StreamingTopK<T> {
     }
 
     /// Drain the collector into a sorted vector
-    /// 
+    ///
     /// Complexity: O(K log K)
     pub fn into_sorted_vec(self) -> Vec<T> {
         let mut values: Vec<_> = self.heap.into_iter().map(|e| e.value).collect();
-        
+
         if self.ascending {
             values.sort();
         } else {
             values.sort_by(|a, b| b.cmp(a));
         }
-        
+
         values
     }
 
@@ -951,7 +960,7 @@ impl<T: Ord + Clone> StreamingTopK<T> {
 }
 
 /// Multi-column top-K with custom comparator
-/// 
+///
 /// Supports ORDER BY col1 ASC, col2 DESC LIMIT K semantics.
 pub struct MultiColumnTopK<T, F>
 where
@@ -967,7 +976,7 @@ where
 
 impl<T: Clone, F: Fn(&T, &T) -> Ordering> MultiColumnTopK<T, F> {
     /// Create with custom comparator
-    /// 
+    ///
     /// The comparator should return `Ordering::Less` if the first argument
     /// should come before the second in the final result.
     pub fn new(k: usize, comparator: F) -> Self {
@@ -979,7 +988,7 @@ impl<T: Clone, F: Fn(&T, &T) -> Ordering> MultiColumnTopK<T, F> {
     }
 
     /// Push a value
-    /// 
+    ///
     /// Complexity: O(K) in worst case (linear scan), but typically O(1) for
     /// random input after heap is full. For truly O(log K), use a proper
     /// heap with custom comparator.
@@ -989,7 +998,7 @@ impl<T: Clone, F: Fn(&T, &T) -> Ordering> MultiColumnTopK<T, F> {
         }
 
         self.heap.push(value);
-        
+
         if self.heap.len() > self.k {
             // Find and remove the worst element
             let mut worst_idx = 0;
@@ -1027,19 +1036,19 @@ impl<T: Clone, F: Fn(&T, &T) -> Ordering> MultiColumnTopK<T, F> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderByLimitStrategy {
     /// Use index pushdown (ordered scan from storage)
-    /// 
+    ///
     /// Complexity: O(log N) to position + O(K) to retrieve
     /// Requires: Matching ordered index on ORDER BY column(s)
     IndexPushdown,
-    
+
     /// Use streaming top-K heap
-    /// 
+    ///
     /// Complexity: O(N log K) time, O(K) space
     /// Use when: No matching index, K << N
     StreamingTopK,
-    
+
     /// Full sort then limit
-    /// 
+    ///
     /// Complexity: O(N log N) time, O(N) space
     /// Use when: No index, K ≈ N, or complex ORDER BY
     FullSort,
@@ -1047,18 +1056,14 @@ pub enum OrderByLimitStrategy {
 
 impl OrderByLimitStrategy {
     /// Choose the best strategy based on available information
-    pub fn choose(
-        has_matching_index: bool,
-        estimated_rows: usize,
-        limit: usize,
-    ) -> Self {
+    pub fn choose(has_matching_index: bool, estimated_rows: usize, limit: usize) -> Self {
         if has_matching_index {
             return OrderByLimitStrategy::IndexPushdown;
         }
 
         // Heuristic: use streaming top-K if K < sqrt(N) or K < 1000
         let use_streaming = limit < 1000 || (limit as f64) < (estimated_rows as f64).sqrt();
-        
+
         if use_streaming {
             OrderByLimitStrategy::StreamingTopK
         } else {
@@ -1069,12 +1074,11 @@ impl OrderByLimitStrategy {
     /// Get description for explain plan
     pub fn description(&self) -> &'static str {
         match self {
-            OrderByLimitStrategy::IndexPushdown => 
-                "Index Pushdown: O(log N + K) using ordered index",
-            OrderByLimitStrategy::StreamingTopK => 
-                "Streaming Top-K: O(N log K) time, O(K) space",
-            OrderByLimitStrategy::FullSort => 
-                "Full Sort: O(N log N) time, O(N) space",
+            OrderByLimitStrategy::IndexPushdown => {
+                "Index Pushdown: O(log N + K) using ordered index"
+            }
+            OrderByLimitStrategy::StreamingTopK => "Streaming Top-K: O(N log K) time, O(K) space",
+            OrderByLimitStrategy::FullSort => "Full Sort: O(N log N) time, O(N) space",
         }
     }
 }
@@ -1098,8 +1102,11 @@ mod tests {
         let encoded3 = key3.encode(true);
 
         // Lower priority should come first (ascending)
-        assert!(encoded1 < encoded2, "Priority 1 should come before priority 2");
-        
+        assert!(
+            encoded1 < encoded2,
+            "Priority 1 should come before priority 2"
+        );
+
         // Same priority, earlier ready_ts comes first
         assert!(encoded1 < encoded3, "Earlier ready_ts should come first");
     }
@@ -1157,7 +1164,7 @@ mod tests {
         let queue = PriorityQueue::new(config);
 
         queue.enqueue(1, b"task 1".to_vec());
-        
+
         let task = match queue.dequeue("worker-1") {
             DequeueResult::Success(t) => t,
             _ => panic!("Expected success"),
@@ -1174,12 +1181,11 @@ mod tests {
 
     #[test]
     fn test_nack_returns_task() {
-        let config = QueueConfig::new("test-queue")
-            .with_visibility_timeout(100); // Short timeout for test
+        let config = QueueConfig::new("test-queue").with_visibility_timeout(100); // Short timeout for test
         let queue = PriorityQueue::new(config);
 
         queue.enqueue(1, b"task 1".to_vec());
-        
+
         let task = match queue.dequeue("worker-1") {
             DequeueResult::Success(t) => t,
             _ => panic!("Expected success"),
@@ -1201,7 +1207,7 @@ mod tests {
     #[test]
     fn test_streaming_topk_ascending() {
         let mut topk = StreamingTopK::new(3, true);
-        
+
         for i in [5, 2, 8, 1, 9, 3, 7, 4, 6] {
             topk.push(i);
         }
@@ -1213,7 +1219,7 @@ mod tests {
     #[test]
     fn test_streaming_topk_descending() {
         let mut topk = StreamingTopK::new(3, false);
-        
+
         for i in [5, 2, 8, 1, 9, 3, 7, 4, 6] {
             topk.push(i);
         }
@@ -1226,7 +1232,7 @@ mod tests {
     fn test_streaming_topk_k1() {
         // Special case: finding minimum
         let mut topk = StreamingTopK::new(1, true);
-        
+
         for i in [5, 2, 8, 1, 9, 3] {
             topk.push(i);
         }
@@ -1248,20 +1254,40 @@ mod tests {
         let comparator = |a: &Task, b: &Task| {
             match a.priority.cmp(&b.priority) {
                 Ordering::Equal => b.created_at.cmp(&a.created_at), // DESC
-                other => other, // ASC
+                other => other,                                     // ASC
             }
         };
 
         let mut topk = MultiColumnTopK::new(3, comparator);
 
-        topk.push(Task { priority: 1, created_at: 100, id: "a".into() });
-        topk.push(Task { priority: 2, created_at: 200, id: "b".into() });
-        topk.push(Task { priority: 1, created_at: 200, id: "c".into() }); // Same priority, later
-        topk.push(Task { priority: 1, created_at: 150, id: "d".into() });
-        topk.push(Task { priority: 3, created_at: 100, id: "e".into() });
+        topk.push(Task {
+            priority: 1,
+            created_at: 100,
+            id: "a".into(),
+        });
+        topk.push(Task {
+            priority: 2,
+            created_at: 200,
+            id: "b".into(),
+        });
+        topk.push(Task {
+            priority: 1,
+            created_at: 200,
+            id: "c".into(),
+        }); // Same priority, later
+        topk.push(Task {
+            priority: 1,
+            created_at: 150,
+            id: "d".into(),
+        });
+        topk.push(Task {
+            priority: 3,
+            created_at: 100,
+            id: "e".into(),
+        });
 
         let result = topk.into_sorted_vec();
-        
+
         // Should be: priority 1 tasks (ordered by created_at DESC), then priority 2
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].id, "c"); // priority=1, created_at=200
@@ -1289,7 +1315,7 @@ mod tests {
             OrderByLimitStrategy::choose(false, 10_000, 5_000),
             OrderByLimitStrategy::FullSort
         );
-        
+
         // K < 1000 always uses streaming even if K > sqrt(N)
         assert_eq!(
             OrderByLimitStrategy::choose(false, 1_000, 900),

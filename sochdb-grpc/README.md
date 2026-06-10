@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/sochdb-grpc.svg)](https://crates.io/crates/sochdb-grpc)
 [![Documentation](https://docs.rs/sochdb-grpc/badge.svg)](https://docs.rs/sochdb-grpc)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](../LICENSE)
 
 **SochDB gRPC Server** - Production-ready gRPC services for cross-language database access. Implements the Thick Server / Thin Client architecture where business logic resides in the server, and clients connect via gRPC or IPC.
 
@@ -196,7 +196,7 @@ See [CONTRIBUTING.md](https://github.com/sochdb/sochdb/blob/main/CONTRIBUTING.md
 
 ## License
 
-Apache-2.0
+AGPL-3.0-or-later
 
 ## Links
 

@@ -5,10 +5,10 @@
 
 use crate::config::BpsConfig;
 use crate::dispatch::BpsScanDispatcher;
+use bytemuck::{Pod, Zeroable};
+use rand::Rng;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
-use rand::Rng;
-use bytemuck::{Pod, Zeroable};
 
 /// BPS quantization parameters per slot (min, inv_range)
 #[repr(C)]
@@ -76,7 +76,7 @@ impl<'a> BpsBuilder<'a> {
             for block_idx in 0..num_blocks {
                 let block_start = block_idx * block_size;
                 let block_end = (block_start + block_size).min(vec.len());
-                
+
                 for proj_idx in 0..num_proj {
                     let proj_vec = &self.projection_vectors[block_idx * num_proj + proj_idx];
                     let mut dot = 0.0f32;
@@ -115,8 +115,9 @@ impl<'a> BpsBuilder<'a> {
         let mut bps_data = vec![0u8; num_slots * n_vec];
         for (vec_id, proj) in projections.iter().enumerate() {
             for (slot_idx, &value) in proj.iter().enumerate() {
-                let normalized = ((value - qparams[slot_idx].min) * qparams[slot_idx].inv_range).clamp(0.0, 255.0);
-                
+                let normalized = ((value - qparams[slot_idx].min) * qparams[slot_idx].inv_range)
+                    .clamp(0.0, 255.0);
+
                 // SoA index: slot_idx * n_vec + vec_id
                 let idx = slot_idx * n_vec + vec_id;
                 bps_data[idx] = normalized as u8;
@@ -127,7 +128,11 @@ impl<'a> BpsBuilder<'a> {
     }
 
     /// Compute query sketch using stored quantization parameters
-    pub fn compute_query_sketch_with_params(config: &BpsConfig, rotated_query: &[f32], qparams: &[BpsQParam]) -> Vec<u8> {
+    pub fn compute_query_sketch_with_params(
+        config: &BpsConfig,
+        rotated_query: &[f32],
+        qparams: &[BpsQParam],
+    ) -> Vec<u8> {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(BPS_SEED);
         let num_blocks = config.num_blocks as usize;
         let block_size = config.block_size as usize;
@@ -135,25 +140,25 @@ impl<'a> BpsBuilder<'a> {
 
         let mut sketch = Vec::with_capacity(num_blocks * num_proj);
         let mut slot_idx = 0;
-        
+
         for block_idx in 0..num_blocks {
             let block_start = block_idx * block_size;
             let block_end = (block_start + block_size).min(rotated_query.len());
-            
+
             for _ in 0..num_proj {
                 // Generate same random projection (must match builder)
                 let proj: Vec<f32> = (0..block_size)
                     .map(|_| rng.gen_range(-1.0f32..1.0))
                     .collect();
                 let norm: f32 = proj.iter().map(|x| x * x).sum::<f32>().sqrt();
-                
+
                 let mut dot = 0.0f32;
                 for (i, &v) in rotated_query[block_start..block_end].iter().enumerate() {
                     if i < proj.len() {
                         dot += v * (proj[i] / norm.max(1e-10));
                     }
                 }
-                
+
                 // Use stored qparams for correct quantization
                 if slot_idx < qparams.len() {
                     let qp = &qparams[slot_idx];
@@ -167,7 +172,7 @@ impl<'a> BpsBuilder<'a> {
                 slot_idx += 1;
             }
         }
-        
+
         sketch
     }
 
@@ -189,31 +194,31 @@ impl<'a> BpsBuilder<'a> {
         let num_proj = config.num_projections as usize;
 
         let mut sketch = Vec::with_capacity(num_blocks * num_proj);
-        
+
         for block_idx in 0..num_blocks {
             let block_start = block_idx * block_size;
             let block_end = (block_start + block_size).min(rotated_query.len());
-            
+
             for _ in 0..num_proj {
                 // Generate same random projection (must match builder)
                 let proj: Vec<f32> = (0..block_size)
                     .map(|_| rng.gen_range(-1.0f32..1.0))
                     .collect();
                 let norm: f32 = proj.iter().map(|x| x * x).sum::<f32>().sqrt();
-                
+
                 let mut dot = 0.0f32;
                 for (i, &v) in rotated_query[block_start..block_end].iter().enumerate() {
                     if i < proj.len() {
                         dot += v * (proj[i] / norm.max(1e-10));
                     }
                 }
-                
+
                 // Symmetric quantization (less accurate without qparams)
                 let quantized = ((dot + 1.0) * 127.5).clamp(0.0, 255.0) as u8;
                 sketch.push(quantized);
             }
         }
-        
+
         sketch
     }
 }
@@ -247,7 +252,7 @@ impl<'a> BpsScanner<'a> {
     pub fn scan(&self, query_sketch: &[u8]) -> Vec<u16> {
         let mut distances = vec![0u16; self.n_vec];
         let n_slots = self.num_blocks * self.num_proj;
-        
+
         // Dispatch to C++ SIMD kernel (AVX2/AVX512/NEON) via FFI
         BpsScanDispatcher::scan(
             self.bps_data,
@@ -257,7 +262,7 @@ impl<'a> BpsScanner<'a> {
             query_sketch,
             &mut distances,
         );
-        
+
         distances
     }
 
@@ -266,11 +271,11 @@ impl<'a> BpsScanner<'a> {
     #[allow(dead_code)]
     fn scan_fallback(&self, query_sketch: &[u8], distances: &mut [u16]) {
         let slots = self.num_blocks * self.num_proj;
-        
+
         for slot_idx in 0..slots {
             let q = query_sketch[slot_idx] as i16;
             let base = slot_idx * self.n_vec;
-            
+
             for vec_id in 0..self.n_vec {
                 let v = self.bps_data[base + vec_id] as i16;
                 let diff = (q - v).abs() as u16;
@@ -283,24 +288,24 @@ impl<'a> BpsScanner<'a> {
     /// Get top-k candidates by distance (lower is better)
     pub fn top_k(&self, query_sketch: &[u8], k: usize) -> Vec<(u32, u16)> {
         let distances = self.scan(query_sketch);
-        
+
         // Use partial selection for efficiency
         let mut candidates: Vec<(u32, u16)> = distances
             .into_iter()
             .enumerate()
             .map(|(i, d)| (i as u32, d))
             .collect();
-        
+
         if candidates.len() <= k {
             candidates.sort_by_key(|&(_, d)| d);
             return candidates;
         }
-        
+
         // Partial sort for top k
         candidates.select_nth_unstable_by_key(k - 1, |&(_, d)| d);
         candidates.truncate(k);
         candidates.sort_by_key(|&(_, d)| d);
-        
+
         candidates
     }
 }
@@ -318,9 +323,7 @@ mod tests {
         };
 
         let vectors: Vec<Vec<f32>> = (0..100)
-            .map(|i| {
-                (0..64).map(|j| (i * 64 + j) as f32 / 1000.0).collect()
-            })
+            .map(|i| (0..64).map(|j| (i * 64 + j) as f32 / 1000.0).collect())
             .collect();
 
         let builder = BpsBuilder::new(&config, &vectors);
@@ -341,20 +344,18 @@ mod tests {
         };
 
         let vectors: Vec<Vec<f32>> = (0..100)
-            .map(|i| {
-                (0..64).map(|j| (i * 64 + j) as f32 / 1000.0).collect()
-            })
+            .map(|i| (0..64).map(|j| (i * 64 + j) as f32 / 1000.0).collect())
             .collect();
 
         let builder = BpsBuilder::new(&config, &vectors);
         let (bps_data, _qparams) = builder.build();
 
         let scanner = BpsScanner::new(&bps_data, 100, 4, 1);
-        
+
         // Query with first vector's sketch (should have distance 0 or close)
         let query_sketch = vec![128u8; 4]; // Neutral sketch
         let candidates = scanner.top_k(&query_sketch, 10);
-        
+
         assert_eq!(candidates.len(), 10);
     }
 }

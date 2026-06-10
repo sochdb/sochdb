@@ -21,8 +21,8 @@
 //! SochDB to work with different storage backends (local filesystem,
 //! S3, GCS, Azure Blob, etc.)
 
-use std::path::Path;
 use sochdb_core::Result;
+use std::path::Path;
 
 /// Object metadata
 #[derive(Debug, Clone)]

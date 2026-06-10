@@ -8,11 +8,11 @@
 //! Provides state checkpoint and restore via gRPC.
 
 use crate::proto::{
-    checkpoint_service_server::{CheckpointService, CheckpointServiceServer},
     Checkpoint, CreateCheckpointRequest, CreateCheckpointResponse, DeleteCheckpointRequest,
     DeleteCheckpointResponse, ExportCheckpointRequest, ExportCheckpointResponse, ExportFormat,
     ImportCheckpointRequest, ImportCheckpointResponse, ListCheckpointsRequest,
     ListCheckpointsResponse, RestoreCheckpointRequest, RestoreCheckpointResponse,
+    checkpoint_service_server::{CheckpointService, CheckpointServiceServer},
 };
 use dashmap::DashMap;
 use std::time::SystemTime;
@@ -100,7 +100,7 @@ impl CheckpointService for CheckpointServer {
         let req = request.into_inner();
 
         match self.checkpoints.get(&req.checkpoint_id) {
-            Some(data) => {
+            Some(_data) => {
                 // In real implementation, this would restore actual data
                 let restored_keys = 10u64; // Mock value
 
@@ -163,20 +163,18 @@ impl CheckpointService for CheckpointServer {
         match self.checkpoints.get(&req.checkpoint_id) {
             Some(checkpoint_data) => {
                 let data = match req.format {
-                    x if x == ExportFormat::Json as i32 => {
-                        serde_json::to_vec(&serde_json::json!({
-                            "checkpoint": {
-                                "id": checkpoint_data.info.id,
-                                "name": checkpoint_data.info.name,
-                                "namespace": checkpoint_data.info.namespace,
-                            },
-                            "data": base64::Engine::encode(
-                                &base64::engine::general_purpose::STANDARD,
-                                &checkpoint_data.data
-                            )
-                        }))
-                        .unwrap_or_default()
-                    }
+                    x if x == ExportFormat::Json as i32 => serde_json::to_vec(&serde_json::json!({
+                        "checkpoint": {
+                            "id": checkpoint_data.info.id,
+                            "name": checkpoint_data.info.name,
+                            "namespace": checkpoint_data.info.namespace,
+                        },
+                        "data": base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &checkpoint_data.data
+                        )
+                    }))
+                    .unwrap_or_default(),
                     _ => checkpoint_data.data.clone(),
                 };
 

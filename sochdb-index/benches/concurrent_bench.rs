@@ -21,9 +21,9 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use rand::Rng;
+use sochdb_index::hnsw::{HnswConfig, HnswIndex};
 use std::sync::Arc;
 use std::thread;
-use sochdb_index::hnsw::{HnswConfig, HnswIndex};
 
 fn generate_random_vector(dim: usize) -> Vec<f32> {
     let mut rng = rand::thread_rng();

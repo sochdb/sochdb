@@ -53,39 +53,37 @@ use std::sync::Arc;
 use clap::Parser;
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 use sochdb_grpc::{
-    VectorIndexServer,
+    SecurityConfig, SecurityService, VectorIndexServer,
     auth_interceptor::AuthInterceptor,
-    graph_server::GraphServer,
-    policy_server::PolicyServer,
-    context_server::ContextServer,
-    collection_server::CollectionServer,
-    namespace_server::NamespaceServer,
-    semantic_cache_server::SemanticCacheServer,
-    trace_server::TraceServer,
     checkpoint_server::CheckpointServer,
-    mcp_server::McpServer,
+    collection_server::CollectionServer,
+    context_server::ContextServer,
+    graph_server::GraphServer,
     kv_server::KvServer,
-    subscription_server::SubscriptionServer,
-    SecurityService, SecurityConfig,
-    security::{AuthMethod, Principal, Role},
+    mcp_server::McpServer,
+    namespace_server::NamespaceServer,
+    policy_server::PolicyServer,
     proto::{
-        vector_index_service_server::VectorIndexServiceServer,
-        graph_service_server::GraphServiceServer,
-        policy_service_server::PolicyServiceServer,
-        context_service_server::ContextServiceServer,
-        collection_service_server::CollectionServiceServer,
-        namespace_service_server::NamespaceServiceServer,
-        semantic_cache_service_server::SemanticCacheServiceServer,
-        trace_service_server::TraceServiceServer,
         checkpoint_service_server::CheckpointServiceServer,
-        mcp_service_server::McpServiceServer,
-        kv_service_server::KvServiceServer,
+        collection_service_server::CollectionServiceServer,
+        context_service_server::ContextServiceServer, graph_service_server::GraphServiceServer,
+        kv_service_server::KvServiceServer, mcp_service_server::McpServiceServer,
+        namespace_service_server::NamespaceServiceServer,
+        policy_service_server::PolicyServiceServer,
+        semantic_cache_service_server::SemanticCacheServiceServer,
         subscription_service_server::SubscriptionServiceServer,
+        trace_service_server::TraceServiceServer,
+        vector_index_service_server::VectorIndexServiceServer,
     },
+    security::{AuthMethod, Principal, Role},
+    semantic_cache_server::SemanticCacheServer,
+    subscription_server::SubscriptionServer,
+    trace_server::TraceServer,
 };
+use sochdb_memory::MemoryStore;
 
 /// SochDB gRPC Server
 #[derive(Parser, Debug)]
@@ -96,11 +94,11 @@ struct Args {
     /// Host address to bind to
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
-    
+
     /// Port to listen on
     #[arg(short, long, default_value = "50051")]
     port: u16,
-    
+
     /// Enable debug logging
     #[arg(short, long)]
     debug: bool,
@@ -140,24 +138,31 @@ struct Args {
     /// Secrets mount path (Kubernetes Secrets volume)
     #[arg(long = "secrets-path", env = "SOCHDB_SECRETS_PATH")]
     secrets_path: Option<String>,
+
+    /// Persistent data directory for the PostgreSQL wire SQL engine. When set,
+    /// `--pg-port` executes real SQL (SELECT/INSERT/UPDATE/DELETE/DDL, incl.
+    /// JOINs) against a database at this path instead of echoing queries back.
+    /// This store is independent of the in-memory gRPC services.
+    #[arg(long = "pg-data-dir", env = "SOCHDB_PG_DATA_DIR")]
+    pg_data_dir: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    
+
     // Initialize tracing
     let filter = if args.debug {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"))
     } else {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
-    
+
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .init();
-    
+
     let addr = format!("{}:{}", args.host, args.port).parse()?;
 
     // Start Prometheus metrics HTTP server (Task 8)
@@ -171,12 +176,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start WebSocket gateway (Task 4)
     let _ws_handle = if args.ws_port > 0 {
         let ws_addr = format!("{}:{}", args.host, args.ws_port).parse()?;
-        let kv_store: sochdb_grpc::ws_server::KvStore = std::sync::Arc::new(dashmap::DashMap::new());
-        Some(sochdb_grpc::ws_server::start(sochdb_grpc::ws_server::WsConfig {
-            addr: ws_addr,
-            kv_store,
-            cdc_log: None,
-        }))
+        let kv_store: sochdb_grpc::ws_server::KvStore =
+            std::sync::Arc::new(dashmap::DashMap::new());
+        Some(sochdb_grpc::ws_server::start(
+            sochdb_grpc::ws_server::WsConfig {
+                addr: ws_addr,
+                kv_store,
+                cdc_log: None,
+            },
+        ))
     } else {
         tracing::info!("WebSocket gateway disabled");
         None
@@ -189,7 +197,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             addr: pg_addr,
             server_version: format!("SochDB {}", env!("CARGO_PKG_VERSION")),
         };
-        Some(sochdb_grpc::pg_wire::start(config, sochdb_grpc::pg_wire::EchoPgExecutor))
+        match args.pg_data_dir.as_deref() {
+            // Real SQL engine over a persistent database.
+            Some(dir) => {
+                // Trust authentication is acceptable on loopback only. Binding
+                // a writable SQL database to a non-loopback address exposes it
+                // unauthenticated on the network (pg_wire has no auth layer,
+                // unlike the gRPC interceptor), so warn loudly.
+                let is_loopback = matches!(args.host.as_str(), "127.0.0.1" | "::1" | "localhost");
+                if !is_loopback {
+                    tracing::warn!(
+                        "PG wire protocol is serving a WRITABLE SQL database on non-loopback \
+                         address '{}' with NO authentication (trust auth). Anyone who can reach \
+                         this port can read and modify all data. Bind to 127.0.0.1 or place it \
+                         behind an authenticating proxy.",
+                        args.host
+                    );
+                }
+                // Fail fast: if the operator explicitly requested real SQL but
+                // the database cannot be opened, refuse to start rather than
+                // silently degrading to the echo executor (which would return
+                // fabricated rows that look like real results).
+                let db = sochdb_storage::Database::open(dir)
+                    .map_err(|e| format!("failed to open PG SQL database at '{}': {}", dir, e))?;
+                tracing::info!(
+                    "PG wire protocol executing real SQL against database at '{}'",
+                    dir
+                );
+                Some(sochdb_grpc::pg_wire::start(
+                    config,
+                    sochdb_grpc::pg_wire::DatabasePgExecutor::new(db),
+                ))
+            }
+            // No data dir configured: keep the echo placeholder (unchanged default).
+            None => {
+                tracing::info!(
+                    "PG wire protocol using echo executor (set --pg-data-dir to enable real SQL)"
+                );
+                Some(sochdb_grpc::pg_wire::start(
+                    config,
+                    sochdb_grpc::pg_wire::EchoPgExecutor,
+                ))
+            }
+        }
     } else {
         tracing::info!("PG wire protocol disabled");
         None
@@ -205,7 +255,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy_server = Arc::new(PolicyServer::new());
     let kv_server = KvServer::with_namespace_server(namespace_server.clone())
         .with_policy_server(policy_server.clone());
-    let context_server = ContextServer::new();
+    let memory_store = Arc::new(MemoryStore::with_defaults());
+    let context_server = ContextServer::with_memory_store(Arc::clone(&memory_store));
     let semantic_cache_server = SemanticCacheServer::new();
     let trace_server = TraceServer::new();
     let checkpoint_server = CheckpointServer::new();
@@ -225,16 +276,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create CDC log for subscriptions
-    let cdc_log = sochdb_storage::cdc::CdcLog::new(
-        sochdb_storage::cdc::CdcConfig { enabled: true, capacity: 65536 },
-    );
+    let cdc_log = sochdb_storage::cdc::CdcLog::new(sochdb_storage::cdc::CdcConfig {
+        enabled: true,
+        capacity: 65536,
+    });
     let subscription_server = SubscriptionServer::new(cdc_log);
-    
+
     // Create authentication interceptor (Task 7)
     let auth = if args.auth {
         let mut sec_config = SecurityConfig::default();
         sec_config.api_key_enabled = true;
         sec_config.jwt_enabled = true;
+        // Optional server-side pepper for API-key hashing (HMAC-SHA256). Sourced
+        // from a secret manager / KMS via env; when absent, falls back to bare
+        // SHA-256 for backward compatibility.
+        sec_config.api_key_pepper = std::env::var("SOCHDB_API_KEY_PEPPER")
+            .ok()
+            .filter(|p| !p.is_empty());
 
         let security = Arc::new(SecurityService::new(sec_config));
 
@@ -256,7 +314,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     auth_method: AuthMethod::ApiKey,
                 },
             );
-            tracing::info!("Registered API key (SHA-256 hashed, Owner role)");
+            tracing::info!("Registered API key (keyed-hash, Owner role)");
         }
         tracing::info!("Authentication enabled");
         interceptor
@@ -264,17 +322,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Authentication disabled (use --auth to enable)");
         AuthInterceptor::disabled()
     };
-    
+
     // Create gRPC health service for Kubernetes probes
-    let (mut health_reporter, health_service) = health_reporter();
-    
+    let (health_reporter, health_service) = health_reporter();
+
     // Mark the overall service as serving (empty service name = overall health)
     // The empty string "" represents overall server health
-    health_reporter.set_service_status("", tonic_health::ServingStatus::Serving).await;
-    
+    health_reporter
+        .set_service_status("", tonic_health::ServingStatus::Serving)
+        .await;
+
     tracing::info!("Starting SochDB gRPC server on {}", addr);
     tracing::info!("Server version: {}", env!("CARGO_PKG_VERSION"));
-    
+
     println!(
         r#"
 ╔══════════════════════════════════════════════════════════════╗
@@ -312,7 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.host,
         args.pg_port
     );
-    
+
     // ── TLS Configuration ─────────────────────────────────────────────
     let tls_mode = if let (Some(cert), Some(key)) = (&args.tls_cert, &args.tls_key) {
         match sochdb_grpc::security::TlsProvider::new(
@@ -321,7 +381,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.tls_ca.as_deref(),
         ) {
             Ok(provider) => {
-                let tls_config = provider.configure_server()
+                let tls_config = provider
+                    .configure_server()
                     .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
                 if provider.is_mtls_enabled() {
                     tracing::info!("TLS + mTLS enabled");
@@ -353,22 +414,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder
         .add_service(health_service)
-        .add_service(VectorIndexServiceServer::new(vector_server)
-            .max_decoding_message_size(64 * 1024 * 1024)
-            .max_encoding_message_size(64 * 1024 * 1024))
-        .add_service(GraphServiceServer::with_interceptor(graph_server, auth.clone()))
-        .add_service(PolicyServiceServer::with_interceptor(policy_grpc, auth.clone()))
-        .add_service(ContextServiceServer::with_interceptor(context_server, auth.clone()))
-        .add_service(CollectionServiceServer::with_interceptor(collection_server, auth.clone()))
-        .add_service(NamespaceServiceServer::with_interceptor(namespace_server, auth.clone()))
-        .add_service(SemanticCacheServiceServer::with_interceptor(semantic_cache_server, auth.clone()))
-        .add_service(TraceServiceServer::with_interceptor(trace_server, auth.clone()))
-        .add_service(CheckpointServiceServer::with_interceptor(checkpoint_server, auth.clone()))
+        .add_service(
+            VectorIndexServiceServer::new(vector_server)
+                .max_decoding_message_size(64 * 1024 * 1024)
+                .max_encoding_message_size(64 * 1024 * 1024),
+        )
+        .add_service(GraphServiceServer::with_interceptor(
+            graph_server,
+            auth.clone(),
+        ))
+        .add_service(PolicyServiceServer::with_interceptor(
+            policy_grpc,
+            auth.clone(),
+        ))
+        .add_service(ContextServiceServer::with_interceptor(
+            context_server,
+            auth.clone(),
+        ))
+        .add_service(CollectionServiceServer::with_interceptor(
+            collection_server,
+            auth.clone(),
+        ))
+        .add_service(NamespaceServiceServer::with_interceptor(
+            namespace_server,
+            auth.clone(),
+        ))
+        .add_service(SemanticCacheServiceServer::with_interceptor(
+            semantic_cache_server,
+            auth.clone(),
+        ))
+        .add_service(TraceServiceServer::with_interceptor(
+            trace_server,
+            auth.clone(),
+        ))
+        .add_service(CheckpointServiceServer::with_interceptor(
+            checkpoint_server,
+            auth.clone(),
+        ))
         .add_service(McpServiceServer::with_interceptor(mcp_server, auth.clone()))
         .add_service(KvServiceServer::with_interceptor(kv_server, auth.clone()))
-        .add_service(SubscriptionServiceServer::with_interceptor(subscription_server, auth.clone()))
+        .add_service(SubscriptionServiceServer::with_interceptor(
+            subscription_server,
+            auth.clone(),
+        ))
         .serve(addr)
         .await?;
-    
+
     Ok(())
 }

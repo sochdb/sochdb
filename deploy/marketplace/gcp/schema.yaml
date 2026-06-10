@@ -1,0 +1,94 @@
+# Google Cloud Marketplace — Kubernetes Application
+#
+# SochDB is published as a Kubernetes Application on GCP Marketplace.
+#
+# Reference: https://cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
+#
+# GCP Marketplace requires:
+# - Production-ready, enterprise-ready product
+# - No known vulnerabilities
+# - Security best practices
+# - Professional support
+
+# === Prerequisites ===
+# 1. Google Cloud Partner account
+# 2. GCR/Artifact Registry for marketplace images
+# 3. Application deployer schema (schema.yaml)
+# 4. Passing marketplace verification tests
+
+# === Image Publishing ===
+# Push to Artifact Registry:
+#   gcloud auth configure-docker us-docker.pkg.dev
+#   docker tag sochdb/sochdb-grpc:latest us-docker.pkg.dev/sochdb-public/sochdb/sochdb-grpc:2.0.3
+#   docker push us-docker.pkg.dev/sochdb-public/sochdb/sochdb-grpc:2.0.3
+
+# === Application Schema ===
+# GCP Marketplace apps use a schema.yaml to define parameters:
+x-google-marketplace:
+  schemaVersion: v2
+  applicationApiVersion: v1beta1
+  publishedVersion: "2.0.3"
+  publishedVersionMetadata:
+    releaseNote: >
+      SochDB 2.0.3 — MultiShardHnswIndex production readiness,
+      Context Queries, token budgeting, gRPC + REST API.
+  images:
+    sochdb-grpc:
+      properties:
+        image.repository:
+          type: REPO_WITH_REGISTRY
+        image.tag:
+          type: TAG
+
+properties:
+  name:
+    type: string
+    x-google-marketplace:
+      type: NAME
+  namespace:
+    type: string
+    x-google-marketplace:
+      type: NAMESPACE
+  replicaCount:
+    type: integer
+    default: 1
+    description: "Number of SochDB replicas"
+  persistence.size:
+    type: string
+    default: "50Gi"
+    description: "Persistent volume size"
+  serviceAccount.name:
+    type: string
+    x-google-marketplace:
+      type: SERVICE_ACCOUNT
+      serviceAccount:
+        description: "SochDB service account"
+        roles:
+          - type: ClusterRole
+            rulesType: CUSTOM
+            rules: []
+
+required:
+  - name
+  - namespace
+
+listing:
+  name: "SochDB"
+  tagline: "LLM-Optimized Database with Vector Search"
+  description: |
+    SochDB is a token-aware embedded database designed for LLM agent memory
+    and retrieval-augmented generation (RAG). Features include HNSW vector
+    search, Context Queries with automatic token budgeting, and a multi-model
+    API surface (key-value, graph, SQL, vector).
+
+    Production-ready Kubernetes deployment with StatefulSet, persistent
+    storage, health probes, NetworkPolicy, and Prometheus metrics.
+
+  categories:
+    - Databases
+    - Machine Learning & AI
+
+  support:
+    description: "Enterprise support available"
+    url: https://sochdb.dev/support
+    email: support@sochdb.dev

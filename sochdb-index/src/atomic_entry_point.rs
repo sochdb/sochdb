@@ -82,9 +82,7 @@ const ENTRY_POINT_MASK: u64 = (1 << 56) - 1;
 fn pack_state(entry_point: Option<u64>, max_layer: usize) -> u64 {
     match entry_point {
         Some(ep) => {
-            PRESENT_BIT
-                | ((max_layer as u64 & 0x7F) << MAX_LAYER_SHIFT)
-                | (ep & ENTRY_POINT_MASK)
+            PRESENT_BIT | ((max_layer as u64 & 0x7F) << MAX_LAYER_SHIFT) | (ep & ENTRY_POINT_MASK)
         }
         None => 0,
     }
@@ -96,10 +94,10 @@ fn unpack_state(packed: u64) -> (Option<u64>, usize) {
     if packed & PRESENT_BIT == 0 {
         return (None, 0);
     }
-    
+
     let max_layer = ((packed & MAX_LAYER_MASK) >> MAX_LAYER_SHIFT) as usize;
     let entry_point = packed & ENTRY_POINT_MASK;
-    
+
     (Some(entry_point), max_layer)
 }
 
@@ -126,14 +124,14 @@ impl AtomicNavigationState {
             packed: AtomicU64::new(0),
         }
     }
-    
+
     /// Create with initial entry point and max layer
     pub fn with_initial(entry_point: u64, max_layer: usize) -> Self {
         Self {
             packed: AtomicU64::new(pack_state(Some(entry_point), max_layer)),
         }
     }
-    
+
     /// Load current state (wait-free)
     ///
     /// This is the hot path for search operations.
@@ -142,31 +140,31 @@ impl AtomicNavigationState {
         let packed = self.packed.load(Ordering::Acquire);
         unpack_state(packed)
     }
-    
+
     /// Load only entry point (wait-free)
     #[inline]
     pub fn load_entry_point(&self) -> Option<u64> {
         self.load().0
     }
-    
+
     /// Load only max layer (wait-free)
     #[inline]
     pub fn load_max_layer(&self) -> usize {
         self.load().1
     }
-    
+
     /// Check if graph is empty (wait-free)
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.packed.load(Ordering::Acquire) & PRESENT_BIT == 0
     }
-    
+
     /// Store new state (for initialization only, not concurrent-safe)
     pub fn store(&self, entry_point: Option<u64>, max_layer: usize) {
         let packed = pack_state(entry_point, max_layer);
         self.packed.store(packed, Ordering::Release);
     }
-    
+
     /// Atomically update if max_layer is higher (lock-free via CAS loop)
     ///
     /// This is the insert path: only update if the new node has a higher layer.
@@ -175,14 +173,14 @@ impl AtomicNavigationState {
         loop {
             let current = self.packed.load(Ordering::Acquire);
             let (_, current_ml) = unpack_state(current);
-            
+
             // Only update if new layer is higher
             if new_max_layer <= current_ml && current != 0 {
                 return false;
             }
-            
+
             let new_packed = pack_state(Some(new_ep), new_max_layer);
-            
+
             match self.packed.compare_exchange_weak(
                 current,
                 new_packed,
@@ -194,7 +192,7 @@ impl AtomicNavigationState {
             }
         }
     }
-    
+
     /// Compare and swap (lock-free)
     ///
     /// Atomically update from expected state to new state.
@@ -208,29 +206,24 @@ impl AtomicNavigationState {
     ) -> Result<(), (Option<u64>, usize)> {
         let expected = pack_state(expected_ep, expected_ml);
         let new = pack_state(new_ep, new_ml);
-        
-        match self.packed.compare_exchange(
-            expected,
-            new,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
+
+        match self
+            .packed
+            .compare_exchange(expected, new, Ordering::AcqRel, Ordering::Acquire)
+        {
             Ok(_) => Ok(()),
             Err(current) => Err(unpack_state(current)),
         }
     }
-    
+
     /// Force-set entry point for first node (when graph was empty)
     pub fn set_first(&self, entry_point: u64, layer: usize) -> bool {
         let new_packed = pack_state(Some(entry_point), layer);
-        
+
         // Only succeed if graph was previously empty
-        self.packed.compare_exchange(
-            0,
-            new_packed,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ).is_ok()
+        self.packed
+            .compare_exchange(0, new_packed, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 }
 
@@ -269,21 +262,21 @@ impl AtomicNavigationStateU128 {
             sequence: AtomicU64::new(0),
         }
     }
-    
+
     /// Load current state using seqlock pattern
     ///
     /// Wait-free under low contention, may retry under concurrent writes.
     pub fn load(&self) -> (Option<u128>, usize) {
         loop {
             let seq1 = self.sequence.load(Ordering::Acquire);
-            
+
             // Read all fields
             let ep_lo = self.entry_point.load(Ordering::Relaxed);
             let ep_hi = self.entry_point_hi.load(Ordering::Relaxed);
             let ml = self.max_layer.load(Ordering::Relaxed);
-            
+
             let seq2 = self.sequence.load(Ordering::Acquire);
-            
+
             // Check consistency
             if seq1 == seq2 && seq1 % 2 == 0 {
                 let ep = if ep_lo == u64::MAX && ep_hi == u64::MAX {
@@ -293,21 +286,22 @@ impl AtomicNavigationStateU128 {
                 };
                 return (ep, ml as usize);
             }
-            
+
             // Concurrent write in progress, spin
             std::hint::spin_loop();
         }
     }
-    
+
     /// Store new state
     pub fn store(&self, entry_point: Option<u128>, max_layer: usize) {
         // Increment sequence (odd = write in progress)
         self.sequence.fetch_add(1, Ordering::Release);
-        
+
         match entry_point {
             Some(ep) => {
                 self.entry_point.store(ep as u64, Ordering::Relaxed);
-                self.entry_point_hi.store((ep >> 64) as u64, Ordering::Relaxed);
+                self.entry_point_hi
+                    .store((ep >> 64) as u64, Ordering::Relaxed);
             }
             None => {
                 self.entry_point.store(u64::MAX, Ordering::Relaxed);
@@ -315,21 +309,21 @@ impl AtomicNavigationStateU128 {
             }
         }
         self.max_layer.store(max_layer as u64, Ordering::Relaxed);
-        
+
         // Increment sequence (even = write complete)
         self.sequence.fetch_add(1, Ordering::Release);
     }
-    
+
     /// Update if new layer is higher
     pub fn update_if_higher(&self, new_ep: u128, new_max_layer: usize) -> bool {
         // Use simple lock-free pattern with retry
         loop {
             let (_, current_ml) = self.load();
-            
+
             if new_max_layer <= current_ml {
                 return false;
             }
-            
+
             // Try to increment sequence to odd (claim write)
             let seq = self.sequence.load(Ordering::Acquire);
             if seq % 2 != 0 {
@@ -337,21 +331,22 @@ impl AtomicNavigationStateU128 {
                 std::hint::spin_loop();
                 continue;
             }
-            
-            if self.sequence.compare_exchange_weak(
-                seq,
-                seq + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ).is_err() {
+
+            if self
+                .sequence
+                .compare_exchange_weak(seq, seq + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
                 continue;
             }
-            
+
             // We own the write lock
             self.entry_point.store(new_ep as u64, Ordering::Relaxed);
-            self.entry_point_hi.store((new_ep >> 64) as u64, Ordering::Relaxed);
-            self.max_layer.store(new_max_layer as u64, Ordering::Relaxed);
-            
+            self.entry_point_hi
+                .store((new_ep >> 64) as u64, Ordering::Relaxed);
+            self.max_layer
+                .store(new_max_layer as u64, Ordering::Relaxed);
+
             // Release write lock
             self.sequence.fetch_add(1, Ordering::Release);
             return true;
@@ -368,66 +363,66 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
-    
+
     #[test]
     fn test_pack_unpack() {
         let ep = Some(0x123456789ABCu64);
         let ml = 5usize;
-        
+
         let packed = pack_state(ep, ml);
         let (ep2, ml2) = unpack_state(packed);
-        
+
         assert_eq!(ep, ep2);
         assert_eq!(ml, ml2);
     }
-    
+
     #[test]
     fn test_empty_state() {
         let packed = pack_state(None, 0);
         let (ep, ml) = unpack_state(packed);
-        
+
         assert_eq!(ep, None);
         assert_eq!(ml, 0);
     }
-    
+
     #[test]
     fn test_atomic_nav_basic() {
         let nav = AtomicNavigationState::new();
-        
+
         assert!(nav.is_empty());
-        
+
         // Set first node
         assert!(nav.set_first(42, 3));
         assert!(!nav.is_empty());
-        
+
         let (ep, ml) = nav.load();
         assert_eq!(ep, Some(42));
         assert_eq!(ml, 3);
     }
-    
+
     #[test]
     fn test_update_if_higher() {
         let nav = AtomicNavigationState::with_initial(1, 2);
-        
+
         // Should fail: same layer
         assert!(!nav.update_if_higher(99, 2));
         assert_eq!(nav.load_entry_point(), Some(1));
-        
+
         // Should fail: lower layer
         assert!(!nav.update_if_higher(99, 1));
         assert_eq!(nav.load_entry_point(), Some(1));
-        
+
         // Should succeed: higher layer
         assert!(nav.update_if_higher(99, 5));
         assert_eq!(nav.load_entry_point(), Some(99));
         assert_eq!(nav.load_max_layer(), 5);
     }
-    
+
     #[test]
     fn test_concurrent_reads() {
         let nav = Arc::new(AtomicNavigationState::with_initial(42, 5));
         let mut handles = vec![];
-        
+
         for _ in 0..8 {
             let nav = Arc::clone(&nav);
             handles.push(thread::spawn(move || {
@@ -438,17 +433,17 @@ mod tests {
                 }
             }));
         }
-        
+
         for h in handles {
             h.join().unwrap();
         }
     }
-    
+
     #[test]
     fn test_concurrent_updates() {
         let nav = Arc::new(AtomicNavigationState::new());
         let mut handles = vec![];
-        
+
         // First thread sets initial
         {
             let nav = Arc::clone(&nav);
@@ -456,7 +451,7 @@ mod tests {
                 nav.set_first(0, 0);
             }));
         }
-        
+
         // Other threads try to update with higher layers
         for i in 1..8 {
             let nav = Arc::clone(&nav);
@@ -466,27 +461,27 @@ mod tests {
                 }
             }));
         }
-        
+
         for h in handles {
             h.join().unwrap();
         }
-        
+
         // Final state should have highest layer
         let (_, ml) = nav.load();
         assert!(ml >= 19);
     }
-    
+
     #[test]
     fn test_u128_state() {
         let nav = AtomicNavigationStateU128::new();
-        
+
         let (ep, ml) = nav.load();
         assert_eq!(ep, None);
         assert_eq!(ml, 0);
-        
+
         let large_id: u128 = 0x123456789ABCDEF0_FEDCBA9876543210;
         nav.store(Some(large_id), 7);
-        
+
         let (ep, ml) = nav.load();
         assert_eq!(ep, Some(large_id));
         assert_eq!(ml, 7);

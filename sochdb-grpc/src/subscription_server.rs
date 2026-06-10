@@ -31,18 +31,17 @@
 
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tonic::{Request, Response, Status};
 
 use crate::proto::{
-    subscription_service_server::SubscriptionService,
     CancelSubscriptionRequest, CancelSubscriptionResponse, ListSubscriptionsRequest,
     ListSubscriptionsResponse, OperationType, SubscribeEvent, SubscribeRequest, SubscriptionInfo,
-    WatchKeyEvent, WatchKeyRequest,
+    WatchKeyEvent, WatchKeyRequest, subscription_service_server::SubscriptionService,
 };
 
 use sochdb_storage::cdc::{CdcLog, CdcOperation, CdcSubscriber};
@@ -67,8 +66,7 @@ struct SubMeta {
     cancel_tx: mpsc::Sender<()>,
 }
 
-type GrpcStream<T> =
-    Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send + 'static>>;
+type GrpcStream<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send + 'static>>;
 
 impl SubscriptionServer {
     /// Create a new subscription server backed by a CDC log.
@@ -118,9 +116,11 @@ impl SubscriptionServer {
     fn cdc_to_proto(event: &sochdb_storage::cdc::CdcEvent) -> SubscribeEvent {
         let (after_value, before_value, ddl) = match &event.operation {
             CdcOperation::Insert { after } => (after.clone(), vec![], String::new()),
-            CdcOperation::Update { before, after } => {
-                (after.clone(), before.clone().unwrap_or_default(), String::new())
-            }
+            CdcOperation::Update { before, after } => (
+                after.clone(),
+                before.clone().unwrap_or_default(),
+                String::new(),
+            ),
             CdcOperation::Delete { before } => {
                 (vec![], before.clone().unwrap_or_default(), String::new())
             }

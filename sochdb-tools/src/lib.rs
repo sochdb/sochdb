@@ -66,19 +66,21 @@
 //!     --dimension 768
 //! ```
 
-pub mod io;
-pub mod error;
-pub mod progress;
-pub mod guardrails;
 pub mod builder;
+pub mod error;
+pub mod guardrails;
+pub mod io;
 pub mod ordering;
+pub mod progress;
 
+pub use builder::{BuildConfig, BuildError, BuildResult, build_hnsw_index, build_hnsw_index_u128};
 pub use error::ToolsError;
-pub use io::{VectorReader, VectorFormat, VectorMeta, open_vectors, ids_from_mmap, open_ids};
+pub use guardrails::{check_safe_mode, check_throughput, log_insert_path, print_perf_summary};
 pub use io::raw::write_raw_f32;
-pub use io::{prefault_region, ensure_resident_for_hnsw, FaultTelemetry, FaultStats, with_telemetry};
-pub use io::{load_vectors_bulk, load_npy_bulk, load_bulk, OwnedVectors};
-pub use progress::{ProgressReporter, BulkStats};
-pub use guardrails::{check_safe_mode, check_throughput, print_perf_summary, log_insert_path};
-pub use builder::{build_hnsw_index, build_hnsw_index_u128, BuildConfig, BuildResult, BuildError};
-pub use ordering::{compute_ordering, OrderingStrategy, ReorderResult};
+pub use io::{
+    FaultStats, FaultTelemetry, ensure_resident_for_hnsw, prefault_region, with_telemetry,
+};
+pub use io::{OwnedVectors, load_bulk, load_npy_bulk, load_vectors_bulk};
+pub use io::{VectorFormat, VectorMeta, VectorReader, ids_from_mmap, open_ids, open_vectors};
+pub use ordering::{OrderingStrategy, ReorderResult, compute_ordering};
+pub use progress::{BulkStats, ProgressReporter};

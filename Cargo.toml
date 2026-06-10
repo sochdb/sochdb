@@ -13,6 +13,9 @@ members = [
     "sochdb-wasm",
     "sochdb-vector",
     "sochdb-tools",
+    "sochdb-simulation",
+    "sochdb-memory",
+    "sochdb-bench",
     "examples/rust",
 ]
 # sochdb-python is excluded from workspace - it must be built with maturin
@@ -55,10 +58,10 @@ resolver = "2"
 # =============================================================================
 
 [workspace.package]
-version = "2.0.2"
+version = "2.0.3"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 repository = "https://github.com/sochdb/sochdb"
 homepage = "https://sochdb.dev"
 documentation = "https://sochdb.dev"
@@ -170,7 +173,13 @@ clap = { version = "4.4", features = ["derive"] }
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# `unwind` (not `abort`) so the FFI panic firewall is actually active in release:
+# under `abort`, `catch_unwind` is a no-op and any panic kills the host process.
+# This is sound ONLY because every `extern "C"` boundary (sochdb-storage/src/ffi.rs
+# and sochdb-index ffi.rs/arrow_ipc.rs/profiling.rs) wraps its body in `ffi_guard!`,
+# so no panic can unwind into a foreign frame. Do NOT revert to `abort` without
+# accepting that bad FFI input will abort the host instead of returning an error.
+panic = "unwind"
 
 [profile.bench]
 inherits = "release"

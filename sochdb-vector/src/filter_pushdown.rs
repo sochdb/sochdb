@@ -130,7 +130,7 @@ impl Value {
 pub trait Filterable {
     /// Get field value by name.
     fn get_field(&self, name: &str) -> Option<Value>;
-    
+
     /// Get document ID.
     fn id(&self) -> u64;
 }
@@ -300,45 +300,42 @@ impl PredicateEvaluator {
     fn eval_expr<D: Filterable>(&self, expr: &PredicateExpr, doc: &D) -> FilterResult<Value> {
         match expr {
             PredicateExpr::Literal(v) => Ok(v.clone()),
-            
-            PredicateExpr::Field(name) => {
-                doc.get_field(name)
-                    .ok_or_else(|| FilterError::FieldNotFound(name.clone()))
-            }
-            
+
+            PredicateExpr::Field(name) => doc
+                .get_field(name)
+                .ok_or_else(|| FilterError::FieldNotFound(name.clone())),
+
             PredicateExpr::Compare { op, left, right } => {
                 let lval = self.eval_expr(left, doc)?;
                 let rval = self.eval_expr(right, doc)?;
                 Ok(Value::Bool(self.compare(*op, &lval, &rval)))
             }
-            
-            PredicateExpr::Logical { op, operands } => {
-                match op {
-                    LogicalOp::And => {
-                        for operand in operands {
-                            let val = self.eval_expr(operand, doc)?;
-                            if !val.is_truthy() {
-                                return Ok(Value::Bool(false));
-                            }
+
+            PredicateExpr::Logical { op, operands } => match op {
+                LogicalOp::And => {
+                    for operand in operands {
+                        let val = self.eval_expr(operand, doc)?;
+                        if !val.is_truthy() {
+                            return Ok(Value::Bool(false));
                         }
-                        Ok(Value::Bool(true))
                     }
-                    LogicalOp::Or => {
-                        for operand in operands {
-                            let val = self.eval_expr(operand, doc)?;
-                            if val.is_truthy() {
-                                return Ok(Value::Bool(true));
-                            }
-                        }
-                        Ok(Value::Bool(false))
-                    }
-                    LogicalOp::Not => {
-                        let val = self.eval_expr(&operands[0], doc)?;
-                        Ok(Value::Bool(!val.is_truthy()))
-                    }
+                    Ok(Value::Bool(true))
                 }
-            }
-            
+                LogicalOp::Or => {
+                    for operand in operands {
+                        let val = self.eval_expr(operand, doc)?;
+                        if val.is_truthy() {
+                            return Ok(Value::Bool(true));
+                        }
+                    }
+                    Ok(Value::Bool(false))
+                }
+                LogicalOp::Not => {
+                    let val = self.eval_expr(&operands[0], doc)?;
+                    Ok(Value::Bool(!val.is_truthy()))
+                }
+            },
+
             PredicateExpr::In { value, list } => {
                 let val = self.eval_expr(value, doc)?;
                 for item in list {
@@ -349,18 +346,18 @@ impl PredicateEvaluator {
                 }
                 Ok(Value::Bool(false))
             }
-            
+
             PredicateExpr::Between { value, low, high } => {
                 let val = self.eval_expr(value, doc)?;
                 let low_val = self.eval_expr(low, doc)?;
                 let high_val = self.eval_expr(high, doc)?;
-                
+
                 let ge_low = self.compare(CompareOp::Ge, &val, &low_val);
                 let le_high = self.compare(CompareOp::Le, &val, &high_val);
-                
+
                 Ok(Value::Bool(ge_low && le_high))
             }
-            
+
             PredicateExpr::IsNull(inner) => {
                 let val = self.eval_expr(inner, doc).unwrap_or(Value::Null);
                 Ok(Value::Bool(matches!(val, Value::Null)))
@@ -432,32 +429,25 @@ impl PredicateEvaluator {
             PredicateExpr::Field(_) => 0.5,
             PredicateExpr::Compare { op, .. } => {
                 match op {
-                    CompareOp::Eq => 0.1,      // Equality is selective
-                    CompareOp::Ne => 0.9,      // Not-equal is not selective
+                    CompareOp::Eq => 0.1, // Equality is selective
+                    CompareOp::Ne => 0.9, // Not-equal is not selective
                     CompareOp::Lt | CompareOp::Le | CompareOp::Gt | CompareOp::Ge => 0.3,
                     CompareOp::Contains | CompareOp::StartsWith | CompareOp::EndsWith => 0.2,
                 }
             }
             PredicateExpr::Logical { op, operands } => {
                 match op {
-                    LogicalOp::And => {
-                        operands.iter().map(Self::estimate_selectivity).product()
-                    }
+                    LogicalOp::And => operands.iter().map(Self::estimate_selectivity).product(),
                     LogicalOp::Or => {
-                        let sels: Vec<f64> = operands.iter()
-                            .map(Self::estimate_selectivity)
-                            .collect();
+                        let sels: Vec<f64> =
+                            operands.iter().map(Self::estimate_selectivity).collect();
                         // P(A or B) = P(A) + P(B) - P(A)*P(B)
                         sels.iter().fold(0.0, |acc, &s| acc + s - acc * s)
                     }
-                    LogicalOp::Not => {
-                        1.0 - Self::estimate_selectivity(&operands[0])
-                    }
+                    LogicalOp::Not => 1.0 - Self::estimate_selectivity(&operands[0]),
                 }
             }
-            PredicateExpr::In { list, .. } => {
-                (list.len() as f64 * 0.1).min(0.9)
-            }
+            PredicateExpr::In { list, .. } => (list.len() as f64 * 0.1).min(0.9),
             PredicateExpr::Between { .. } => 0.2,
             PredicateExpr::IsNull(_) => 0.05,
         }
@@ -468,15 +458,15 @@ impl PredicateEvaluator {
 pub trait FilterPlugin: Send + Sync {
     /// Plugin name.
     fn name(&self) -> &str;
-    
+
     /// Evaluate filter on document.
     fn evaluate(&self, doc: &dyn Filterable) -> FilterResult<bool>;
-    
+
     /// Estimated selectivity.
     fn selectivity(&self) -> f64 {
         0.5
     }
-    
+
     /// Estimated cost per evaluation (relative units).
     fn cost(&self) -> f64 {
         1.0
@@ -560,7 +550,9 @@ impl FilterPipeline {
         self.filters.sort_by(|a, b| {
             let score_a = (1.0 - a.selectivity()) / a.cost();
             let score_b = (1.0 - b.selectivity()) / b.cost();
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
 
@@ -715,12 +707,12 @@ impl WasmModule {
         // Check WASM magic number: \0asm
         if self.bytecode.len() < 8 {
             return Err(FilterError::PluginLoadError(
-                "WASM bytecode too short".to_string()
+                "WASM bytecode too short".to_string(),
             ));
         }
         if &self.bytecode[0..4] != b"\0asm" {
             return Err(FilterError::PluginLoadError(
-                "Invalid WASM magic number".to_string()
+                "Invalid WASM magic number".to_string(),
             ));
         }
         Ok(())
@@ -789,14 +781,14 @@ impl WasmFilter {
     /// 3. Deserialize result
     pub fn evaluate(&mut self, doc: &dyn Filterable) -> FilterResult<bool> {
         self.stats.evaluations += 1;
-        
+
         // Placeholder: actual WASM runtime integration would go here
         // For now, return a default based on document existence
         let _ = doc.id();
-        
+
         // Simulate some fuel consumption
         self.stats.fuel_consumed += 100;
-        
+
         // In production, this would execute the WASM module
         // with proper sandboxing via wasmtime/wasmer
         Ok(true)
@@ -852,7 +844,7 @@ impl WasmPluginRegistry {
     pub fn register(&mut self, module: WasmModule) -> FilterResult<()> {
         if self.plugins.len() >= self.max_plugins {
             return Err(FilterError::PluginLoadError(
-                "plugin registry full".to_string()
+                "plugin registry full".to_string(),
             ));
         }
 
@@ -925,7 +917,7 @@ mod tests {
             PredicateExpr::lit(Value::Int(30)),
         );
         let eval = PredicateEvaluator::new(expr);
-        
+
         let doc = sample_doc();
         assert!(eval.evaluate(&doc).unwrap());
     }
@@ -938,7 +930,7 @@ mod tests {
             right: Box::new(PredicateExpr::lit(Value::Float(90.0))),
         };
         let eval = PredicateEvaluator::new(expr);
-        
+
         let doc = sample_doc();
         assert!(eval.evaluate(&doc).unwrap());
     }
@@ -957,7 +949,7 @@ mod tests {
             },
         ]);
         let eval = PredicateEvaluator::new(expr);
-        
+
         let doc = sample_doc();
         assert!(eval.evaluate(&doc).unwrap());
     }
@@ -975,7 +967,7 @@ mod tests {
             ),
         ]);
         let eval = PredicateEvaluator::new(expr);
-        
+
         let doc = sample_doc();
         assert!(eval.evaluate(&doc).unwrap());
     }
@@ -988,7 +980,7 @@ mod tests {
             right: Box::new(PredicateExpr::lit(Value::String("lic".to_string()))),
         };
         let eval = PredicateEvaluator::new(expr);
-        
+
         let doc = sample_doc();
         assert!(eval.evaluate(&doc).unwrap());
     }
@@ -1001,7 +993,7 @@ mod tests {
             high: Box::new(PredicateExpr::lit(Value::Int(35))),
         };
         let eval = PredicateEvaluator::new(expr);
-        
+
         let doc = sample_doc();
         assert!(eval.evaluate(&doc).unwrap());
     }
@@ -1022,19 +1014,25 @@ mod tests {
     #[test]
     fn test_filter_pipeline() {
         let mut pipeline = FilterPipeline::new();
-        
-        let filter1 = Arc::new(NativeFilter::new("active_check", |doc| {
-            doc.get_field("active")
-                .map(|v| v.is_truthy())
-                .unwrap_or(false)
-        }).with_selectivity(0.8));
-        
-        let filter2 = Arc::new(NativeFilter::new("score_check", |doc| {
-            doc.get_field("score")
-                .and_then(|v| v.as_float())
-                .map(|s| s > 50.0)
-                .unwrap_or(false)
-        }).with_selectivity(0.3));
+
+        let filter1 = Arc::new(
+            NativeFilter::new("active_check", |doc| {
+                doc.get_field("active")
+                    .map(|v| v.is_truthy())
+                    .unwrap_or(false)
+            })
+            .with_selectivity(0.8),
+        );
+
+        let filter2 = Arc::new(
+            NativeFilter::new("score_check", |doc| {
+                doc.get_field("score")
+                    .and_then(|v| v.as_float())
+                    .map(|s| s > 50.0)
+                    .unwrap_or(false)
+            })
+            .with_selectivity(0.3),
+        );
 
         pipeline.add(filter1);
         pipeline.add(filter2);
@@ -1046,17 +1044,11 @@ mod tests {
     #[test]
     fn test_selectivity_estimation() {
         let expr = PredicateExpr::and(vec![
-            PredicateExpr::eq(
-                PredicateExpr::field("x"),
-                PredicateExpr::lit(Value::Int(1)),
-            ),
-            PredicateExpr::eq(
-                PredicateExpr::field("y"),
-                PredicateExpr::lit(Value::Int(2)),
-            ),
+            PredicateExpr::eq(PredicateExpr::field("x"), PredicateExpr::lit(Value::Int(1))),
+            PredicateExpr::eq(PredicateExpr::field("y"), PredicateExpr::lit(Value::Int(2))),
         ]);
         let eval = PredicateEvaluator::new(expr);
-        
+
         // AND of two equality checks: 0.1 * 0.1 = 0.01
         assert!((eval.selectivity() - 0.01).abs() < 0.001);
     }
@@ -1064,7 +1056,7 @@ mod tests {
     #[test]
     fn test_projection_include() {
         let proj = Projection::include(vec!["name".to_string(), "age".to_string()]);
-        
+
         assert!(proj.includes("name"));
         assert!(proj.includes("age"));
         assert!(!proj.includes("score"));
@@ -1074,7 +1066,7 @@ mod tests {
     fn test_projection_apply() {
         let proj = Projection::include(vec!["name".to_string()]);
         let doc = sample_doc();
-        
+
         let result = proj.apply(&doc);
         assert!(result.get_field("name").is_some());
         assert!(result.get_field("age").is_none());
@@ -1150,8 +1142,12 @@ mod tests {
         assert!(registry.is_empty());
 
         let wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
-        registry.register(WasmModule::new("filter1", wasm.clone())).unwrap();
-        registry.register(WasmModule::new("filter2", wasm.clone())).unwrap();
+        registry
+            .register(WasmModule::new("filter1", wasm.clone()))
+            .unwrap();
+        registry
+            .register(WasmModule::new("filter2", wasm.clone()))
+            .unwrap();
 
         assert_eq!(registry.len(), 2);
         assert!(registry.get("filter1").is_some());
@@ -1170,9 +1166,13 @@ mod tests {
         let mut registry = WasmPluginRegistry::with_max_plugins(2);
         let wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
-        registry.register(WasmModule::new("p1", wasm.clone())).unwrap();
-        registry.register(WasmModule::new("p2", wasm.clone())).unwrap();
-        
+        registry
+            .register(WasmModule::new("p1", wasm.clone()))
+            .unwrap();
+        registry
+            .register(WasmModule::new("p2", wasm.clone()))
+            .unwrap();
+
         // Third should fail
         let result = registry.register(WasmModule::new("p3", wasm));
         assert!(result.is_err());

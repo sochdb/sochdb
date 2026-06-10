@@ -171,4 +171,4 @@ Set `RUST_LOG=sochdb_mcp=debug` for verbose output.
 
 ## License
 
-Apache-2.0
+AGPL-3.0-or-later

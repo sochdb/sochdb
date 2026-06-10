@@ -75,10 +75,10 @@ pub enum WireFormat {
     /// TOON format (default, 40-66% fewer tokens than JSON)
     /// Optimized for LLM consumption.
     Soch,
-    
+
     /// Standard JSON for compatibility
     Json,
-    
+
     /// Raw columnar format for analytics
     /// More efficient for large result sets with projection pushdown.
     Columnar,
@@ -102,7 +102,7 @@ impl fmt::Display for WireFormat {
 
 impl std::str::FromStr for WireFormat {
     type Err = FormatConversionError;
-    
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "toon" => Ok(Self::Soch),
@@ -130,11 +130,11 @@ pub enum ContextFormat {
     /// TOON format (default, token-efficient)
     /// Structured data with minimal syntax overhead.
     Soch,
-    
+
     /// JSON format
     /// Widely understood by LLMs, good for structured data.
     Json,
-    
+
     /// Markdown format
     /// Best for human-readable context with formatting.
     Markdown,
@@ -158,7 +158,7 @@ impl fmt::Display for ContextFormat {
 
 impl std::str::FromStr for ContextFormat {
     type Err = FormatConversionError;
-    
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "toon" => Ok(Self::Soch),
@@ -170,7 +170,8 @@ impl std::str::FromStr for ContextFormat {
                 from: s.to_string(),
                 to: "ContextFormat".to_string(),
                 reason: "Plain text format is not supported. Use 'markdown' for \
-                        human-readable output or 'toon' for LLM-optimized output.".to_string(),
+                        human-readable output or 'toon' for LLM-optimized output."
+                    .to_string(),
             }),
             _ => Err(FormatConversionError {
                 from: s.to_string(),
@@ -188,7 +189,7 @@ impl std::str::FromStr for ContextFormat {
 /// Convert WireFormat to ContextFormat (where possible)
 impl TryFrom<WireFormat> for ContextFormat {
     type Error = FormatConversionError;
-    
+
     fn try_from(wire: WireFormat) -> Result<Self, Self::Error> {
         match wire {
             WireFormat::Soch => Ok(ContextFormat::Soch),
@@ -197,7 +198,8 @@ impl TryFrom<WireFormat> for ContextFormat {
                 from: "Columnar".to_string(),
                 to: "ContextFormat".to_string(),
                 reason: "Columnar format is for analytics, not LLM context. \
-                        Convert to Soch or Json first.".to_string(),
+                        Convert to Soch or Json first."
+                    .to_string(),
             }),
         }
     }
@@ -289,16 +291,16 @@ impl ContextFormat {
             },
         }
     }
-    
+
     /// Get the recommended format for a given use case
     pub fn recommended_for_llm() -> Self {
         Self::Soch
     }
-    
+
     pub fn recommended_for_human() -> Self {
         Self::Markdown
     }
-    
+
     pub fn recommended_for_api() -> Self {
         Self::Json
     }
@@ -337,25 +339,37 @@ impl CanonicalFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_wire_format_parsing() {
         assert_eq!("toon".parse::<WireFormat>().unwrap(), WireFormat::Soch);
         assert_eq!("json".parse::<WireFormat>().unwrap(), WireFormat::Json);
-        assert_eq!("columnar".parse::<WireFormat>().unwrap(), WireFormat::Columnar);
+        assert_eq!(
+            "columnar".parse::<WireFormat>().unwrap(),
+            WireFormat::Columnar
+        );
         assert!("invalid".parse::<WireFormat>().is_err());
     }
-    
+
     #[test]
     fn test_context_format_parsing() {
-        assert_eq!("toon".parse::<ContextFormat>().unwrap(), ContextFormat::Soch);
-        assert_eq!("json".parse::<ContextFormat>().unwrap(), ContextFormat::Json);
-        assert_eq!("markdown".parse::<ContextFormat>().unwrap(), ContextFormat::Markdown);
-        
+        assert_eq!(
+            "toon".parse::<ContextFormat>().unwrap(),
+            ContextFormat::Soch
+        );
+        assert_eq!(
+            "json".parse::<ContextFormat>().unwrap(),
+            ContextFormat::Json
+        );
+        assert_eq!(
+            "markdown".parse::<ContextFormat>().unwrap(),
+            ContextFormat::Markdown
+        );
+
         // "text" should fail - no more silent coercion to Soch
         assert!("text".parse::<ContextFormat>().is_err());
     }
-    
+
     #[test]
     fn test_wire_to_context_conversion() {
         assert_eq!(
@@ -366,33 +380,45 @@ mod tests {
             ContextFormat::try_from(WireFormat::Json).unwrap(),
             ContextFormat::Json
         );
-        
+
         // Columnar cannot convert to ContextFormat
         assert!(ContextFormat::try_from(WireFormat::Columnar).is_err());
     }
-    
+
     #[test]
     fn test_context_to_wire_conversion() {
         assert_eq!(WireFormat::from(ContextFormat::Soch), WireFormat::Soch);
         assert_eq!(WireFormat::from(ContextFormat::Json), WireFormat::Json);
         assert_eq!(WireFormat::from(ContextFormat::Markdown), WireFormat::Soch);
     }
-    
+
     #[test]
     fn test_round_trip_property() {
         // This test verifies the core requirement:
         // Converting to string and back should preserve the format
-        
+
         for format in [WireFormat::Soch, WireFormat::Json, WireFormat::Columnar] {
             let s = format.to_string();
             let parsed: WireFormat = s.parse().unwrap();
-            assert_eq!(format, parsed, "Round-trip failed for WireFormat::{:?}", format);
+            assert_eq!(
+                format, parsed,
+                "Round-trip failed for WireFormat::{:?}",
+                format
+            );
         }
-        
-        for format in [ContextFormat::Soch, ContextFormat::Json, ContextFormat::Markdown] {
+
+        for format in [
+            ContextFormat::Soch,
+            ContextFormat::Json,
+            ContextFormat::Markdown,
+        ] {
             let s = format.to_string();
             let parsed: ContextFormat = s.parse().unwrap();
-            assert_eq!(format, parsed, "Round-trip failed for ContextFormat::{:?}", format);
+            assert_eq!(
+                format, parsed,
+                "Round-trip failed for ContextFormat::{:?}",
+                format
+            );
         }
     }
 }

@@ -15,7 +15,7 @@ Uses real Azure OpenAI embeddings and GPT-4.1 for end-to-end validation.
 """
 
 # Copyright 2025 Sushanth (https://github.com/sushanthpy)
-# Licensed under the Apache License, Version 2.0
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
 import os
 import sys

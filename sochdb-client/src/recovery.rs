@@ -103,7 +103,9 @@ impl<'a> RecoveryManager<'a> {
     /// Perform recovery
     pub fn recover(&self) -> Result<RecoveryStatus> {
         // DurableStorage handles recovery via its recover() method
-        let stats = self.conn.storage
+        let stats = self
+            .conn
+            .storage
             .recover()
             .map_err(|e| ClientError::Storage(e.to_string()))?;
 
@@ -120,7 +122,9 @@ impl<'a> RecoveryManager<'a> {
     pub fn checkpoint(&self) -> Result<CheckpointResult> {
         let start = Instant::now();
 
-        let lsn = self.conn.storage
+        let lsn = self
+            .conn
+            .storage
             .checkpoint()
             .map_err(|e| ClientError::Storage(e.to_string()))?;
 

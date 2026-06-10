@@ -655,28 +655,39 @@ impl TypedColumn {
     pub fn value_at(&self, idx: usize) -> crate::SochValue {
         use crate::SochValue;
         match self {
-            TypedColumn::Int64 { values, validity, .. } => {
+            TypedColumn::Int64 {
+                values, validity, ..
+            } => {
                 if idx < values.len() && validity.is_valid(idx) {
                     SochValue::Int(values[idx])
                 } else {
                     SochValue::Null
                 }
             }
-            TypedColumn::UInt64 { values, validity, .. } => {
+            TypedColumn::UInt64 {
+                values, validity, ..
+            } => {
                 if idx < values.len() && validity.is_valid(idx) {
                     SochValue::UInt(values[idx])
                 } else {
                     SochValue::Null
                 }
             }
-            TypedColumn::Float64 { values, validity, .. } => {
+            TypedColumn::Float64 {
+                values, validity, ..
+            } => {
                 if idx < values.len() && validity.is_valid(idx) {
                     SochValue::Float(values[idx])
                 } else {
                     SochValue::Null
                 }
             }
-            TypedColumn::Text { offsets, data, validity, .. } => {
+            TypedColumn::Text {
+                offsets,
+                data,
+                validity,
+                ..
+            } => {
                 if idx + 1 < offsets.len() && validity.is_valid(idx) {
                     let start = offsets[idx] as usize;
                     let end = offsets[idx + 1] as usize;
@@ -687,7 +698,12 @@ impl TypedColumn {
                     SochValue::Null
                 }
             }
-            TypedColumn::Binary { offsets, data, validity, .. } => {
+            TypedColumn::Binary {
+                offsets,
+                data,
+                validity,
+                ..
+            } => {
                 if idx + 1 < offsets.len() && validity.is_valid(idx) {
                     let start = offsets[idx] as usize;
                     let end = offsets[idx + 1] as usize;
@@ -696,7 +712,12 @@ impl TypedColumn {
                     SochValue::Null
                 }
             }
-            TypedColumn::Bool { values, validity, len, .. } => {
+            TypedColumn::Bool {
+                values,
+                validity,
+                len,
+                ..
+            } => {
                 if idx < *len && validity.is_valid(idx) {
                     let word = idx / 64;
                     let bit = idx % 64;

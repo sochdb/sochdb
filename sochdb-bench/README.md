@@ -14,6 +14,16 @@ across four workload families:
 ## Quick Start
 
 ```bash
+
+cd ../sochdb/sochdb-bench
+
+# build once
+cargo build --release --bin sochdb-bench
+
+# the exact two runs behind this report
+./target/release/sochdb-bench --all --export ./bench-results-2026-06-08
+./target/release/sochdb-bench --all --scale 100000 --export ./bench-results-100k
+
 # Run all workloads at default scale (10 K ops)
 cargo run --release -- --all
 

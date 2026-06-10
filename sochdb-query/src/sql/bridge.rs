@@ -50,8 +50,8 @@ use super::ast::*;
 use super::compatibility::SqlDialect;
 use super::error::{SqlError, SqlResult};
 use super::parser::Parser;
-use std::collections::HashMap;
 use sochdb_core::SochValue;
+use std::collections::HashMap;
 
 /// Execution result types
 #[derive(Debug, Clone)]
@@ -339,26 +339,32 @@ impl<C: SqlConnection> SqlBridge<C> {
                 "EXPLAIN not yet implemented".into(),
             )),
             Statement::DefineScope(def) => {
-                self.scope_definitions.insert(def.name.clone(), ScopeDefinition {
-                    name: def.name.clone(),
-                    session_duration_secs: def.session_duration_secs,
-                    signin: def.signin.clone(),
-                    signup: def.signup.clone(),
-                });
+                self.scope_definitions.insert(
+                    def.name.clone(),
+                    ScopeDefinition {
+                        name: def.name.clone(),
+                        session_duration_secs: def.session_duration_secs,
+                        signin: def.signin.clone(),
+                        signup: def.signup.clone(),
+                    },
+                );
                 Ok(ExecutionResult::Ok)
-            },
+            }
             Statement::DefineTablePermissions(def) => {
                 let table_name = def.table.name().to_string();
-                self.table_permissions.insert(table_name.clone(), StoredTablePermissions {
-                    table: table_name,
-                    permissions: def.permissions.clone(),
-                });
+                self.table_permissions.insert(
+                    table_name.clone(),
+                    StoredTablePermissions {
+                        table: table_name,
+                        permissions: def.permissions.clone(),
+                    },
+                );
                 Ok(ExecutionResult::Ok)
-            },
+            }
             Statement::RemoveScope(name) => {
                 self.scope_definitions.remove(name);
                 Ok(ExecutionResult::Ok)
-            },
+            }
             Statement::Relate(_) => Err(SqlError::NotImplemented(
                 "RELATE not yet implemented — graph execution engine required".into(),
             )),
@@ -394,7 +400,7 @@ impl<C: SqlConnection> SqlBridge<C> {
             return self.execute_join_select(select, table_ref, params);
         }
 
-        // Simple single-table SELECT  
+        // Simple single-table SELECT
         let table_name = match table_ref {
             TableRef::Table { name, .. } => name.name().to_string(),
             TableRef::Subquery { .. } => {
@@ -491,8 +497,7 @@ impl<C: SqlConnection> SqlBridge<C> {
 
         // Project columns
         let select_columns = self.extract_select_columns(&select.columns)?;
-        let (result_columns, projected_rows) =
-            self.project_join_rows(&select_columns, &rows)?;
+        let (result_columns, projected_rows) = self.project_join_rows(&select_columns, &rows)?;
 
         Ok(ExecutionResult::Rows {
             columns: result_columns,
@@ -537,7 +542,13 @@ impl<C: SqlConnection> SqlBridge<C> {
             } => {
                 let left_rows = self.resolve_table_ref(left, params)?;
                 let right_rows = self.resolve_table_ref(right, params)?;
-                self.execute_join(&left_rows, &right_rows, *join_type, condition.as_ref(), params)
+                self.execute_join(
+                    &left_rows,
+                    &right_rows,
+                    *join_type,
+                    condition.as_ref(),
+                    params,
+                )
             }
             TableRef::Subquery { .. } => Err(SqlError::NotImplemented(
                 "Subqueries in FROM not yet supported".into(),
@@ -566,7 +577,7 @@ impl<C: SqlConnection> SqlBridge<C> {
             Some(JoinCondition::Natural) => {
                 return Err(SqlError::NotImplemented(
                     "NATURAL JOIN not yet supported".into(),
-                ))
+                ));
             }
             None => (None, None), // CROSS JOIN — no condition
         };
@@ -609,9 +620,7 @@ impl<C: SqlConnection> SqlBridge<C> {
             }
 
             // LEFT / FULL: emit left + NULLs if no match
-            if !found_match
-                && matches!(join_type, JoinType::Left | JoinType::Full)
-            {
+            if !found_match && matches!(join_type, JoinType::Left | JoinType::Full) {
                 result.push(Self::merge_rows(left, &null_right));
             }
         }
@@ -768,10 +777,7 @@ impl<C: SqlConnection> SqlBridge<C> {
     }
 
     /// Compare two optional SochValues for ordering.
-    fn compare_optional_values(
-        a: Option<&SochValue>,
-        b: Option<&SochValue>,
-    ) -> std::cmp::Ordering {
+    fn compare_optional_values(a: Option<&SochValue>, b: Option<&SochValue>) -> std::cmp::Ordering {
         match (a, b) {
             (None, None) => std::cmp::Ordering::Equal,
             (None, Some(_)) => std::cmp::Ordering::Less,
@@ -808,11 +814,8 @@ impl<C: SqlConnection> SqlBridge<C> {
                 .first()
                 .map(|r| {
                     // Return only qualified columns (containing '.') for clarity
-                    let mut cols: Vec<String> = r
-                        .keys()
-                        .filter(|k| k.contains('.'))
-                        .cloned()
-                        .collect();
+                    let mut cols: Vec<String> =
+                        r.keys().filter(|k| k.contains('.')).cloned().collect();
                     cols.sort();
                     if cols.is_empty() {
                         // Fallback: return all keys
@@ -830,7 +833,10 @@ impl<C: SqlConnection> SqlBridge<C> {
                         .iter()
                         .map(|c| {
                             let short = c.rsplit('.').next().unwrap_or(c);
-                            (short.to_string(), row.get(c).cloned().unwrap_or(SochValue::Null))
+                            (
+                                short.to_string(),
+                                row.get(c).cloned().unwrap_or(SochValue::Null),
+                            )
                         })
                         .collect()
                 })
@@ -853,10 +859,7 @@ impl<C: SqlConnection> SqlBridge<C> {
                     .or_else(|| {
                         // Try all qualified versions: "anything.col"
                         row.iter()
-                            .find(|(k, _)| {
-                                k.ends_with(&format!(".{}", col))
-                                    || k.as_str() == col
-                            })
+                            .find(|(k, _)| k.ends_with(&format!(".{}", col)) || k.as_str() == col)
                             .map(|(_, v)| v)
                     })
                     .cloned()
@@ -930,11 +933,8 @@ impl<C: SqlConnection> SqlBridge<C> {
         // Check table-level permission for DELETE
         self.check_table_permission(table_name, PermissionOp::Delete)?;
 
-        self.conn.delete(
-            table_name,
-            delete.where_clause.as_ref(),
-            params,
-        )
+        self.conn
+            .delete(table_name, delete.where_clause.as_ref(), params)
     }
 
     fn execute_create_table(&mut self, stmt: &CreateTableStmt) -> SqlResult<ExecutionResult> {
@@ -1114,7 +1114,11 @@ impl PlaceholderVisitor {
                     self.visit_expr(arg);
                 }
             }
-            Expr::Case { operand, conditions, else_result } => {
+            Expr::Case {
+                operand,
+                conditions,
+                else_result,
+            } => {
                 if let Some(op) = operand {
                     self.visit_expr(op);
                 }
@@ -1132,7 +1136,9 @@ impl PlaceholderVisitor {
                     self.visit_expr(item);
                 }
             }
-            Expr::Between { expr, low, high, .. } => {
+            Expr::Between {
+                expr, low, high, ..
+            } => {
                 self.visit_expr(expr);
                 self.visit_expr(low);
                 self.visit_expr(high);
@@ -1167,7 +1173,10 @@ mod tests {
 
     #[test]
     fn test_dialect_detection() {
-        assert_eq!(SqlDialect::detect("SELECT * FROM users"), SqlDialect::Standard);
+        assert_eq!(
+            SqlDialect::detect("SELECT * FROM users"),
+            SqlDialect::Standard
+        );
         assert_eq!(
             SqlDialect::detect("INSERT IGNORE INTO users VALUES (1)"),
             SqlDialect::MySQL
@@ -1196,7 +1205,9 @@ mod tests {
     fn test_remove_scope_deletes_definition() {
         use crate::sql::bridge::tests::make_mock_bridge;
         let mut bridge = make_mock_bridge();
-        bridge.execute("DEFINE SCOPE temp_scope SESSION 3600").unwrap();
+        bridge
+            .execute("DEFINE SCOPE temp_scope SESSION 3600")
+            .unwrap();
         assert!(bridge.get_scope("temp_scope").is_some());
         bridge.execute("REMOVE SCOPE temp_scope").unwrap();
         assert!(bridge.get_scope("temp_scope").is_none());
@@ -1206,9 +1217,8 @@ mod tests {
     fn test_define_table_permissions_stores_rules() {
         use crate::sql::bridge::tests::make_mock_bridge;
         let mut bridge = make_mock_bridge();
-        let result = bridge.execute(
-            "DEFINE TABLE posts PERMISSIONS FOR select WHERE true FOR delete WHERE false"
-        );
+        let result = bridge
+            .execute("DEFINE TABLE posts PERMISSIONS FOR select WHERE true FOR delete WHERE false");
         assert!(result.is_ok());
         let perms = bridge.get_table_permissions("posts");
         assert!(perms.is_some());
@@ -1222,19 +1232,37 @@ mod tests {
         bridge.execute(
             "DEFINE TABLE docs PERMISSIONS FOR select WHERE true FOR insert WHERE true FOR update WHERE true FOR delete WHERE true"
         ).unwrap();
-        assert!(bridge.check_table_permission("docs", PermissionOp::Select).is_ok());
-        assert!(bridge.check_table_permission("docs", PermissionOp::Create).is_ok());
-        assert!(bridge.check_table_permission("docs", PermissionOp::Update).is_ok());
-        assert!(bridge.check_table_permission("docs", PermissionOp::Delete).is_ok());
+        assert!(
+            bridge
+                .check_table_permission("docs", PermissionOp::Select)
+                .is_ok()
+        );
+        assert!(
+            bridge
+                .check_table_permission("docs", PermissionOp::Create)
+                .is_ok()
+        );
+        assert!(
+            bridge
+                .check_table_permission("docs", PermissionOp::Update)
+                .is_ok()
+        );
+        assert!(
+            bridge
+                .check_table_permission("docs", PermissionOp::Delete)
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_table_permission_check_denies_matching_false() {
         use crate::sql::bridge::tests::make_mock_bridge;
         let mut bridge = make_mock_bridge();
-        bridge.execute(
-            "DEFINE TABLE secrets PERMISSIONS FOR select WHERE false FOR delete WHERE false"
-        ).unwrap();
+        bridge
+            .execute(
+                "DEFINE TABLE secrets PERMISSIONS FOR select WHERE false FOR delete WHERE false",
+            )
+            .unwrap();
         let err = bridge.check_table_permission("secrets", PermissionOp::Select);
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Permission denied"));
@@ -1245,10 +1273,14 @@ mod tests {
         use crate::sql::bridge::tests::make_mock_bridge;
         let mut bridge = make_mock_bridge();
         // Only define SELECT — UPDATE should be denied since other rules exist
-        bridge.execute(
-            "DEFINE TABLE restricted PERMISSIONS FOR select WHERE true"
-        ).unwrap();
-        assert!(bridge.check_table_permission("restricted", PermissionOp::Select).is_ok());
+        bridge
+            .execute("DEFINE TABLE restricted PERMISSIONS FOR select WHERE true")
+            .unwrap();
+        assert!(
+            bridge
+                .check_table_permission("restricted", PermissionOp::Select)
+                .is_ok()
+        );
         let err = bridge.check_table_permission("restricted", PermissionOp::Update);
         assert!(err.is_err());
     }
@@ -1258,8 +1290,16 @@ mod tests {
         use crate::sql::bridge::tests::make_mock_bridge;
         let bridge = make_mock_bridge();
         // No permissions defined = everything allowed
-        assert!(bridge.check_table_permission("any_table", PermissionOp::Select).is_ok());
-        assert!(bridge.check_table_permission("any_table", PermissionOp::Delete).is_ok());
+        assert!(
+            bridge
+                .check_table_permission("any_table", PermissionOp::Select)
+                .is_ok()
+        );
+        assert!(
+            bridge
+                .check_table_permission("any_table", PermissionOp::Delete)
+                .is_ok()
+        );
     }
 
     // Helper: create a SqlBridge with a mock connection for permission tests
@@ -1271,29 +1311,88 @@ mod tests {
     struct MockPermConn;
 
     impl SqlConnection for MockPermConn {
-        fn select(&self, _: &str, _: &[String], _: Option<&Expr>, _: &[OrderByItem], _: Option<usize>, _: Option<usize>, _: &[SochValue]) -> SqlResult<ExecutionResult> {
-            Ok(ExecutionResult::Rows { columns: vec![], rows: vec![] })
+        fn select(
+            &self,
+            _: &str,
+            _: &[String],
+            _: Option<&Expr>,
+            _: &[OrderByItem],
+            _: Option<usize>,
+            _: Option<usize>,
+            _: &[SochValue],
+        ) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Rows {
+                columns: vec![],
+                rows: vec![],
+            })
         }
-        fn insert(&mut self, _: &str, _: Option<&[String]>, _: &[Vec<Expr>], _: Option<&OnConflict>, _: &[SochValue]) -> SqlResult<ExecutionResult> {
+        fn insert(
+            &mut self,
+            _: &str,
+            _: Option<&[String]>,
+            _: &[Vec<Expr>],
+            _: Option<&OnConflict>,
+            _: &[SochValue],
+        ) -> SqlResult<ExecutionResult> {
             Ok(ExecutionResult::RowsAffected(0))
         }
-        fn update(&mut self, _: &str, _: &[Assignment], _: Option<&Expr>, _: &[SochValue]) -> SqlResult<ExecutionResult> {
+        fn update(
+            &mut self,
+            _: &str,
+            _: &[Assignment],
+            _: Option<&Expr>,
+            _: &[SochValue],
+        ) -> SqlResult<ExecutionResult> {
             Ok(ExecutionResult::RowsAffected(0))
         }
-        fn delete(&mut self, _: &str, _: Option<&Expr>, _: &[SochValue]) -> SqlResult<ExecutionResult> {
+        fn delete(
+            &mut self,
+            _: &str,
+            _: Option<&Expr>,
+            _: &[SochValue],
+        ) -> SqlResult<ExecutionResult> {
             Ok(ExecutionResult::RowsAffected(0))
         }
-        fn create_table(&mut self, _: &CreateTableStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn drop_table(&mut self, _: &DropTableStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn create_index(&mut self, _: &CreateIndexStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn drop_index(&mut self, _: &DropIndexStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn alter_table(&mut self, _: &AlterTableStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::Ok) }
-        fn begin(&mut self, _: &BeginStmt) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::TransactionOk) }
-        fn commit(&mut self) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::TransactionOk) }
-        fn rollback(&mut self, _: Option<&str>) -> SqlResult<ExecutionResult> { Ok(ExecutionResult::TransactionOk) }
-        fn table_exists(&self, _: &str) -> SqlResult<bool> { Ok(true) }
-        fn index_exists(&self, _: &str) -> SqlResult<bool> { Ok(false) }
-        fn scan_all(&self, _: &str, _: &[String]) -> SqlResult<Vec<HashMap<String, SochValue>>> { Ok(vec![]) }
-        fn eval_join_predicate(&self, _: &Expr, _: &HashMap<String, SochValue>, _: &[SochValue]) -> Option<bool> { Some(true) }
+        fn create_table(&mut self, _: &CreateTableStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn drop_table(&mut self, _: &DropTableStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn create_index(&mut self, _: &CreateIndexStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn drop_index(&mut self, _: &DropIndexStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn alter_table(&mut self, _: &AlterTableStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::Ok)
+        }
+        fn begin(&mut self, _: &BeginStmt) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::TransactionOk)
+        }
+        fn commit(&mut self) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::TransactionOk)
+        }
+        fn rollback(&mut self, _: Option<&str>) -> SqlResult<ExecutionResult> {
+            Ok(ExecutionResult::TransactionOk)
+        }
+        fn table_exists(&self, _: &str) -> SqlResult<bool> {
+            Ok(true)
+        }
+        fn index_exists(&self, _: &str) -> SqlResult<bool> {
+            Ok(false)
+        }
+        fn scan_all(&self, _: &str, _: &[String]) -> SqlResult<Vec<HashMap<String, SochValue>>> {
+            Ok(vec![])
+        }
+        fn eval_join_predicate(
+            &self,
+            _: &Expr,
+            _: &HashMap<String, SochValue>,
+            _: &[SochValue],
+        ) -> Option<bool> {
+            Some(true)
+        }
     }
 }

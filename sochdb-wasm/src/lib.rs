@@ -68,8 +68,8 @@
 //! wasm-pack build --target bundler --release
 //! ```
 
-use wasm_bindgen::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
 mod hnsw_core;
 

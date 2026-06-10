@@ -57,8 +57,8 @@
 use crate::error::{KernelError, KernelResult};
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 // ============================================================================
@@ -86,7 +86,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             memory_limit_bytes: 64 * 1024 * 1024, // 64 MB
-            timeout_ms: 5000,                      // 5 seconds
+            timeout_ms: 5000,                     // 5 seconds
             packages: vec![],
             debug: false,
             allow_network: false,
@@ -99,13 +99,9 @@ impl RuntimeConfig {
     /// Create config with ML packages (numpy, pandas, sklearn)
     pub fn with_ml_packages() -> Self {
         Self {
-            packages: vec![
-                "numpy".into(),
-                "pandas".into(),
-                "scikit-learn".into(),
-            ],
+            packages: vec!["numpy".into(), "pandas".into(), "scikit-learn".into()],
             memory_limit_bytes: 256 * 1024 * 1024, // 256 MB for ML
-            timeout_ms: 30000,                      // 30s for model inference
+            timeout_ms: 30000,                     // 30s for model inference
             ..Default::default()
         }
     }
@@ -114,7 +110,7 @@ impl RuntimeConfig {
     pub fn lightweight() -> Self {
         Self {
             memory_limit_bytes: 16 * 1024 * 1024, // 16 MB
-            timeout_ms: 100,                       // 100ms
+            timeout_ms: 100,                      // 100ms
             packages: vec![],
             ..Default::default()
         }
@@ -165,7 +161,10 @@ impl TriggerEvent {
     }
 
     pub fn is_before(&self) -> bool {
-        matches!(self, Self::BeforeInsert | Self::BeforeUpdate | Self::BeforeDelete)
+        matches!(
+            self,
+            Self::BeforeInsert | Self::BeforeUpdate | Self::BeforeDelete
+        )
     }
 }
 
@@ -335,7 +334,9 @@ impl PyodideRuntime {
                     eprintln!("[Pyodide] Installing package: {}", pkg);
                 }
                 installed.push(pkg.to_string());
-                self.stats.packages_installed.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .packages_installed
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
         Ok(())
@@ -442,7 +443,9 @@ impl PyodideRuntime {
         }
 
         let elapsed = start.elapsed().as_micros() as u64;
-        self.stats.total_time_us.fetch_add(elapsed, Ordering::Relaxed);
+        self.stats
+            .total_time_us
+            .fetch_add(elapsed, Ordering::Relaxed);
 
         Ok(TriggerResult::Continue(Some(current_row)))
     }
@@ -566,9 +569,19 @@ impl PyodideRuntime {
         }
 
         // Check for required handler function
-        let handlers = ["on_insert", "on_before_insert", "on_after_insert", 
-                        "on_update", "on_delete", "on_batch", "handler"];
-        if !handlers.iter().any(|h| code.contains(&format!("def {}(", h))) {
+        let handlers = [
+            "on_insert",
+            "on_before_insert",
+            "on_after_insert",
+            "on_update",
+            "on_delete",
+            "on_batch",
+            "handler",
+        ];
+        if !handlers
+            .iter()
+            .any(|h| code.contains(&format!("def {}(", h)))
+        {
             return Err(KernelError::Plugin {
                 message: "Code must define a handler function".to_string(),
             });
@@ -678,12 +691,14 @@ mod tests {
         let runtime = PyodideRuntime::new(RuntimeConfig::default());
 
         let plugin = PythonPlugin::new("amount_check")
-            .with_code(r#"
+            .with_code(
+                r#"
 def on_insert(row):
     if row["amount"] > 10000:
         raise TriggerAbort("Amount too high")
     return row
-"#)
+"#,
+            )
             .with_trigger("orders", TriggerEvent::BeforeInsert);
 
         runtime.register(plugin).unwrap();
@@ -698,7 +713,9 @@ def on_insert(row):
             batch_json: None,
         };
 
-        let result = runtime.fire("orders", TriggerEvent::BeforeInsert, &context).await;
+        let result = runtime
+            .fire("orders", TriggerEvent::BeforeInsert, &context)
+            .await;
         assert!(matches!(result, Ok(TriggerResult::Continue(_))));
 
         // Test high amount (should abort)
@@ -711,7 +728,9 @@ def on_insert(row):
             batch_json: None,
         };
 
-        let result2 = runtime.fire("orders", TriggerEvent::BeforeInsert, &context2).await;
+        let result2 = runtime
+            .fire("orders", TriggerEvent::BeforeInsert, &context2)
+            .await;
         assert!(matches!(result2, Ok(TriggerResult::Abort { .. })));
     }
 
@@ -720,7 +739,11 @@ def on_insert(row):
         let runtime = PyodideRuntime::new(RuntimeConfig::default());
 
         // Valid code
-        assert!(runtime.validate_code("def on_insert(row): return row").is_ok());
+        assert!(
+            runtime
+                .validate_code("def on_insert(row): return row")
+                .is_ok()
+        );
 
         // Forbidden pattern
         assert!(runtime.validate_code("import subprocess").is_err());

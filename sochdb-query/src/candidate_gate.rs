@@ -65,16 +65,16 @@ use std::sync::Arc;
 pub enum AllowedSet {
     /// All documents are allowed (no filter constraint)
     All,
-    
+
     /// Bitmap representation (efficient for dense sets)
     Bitmap(Arc<AllowedBitmap>),
-    
+
     /// Sorted vector (efficient for sparse sets with iteration)
     SortedVec(Arc<Vec<u64>>),
-    
+
     /// Hash set (efficient for random access)
     HashSet(Arc<HashSet<u64>>),
-    
+
     /// No documents allowed (empty result shortcut)
     None,
 }
@@ -90,7 +90,7 @@ impl AllowedSet {
             Self::Bitmap(Arc::new(bitmap))
         }
     }
-    
+
     /// Create an AllowedSet from a sorted vector of doc IDs
     pub fn from_sorted_vec(mut ids: Vec<u64>) -> Self {
         if ids.is_empty() {
@@ -100,7 +100,7 @@ impl AllowedSet {
         ids.dedup();
         Self::SortedVec(Arc::new(ids))
     }
-    
+
     /// Create an AllowedSet from an iterator of doc IDs
     pub fn from_iter(ids: impl IntoIterator<Item = u64>) -> Self {
         let set: HashSet<u64> = ids.into_iter().collect();
@@ -110,7 +110,7 @@ impl AllowedSet {
             Self::HashSet(Arc::new(set))
         }
     }
-    
+
     /// Check if a document ID is allowed
     ///
     /// This is the core operation that executors MUST call.
@@ -124,17 +124,17 @@ impl AllowedSet {
             Self::None => false,
         }
     }
-    
+
     /// Check if this set is empty (no allowed documents)
     pub fn is_empty(&self) -> bool {
         matches!(self, Self::None)
     }
-    
+
     /// Check if this set allows all documents
     pub fn is_all(&self) -> bool {
         matches!(self, Self::All)
     }
-    
+
     /// Get the cardinality (number of allowed documents)
     ///
     /// Returns None for All (unknown without universe size)
@@ -147,7 +147,7 @@ impl AllowedSet {
             Self::None => Some(0),
         }
     }
-    
+
     /// Compute selectivity against a universe of size N
     ///
     /// Returns |S| / N, the fraction of allowed documents
@@ -158,21 +158,20 @@ impl AllowedSet {
         match self {
             Self::All => 1.0,
             Self::None => 0.0,
-            other => {
-                other.cardinality()
-                    .map(|c| c as f64 / universe_size as f64)
-                    .unwrap_or(1.0)
-            }
+            other => other
+                .cardinality()
+                .map(|c| c as f64 / universe_size as f64)
+                .unwrap_or(1.0),
         }
     }
-    
+
     /// Intersect with another AllowedSet
     pub fn intersect(&self, other: &AllowedSet) -> AllowedSet {
         match (self, other) {
             // Identity cases
             (Self::All, x) | (x, Self::All) => x.clone(),
             (Self::None, _) | (_, Self::None) => Self::None,
-            
+
             // Both are sets - compute intersection
             (Self::SortedVec(a), Self::SortedVec(b)) => {
                 let result = sorted_vec_intersect(a, b);
@@ -190,7 +189,7 @@ impl AllowedSet {
                 let result = a.intersect(b);
                 Self::from_bitmap(result)
             }
-            
+
             // Mixed - convert to hash set
             (a, b) => {
                 let set_a: HashSet<u64> = a.iter().collect();
@@ -204,18 +203,18 @@ impl AllowedSet {
             }
         }
     }
-    
+
     /// Union with another AllowedSet
     pub fn union(&self, other: &AllowedSet) -> AllowedSet {
         match (self, other) {
             (Self::All, _) | (_, Self::All) => Self::All,
             (Self::None, x) | (x, Self::None) => x.clone(),
-            
+
             (Self::HashSet(a), Self::HashSet(b)) => {
                 let result: HashSet<_> = a.union(b).copied().collect();
                 Self::HashSet(Arc::new(result))
             }
-            
+
             // Mixed - convert to hash set
             (a, b) => {
                 let mut result: HashSet<u64> = a.iter().collect();
@@ -224,7 +223,7 @@ impl AllowedSet {
             }
         }
     }
-    
+
     /// Iterate over allowed document IDs
     ///
     /// Note: For All, this returns an empty iterator (unknown universe)
@@ -237,7 +236,7 @@ impl AllowedSet {
             Self::None => AllowedSetIter::Empty,
         }
     }
-    
+
     /// Convert to a Vec (for small sets)
     pub fn to_vec(&self) -> Vec<u64> {
         self.iter().collect()
@@ -267,7 +266,7 @@ fn sorted_vec_intersect(a: &[u64], b: &[u64]) -> Vec<u64> {
     let mut result = Vec::with_capacity(a.len().min(b.len()));
     let mut i = 0;
     let mut j = 0;
-    
+
     while i < a.len() && j < b.len() {
         match a[i].cmp(&b[j]) {
             std::cmp::Ordering::Less => i += 1,
@@ -279,7 +278,7 @@ fn sorted_vec_intersect(a: &[u64], b: &[u64]) -> Vec<u64> {
             }
         }
     }
-    
+
     result
 }
 
@@ -297,7 +296,7 @@ pub enum AllowedSetIter<'a> {
 
 impl<'a> Iterator for AllowedSetIter<'a> {
     type Item = u64;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Empty => None,
@@ -306,7 +305,7 @@ impl<'a> Iterator for AllowedSetIter<'a> {
             Self::HashSet(iter) => iter.next().copied(),
         }
     }
-    
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Empty => (0, Some(0)),
@@ -343,7 +342,7 @@ impl AllowedBitmap {
             all: false,
         }
     }
-    
+
     /// Create a bitmap with all bits set up to max_id
     pub fn all(max_id: u64) -> Self {
         let word_count = (max_id as usize / 64) + 1;
@@ -353,54 +352,54 @@ impl AllowedBitmap {
             all: true,
         }
     }
-    
+
     /// Create a bitmap from a set of IDs
     pub fn from_ids(ids: &[u64]) -> Self {
         if ids.is_empty() {
             return Self::new();
         }
-        
+
         let max_id = *ids.iter().max().unwrap();
         let word_count = (max_id as usize / 64) + 1;
         let mut words = vec![0u64; word_count];
-        
+
         for &id in ids {
             let word_idx = id as usize / 64;
             let bit_idx = id % 64;
             words[word_idx] |= 1 << bit_idx;
         }
-        
+
         Self {
             words,
             count: ids.len(),
             all: false,
         }
     }
-    
+
     /// Set a bit
     pub fn set(&mut self, id: u64) {
         let word_idx = id as usize / 64;
         let bit_idx = id % 64;
-        
+
         // Extend if necessary
         if word_idx >= self.words.len() {
             self.words.resize(word_idx + 1, 0);
         }
-        
+
         let old = self.words[word_idx];
         self.words[word_idx] |= 1 << bit_idx;
         if old != self.words[word_idx] {
             self.count += 1;
         }
     }
-    
+
     /// Clear a bit
     pub fn clear(&mut self, id: u64) {
         let word_idx = id as usize / 64;
         if word_idx >= self.words.len() {
             return;
         }
-        
+
         let bit_idx = id % 64;
         let old = self.words[word_idx];
         self.words[word_idx] &= !(1 << bit_idx);
@@ -408,7 +407,7 @@ impl AllowedBitmap {
             self.count -= 1;
         }
     }
-    
+
     /// Check if a bit is set
     #[inline]
     pub fn contains(&self, id: u64) -> bool {
@@ -419,47 +418,47 @@ impl AllowedBitmap {
         let bit_idx = id % 64;
         (self.words[word_idx] & (1 << bit_idx)) != 0
     }
-    
+
     /// Get the count of set bits
     pub fn count(&self) -> usize {
         self.count
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
-    
+
     /// Check if all bits are set
     pub fn is_all(&self) -> bool {
         self.all
     }
-    
+
     /// Intersect with another bitmap
     pub fn intersect(&self, other: &AllowedBitmap) -> AllowedBitmap {
         let min_len = self.words.len().min(other.words.len());
         let mut words = Vec::with_capacity(min_len);
         let mut count = 0;
-        
+
         for i in 0..min_len {
             let word = self.words[i] & other.words[i];
             count += word.count_ones() as usize;
             words.push(word);
         }
-        
+
         AllowedBitmap {
             words,
             count,
             all: false,
         }
     }
-    
+
     /// Union with another bitmap
     pub fn union(&self, other: &AllowedBitmap) -> AllowedBitmap {
         let max_len = self.words.len().max(other.words.len());
         let mut words = Vec::with_capacity(max_len);
         let mut count = 0;
-        
+
         for i in 0..max_len {
             let a = self.words.get(i).copied().unwrap_or(0);
             let b = other.words.get(i).copied().unwrap_or(0);
@@ -467,14 +466,14 @@ impl AllowedBitmap {
             count += word.count_ones() as usize;
             words.push(word);
         }
-        
+
         AllowedBitmap {
             words,
             count,
             all: false,
         }
     }
-    
+
     /// Iterate over set bit positions
     pub fn iter(&self) -> BitmapIter<'_> {
         BitmapIter {
@@ -502,37 +501,41 @@ pub struct BitmapIter<'a> {
 
 impl<'a> Iterator for BitmapIter<'a> {
     type Item = u64;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             return None;
         }
-        
+
         while self.word_idx < self.words.len() {
             let word = self.words[self.word_idx];
             let masked = word >> self.bit_offset;
-            
+
             if masked != 0 {
                 let trailing = masked.trailing_zeros() as u64;
                 let bit_pos = self.bit_offset + trailing;
                 self.bit_offset = bit_pos + 1;
-                
+
                 if self.bit_offset >= 64 {
                     self.bit_offset = 0;
                     self.word_idx += 1;
                 }
-                
+
                 self.remaining -= 1;
-                return Some(self.word_idx as u64 * 64 + bit_pos - (if self.bit_offset == 0 { 64 } else { 0 }) + (if bit_pos >= 64 { 0 } else { bit_pos }));
+                return Some(
+                    self.word_idx as u64 * 64 + bit_pos
+                        - (if self.bit_offset == 0 { 64 } else { 0 })
+                        + (if bit_pos >= 64 { 0 } else { bit_pos }),
+                );
             }
-            
+
             self.word_idx += 1;
             self.bit_offset = 0;
         }
-        
+
         None
     }
-    
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.remaining, Some(self.remaining))
     }
@@ -577,13 +580,13 @@ impl AllowedBitmap {
 pub trait CandidateGate {
     /// The query type
     type Query;
-    
+
     /// The result type  
     type Result;
-    
+
     /// The error type
     type Error;
-    
+
     /// Execute with a mandatory allowed set
     ///
     /// # Contract
@@ -596,7 +599,7 @@ pub trait CandidateGate {
         query: &Self::Query,
         allowed_set: &AllowedSet,
     ) -> Result<Self::Result, Self::Error>;
-    
+
     /// Get the execution strategy for a given selectivity
     fn strategy_for_selectivity(&self, selectivity: f64) -> ExecutionStrategy {
         if selectivity >= 0.1 {
@@ -614,13 +617,13 @@ pub trait CandidateGate {
 pub enum ExecutionStrategy {
     /// Standard search with filter check during traversal
     FilterDuringSearch,
-    
+
     /// Iterate over allowed IDs and compute distances
     ScanAllowedIds,
-    
+
     /// Fall back to linear scan (very low selectivity)
     LinearScan,
-    
+
     /// Refuse to execute (too expensive)
     Reject,
 }
@@ -632,48 +635,48 @@ pub enum ExecutionStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_allowed_set_contains() {
         // All
         let all = AllowedSet::All;
         assert!(all.contains(0));
         assert!(all.contains(1000000));
-        
+
         // None
         let none = AllowedSet::None;
         assert!(!none.contains(0));
-        
+
         // SortedVec
         let vec = AllowedSet::from_sorted_vec(vec![1, 3, 5, 7, 9]);
         assert!(vec.contains(1));
         assert!(vec.contains(5));
         assert!(!vec.contains(2));
         assert!(!vec.contains(10));
-        
+
         // HashSet
         let set = AllowedSet::from_iter([1, 3, 5, 7, 9]);
         assert!(set.contains(1));
         assert!(set.contains(5));
         assert!(!set.contains(2));
     }
-    
+
     #[test]
     fn test_allowed_set_selectivity() {
         let set = AllowedSet::from_sorted_vec(vec![1, 2, 3, 4, 5]);
-        
+
         assert_eq!(set.selectivity(100), 0.05);
         assert_eq!(set.selectivity(10), 0.5);
-        
+
         assert_eq!(AllowedSet::All.selectivity(100), 1.0);
         assert_eq!(AllowedSet::None.selectivity(100), 0.0);
     }
-    
+
     #[test]
     fn test_allowed_set_intersection() {
         let a = AllowedSet::from_sorted_vec(vec![1, 2, 3, 4, 5]);
         let b = AllowedSet::from_sorted_vec(vec![3, 4, 5, 6, 7]);
-        
+
         let c = a.intersect(&b);
         assert_eq!(c.cardinality(), Some(3));
         assert!(c.contains(3));
@@ -682,7 +685,7 @@ mod tests {
         assert!(!c.contains(1));
         assert!(!c.contains(7));
     }
-    
+
     #[test]
     fn test_bitmap_basic() {
         let mut bm = AllowedBitmap::new();
@@ -690,41 +693,41 @@ mod tests {
         bm.set(5);
         bm.set(64);
         bm.set(100);
-        
+
         assert!(bm.contains(0));
         assert!(bm.contains(5));
         assert!(bm.contains(64));
         assert!(bm.contains(100));
         assert!(!bm.contains(1));
         assert!(!bm.contains(63));
-        
+
         assert_eq!(bm.count(), 4);
     }
-    
+
     #[test]
     fn test_bitmap_from_ids() {
         let ids = vec![1, 5, 10, 100, 1000];
         let bm = AllowedBitmap::from_ids(&ids);
-        
+
         for &id in &ids {
             assert!(bm.contains(id));
         }
         assert!(!bm.contains(0));
         assert!(!bm.contains(50));
     }
-    
+
     #[test]
     fn test_bitmap_intersection() {
         let a = AllowedBitmap::from_ids(&[1, 2, 3, 4, 5]);
         let b = AllowedBitmap::from_ids(&[3, 4, 5, 6, 7]);
-        
+
         let c = a.intersect(&b);
         assert_eq!(c.count(), 3);
         assert!(c.contains(3));
         assert!(c.contains(4));
         assert!(c.contains(5));
     }
-    
+
     #[test]
     fn test_execution_strategy() {
         struct DummyGate;
@@ -736,10 +739,19 @@ mod tests {
                 Ok(())
             }
         }
-        
+
         let gate = DummyGate;
-        assert_eq!(gate.strategy_for_selectivity(0.5), ExecutionStrategy::FilterDuringSearch);
-        assert_eq!(gate.strategy_for_selectivity(0.01), ExecutionStrategy::ScanAllowedIds);
-        assert_eq!(gate.strategy_for_selectivity(0.0001), ExecutionStrategy::LinearScan);
+        assert_eq!(
+            gate.strategy_for_selectivity(0.5),
+            ExecutionStrategy::FilterDuringSearch
+        );
+        assert_eq!(
+            gate.strategy_for_selectivity(0.01),
+            ExecutionStrategy::ScanAllowedIds
+        );
+        assert_eq!(
+            gate.strategy_for_selectivity(0.0001),
+            ExecutionStrategy::LinearScan
+        );
     }
 }

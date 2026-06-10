@@ -16,22 +16,41 @@ fn main() {
 
     // Step 1: Demonstrate Capabilities Configuration
     println!("Step 1: Plugin Capabilities\n");
-    
+
     let default_caps = WasmPluginCapabilities::default();
     println!("   Default capabilities:");
-    println!("   - Memory limit: {} MB", default_caps.memory_limit_bytes / (1024 * 1024));
+    println!(
+        "   - Memory limit: {} MB",
+        default_caps.memory_limit_bytes / (1024 * 1024)
+    );
     println!("   - Fuel limit: {} instructions", default_caps.fuel_limit);
     println!("   - Timeout: {}ms", default_caps.timeout_ms);
     println!("   - Can vector search: {}", default_caps.can_vector_search);
     println!();
 
-    let readonly_caps = WasmPluginCapabilities::read_only(vec!["users".to_string(), "logs_*".to_string()]);
+    let readonly_caps =
+        WasmPluginCapabilities::read_only(vec!["users".to_string(), "logs_*".to_string()]);
     println!("   Read-only analytics capabilities:");
-    println!("   - Can read 'users' table: {}", readonly_caps.can_read("users"));
-    println!("   - Can read 'logs_2024' table: {}", readonly_caps.can_read("logs_2024"));
-    println!("   - Can read 'orders' table: {}", readonly_caps.can_read("orders"));
-    println!("   - Can write 'users' table: {}", readonly_caps.can_write("users"));
-    println!("   - Can vector search: {}", readonly_caps.can_vector_search);
+    println!(
+        "   - Can read 'users' table: {}",
+        readonly_caps.can_read("users")
+    );
+    println!(
+        "   - Can read 'logs_2024' table: {}",
+        readonly_caps.can_read("logs_2024")
+    );
+    println!(
+        "   - Can read 'orders' table: {}",
+        readonly_caps.can_read("orders")
+    );
+    println!(
+        "   - Can write 'users' table: {}",
+        readonly_caps.can_write("users")
+    );
+    println!(
+        "   - Can vector search: {}",
+        readonly_caps.can_vector_search
+    );
     println!();
 
     // Step 2: Create a single WASM plugin instance
@@ -47,10 +66,10 @@ fn main() {
     // Note: In production, this would be actual WASM bytes
     let fake_wasm_bytes = b"fake wasm module bytes for demo";
     let instance = WasmPluginInstance::new("my-analytics-plugin", fake_wasm_bytes, config).unwrap();
-    
+
     println!("   Plugin name: {}", instance.name());
     println!("   Plugin state: {:?}", instance.state());
-    
+
     // Initialize the plugin
     instance.init().unwrap();
     println!("   After init - state: {:?}", instance.state());
@@ -75,7 +94,7 @@ fn main() {
 
     // Step 4: Check plugin statistics
     println!("Step 4: Plugin Statistics\n");
-    
+
     let stats = instance.stats();
     println!("   Total calls: {}", stats.total_calls);
     println!("   Total fuel consumed: {}", stats.total_fuel_consumed);
@@ -89,9 +108,15 @@ fn main() {
     let registry = WasmPluginRegistry::new();
 
     // Load multiple plugins
-    registry.load("plugin-a", b"wasm bytes A", WasmInstanceConfig::default()).unwrap();
-    registry.load("plugin-b", b"wasm bytes B", WasmInstanceConfig::default()).unwrap();
-    registry.load("plugin-c", b"wasm bytes C", WasmInstanceConfig::default()).unwrap();
+    registry
+        .load("plugin-a", b"wasm bytes A", WasmInstanceConfig::default())
+        .unwrap();
+    registry
+        .load("plugin-b", b"wasm bytes B", WasmInstanceConfig::default())
+        .unwrap();
+    registry
+        .load("plugin-c", b"wasm bytes C", WasmInstanceConfig::default())
+        .unwrap();
 
     println!("   Registered plugins: {:?}", registry.list());
     println!("   Plugin count: {}", registry.count());
@@ -110,7 +135,10 @@ fn main() {
 
     // Global stats
     let (total_calls, total_traps) = registry.global_stats();
-    println!("   Global stats - calls: {}, traps: {}", total_calls, total_traps);
+    println!(
+        "   Global stats - calls: {}, traps: {}",
+        total_calls, total_traps
+    );
 
     // Unload a plugin
     registry.unload("plugin-b").unwrap();

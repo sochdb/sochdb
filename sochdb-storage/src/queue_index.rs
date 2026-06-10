@@ -68,12 +68,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use parking_lot::RwLock;
 
 use crate::index_policy::{IndexPolicy, TableIndexConfig, TableIndexRegistry};
-use crate::key_buffer::ArenaKeyHandle;
 
 // ============================================================================
 // QueueIndexConfig - Queue-Specific Configuration
@@ -220,20 +218,20 @@ impl CompositeQueueKey {
     /// Encode to bytes for storage
     pub fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(32 + self.task_id.len());
-        
+
         // Priority: map i64 to u64 preserving order
         let priority_encoded = (self.priority as i128 + i64::MAX as i128 + 1) as u64;
         bytes.extend_from_slice(&priority_encoded.to_be_bytes());
-        
+
         // Timestamp: big-endian
         bytes.extend_from_slice(&self.timestamp.to_be_bytes());
-        
+
         // Sequence: big-endian
         bytes.extend_from_slice(&self.sequence.to_be_bytes());
-        
+
         // Task ID
         bytes.extend_from_slice(self.task_id.as_bytes());
-        
+
         bytes
     }
 
@@ -242,14 +240,14 @@ impl CompositeQueueKey {
         if bytes.len() < 24 {
             return None;
         }
-        
+
         let priority_encoded = u64::from_be_bytes(bytes[0..8].try_into().ok()?);
         let priority = (priority_encoded as i128 - i64::MAX as i128 - 1) as i64;
-        
+
         let timestamp = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
         let sequence = u64::from_be_bytes(bytes[16..24].try_into().ok()?);
         let task_id = String::from_utf8(bytes[24..].to_vec()).ok()?;
-        
+
         Some(Self {
             priority,
             timestamp,
@@ -277,25 +275,26 @@ impl<V: Clone + Send + Sync> QueueIndex<V> {
     pub fn insert(&self, key: CompositeQueueKey, value: V) {
         let is_new_min = {
             let entries = self.entries.read();
-            entries.first_key_value()
+            entries
+                .first_key_value()
                 .map(|(min, _)| &key < min)
                 .unwrap_or(true)
         };
-        
+
         {
             let mut entries = self.entries.write();
             let was_absent = entries.insert(key.clone(), value).is_none();
-            
+
             if was_absent {
                 self.size.fetch_add(1, Ordering::Relaxed);
             }
         }
-        
+
         // Update min cache if this is the new minimum
         if is_new_min && self.config.enable_min_key_cache {
             *self.min_key_cache.write() = Some(key);
         }
-        
+
         self.version.fetch_add(1, Ordering::Release);
     }
 
@@ -313,19 +312,20 @@ impl<V: Clone + Send + Sync> QueueIndex<V> {
                 }
             }
         }
-        
+
         // Cache miss - scan
         let entries = self.entries.read();
-        let result = entries.first_key_value()
+        let result = entries
+            .first_key_value()
             .map(|(k, v)| (k.clone(), v.clone()));
-        
+
         // Update cache
         if self.config.enable_min_key_cache {
             if let Some((ref key, _)) = result {
                 *self.min_key_cache.write() = Some(key.clone());
             }
         }
-        
+
         result
     }
 
@@ -337,18 +337,18 @@ impl<V: Clone + Send + Sync> QueueIndex<V> {
             let mut entries = self.entries.write();
             entries.pop_first()
         };
-        
+
         if result.is_some() {
             self.size.fetch_sub(1, Ordering::Relaxed);
-            
+
             // Invalidate cache
             if self.config.enable_min_key_cache {
                 *self.min_key_cache.write() = None;
             }
-            
+
             self.version.fetch_add(1, Ordering::Release);
         }
-        
+
         result
     }
 
@@ -360,10 +360,10 @@ impl<V: Clone + Send + Sync> QueueIndex<V> {
             let mut entries = self.entries.write();
             entries.remove(key)
         };
-        
+
         if result.is_some() {
             self.size.fetch_sub(1, Ordering::Relaxed);
-            
+
             // Invalidate cache if we removed the cached min
             if self.config.enable_min_key_cache {
                 let should_invalidate = {
@@ -374,10 +374,10 @@ impl<V: Clone + Send + Sync> QueueIndex<V> {
                     *self.min_key_cache.write() = None;
                 }
             }
-            
+
             self.version.fetch_add(1, Ordering::Release);
         }
-        
+
         result
     }
 
@@ -425,8 +425,9 @@ impl<V: Clone + Send + Sync> QueueIndex<V> {
     /// Complexity: O(log N + K) where K is result count
     pub fn scan_by_priority(&self, max_priority: i64, limit: usize) -> Vec<(CompositeQueueKey, V)> {
         let entries = self.entries.read();
-        
-        entries.iter()
+
+        entries
+            .iter()
             .take_while(|(k, _)| k.priority <= max_priority)
             .take(limit)
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -438,8 +439,9 @@ impl<V: Clone + Send + Sync> QueueIndex<V> {
     /// Complexity: O(N) in worst case, but typically O(K) if data is time-ordered
     pub fn scan_ready(&self, now: u64, limit: usize) -> Vec<(CompositeQueueKey, V)> {
         let entries = self.entries.read();
-        
-        entries.iter()
+
+        entries
+            .iter()
             .filter(|(k, _)| k.timestamp <= now)
             .take(limit)
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -477,12 +479,11 @@ impl QueueTableRegistry {
     pub fn register_queue(&self, config: QueueIndexConfig) {
         // Register base config with ScanOptimized policy
         self.base.configure_table(config.base.clone());
-        
+
         // Store queue-specific config
-        self.queue_configs.write().insert(
-            config.base.table_name.clone(),
-            config,
-        );
+        self.queue_configs
+            .write()
+            .insert(config.base.table_name.clone(), config);
     }
 
     /// Check if a table is registered as a queue
@@ -540,13 +541,13 @@ mod tests {
         let k2 = CompositeQueueKey::new(2, 100, 1, "task2");
         let k3 = CompositeQueueKey::new(1, 200, 1, "task3");
         let k4 = CompositeQueueKey::new(1, 100, 2, "task4");
-        
+
         // Lower priority comes first
         assert!(k1 < k2);
-        
+
         // Same priority, earlier timestamp comes first
         assert!(k1 < k3);
-        
+
         // Same priority and timestamp, lower sequence comes first
         assert!(k1 < k4);
     }
@@ -556,7 +557,7 @@ mod tests {
         let original = CompositeQueueKey::new(-100, 12345, 999, "my-task-id");
         let encoded = original.encode();
         let decoded = CompositeQueueKey::decode(&encoded).unwrap();
-        
+
         assert_eq!(decoded.priority, original.priority);
         assert_eq!(decoded.timestamp, original.timestamp);
         assert_eq!(decoded.sequence, original.sequence);
@@ -567,25 +568,34 @@ mod tests {
     fn test_queue_index_insert_pop() {
         let config = QueueIndexConfig::new("test_queue");
         let index: QueueIndex<String> = QueueIndex::new(config);
-        
+
         // Insert with different priorities
-        index.insert(CompositeQueueKey::new(3, 100, 1, "low"), "low priority".to_string());
-        index.insert(CompositeQueueKey::new(1, 100, 1, "high"), "high priority".to_string());
-        index.insert(CompositeQueueKey::new(2, 100, 1, "medium"), "medium priority".to_string());
-        
+        index.insert(
+            CompositeQueueKey::new(3, 100, 1, "low"),
+            "low priority".to_string(),
+        );
+        index.insert(
+            CompositeQueueKey::new(1, 100, 1, "high"),
+            "high priority".to_string(),
+        );
+        index.insert(
+            CompositeQueueKey::new(2, 100, 1, "medium"),
+            "medium priority".to_string(),
+        );
+
         assert_eq!(index.len(), 3);
-        
+
         // Pop should return highest priority (lowest number) first
         let (key, value) = index.pop_min().unwrap();
         assert_eq!(key.priority, 1);
         assert_eq!(value, "high priority");
-        
+
         let (key, _) = index.pop_min().unwrap();
         assert_eq!(key.priority, 2);
-        
+
         let (key, _) = index.pop_min().unwrap();
         assert_eq!(key.priority, 3);
-        
+
         assert!(index.is_empty());
     }
 
@@ -593,18 +603,18 @@ mod tests {
     fn test_queue_index_peek() {
         let config = QueueIndexConfig::new("test_queue");
         let index: QueueIndex<i32> = QueueIndex::new(config);
-        
+
         index.insert(CompositeQueueKey::new(2, 100, 1, "task1"), 1);
         index.insert(CompositeQueueKey::new(1, 100, 1, "task2"), 2);
-        
+
         // Peek should return min without removing
         let (key, value) = index.peek_min().unwrap();
         assert_eq!(key.priority, 1);
         assert_eq!(value, 2);
-        
+
         // Should still have 2 items
         assert_eq!(index.len(), 2);
-        
+
         // Peek again (should hit cache)
         let (key, _) = index.peek_min().unwrap();
         assert_eq!(key.priority, 1);
@@ -614,18 +624,18 @@ mod tests {
     fn test_queue_index_remove() {
         let config = QueueIndexConfig::new("test_queue");
         let index: QueueIndex<i32> = QueueIndex::new(config);
-        
+
         let key1 = CompositeQueueKey::new(1, 100, 1, "task1");
         let key2 = CompositeQueueKey::new(2, 100, 1, "task2");
-        
+
         index.insert(key1.clone(), 1);
         index.insert(key2.clone(), 2);
-        
+
         // Remove by key
         let removed = index.remove(&key1);
         assert_eq!(removed, Some(1));
         assert_eq!(index.len(), 1);
-        
+
         // Pop should return remaining item
         let (key, _) = index.pop_min().unwrap();
         assert_eq!(key.task_id, "task2");
@@ -635,11 +645,14 @@ mod tests {
     fn test_scan_by_priority() {
         let config = QueueIndexConfig::new("test_queue");
         let index: QueueIndex<i32> = QueueIndex::new(config);
-        
+
         for i in 1..=10 {
-            index.insert(CompositeQueueKey::new(i, 100, 1, format!("task{}", i)), i as i32);
+            index.insert(
+                CompositeQueueKey::new(i, 100, 1, format!("task{}", i)),
+                i as i32,
+            );
         }
-        
+
         // Scan priority <= 3
         let results = index.scan_by_priority(3, 100);
         assert_eq!(results.len(), 3);
@@ -652,12 +665,12 @@ mod tests {
     fn test_scan_ready() {
         let config = QueueIndexConfig::new("test_queue");
         let index: QueueIndex<i32> = QueueIndex::new(config);
-        
+
         // Insert tasks with different ready times
         index.insert(CompositeQueueKey::new(1, 100, 1, "ready1"), 1);
         index.insert(CompositeQueueKey::new(1, 200, 1, "ready2"), 2);
         index.insert(CompositeQueueKey::new(1, 300, 1, "future"), 3);
-        
+
         // Scan ready at timestamp 200
         let results = index.scan_ready(200, 100);
         assert_eq!(results.len(), 2);
@@ -666,16 +679,16 @@ mod tests {
     #[test]
     fn test_queue_registry() {
         let registry = QueueTableRegistry::new();
-        
+
         let queue_config = QueueIndexConfig::new("task_queue")
             .with_priority_column("priority")
             .with_timestamp_column("ready_at");
-        
+
         registry.register_queue(queue_config);
-        
+
         assert!(registry.is_queue("task_queue"));
         assert!(!registry.is_queue("regular_table"));
-        
+
         let config = registry.get_queue_config("task_queue").unwrap();
         assert_eq!(config.priority_column, Some("priority".to_string()));
     }
@@ -684,17 +697,26 @@ mod tests {
     fn test_fifo_within_priority() {
         let config = QueueIndexConfig::new("test_queue");
         let index: QueueIndex<String> = QueueIndex::new(config);
-        
+
         // Insert tasks with same priority, different sequence
-        index.insert(CompositeQueueKey::new(1, 100, 3, "third"), "third".to_string());
-        index.insert(CompositeQueueKey::new(1, 100, 1, "first"), "first".to_string());
-        index.insert(CompositeQueueKey::new(1, 100, 2, "second"), "second".to_string());
-        
+        index.insert(
+            CompositeQueueKey::new(1, 100, 3, "third"),
+            "third".to_string(),
+        );
+        index.insert(
+            CompositeQueueKey::new(1, 100, 1, "first"),
+            "first".to_string(),
+        );
+        index.insert(
+            CompositeQueueKey::new(1, 100, 2, "second"),
+            "second".to_string(),
+        );
+
         // Should pop in sequence order (FIFO)
         let (_, v1) = index.pop_min().unwrap();
         let (_, v2) = index.pop_min().unwrap();
         let (_, v3) = index.pop_min().unwrap();
-        
+
         assert_eq!(v1, "first");
         assert_eq!(v2, "second");
         assert_eq!(v3, "third");

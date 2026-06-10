@@ -64,16 +64,16 @@
 //! - Flush strategy: Size-based, time-based, or manual
 //! - Background threads: 0 (sync flush) or 1+ (async flush)
 
+use crossbeam_channel::{Receiver, Sender, bounded};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
-use crossbeam_channel::{bounded, Sender, Receiver};
 
 use crate::hnsw::{HnswConfig, HnswIndex};
 use crate::hnsw_staged::{StagedBuilder, StagedConfig, StagedStats};
-use crate::vector_quantized::{QuantizedVector, Precision};
+use crate::vector_quantized::{Precision, QuantizedVector};
 
 // ============================================================================
 // Configuration
@@ -84,22 +84,22 @@ use crate::vector_quantized::{QuantizedVector, Precision};
 pub struct HotBufferConfig {
     /// HNSW configuration for the underlying index
     pub hnsw_config: HnswConfig,
-    
+
     /// Maximum hot buffer size before triggering flush
     /// Default: 10,000 vectors
     pub buffer_capacity: usize,
-    
+
     /// Number of background flush threads (0 = sync flush)
     /// Default: 1
     pub flush_threads: usize,
-    
+
     /// Staged builder config for flush operations
     pub staged_config: StagedConfig,
-    
+
     /// Auto-flush when buffer reaches capacity
     /// Default: true
     pub auto_flush: bool,
-    
+
     /// Precision for distance calculations
     pub precision: Precision,
 }
@@ -127,7 +127,7 @@ impl HotBufferConfig {
             ..Default::default()
         }
     }
-    
+
     /// Create config for high-throughput batch ingest
     pub fn for_high_throughput() -> Self {
         Self {
@@ -185,31 +185,31 @@ pub struct HotBufferStats {
 pub struct HotBufferHnsw {
     /// The underlying HNSW index
     hnsw: Arc<HnswIndex>,
-    
+
     /// Hot buffer for pending inserts (protected by RwLock for read-heavy access)
     buffer: RwLock<Vec<HotBufferEntry>>,
-    
+
     /// ID lookup in buffer (for dedup and contains check)
     buffer_ids: RwLock<HashMap<u128, usize>>,
-    
+
     /// Configuration
     config: HotBufferConfig,
-    
+
     /// Vector dimension
     dimension: usize,
-    
+
     /// Statistics
     stats: Mutex<HotBufferStats>,
-    
+
     /// Shutdown flag for background threads
     shutdown: Arc<AtomicBool>,
-    
+
     /// Channel for sending flush requests to background thread
     flush_tx: Option<Sender<FlushRequest>>,
-    
+
     /// Background flush thread handles
     flush_handles: Mutex<Vec<JoinHandle<()>>>,
-    
+
     /// Count of in-progress flushes
     flushes_in_progress: AtomicUsize,
 }
@@ -224,29 +224,29 @@ impl HotBufferHnsw {
     pub fn new(dimension: usize, config: HotBufferConfig) -> Self {
         let hnsw = Arc::new(HnswIndex::new(dimension, config.hnsw_config.clone()));
         let shutdown = Arc::new(AtomicBool::new(false));
-        
+
         // Create flush channel and background threads if configured
         let (flush_tx, flush_handles) = if config.flush_threads > 0 {
             let (tx, rx) = bounded::<FlushRequest>(config.flush_threads * 2);
             let mut handles = Vec::with_capacity(config.flush_threads);
-            
+
             for _ in 0..config.flush_threads {
                 let hnsw_clone = Arc::clone(&hnsw);
                 let rx_clone = rx.clone();
                 let shutdown_clone = Arc::clone(&shutdown);
                 let staged_config = config.staged_config.clone();
-                
+
                 let handle = thread::spawn(move || {
                     flush_worker(hnsw_clone, rx_clone, shutdown_clone, staged_config);
                 });
                 handles.push(handle);
             }
-            
+
             (Some(tx), handles)
         } else {
             (None, Vec::new())
         };
-        
+
         Self {
             hnsw,
             buffer: RwLock::new(Vec::with_capacity(config.buffer_capacity)),
@@ -260,7 +260,7 @@ impl HotBufferHnsw {
             flushes_in_progress: AtomicUsize::new(0),
         }
     }
-    
+
     /// Insert a vector into the hot buffer (O(1))
     ///
     /// The vector is NOT immediately added to HNSW. It lives in the hot buffer
@@ -269,71 +269,72 @@ impl HotBufferHnsw {
         if vector.len() != self.dimension {
             return Err(format!(
                 "Dimension mismatch: expected {}, got {}",
-                self.dimension, vector.len()
+                self.dimension,
+                vector.len()
             ));
         }
-        
+
         // Check if already in HNSW or buffer
         if self.hnsw.nodes.contains_key(&id) {
             return Err(format!("Vector {} already exists in HNSW", id));
         }
-        
+
         // Pre-compute quantized form for search
         let quantized = QuantizedVector::from_f32(
             ndarray::Array1::from_vec(vector.clone()),
             self.config.precision,
         );
-        
+
         let entry = HotBufferEntry {
             id,
             vector,
             quantized,
         };
-        
+
         // Insert into buffer
         let needs_flush = {
             let mut buffer = self.buffer.write();
             let mut ids = self.buffer_ids.write();
-            
+
             if ids.contains_key(&id) {
                 return Err(format!("Vector {} already exists in buffer", id));
             }
-            
+
             let idx = buffer.len();
             buffer.push(entry);
             ids.insert(id, idx);
-            
+
             // Update stats
             {
                 let mut stats = self.stats.lock();
                 stats.buffer_size = buffer.len();
                 stats.total_inserts += 1;
             }
-            
+
             self.config.auto_flush && buffer.len() >= self.config.buffer_capacity
         };
-        
+
         if needs_flush {
             self.trigger_flush()?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Insert multiple vectors (batch O(n) with amortized flush)
     pub fn insert_batch(&self, batch: &[(u128, Vec<f32>)]) -> Result<usize, String> {
         let mut inserted = 0;
-        
+
         for (id, vector) in batch {
             match self.insert(*id, vector.clone()) {
                 Ok(()) => inserted += 1,
                 Err(_) => continue,
             }
         }
-        
+
         Ok(inserted)
     }
-    
+
     /// Search for k nearest neighbors
     ///
     /// Merges results from:
@@ -343,22 +344,23 @@ impl HotBufferHnsw {
         if query.len() != self.dimension {
             return Err(format!(
                 "Query dimension mismatch: expected {}, got {}",
-                self.dimension, query.len()
+                self.dimension,
+                query.len()
             ));
         }
-        
+
         let query_quantized = QuantizedVector::from_f32(
             ndarray::Array1::from_vec(query.to_vec()),
             self.config.precision,
         );
-        
+
         // Search HNSW
         let mut hnsw_results = self.hnsw.search(query, k)?;
-        
+
         // Scan hot buffer
         let buffer_results = {
             let buffer = self.buffer.read();
-            
+
             // Update stats
             {
                 let mut stats = self.stats.lock();
@@ -367,7 +369,7 @@ impl HotBufferHnsw {
                     stats.buffer_hits += 1;
                 }
             }
-            
+
             let mut results: Vec<(u128, f32)> = buffer
                 .iter()
                 .map(|entry| {
@@ -375,31 +377,31 @@ impl HotBufferHnsw {
                     (entry.id, dist)
                 })
                 .collect();
-            
+
             results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
             results.truncate(k);
             results
         };
-        
+
         // Merge results
         hnsw_results.extend(buffer_results);
         hnsw_results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         hnsw_results.truncate(k);
-        
+
         Ok(hnsw_results)
     }
-    
+
     /// Trigger a flush of the hot buffer to HNSW
     ///
     /// If background threads are configured, this is async.
     /// Otherwise, this blocks until flush completes.
     pub fn trigger_flush(&self) -> Result<(), String> {
         let entries = self.drain_buffer();
-        
+
         if entries.is_empty() {
             return Ok(());
         }
-        
+
         // Update stats
         {
             let mut stats = self.stats.lock();
@@ -407,36 +409,37 @@ impl HotBufferHnsw {
             stats.flushes_in_progress += 1;
         }
         self.flushes_in_progress.fetch_add(1, Ordering::Relaxed);
-        
+
         if let Some(ref tx) = self.flush_tx {
             // Async flush via background thread
-            tx.send(FlushRequest { entries }).map_err(|e| e.to_string())?;
+            tx.send(FlushRequest { entries })
+                .map_err(|e| e.to_string())?;
         } else {
             // Sync flush
             self.sync_flush(entries)?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Force a synchronous flush (blocks until complete)
     pub fn flush_sync(&self) -> Result<StagedStats, String> {
         let entries = self.drain_buffer();
-        
+
         if entries.is_empty() {
             return Ok(StagedStats::default());
         }
-        
+
         self.sync_flush(entries)
     }
-    
+
     /// Wait for all background flushes to complete
     pub fn wait_for_flushes(&self) {
         while self.flushes_in_progress.load(Ordering::Relaxed) > 0 {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
-    
+
     /// Get current statistics
     pub fn stats(&self) -> HotBufferStats {
         let mut stats = self.stats.lock().clone();
@@ -444,58 +447,55 @@ impl HotBufferHnsw {
         stats.buffer_size = self.buffer.read().len();
         stats
     }
-    
+
     /// Get current buffer size
     pub fn buffer_len(&self) -> usize {
         self.buffer.read().len()
     }
-    
+
     /// Get total HNSW node count
     pub fn hnsw_len(&self) -> usize {
         self.hnsw.nodes.len()
     }
-    
+
     /// Get total vector count (HNSW + buffer)
     pub fn total_len(&self) -> usize {
         self.hnsw_len() + self.buffer_len()
     }
-    
+
     /// Get reference to underlying HNSW index
     pub fn hnsw(&self) -> &HnswIndex {
         &self.hnsw
     }
-    
+
     // ========================================================================
     // Internal Methods
     // ========================================================================
-    
+
     /// Drain the hot buffer and return entries
     fn drain_buffer(&self) -> Vec<HotBufferEntry> {
         let mut buffer = self.buffer.write();
         let mut ids = self.buffer_ids.write();
-        
+
         let entries = std::mem::take(&mut *buffer);
         ids.clear();
-        
+
         // Update stats
         {
             let mut stats = self.stats.lock();
             stats.buffer_size = 0;
         }
-        
+
         entries
     }
-    
+
     /// Perform synchronous flush of entries to HNSW
     fn sync_flush(&self, entries: Vec<HotBufferEntry>) -> Result<StagedStats, String> {
-        let batch: Vec<(u128, Vec<f32>)> = entries
-            .into_iter()
-            .map(|e| (e.id, e.vector))
-            .collect();
-        
+        let batch: Vec<(u128, Vec<f32>)> = entries.into_iter().map(|e| (e.id, e.vector)).collect();
+
         let builder = StagedBuilder::new(&self.hnsw, self.config.staged_config.clone());
         let (inserted, stats) = builder.insert_batch(&batch)?;
-        
+
         // Update stats
         {
             let mut s = self.stats.lock();
@@ -503,10 +503,10 @@ impl HotBufferHnsw {
             s.flushes_in_progress = s.flushes_in_progress.saturating_sub(1);
         }
         self.flushes_in_progress.fetch_sub(1, Ordering::Relaxed);
-        
+
         Ok(stats)
     }
-    
+
     /// Calculate distance between two quantized vectors
     fn calculate_distance(&self, a: &QuantizedVector, b: &QuantizedVector) -> f32 {
         match self.hnsw.config.metric {
@@ -527,10 +527,10 @@ impl Drop for HotBufferHnsw {
     fn drop(&mut self) {
         // Signal shutdown
         self.shutdown.store(true, Ordering::Release);
-        
+
         // Flush remaining buffer
         let _ = self.flush_sync();
-        
+
         // Wait for background threads
         let mut handles = self.flush_handles.lock();
         for handle in handles.drain(..) {
@@ -553,11 +553,12 @@ fn flush_worker(
     while !shutdown.load(Ordering::Acquire) {
         match rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(request) => {
-                let batch: Vec<(u128, Vec<f32>)> = request.entries
+                let batch: Vec<(u128, Vec<f32>)> = request
+                    .entries
                     .into_iter()
                     .map(|e| (e.id, e.vector))
                     .collect();
-                
+
                 let builder = StagedBuilder::new(&hnsw, staged_config.clone());
                 let _ = builder.insert_batch(&batch);
             }
@@ -580,7 +581,7 @@ fn flush_worker(
 mod tests {
     use super::*;
     use crate::hnsw::DistanceMetric;
-    
+
     #[test]
     fn test_hot_buffer_basic() {
         let config = HotBufferConfig {
@@ -598,26 +599,26 @@ mod tests {
             auto_flush: false,
             ..Default::default()
         };
-        
+
         let index = HotBufferHnsw::new(64, config);
-        
+
         // Insert some vectors
         for i in 0..50 {
             let vec: Vec<f32> = (0..64).map(|d| (i * 10 + d) as f32 / 1000.0).collect();
             index.insert(i as u128, vec).unwrap();
         }
-        
+
         assert_eq!(index.buffer_len(), 50);
         assert_eq!(index.hnsw_len(), 0);
-        
+
         // Flush to HNSW
         let stats = index.flush_sync().unwrap();
         assert!(stats.scaffold_count + stats.wave_count == 50);
-        
+
         assert_eq!(index.buffer_len(), 0);
         assert_eq!(index.hnsw_len(), 50);
     }
-    
+
     #[test]
     fn test_hot_buffer_search() {
         let config = HotBufferConfig {
@@ -635,32 +636,32 @@ mod tests {
             auto_flush: false,
             ..Default::default()
         };
-        
+
         let index = HotBufferHnsw::new(64, config);
-        
+
         // Insert vectors into HNSW (via flush)
         for i in 0..50 {
             let vec: Vec<f32> = (0..64).map(|d| (i * 100 + d) as f32).collect();
             index.insert(i as u128, vec).unwrap();
         }
         index.flush_sync().unwrap();
-        
+
         // Insert vectors into buffer (no flush)
         for i in 50..100 {
             let vec: Vec<f32> = (0..64).map(|d| (i * 100 + d) as f32).collect();
             index.insert(i as u128, vec).unwrap();
         }
-        
+
         // Query should find results from both
         let query: Vec<f32> = (0..64).map(|d| (75 * 100 + d) as f32).collect();
         let results = index.search(&query, 10).unwrap();
-        
+
         assert!(!results.is_empty());
         // Result 75 should be in top results (from buffer)
         let ids: Vec<u128> = results.iter().map(|(id, _)| *id).collect();
         assert!(ids.contains(&75));
     }
-    
+
     #[test]
     fn test_auto_flush() {
         let config = HotBufferConfig {
@@ -678,21 +679,21 @@ mod tests {
             auto_flush: true,
             ..Default::default()
         };
-        
+
         let index = HotBufferHnsw::new(64, config);
-        
+
         // Insert more than buffer capacity
         for i in 0..100 {
             let vec: Vec<f32> = (0..64).map(|d| (i * 10 + d) as f32 / 1000.0).collect();
             index.insert(i as u128, vec).unwrap();
         }
-        
+
         // Should have auto-flushed
         assert!(index.hnsw_len() > 0);
-        
+
         // Flush remaining
         index.flush_sync().unwrap();
-        
+
         assert_eq!(index.total_len(), 100);
     }
 }

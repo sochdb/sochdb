@@ -102,7 +102,7 @@ impl Iterator for ColumnIterator {
 }
 
 /// Storage facade exposing LSCS capabilities
-/// 
+///
 /// This facade delegates to the underlying SochConnection's storage backend,
 /// providing columnar access with projection pushdown.
 pub struct Storage {
@@ -142,17 +142,17 @@ impl Storage {
     }
 
     /// Force compaction
-    /// 
+    ///
     /// Triggers LSCS compaction on the underlying storage backend.
     /// Returns metrics about bytes compacted and files merged.
     pub fn compact(&self) -> Result<CompactionResult> {
         let start = std::time::Instant::now();
-        
+
         // Delegate to connection's storage backend
         let result = self.conn.compact();
-        
+
         let duration_ms = start.elapsed().as_millis() as u64;
-        
+
         match result {
             Ok(metrics) => Ok(CompactionResult {
                 bytes_compacted: metrics.bytes_compacted.unwrap_or(0),
@@ -173,12 +173,12 @@ impl Storage {
     /// Returns bytes flushed and duration.
     pub fn flush(&self) -> Result<FlushResult> {
         let start = std::time::Instant::now();
-        
+
         // Delegate to connection's storage backend
         let result = self.conn.flush();
-        
+
         let duration_ms = start.elapsed().as_millis() as u64;
-        
+
         match result {
             Ok(bytes) => {
                 let mut stats = self.stats.write();
@@ -196,16 +196,16 @@ impl Storage {
     }
 
     /// Get by key
-    /// 
+    ///
     /// Reads from memtable first, then L0 → ... → Ln SST files.
     /// Uses bloom filters for efficient negative lookups.
     pub fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let mut stats = self.stats.write();
         stats.blocks_read += 1;
-        
+
         // Build namespaced key: table:key
         let ns_key = format!("{}:{}", table, String::from_utf8_lossy(key));
-        
+
         // Delegate to connection's storage backend
         match self.conn.get(ns_key.as_bytes()) {
             Ok(Some(value)) => {
@@ -222,39 +222,39 @@ impl Storage {
     }
 
     /// Put key-value
-    /// 
+    ///
     /// Writes to WAL and memtable. Key is namespaced by table.
     pub fn put(&self, table: &str, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         let mut stats = self.stats.write();
         stats.bytes_written += (key.len() + value.len()) as u64;
-        
+
         // Build namespaced key: table:key
         let ns_key = format!("{}:{}", table, String::from_utf8_lossy(&key));
-        
+
         // Delegate to connection's storage backend
         self.conn.put(ns_key.into_bytes(), value)
     }
 
     /// Delete key
-    /// 
+    ///
     /// Writes a tombstone to WAL and memtable.
     pub fn delete(&self, table: &str, key: &[u8]) -> Result<()> {
         // Build namespaced key: table:key
         let ns_key = format!("{}:{}", table, String::from_utf8_lossy(key));
-        
+
         // Delegate to connection's storage backend
         self.conn.delete(ns_key.as_bytes())
     }
 
     /// Resolve column name to ID
-    /// 
+    ///
     /// Uses persistent column catalog with monotonic ID assignment.
     /// Column IDs are unique within a table and stable across restarts.
     pub fn resolve_column_id(&self, table: &str, name: &str) -> Result<ColumnId> {
         use std::sync::atomic::Ordering;
-        
+
         let key = (table.to_string(), name.to_string());
-        
+
         // Check cache first
         {
             let catalog = self.column_catalog.read();
@@ -262,19 +262,19 @@ impl Storage {
                 return Ok(id);
             }
         }
-        
+
         // Assign new ID (with write lock)
         let mut catalog = self.column_catalog.write();
-        
+
         // Double-check after acquiring write lock
         if let Some(&id) = catalog.get(&key) {
             return Ok(id);
         }
-        
+
         // Assign monotonic ID
         let id = self.next_column_id.fetch_add(1, Ordering::SeqCst);
         catalog.insert(key, id);
-        
+
         Ok(id)
     }
 
@@ -286,7 +286,7 @@ impl Storage {
 }
 
 /// Builder for scan operations on LscsStorage
-/// 
+///
 /// Uses key-based range scanning on the underlying BTreeMap storage.
 pub struct ScanBuilder<'a> {
     storage: &'a Storage,
@@ -331,8 +331,12 @@ impl<'a> ScanBuilder<'a> {
     /// Execute scan with columnar projection
     pub fn execute(self) -> Result<ColumnIterator> {
         // Get the range bounds — use start as prefix for DurableStorage scan
-        let prefix = self.range.as_ref().map(|r| r.start.as_slice()).unwrap_or(b"");
-        
+        let prefix = self
+            .range
+            .as_ref()
+            .map(|r| r.start.as_slice())
+            .unwrap_or(b"");
+
         // Use DurableStorage's scan method via SochConnection
         let results = self.storage.conn.scan_prefix(prefix)?;
         let count = if let Some(limit) = self.limit {
@@ -340,18 +344,22 @@ impl<'a> ScanBuilder<'a> {
         } else {
             results.len()
         };
-        
+
         // Record stats
         self.storage.record_scan(self.columns.len(), count);
-        
+
         // Convert to column iterator
         Ok(ColumnIterator::new(count))
     }
 
     /// Count matching rows (without fetching data)
     pub fn count(self) -> Result<usize> {
-        let prefix = self.range.as_ref().map(|r| r.start.as_slice()).unwrap_or(b"");
-        
+        let prefix = self
+            .range
+            .as_ref()
+            .map(|r| r.start.as_slice())
+            .unwrap_or(b"");
+
         let results = self.storage.conn.scan_prefix(prefix)?;
         let count = if let Some(limit) = self.limit {
             results.len().min(limit)

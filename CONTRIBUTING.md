@@ -186,7 +186,7 @@ sochdb/
 ├── README.md               # Project overview
 ├── CONTRIBUTING.md         # This file
 ├── CHANGELOG.md            # Version history
-├── LICENSE                 # Apache 2.0
+├── LICENSE                 # AGPL-3.0-or-later
 │
 ├── docs/                   # 📚 Documentation
 │   ├── index.md            # Documentation home

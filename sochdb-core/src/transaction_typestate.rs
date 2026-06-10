@@ -65,9 +65,9 @@
 //! 3. **No runtime errors**: Invalid sequences are impossible to write
 //! 4. **Better IDE support**: Autocomplete only shows valid methods
 
+use crate::error::Result;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use crate::error::Result;
 
 // =============================================================================
 // Transaction States (Marker Types)
@@ -198,7 +198,7 @@ struct WriteEntry {
 pub trait TransactionStorage: Send + Sync {
     /// Get a value at the given snapshot timestamp
     fn get(&self, key: &[u8], snapshot_ts: u64, txn_id: u64) -> Result<Option<Vec<u8>>>;
-    
+
     /// Apply writes and commit the transaction
     fn commit(
         &self,
@@ -206,19 +206,19 @@ pub trait TransactionStorage: Send + Sync {
         writes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
         read_set: Vec<Vec<u8>>,
     ) -> Result<u64>;
-    
+
     /// Abort the transaction
     fn abort(&self, txn_id: u64) -> Result<()>;
-    
+
     /// Prepare for 2PC (returns prepare result)
     fn prepare(&self, txn_id: u64) -> Result<()>;
-    
+
     /// Finalize 2PC commit
     fn finalize_commit(&self, txn_id: u64) -> Result<u64>;
-    
+
     /// Allocate a new transaction ID
     fn allocate_txn_id(&self) -> u64;
-    
+
     /// Get current snapshot timestamp
     fn snapshot_ts(&self) -> u64;
 }
@@ -251,8 +251,10 @@ impl TransactionBuilder {
     /// Build a read-only transaction
     pub fn read_only(self) -> Transaction<Active, ReadOnly> {
         let txn_id = self.storage.allocate_txn_id();
-        let snapshot_ts = self.snapshot_ts.unwrap_or_else(|| self.storage.snapshot_ts());
-        
+        let snapshot_ts = self
+            .snapshot_ts
+            .unwrap_or_else(|| self.storage.snapshot_ts());
+
         Transaction {
             inner: TransactionInner {
                 txn_id,
@@ -270,8 +272,10 @@ impl TransactionBuilder {
     /// Build a read-write transaction
     pub fn read_write(self) -> Transaction<Active, ReadWrite> {
         let txn_id = self.storage.allocate_txn_id();
-        let snapshot_ts = self.snapshot_ts.unwrap_or_else(|| self.storage.snapshot_ts());
-        
+        let snapshot_ts = self
+            .snapshot_ts
+            .unwrap_or_else(|| self.storage.snapshot_ts());
+
         Transaction {
             inner: TransactionInner {
                 txn_id,
@@ -289,8 +293,10 @@ impl TransactionBuilder {
     /// Build a write-only transaction
     pub fn write_only(self) -> Transaction<Active, WriteOnly> {
         let txn_id = self.storage.allocate_txn_id();
-        let snapshot_ts = self.snapshot_ts.unwrap_or_else(|| self.storage.snapshot_ts());
-        
+        let snapshot_ts = self
+            .snapshot_ts
+            .unwrap_or_else(|| self.storage.snapshot_ts());
+
         Transaction {
             inner: TransactionInner {
                 txn_id,
@@ -327,7 +333,7 @@ impl<Mode: TransactionMode> Transaction<Active, Mode> {
     /// No further operations are possible after abort.
     pub fn abort(self) -> Result<Transaction<Aborted, Mode>> {
         self.inner.storage.abort(self.inner.txn_id)?;
-        
+
         Ok(Transaction {
             inner: self.inner,
             _state: PhantomData,
@@ -342,7 +348,9 @@ impl Transaction<Active, ReadOnly> {
     ///
     /// Note: Read-only transactions don't track reads for SSI
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        self.inner.storage.get(key, self.inner.snapshot_ts, self.inner.txn_id)
+        self.inner
+            .storage
+            .get(key, self.inner.snapshot_ts, self.inner.txn_id)
     }
 
     /// Commit the read-only transaction
@@ -369,16 +377,18 @@ impl Transaction<Active, ReadWrite> {
     pub fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         // Track read for SSI
         self.inner.read_set.push(key.to_vec());
-        
+
         // Check write buffer first (read-your-writes)
         for entry in self.inner.write_buffer.iter().rev() {
             if entry.key == key {
                 return Ok(entry.value.clone());
             }
         }
-        
+
         // Fall through to storage
-        self.inner.storage.get(key, self.inner.snapshot_ts, self.inner.txn_id)
+        self.inner
+            .storage
+            .get(key, self.inner.snapshot_ts, self.inner.txn_id)
     }
 
     /// Put a key-value pair
@@ -404,17 +414,18 @@ impl Transaction<Active, ReadWrite> {
     /// Consumes the transaction and returns a Committed transaction.
     /// The committed transaction contains the commit timestamp.
     pub fn commit(self) -> Result<Transaction<Committed, ReadWrite>> {
-        let writes: Vec<_> = self.inner.write_buffer
+        let writes: Vec<_> = self
+            .inner
+            .write_buffer
             .into_iter()
             .map(|e| (e.key, e.value))
             .collect();
-        
-        let commit_ts = self.inner.storage.commit(
-            self.inner.txn_id,
-            writes,
-            self.inner.read_set.clone(),
-        )?;
-        
+
+        let commit_ts =
+            self.inner
+                .storage
+                .commit(self.inner.txn_id, writes, self.inner.read_set.clone())?;
+
         Ok(Transaction {
             inner: TransactionInner {
                 commit_ts: Some(commit_ts),
@@ -434,7 +445,7 @@ impl Transaction<Active, ReadWrite> {
     /// Transitions to Preparing state.
     pub fn prepare(self) -> Result<Transaction<Prepared, ReadWrite>> {
         self.inner.storage.prepare(self.inner.txn_id)?;
-        
+
         Ok(Transaction {
             inner: self.inner,
             _state: PhantomData,
@@ -464,18 +475,19 @@ impl Transaction<Active, WriteOnly> {
 
     /// Commit the transaction
     pub fn commit(self) -> Result<Transaction<Committed, WriteOnly>> {
-        let writes: Vec<_> = self.inner.write_buffer
+        let writes: Vec<_> = self
+            .inner
+            .write_buffer
             .into_iter()
             .map(|e| (e.key, e.value))
             .collect();
-        
+
         // WriteOnly doesn't pass read_set (empty)
-        let commit_ts = self.inner.storage.commit(
-            self.inner.txn_id,
-            writes,
-            Vec::new(),
-        )?;
-        
+        let commit_ts = self
+            .inner
+            .storage
+            .commit(self.inner.txn_id, writes, Vec::new())?;
+
         Ok(Transaction {
             inner: TransactionInner {
                 commit_ts: Some(commit_ts),
@@ -499,7 +511,7 @@ impl Transaction<Prepared, ReadWrite> {
     /// Finalize the 2PC commit
     pub fn finalize(self) -> Result<Transaction<Committed, ReadWrite>> {
         let commit_ts = self.inner.storage.finalize_commit(self.inner.txn_id)?;
-        
+
         Ok(Transaction {
             inner: TransactionInner {
                 commit_ts: Some(commit_ts),
@@ -513,7 +525,7 @@ impl Transaction<Prepared, ReadWrite> {
     /// Abort the prepared transaction
     pub fn abort(self) -> Result<Transaction<Aborted, ReadWrite>> {
         self.inner.storage.abort(self.inner.txn_id)?;
-        
+
         Ok(Transaction {
             inner: self.inner,
             _state: PhantomData,
@@ -591,8 +603,8 @@ pub fn begin_write_only(storage: Arc<dyn TransactionStorage>) -> Transaction<Act
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use parking_lot::RwLock;
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Mock storage implementation for testing
@@ -660,7 +672,7 @@ mod tests {
         let mut txn = begin_transaction(storage);
 
         txn.put(b"key1", b"value1").unwrap();
-        
+
         // Read-your-writes
         let val = txn.get(b"key1").unwrap();
         assert_eq!(val, Some(b"value1".to_vec()));
@@ -672,19 +684,19 @@ mod tests {
     #[test]
     fn test_read_only_transaction() {
         let storage = MockStorage::new();
-        
+
         // First, write some data
         {
             let mut write_txn = begin_transaction(storage.clone());
             write_txn.put(b"key", b"value").unwrap();
             write_txn.commit().unwrap();
         }
-        
+
         // Now read it with read-only transaction
         let read_txn = begin_read_only(storage);
         let val = read_txn.get(b"key").unwrap();
         assert_eq!(val, Some(b"value".to_vec()));
-        
+
         let committed = read_txn.commit().unwrap();
         assert!(committed.commit_ts().is_some());
     }
@@ -695,7 +707,7 @@ mod tests {
         let mut txn = begin_transaction(storage.clone());
 
         txn.put(b"key", b"value").unwrap();
-        
+
         let aborted = txn.abort().unwrap();
         assert!(aborted.txn_id() > 0);
 
@@ -712,7 +724,7 @@ mod tests {
         txn.put(b"key1", b"value1").unwrap();
         txn.put(b"key2", b"value2").unwrap();
         txn.delete(b"key1").unwrap();
-        
+
         let committed = txn.commit().unwrap();
         assert!(committed.commit_ts().is_some());
 

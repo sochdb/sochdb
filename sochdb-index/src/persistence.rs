@@ -180,12 +180,13 @@ impl HnswIndex {
                 }));
             }
 
-            let dense_index = index.next_dense_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u32;
+            let dense_index = index
+                .next_dense_index
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                as u32;
             index.record_dense_id(dense_index, snode.id);
-            let quantized = QuantizedVector::from_f32(
-                ndarray::Array1::from_vec(snode.vector),
-                precision,
-            );
+            let quantized =
+                QuantizedVector::from_f32(ndarray::Array1::from_vec(snode.vector), precision);
             let vector_index = {
                 let mut store = index.vector_store.write();
                 let idx = store.len() as u32;
@@ -228,8 +229,12 @@ impl HnswIndex {
         // Restore metadata via atomic nav_state
         if let Some(ep_id) = snapshot.entry_point {
             if let Some(dense) = index.node_id_to_dense(ep_id) {
-                index.nav_state.store(Some(dense as u64), snapshot.max_layer);
-                index.entry_point_dense.store(dense, std::sync::atomic::Ordering::Release);
+                index
+                    .nav_state
+                    .store(Some(dense as u64), snapshot.max_layer);
+                index
+                    .entry_point_dense
+                    .store(dense, std::sync::atomic::Ordering::Release);
             }
         }
 
@@ -328,12 +333,13 @@ impl HnswIndex {
                 }));
             }
 
-            let dense_index = index.next_dense_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u32;
+            let dense_index = index
+                .next_dense_index
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                as u32;
             index.record_dense_id(dense_index, snode.id);
-            let quantized = QuantizedVector::from_f32(
-                ndarray::Array1::from_vec(snode.vector),
-                precision,
-            );
+            let quantized =
+                QuantizedVector::from_f32(ndarray::Array1::from_vec(snode.vector), precision);
             let vector_index = {
                 let mut store = index.vector_store.write();
                 let idx = store.len() as u32;
@@ -376,8 +382,12 @@ impl HnswIndex {
         // Restore metadata via atomic nav_state
         if let Some(ep_id) = snapshot.entry_point {
             if let Some(dense) = index.node_id_to_dense(ep_id) {
-                index.nav_state.store(Some(dense as u64), snapshot.max_layer);
-                index.entry_point_dense.store(dense, std::sync::atomic::Ordering::Release);
+                index
+                    .nav_state
+                    .store(Some(dense as u64), snapshot.max_layer);
+                index
+                    .entry_point_dense
+                    .store(dense, std::sync::atomic::Ordering::Release);
             }
         }
 
@@ -765,11 +775,13 @@ impl HnswIndex {
                 if let Some(ep_id) = *id {
                     if let Some(dense) = self.node_id_to_dense(ep_id) {
                         self.nav_state.store(Some(dense as u64), *max_layer);
-                        self.entry_point_dense.store(dense, std::sync::atomic::Ordering::Release);
+                        self.entry_point_dense
+                            .store(dense, std::sync::atomic::Ordering::Release);
                     }
                 } else {
                     self.nav_state.store(None, *max_layer);
-                    self.entry_point_dense.store(u32::MAX, std::sync::atomic::Ordering::Release);
+                    self.entry_point_dense
+                        .store(u32::MAX, std::sync::atomic::Ordering::Release);
                 }
             }
             // AddNeighbor and RemoveNeighbor are handled by insert()

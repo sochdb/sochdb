@@ -49,7 +49,7 @@ pub type TxnId = u64;
 pub type Timestamp = u64;
 
 /// Version visibility context
-/// 
+///
 /// Provides the information needed to determine if a version is visible
 /// to a particular reader/transaction.
 #[derive(Debug, Clone)]
@@ -95,7 +95,7 @@ impl VisibilityContext {
 }
 
 /// Version metadata
-/// 
+///
 /// Common metadata for all version chain implementations.
 #[derive(Debug, Clone)]
 pub struct VersionMeta {
@@ -166,7 +166,7 @@ impl VersionMeta {
 }
 
 /// Trait for MVCC version chain implementations
-/// 
+///
 /// Implementors store multiple versions of a value and provide
 /// visibility-based access according to MVCC semantics.
 pub trait MvccVersionChain {
@@ -387,15 +387,27 @@ impl<E: ChainEntry> BinarySearchChain<E> {
 
     /// GC versions older than `min_active_ts`.
     ///
-    /// Keeps all versions with `commit_ts > min_active_ts` plus one anchor
-    /// version at or below the threshold (for new snapshots).
+    /// Retention must agree with [`read_at`](Self::read_at), whose visibility
+    /// rule is **strict**: a reader at snapshot `S` observes the newest version
+    /// with `commit_ts < S`. The smallest live snapshot is `min_active_ts`, so
+    /// the oldest version any reader can still need is the newest one with
+    /// `commit_ts < min_active_ts`. We therefore keep every version with
+    /// `commit_ts >= min_active_ts` **plus one anchor** — the newest version
+    /// strictly below `min_active_ts`.
+    ///
+    /// Using `>=` here (rather than `>`) is load-bearing for read-safety: with
+    /// `>`, a boundary version whose `commit_ts == min_active_ts` would be
+    /// chosen as the anchor and the genuinely-needed older version (the one a
+    /// reader at `snapshot == min_active_ts` resolves, since that boundary
+    /// version is *not* visible to it under the strict `<` rule) would be
+    /// freed — causing the reader to observe a spurious `None`.
     pub fn gc_by_ts(&mut self, min_active_ts: u64) {
         if self.committed.len() <= 1 {
             return;
         }
         let split_idx = self
             .committed
-            .partition_point(|v| v.commit_ts() > min_active_ts);
+            .partition_point(|v| v.commit_ts() >= min_active_ts);
         let keep_count = if split_idx < self.committed.len() {
             split_idx + 1
         } else {
@@ -522,18 +534,18 @@ mod tests {
     #[test]
     fn test_version_meta_visibility() {
         let mut meta = VersionMeta::new_uncommitted(1, 100);
-        
+
         // Uncommitted - only visible to creator
         let ctx = VisibilityContext::new(1, 200);
         assert!(meta.is_visible(&ctx));
-        
+
         let ctx2 = VisibilityContext::new(2, 200);
         assert!(!meta.is_visible(&ctx2));
-        
+
         // After commit - visible to later snapshots
         meta.commit(150);
         assert!(meta.is_visible(&ctx2));
-        
+
         // Not visible to earlier snapshots
         let ctx3 = VisibilityContext::new(3, 100);
         assert!(!meta.is_visible(&ctx3));
@@ -544,11 +556,11 @@ mod tests {
         let mut meta = VersionMeta::new_uncommitted(1, 100);
         meta.commit(150);
         meta.delete(2, 200);
-        
+
         // Visible before deletion
         let ctx = VisibilityContext::new(3, 180);
         assert!(meta.is_visible(&ctx));
-        
+
         // Not visible after deletion
         let ctx2 = VisibilityContext::new(3, 250);
         assert!(!meta.is_visible(&ctx2));
@@ -558,18 +570,18 @@ mod tests {
     fn test_visibility_context_committed_before() {
         let mut active = std::collections::HashSet::new();
         active.insert(5);
-        
+
         let ctx = VisibilityContext::with_active_txns(1, 200, active);
-        
+
         // Committed before snapshot
         assert!(ctx.is_committed_before(2, Some(100)));
-        
+
         // Committed after snapshot
         assert!(!ctx.is_committed_before(3, Some(250)));
-        
+
         // Active transaction - not committed
         assert!(!ctx.is_committed_before(5, Some(100)));
-        
+
         // No commit timestamp
         assert!(!ctx.is_committed_before(6, None));
     }
@@ -592,9 +604,15 @@ mod tests {
     }
 
     impl ChainEntry for TestEntry {
-        fn commit_ts(&self) -> u64 { self.commit_ts }
-        fn txn_id(&self) -> u64 { self.txn_id }
-        fn set_commit_ts(&mut self, ts: u64) { self.commit_ts = ts; }
+        fn commit_ts(&self) -> u64 {
+            self.commit_ts
+        }
+        fn txn_id(&self) -> u64 {
+            self.txn_id
+        }
+        fn set_commit_ts(&mut self, ts: u64) {
+            self.commit_ts = ts;
+        }
     }
 
     #[test]
@@ -603,7 +621,11 @@ mod tests {
         assert!(chain.is_empty());
 
         // Add uncommitted, then commit
-        chain.set_uncommitted(TestEntry { commit_ts: 0, txn_id: 1, val: 10 });
+        chain.set_uncommitted(TestEntry {
+            commit_ts: 0,
+            txn_id: 1,
+            val: 10,
+        });
         assert_eq!(chain.version_count(), 1);
 
         // Read own writes
@@ -628,11 +650,19 @@ mod tests {
     #[test]
     fn test_binary_search_chain_abort() {
         let mut chain = BinarySearchChain::<TestEntry>::new();
-        chain.set_uncommitted(TestEntry { commit_ts: 0, txn_id: 1, val: 10 });
+        chain.set_uncommitted(TestEntry {
+            commit_ts: 0,
+            txn_id: 1,
+            val: 10,
+        });
         chain.abort(1);
         assert!(chain.is_empty());
         // Abort wrong txn is a no-op
-        chain.set_uncommitted(TestEntry { commit_ts: 0, txn_id: 2, val: 20 });
+        chain.set_uncommitted(TestEntry {
+            commit_ts: 0,
+            txn_id: 2,
+            val: 20,
+        });
         chain.abort(1);
         assert_eq!(chain.version_count(), 1);
     }
@@ -642,9 +672,13 @@ mod tests {
         let mut chain = BinarySearchChain::<TestEntry>::new();
         assert!(!chain.has_write_conflict(1));
 
-        chain.set_uncommitted(TestEntry { commit_ts: 0, txn_id: 1, val: 10 });
+        chain.set_uncommitted(TestEntry {
+            commit_ts: 0,
+            txn_id: 1,
+            val: 10,
+        });
         assert!(!chain.has_write_conflict(1)); // own txn
-        assert!(chain.has_write_conflict(2));  // other txn
+        assert!(chain.has_write_conflict(2)); // other txn
     }
 
     #[test]
@@ -653,7 +687,11 @@ mod tests {
 
         // Commit 5 versions at ts 10, 20, 30, 40, 50
         for i in 1..=5u64 {
-            chain.set_uncommitted(TestEntry { commit_ts: 0, txn_id: i, val: i as i32 });
+            chain.set_uncommitted(TestEntry {
+                commit_ts: 0,
+                txn_id: i,
+                val: i as i32,
+            });
             chain.commit(i, i * 10);
         }
         assert_eq!(chain.committed_count(), 5);
@@ -674,7 +712,11 @@ mod tests {
         // Commit in order: ts=100, ts=200, ts=300
         for (i, ts) in [100u64, 200, 300].iter().enumerate() {
             let txn = (i + 1) as u64;
-            chain.set_uncommitted(TestEntry { commit_ts: 0, txn_id: txn, val: *ts as i32 });
+            chain.set_uncommitted(TestEntry {
+                commit_ts: 0,
+                txn_id: txn,
+                val: *ts as i32,
+            });
             chain.commit(txn, *ts);
         }
 
@@ -686,5 +728,112 @@ mod tests {
         assert_eq!(chain.read_at(350, None).unwrap().val, 300);
         // Snapshot at 50 → sees nothing
         assert!(chain.read_at(50, None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod version_chain_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Minimal committed entry for property testing the chain's read/GC contract.
+    #[derive(Debug, Clone)]
+    struct PropEntry {
+        commit_ts: u64,
+        val: i32,
+    }
+
+    impl ChainEntry for PropEntry {
+        fn commit_ts(&self) -> u64 {
+            self.commit_ts
+        }
+        fn txn_id(&self) -> u64 {
+            0
+        }
+        fn set_commit_ts(&mut self, ts: u64) {
+            self.commit_ts = ts;
+        }
+    }
+
+    /// Build a chain from a set of distinct commit timestamps (committed in
+    /// ascending order, mirroring how `MvccManager` allocates commit_ts).
+    fn build_chain(mut tss: Vec<u64>) -> BinarySearchChain<PropEntry> {
+        tss.sort_unstable();
+        tss.dedup();
+        let mut chain = BinarySearchChain::<PropEntry>::new();
+        for ts in tss {
+            chain.set_uncommitted(PropEntry {
+                commit_ts: 0,
+                val: ts as i32,
+            });
+            // txn_id 0 is fine here: one writer at a time in this model.
+            chain.commit(0, ts);
+        }
+        chain
+    }
+
+    /// Reference visibility oracle: the value a reader at `snapshot` must see is
+    /// the largest commit_ts strictly less than `snapshot` (strict `<` rule).
+    fn expected_visible(tss: &[u64], snapshot: u64) -> Option<i32> {
+        tss.iter()
+            .copied()
+            .filter(|&ts| ts < snapshot)
+            .max()
+            .map(|ts| ts as i32)
+    }
+
+    proptest! {
+        /// `read_at` matches the strict-visibility oracle for any snapshot.
+        #[test]
+        fn prop_read_at_matches_strict_visibility(
+            tss in prop::collection::vec(1u64..1000, 0..32),
+            snapshot in 0u64..1100,
+        ) {
+            let mut sorted = tss.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            let chain = build_chain(tss);
+
+            let got = chain.read_at(snapshot, None).map(|e| e.val);
+            prop_assert_eq!(got, expected_visible(&sorted, snapshot));
+        }
+
+        /// GC is read-safe: after `gc_by_ts(min_active_ts)`, every reader whose
+        /// snapshot is `>= min_active_ts` still observes exactly the same value
+        /// as before GC. This is the invariant the T8 anchor fix (`>=`) restores —
+        /// a too-aggressive GC would make such a reader see a spurious `None`.
+        #[test]
+        fn prop_gc_preserves_reads_for_live_snapshots(
+            tss in prop::collection::vec(1u64..1000, 1..32),
+            min_active in 1u64..1000,
+            // Several snapshots at or above the GC watermark.
+            extra in prop::collection::vec(0u64..200, 1..6),
+        ) {
+            let mut sorted = tss.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+
+            let mut chain = build_chain(tss);
+
+            // Snapshots that remain valid after GC are those >= min_active_ts.
+            let snapshots: Vec<u64> = extra.iter().map(|d| min_active + *d).collect();
+
+            // Capture pre-GC observations.
+            let before: Vec<Option<i32>> = snapshots
+                .iter()
+                .map(|&s| chain.read_at(s, None).map(|e| e.val))
+                .collect();
+
+            chain.gc_by_ts(min_active);
+
+            // Post-GC observations must be identical for every live snapshot.
+            for (i, &s) in snapshots.iter().enumerate() {
+                let after = chain.read_at(s, None).map(|e| e.val);
+                prop_assert_eq!(after, before[i],
+                    "GC at {} changed read at snapshot {}", min_active, s);
+                // And it must still equal the oracle.
+                prop_assert_eq!(after, expected_visible(&sorted, s));
+            }
+        }
     }
 }

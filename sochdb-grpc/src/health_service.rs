@@ -38,11 +38,11 @@
 //! - Exit degraded: metric < (threshold - hysteresis) for M consecutive checks
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -74,7 +74,10 @@ impl HealthCheckResult {
 
     /// Is this result considered "passing" for readiness?
     pub fn is_ready(&self) -> bool {
-        matches!(self, HealthCheckResult::Healthy | HealthCheckResult::Degraded)
+        matches!(
+            self,
+            HealthCheckResult::Healthy | HealthCheckResult::Degraded
+        )
     }
 
     /// Is this result considered "passing" for liveness?

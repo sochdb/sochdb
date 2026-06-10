@@ -75,15 +75,18 @@
 // New TOON-native storage components
 pub mod actor; // Actor-based connection manager (mm.md Task 7.2)
 pub mod admission_control; // Admission control with cost model + tenant fairness (Task 6)
-pub mod aries_recovery; // ARIES-style crash recovery (Task 1)
+#[cfg(feature = "experimental")]
+pub mod aries_recovery; // ARIES-style crash recovery (Task 1) [quarantined: unwired]
 pub mod cdc; // WAL-derived Change Data Capture (T1)
-pub mod checkpoint; // ARIES-style checkpointing with WAL truncation (mm.md Task 1.4)
+#[cfg(feature = "experimental")]
+pub mod checkpoint; // ARIES-style checkpointing with WAL truncation (mm.md Task 1.4) [quarantined: unwired]
 pub mod columnar_compression;
 pub mod correctness_testing; // Property-based correctness testing (Task 13)
 pub mod database; // Database Kernel (shared by embedded + server)
-pub mod durable_storage; // Fully wired durable storage with MVCC
 pub mod durability_contract; // Durability contract hardening (Task 4)
-pub mod encryption; // Data-at-rest encryption (AES-256-GCM-SIV, Enterprise Security)
+pub mod durable_storage; // Fully wired durable storage with MVCC
+#[cfg(feature = "experimental")]
+pub mod encryption; // Data-at-rest encryption (AES-256-GCM-SIV) [quarantined: unwired]
 pub mod ffi;
 pub mod group_commit; // Event-driven Group Commit (Task 4)
 pub mod hlc; // Hybrid Logical Clock for commit timestamps (mm.md Task 1.3)
@@ -99,45 +102,52 @@ pub mod mvcc_concurrent; // Concurrent MVCC for multi-reader single-writer (Task
 pub mod mvcc_new;
 pub mod mvcc_snapshot;
 pub mod page_manager;
-pub mod pitr; // Point-in-Time Recovery with WAL archiving (Task 11)
-pub mod production_wal; // Production WAL with ARIES recovery (mm.md Task 3)
+#[cfg(feature = "experimental")]
+pub mod pitr; // Point-in-Time Recovery with WAL archiving (Task 11) [quarantined: unwired]
+#[cfg(feature = "experimental")]
+pub mod production_wal; // Production WAL with ARIES recovery (mm.md Task 3) [quarantined: unwired]
 pub mod ssi; // Serializable Snapshot Isolation (Task 2)
 pub mod ssi_scaling; // SSI scaling guardrails with range locks (Task 7)
 pub mod storage_engine;
 pub mod streaming_iterator; // Streaming Iterator Architecture (mm.md Task 4)
+pub mod supervisor; // Supervised background workers (panic-contained restart) (Task 4)
 pub mod transaction; // Unified Transaction Coordinator trait and types
 pub mod txn_arena; // Transaction-scoped arena with zero-copy key/value plumbing
 pub mod txn_wal;
 pub mod upgrade_contract; // Upgrade compatibility contract (Task 12)
-pub mod wal_fencing; // Epoch-based WAL fencing for split-brain detection
+#[cfg(feature = "experimental")]
+pub mod wal_fencing; // Epoch-based WAL fencing for split-brain detection [quarantined: unwired]
 pub mod wal_integration;
 pub mod zero_copy_safety; // Zero-Copy Validation Layer (Task 5) // FFI bindings for Python SDK
 
 // Performance optimization modules
 pub mod adaptive_learned_index;
 pub mod adaptive_memtable; // Adaptive memtable sizing with memory pressure (Task 10)
+pub mod batch_wal; // Batched WAL with vectored I/O (Task 3)
 pub mod deferred_index; // Deferred sorted index with LSM-style compaction (Rec 2)
 pub mod dirty_tracking; // Batched dirty tracking with MPSC queue
 pub mod index_policy; // Per-table index policy
-pub mod queue_index; // Queue-optimized index structure (Task: Queue Index Policy)
-pub mod batch_wal; // Batched WAL with vectored I/O (Task 3)
 pub mod key_buffer; // Cache-line aligned key buffer (Task 2)
 pub mod lockfree_memtable; // Lock-free read path with hazard pointers (Task 4)
-pub mod packed_row; // Unified row storage with delta encoding (Task 1)
+pub mod packed_row;
+pub mod queue_index; // Queue-optimized index structure (Task: Queue Index Policy) // Unified row storage with delta encoding (Task 1)
 
 // PhD-Level Architectural Optimizations (December 2025)
 pub mod clr_learned_index; // CLR Learned Index for sorted runs (Task 3)
-pub mod lockfree_epoch; // Lock-Free Epoch Tracking (Task 3)
-pub mod hierarchical_ts; // Hierarchical Timestamp Oracle (Task 9)
-pub mod shard_coalesced; // Shard-Coalesced Batch DashMap (Task 6)
-pub mod polymorphic_value; // Polymorphic Value Encoding (Task 12)
+#[cfg(feature = "experimental")]
+pub mod columnar_wal; // Columnar WAL Layout (Task 4) [quarantined: unwired]
 pub mod epoch_arena; // Epoch-Partitioned Key Arena (Task 1)
-pub mod stratified_skiplist; // Stratified SkipList with Deferred Promotion (Task 2)
-pub mod columnar_wal; // Columnar WAL Layout (Task 4)
 pub mod generational_slab; // Generational Slab Allocator (Task 5)
-pub mod rl_workload; // RL Workload Classifier (Task 10)
-#[cfg(unix)]
-pub mod io_uring_wal; // io_uring WAL Submission (Task 11)
+#[cfg(feature = "experimental")]
+pub mod hierarchical_ts; // Hierarchical Timestamp Oracle (Task 9) [quarantined: unwired]
+#[cfg(all(unix, feature = "experimental"))]
+pub mod io_uring_wal; // [quarantined: unwired]
+pub mod lockfree_epoch; // Lock-Free Epoch Tracking (Task 3)
+pub mod polymorphic_value; // Polymorphic Value Encoding (Task 12)
+#[cfg(feature = "experimental")]
+pub mod rl_workload; // RL Workload Classifier (Task 10) [quarantined: unwired]
+pub mod shard_coalesced; // Shard-Coalesced Batch DashMap (Task 6)
+pub mod stratified_skiplist; // Stratified SkipList with Deferred Promotion (Task 2) // io_uring WAL Submission (Task 11)
 
 // New performance modules (Recommendations 1-9)
 pub mod cow_btree; // Copy-on-Write B-Tree for ordered access (Recommendation 5)
@@ -150,7 +160,9 @@ pub mod vectorized_scan; // SIMD-accelerated vectorized scan engine (Recommendat
 pub mod zero_copy_serde; // Zero-copy serialization for WAL (Recommendation 6)
 
 // Namespace and multi-tenancy support (Task 3)
+pub mod lazy_namespace; // Per-namespace lazy hydrate/evict
 pub mod namespace; // Namespace routing and on-disk layout
+pub mod object_store_tier; // Object-storage cold tier for immutable segments
 
 // Core utilities
 pub mod backend;
@@ -203,15 +215,15 @@ pub use transaction::{
 };
 pub use txn_wal::{CrashRecoveryStats, TxnWal, TxnWalBuffer, TxnWalEntry, TxnWalStats};
 pub use wal_integration::{
-    GroupCommitBuffer, MvccTransactionManager, RecoveryStats, Transaction, TxnState, 
+    GroupCommitBuffer, MvccTransactionManager, RecoveryStats, Transaction, TxnState,
     WalStorageManager,
 };
 
 // Re-exports for performance optimization modules
 pub use adaptive_learned_index::{AdaptiveLearnedIndex, LearnedIndexStats, PiecewiseLinearModel};
 pub use adaptive_memtable::{
-    AdaptiveMemtableConfig, AdaptiveMemtableSizer, AdaptiveMemtableStats,
-    DEFAULT_BASE_SIZE, MAX_MEMTABLE_SIZE, MIN_MEMTABLE_SIZE,
+    AdaptiveMemtableConfig, AdaptiveMemtableSizer, AdaptiveMemtableStats, DEFAULT_BASE_SIZE,
+    MAX_MEMTABLE_SIZE, MIN_MEMTABLE_SIZE,
 };
 pub use batch_wal::{
     BatchAccumulator, BatchedWalReader, BatchedWalStats, BatchedWalWriter, ConcurrentBatchedWal,
@@ -245,7 +257,8 @@ pub use packed_row::{
 pub use backend::{LocalFsBackend, ObjectMetadata, StorageBackend};
 pub use backup::{BackupManager, BackupMetadata};
 pub use block_checksum::{
-    BlockChecksumConfig, BlockChecksumStats, BlockType as BlockChecksumType, BlockWriter, ChecksummedBlock,
+    BlockChecksumConfig, BlockChecksumStats, BlockType as BlockChecksumType, BlockWriter,
+    ChecksummedBlock,
 };
 pub use bloom::{BlockedBloomFilter, BloomFilter, LevelAdaptiveFPR, UnifiedBloomFilter};
 pub use compression::{CompressionEngine, CompressionStats, StorageTier};
@@ -263,80 +276,89 @@ pub use two_level_index::{
 pub use validation::{SSTableValidator, validate_sstable_file};
 
 // Re-exports for durable storage
-pub use durable_storage::{ArenaMvccMemTable, DurableStorage, EphemeralHandle, MvccMemTable, TransactionMode};
+pub use durable_storage::{
+    ArenaMvccMemTable, DurableStorage, EphemeralHandle, MvccMemTable, TransactionMode,
+};
 
 // Re-exports for concurrent MVCC (Task: Concurrent Embedded)
 pub use mvcc_concurrent::{
-    ConcurrentMvcc, HlcTimestamp, ReaderSlot, 
-    ConcurrentVersionChain, ConcurrentVersionEntry,
+    ConcurrentMvcc, ConcurrentVersionChain, ConcurrentVersionEntry, HlcTimestamp, ReaderSlot,
     VersionStore, VersionStoreStats, WriterGuard,
 };
 
 // Super Version and Copy-on-Write Version Set (mm.md Task 1)
-pub mod version_set;
-pub mod concurrent_art;
-pub mod sstable;
-pub mod wal_segment;
 pub mod compaction_policy;
+pub mod concurrent_art;
 pub mod optimized_scan;
+pub mod sstable;
+pub mod version_set;
+pub mod wal_segment;
 
 // Re-exports for new performance modules (Recommendations 1-9)
-pub use version_set::{
-    FileMetadata as VersionFileMetadata, ImmutableMemTable, ImmutableMemTableRef,
-    LevelMetadata, SuperVersion, SuperVersionHandle, VersionSet as CowVersionSet,
+pub use compaction_policy::{
+    CompactionConfig, CompactionFile, CompactionJob, CompactionPicker, CompactionPriority,
+    CompactionReason, CompactionState, CompactionStats, CompactionStrategy,
+    LeveledCompactionPicker, RetentionConfig, UniversalCompactionPicker, VersionPruner,
 };
 pub use concurrent_art::ConcurrentART;
-pub use sstable::{
-    BlockBuilder, BlockIterator, BlockHandle, BlockType,
-    FilterPolicy, BloomFilterPolicy, RibbonFilterPolicy, XorFilterPolicy, FilterReader,
-    SSTableFormat, Header, Footer, Section, SectionType,
-    SSTableBuilder, SSTableBuilderOptions, SSTableBuilderResult,
-    SSTable, TableMetadata, ReadOptions, BlockCache,
-};
-pub use wal_segment::{
-    WalSegmentManager, SegmentConfig, SegmentHeader, SegmentMetadata,
-    CheckpointRecord, SegmentStats, RecoveryIterator, WalEntry,
-};
-pub use compaction_policy::{
-    CompactionConfig, CompactionFile, CompactionJob, CompactionPicker,
-    CompactionPriority, CompactionReason, CompactionState, CompactionStats,
-    CompactionStrategy, LeveledCompactionPicker, RetentionConfig,
-    UniversalCompactionPicker, VersionPruner,
-};
-pub use optimized_scan::{
-    EntrySource, FileRange, LevelFiles, RangeScanner, ScanConfig, ScanStats,
-    TournamentTree, VersionedEntry,
-};
 pub use cow_btree::{BTreeEntry, BTreeSnapshot, CowBTree, Node, SearchResult};
 pub use epoch_mvcc::{
-    CommitResult, EpochManager, EpochMvccStore, EpochSnapshot, EpochTransaction,
-    EpochVersionChain, GcStats, StoreStats, VersionEntry,
+    CommitResult, EpochManager, EpochMvccStore, EpochSnapshot, EpochTransaction, EpochVersionChain,
+    GcStats, StoreStats, VersionEntry,
 };
-pub use page_cache::{CacheStats, ClockProCache, CachedPage, PageId as CachePageId, PageState};
-pub use row_format::{Slot, SlotRow, SlotRowArena, SlotRowHandle, SlotRowFlags};
+pub use optimized_scan::{
+    EntrySource, FileRange, LevelFiles, RangeScanner, ScanConfig, ScanStats, TournamentTree,
+    VersionedEntry,
+};
+pub use page_cache::{CacheStats, CachedPage, ClockProCache, PageId as CachePageId, PageState};
+pub use row_format::{Slot, SlotRow, SlotRowArena, SlotRowFlags, SlotRowHandle};
+pub use sstable::{
+    BlockBuilder, BlockCache, BlockHandle, BlockIterator, BlockType, BloomFilterPolicy,
+    FilterPolicy, FilterReader, Footer, Header, ReadOptions, RibbonFilterPolicy, SSTable,
+    SSTableBuilder, SSTableBuilderOptions, SSTableBuilderResult, SSTableFormat, Section,
+    SectionType, TableMetadata, XorFilterPolicy,
+};
+pub use lazy_namespace::{LazyNamespaceConfig, LazyNamespaceTable};
+pub use object_store_tier::{ObjectStoreTier, ObjectStoreTierConfig, SegmentDescriptor};
 pub use tiered_memtable::{HotEntry, SortedBatch, TieredMemTable};
 pub use vectorized_scan::{
-    ColumnVector, ComparisonOp, Int64Comparison, VectorBatch, VectorPredicate,
-    VectorizedScanConfig, VectorizedScanStats, DEFAULT_BATCH_SIZE,
+    ColumnVector,
+    ComparisonOp,
+    DEFAULT_BATCH_SIZE,
+    Int64Comparison,
     // SoA + Late Materialization (80/20 optimization)
-    SimdVisibilityFilter, SoaBatch, SoaScanIterator, SoaScanStats, SoaSource,
-    StreamingScanIterator, ValueHandle, VersionedSlice,
+    SimdVisibilityFilter,
+    SoaBatch,
+    SoaScanIterator,
+    SoaScanStats,
+    SoaSource,
+    StreamingScanIterator,
+    ValueHandle,
+    VectorBatch,
+    VectorPredicate,
+    VectorizedScanConfig,
+    VectorizedScanStats,
+    VersionedSlice,
+};
+pub use version_set::{
+    FileMetadata as VersionFileMetadata, ImmutableMemTable, ImmutableMemTableRef, LevelMetadata,
+    SuperVersion, SuperVersionHandle, VersionSet as CowVersionSet,
+};
+pub use wal_segment::{
+    CheckpointRecord, RecoveryIterator, SegmentConfig, SegmentHeader, SegmentMetadata,
+    SegmentStats, WalEntry, WalSegmentManager,
 };
 pub use zero_copy_serde::{
-    FieldDescriptor, MmapWalReader, SerdeStats, WalBatchReader, WalBatchWriter,
-    WalEntryBuilder, WalEntryHeader, WalEntryReader, WalEntryType, ZeroCopyHeader,
-    FORMAT_VERSION as SERDE_FORMAT_VERSION, HEADER_SIZE as SERDE_HEADER_SIZE, ZERO_COPY_MAGIC,
+    FORMAT_VERSION as SERDE_FORMAT_VERSION, FieldDescriptor, HEADER_SIZE as SERDE_HEADER_SIZE,
+    MmapWalReader, SerdeStats, WalBatchReader, WalBatchWriter, WalEntryBuilder, WalEntryHeader,
+    WalEntryReader, WalEntryType, ZERO_COPY_MAGIC, ZeroCopyHeader,
 };
 
 // Re-exports for transaction arena and zero-copy plumbing
-pub use txn_arena::{
-    ArenaWriteSet, BytesRef, KeyFingerprint, TxnArena, TxnWriteBuffer, WriteOp,
-};
+pub use txn_arena::{ArenaWriteSet, BytesRef, KeyFingerprint, TxnArena, TxnWriteBuffer, WriteOp};
 
 // Re-exports for dirty tracking with batching
-pub use dirty_tracking::{
-    BatchedDirtyTracker, DirtyEvent, DirtyTrackingStats, TxnDirtyBuffer,
-};
+pub use dirty_tracking::{BatchedDirtyTracker, DirtyEvent, DirtyTrackingStats, TxnDirtyBuffer};
 
 // Re-exports for per-table index policy
 pub use index_policy::{

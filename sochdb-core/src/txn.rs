@@ -885,7 +885,7 @@ pub struct TxnStats {
 ///
 /// Manages transaction lifecycle and provides ACID guarantees for in-memory
 /// operations. This implementation does NOT include WAL integration.
-/// 
+///
 /// For production workloads requiring durability, use [`sochdb_storage::MvccTransactionManager`]
 /// which includes:
 /// - Write-ahead logging for crash recovery  
@@ -1050,8 +1050,8 @@ mod tests {
             "orders".to_string(),
             vec![10, 20],
             Some(vec![30, 40, 50]),
-            42,           // page_id
-            Some(100),    // prev_lsn
+            42,                     // page_id
+            Some(100),              // prev_lsn
             Some(vec![0xDE, 0xAD]), // undo_info
         );
         entry.lsn = 200;
@@ -1080,9 +1080,9 @@ mod tests {
             "inventory".to_string(),
             vec![1],
             Some(vec![2]),
-            10,     // page_id
-            300,    // prev_lsn
-            250,    // undo_next_lsn
+            10,  // page_id
+            300, // prev_lsn
+            250, // undo_next_lsn
         );
         entry.lsn = 400;
         entry.compute_checksum();

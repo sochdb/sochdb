@@ -60,7 +60,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::filter_ir::{AuthScope, FilterIR, FilterBuilder};
+use crate::filter_ir::{AuthScope, FilterBuilder, FilterIR};
 
 // ============================================================================
 // Namespace - Opaque, Validated Identifier
@@ -76,7 +76,7 @@ pub struct Namespace(String);
 impl Namespace {
     /// Maximum length for a namespace identifier
     pub const MAX_LENGTH: usize = 256;
-    
+
     /// Create a new namespace (validates format)
     ///
     /// # Validation Rules
@@ -89,7 +89,7 @@ impl Namespace {
         Self::validate(&name)?;
         Ok(Self(name))
     }
-    
+
     /// Create without validation (for internal use only)
     ///
     /// # Safety
@@ -98,7 +98,7 @@ impl Namespace {
     pub(crate) fn new_unchecked(name: impl Into<String>) -> Self {
         Self(name.into())
     }
-    
+
     /// Validate a namespace string
     fn validate(name: &str) -> Result<(), NamespaceError> {
         Self::validate_name(name)
@@ -109,35 +109,35 @@ impl Namespace {
         if name.is_empty() {
             return Err(NamespaceError::Empty);
         }
-        
+
         if name.len() > Self::MAX_LENGTH {
             return Err(NamespaceError::TooLong {
                 length: name.len(),
                 max: Self::MAX_LENGTH,
             });
         }
-        
+
         // Check first character
         let first = name.chars().next().unwrap();
         if first == '.' || first == '-' {
             return Err(NamespaceError::InvalidStart(first));
         }
-        
+
         // Check all characters
         for (i, ch) in name.chars().enumerate() {
             if !ch.is_alphanumeric() && ch != '_' && ch != '-' && ch != '.' {
                 return Err(NamespaceError::InvalidChar { ch, position: i });
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Get the namespace as a string slice
     pub fn as_str(&self) -> &str {
         &self.0
     }
-    
+
     /// Convert to owned string
     pub fn into_string(self) -> String {
         self.0
@@ -161,13 +161,13 @@ impl AsRef<str> for Namespace {
 pub enum NamespaceError {
     #[error("namespace cannot be empty")]
     Empty,
-    
+
     #[error("namespace too long: {length} > {max}")]
     TooLong { length: usize, max: usize },
-    
+
     #[error("namespace cannot start with '{0}'")]
     InvalidStart(char),
-    
+
     #[error("invalid character '{ch}' at position {position}")]
     InvalidChar { ch: char, position: usize },
 }
@@ -181,7 +181,7 @@ pub enum NamespaceError {
 pub enum NamespaceScope {
     /// Query within a single namespace (most common)
     Single(Namespace),
-    
+
     /// Query across multiple namespaces (requires explicit authorization)
     Multiple(Vec<Namespace>),
 }
@@ -191,7 +191,7 @@ impl NamespaceScope {
     pub fn single(ns: Namespace) -> Self {
         Self::Single(ns)
     }
-    
+
     /// Create a multi-namespace scope
     pub fn multiple(namespaces: Vec<Namespace>) -> Result<Self, NamespaceError> {
         if namespaces.is_empty() {
@@ -199,7 +199,7 @@ impl NamespaceScope {
         }
         Ok(Self::Multiple(namespaces))
     }
-    
+
     /// Get all namespaces in this scope
     pub fn namespaces(&self) -> Vec<&Namespace> {
         match self {
@@ -207,7 +207,7 @@ impl NamespaceScope {
             Self::Multiple(nss) => nss.iter().collect(),
         }
     }
-    
+
     /// Check if a namespace is in this scope
     pub fn contains(&self, ns: &Namespace) -> bool {
         match self {
@@ -215,7 +215,7 @@ impl NamespaceScope {
             Self::Multiple(multiple) => multiple.contains(ns),
         }
     }
-    
+
     /// Validate against an auth scope
     pub fn validate_against(&self, auth: &AuthScope) -> Result<(), ScopeError> {
         for ns in self.namespaces() {
@@ -225,13 +225,11 @@ impl NamespaceScope {
         }
         Ok(())
     }
-    
+
     /// Convert to filter IR clauses
     pub fn to_filter_ir(&self) -> FilterIR {
         match self {
-            Self::Single(ns) => FilterBuilder::new()
-                .namespace(ns.as_str())
-                .build(),
+            Self::Single(ns) => FilterBuilder::new().namespace(ns.as_str()).build(),
             Self::Multiple(nss) => {
                 use crate::filter_ir::{FilterAtom, FilterValue};
                 FilterIR::from_atom(FilterAtom::in_set(
@@ -262,10 +260,10 @@ impl fmt::Display for NamespaceScope {
 pub enum ScopeError {
     #[error("namespace not allowed: {0}")]
     NamespaceNotAllowed(Namespace),
-    
+
     #[error("auth scope expired")]
     AuthExpired,
-    
+
     #[error("insufficient capabilities for this operation")]
     InsufficientCapabilities,
 }
@@ -282,10 +280,10 @@ pub enum ScopeError {
 pub struct ScopedQuery<Q> {
     /// The namespace scope (mandatory)
     scope: NamespaceScope,
-    
+
     /// The underlying query operation
     query: Q,
-    
+
     /// User-provided filters (in addition to namespace)
     filters: FilterIR,
 }
@@ -301,53 +299,53 @@ impl<Q> ScopedQuery<Q> {
             filters: FilterIR::all(),
         }
     }
-    
+
     /// Create a single-namespace query (convenience)
     pub fn in_namespace(namespace: Namespace, query: Q) -> Self {
         Self::new(NamespaceScope::Single(namespace), query)
     }
-    
+
     /// Add user filters
     pub fn with_filters(mut self, filters: FilterIR) -> Self {
         self.filters = filters;
         self
     }
-    
+
     /// Get the namespace scope
     pub fn scope(&self) -> &NamespaceScope {
         &self.scope
     }
-    
+
     /// Get the underlying query
     pub fn query(&self) -> &Q {
         &self.query
     }
-    
+
     /// Get user filters
     pub fn filters(&self) -> &FilterIR {
         &self.filters
     }
-    
+
     /// Compute the effective filter (namespace + user filters)
     ///
     /// This is the filter that will be passed to executors.
     pub fn effective_filter(&self) -> FilterIR {
         self.scope.to_filter_ir().and(self.filters.clone())
     }
-    
+
     /// Validate this query against an auth scope
     pub fn validate(&self, auth: &AuthScope) -> Result<(), ScopeError> {
         // Check auth expiry
         if auth.is_expired() {
             return Err(ScopeError::AuthExpired);
         }
-        
+
         // Check namespace access
         self.scope.validate_against(auth)?;
-        
+
         Ok(())
     }
-    
+
     /// Extract the query, consuming self
     pub fn into_query(self) -> Q {
         self.query
@@ -369,7 +367,7 @@ impl<Q> ScopedQuery<Q> {
 pub struct QueryRequest<Q> {
     /// The scoped query
     query: ScopedQuery<Q>,
-    
+
     /// The auth scope (from capability token)
     auth: Arc<AuthScope>,
 }
@@ -383,17 +381,17 @@ impl<Q> QueryRequest<Q> {
         query.validate(&auth)?;
         Ok(Self { query, auth })
     }
-    
+
     /// Get the scoped query
     pub fn query(&self) -> &ScopedQuery<Q> {
         &self.query
     }
-    
+
     /// Get the auth scope
     pub fn auth(&self) -> &AuthScope {
         &self.auth
     }
-    
+
     /// Compute the complete effective filter
     ///
     /// This combines:
@@ -401,10 +399,9 @@ impl<Q> QueryRequest<Q> {
     /// 2. Namespace scope constraints (mandatory)  
     /// 3. User-provided filters (optional)
     pub fn effective_filter(&self) -> FilterIR {
-        self.auth.to_filter_ir()
-            .and(self.query.effective_filter())
+        self.auth.to_filter_ir().and(self.query.effective_filter())
     }
-    
+
     /// Get the namespace scope
     pub fn namespace_scope(&self) -> &NamespaceScope {
         self.query.scope()
@@ -459,7 +456,10 @@ impl DatabaseId {
     pub const MAX_LENGTH: usize = 256;
 
     /// Create a new database identifier.
-    pub fn new(namespace: impl Into<String>, name: impl Into<String>) -> Result<Self, NamespaceError> {
+    pub fn new(
+        namespace: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Result<Self, NamespaceError> {
         let namespace = namespace.into();
         let name = name.into();
         Namespace::validate_name(&name)?;
@@ -545,35 +545,51 @@ impl NamespaceRegistry {
     }
 
     /// Create a database within a namespace.
-    pub fn create_database(&mut self, namespace: &str, database: &str) -> Result<(), NamespaceError> {
+    pub fn create_database(
+        &mut self,
+        namespace: &str,
+        database: &str,
+    ) -> Result<(), NamespaceError> {
         Namespace::validate_name(database)?;
         let dbs = self.databases.entry(namespace.to_string()).or_default();
         dbs.insert(database.to_string());
-        self.tables.entry((namespace.to_string(), database.to_string())).or_default();
+        self.tables
+            .entry((namespace.to_string(), database.to_string()))
+            .or_default();
         Ok(())
     }
 
     /// Register a table within a namespace/database.
-    pub fn create_table(&mut self, namespace: &str, database: &str, table: &str) -> Result<(), NamespaceError> {
+    pub fn create_table(
+        &mut self,
+        namespace: &str,
+        database: &str,
+        table: &str,
+    ) -> Result<(), NamespaceError> {
         Namespace::validate_name(table)?;
         // Ensure parent database exists
         let dbs = self.databases.entry(namespace.to_string()).or_default();
         dbs.insert(database.to_string());
-        let tables = self.tables.entry((namespace.to_string(), database.to_string())).or_default();
+        let tables = self
+            .tables
+            .entry((namespace.to_string(), database.to_string()))
+            .or_default();
         tables.insert(table.to_string());
         Ok(())
     }
 
     /// List databases in a namespace.
     pub fn list_databases(&self, namespace: &str) -> Vec<&str> {
-        self.databases.get(namespace)
+        self.databases
+            .get(namespace)
             .map(|dbs| dbs.iter().map(|s| s.as_str()).collect())
             .unwrap_or_default()
     }
 
     /// List tables in a database.
     pub fn list_tables(&self, namespace: &str, database: &str) -> Vec<&str> {
-        self.tables.get(&(namespace.to_string(), database.to_string()))
+        self.tables
+            .get(&(namespace.to_string(), database.to_string()))
             .map(|tables| tables.iter().map(|s| s.as_str()).collect())
             .unwrap_or_default()
     }
@@ -585,29 +601,34 @@ impl NamespaceRegistry {
 
     /// Check if a database exists within a namespace.
     pub fn database_exists(&self, namespace: &str, database: &str) -> bool {
-        self.databases.get(namespace)
+        self.databases
+            .get(namespace)
             .map(|dbs| dbs.contains(database))
             .unwrap_or(false)
     }
 
     /// Check if a table exists within a namespace/database.
     pub fn table_exists(&self, namespace: &str, database: &str, table: &str) -> bool {
-        self.tables.get(&(namespace.to_string(), database.to_string()))
+        self.tables
+            .get(&(namespace.to_string(), database.to_string()))
             .map(|tables| tables.contains(table))
             .unwrap_or(false)
     }
 
     /// Drop a database and all its tables.
     pub fn drop_database(&mut self, namespace: &str, database: &str) -> bool {
-        self.tables.remove(&(namespace.to_string(), database.to_string()));
-        self.databases.get_mut(namespace)
+        self.tables
+            .remove(&(namespace.to_string(), database.to_string()));
+        self.databases
+            .get_mut(namespace)
             .map(|dbs| dbs.remove(database))
             .unwrap_or(false)
     }
 
     /// Drop a table from a database.
     pub fn drop_table(&mut self, namespace: &str, database: &str, table: &str) -> bool {
-        self.tables.get_mut(&(namespace.to_string(), database.to_string()))
+        self.tables
+            .get_mut(&(namespace.to_string(), database.to_string()))
             .map(|tables| tables.remove(table))
             .unwrap_or(false)
     }
@@ -618,7 +639,9 @@ impl NamespaceRegistry {
             return false;
         }
         // Remove all tables under this namespace
-        let db_names: Vec<String> = self.databases.get(namespace)
+        let db_names: Vec<String> = self
+            .databases
+            .get(namespace)
             .map(|dbs| dbs.iter().cloned().collect())
             .unwrap_or_default();
         for db in &db_names {
@@ -641,7 +664,7 @@ impl NamespaceRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_namespace_validation() {
         // Valid
@@ -649,7 +672,7 @@ mod tests {
         assert!(Namespace::new("my_namespace").is_ok());
         assert!(Namespace::new("project-123").is_ok());
         assert!(Namespace::new("v1.0.0").is_ok());
-        
+
         // Invalid
         assert!(Namespace::new("").is_err()); // Empty
         assert!(Namespace::new("-starts-with-dash").is_err());
@@ -657,79 +680,73 @@ mod tests {
         assert!(Namespace::new("has spaces").is_err());
         assert!(Namespace::new("has@symbol").is_err());
     }
-    
+
     #[test]
     fn test_namespace_scope_single() {
         let ns = Namespace::new("production").unwrap();
         let scope = NamespaceScope::single(ns.clone());
-        
+
         assert!(scope.contains(&ns));
         assert!(!scope.contains(&Namespace::new("staging").unwrap()));
     }
-    
+
     #[test]
     fn test_namespace_scope_multiple() {
         let ns1 = Namespace::new("prod").unwrap();
         let ns2 = Namespace::new("staging").unwrap();
         let scope = NamespaceScope::multiple(vec![ns1.clone(), ns2.clone()]).unwrap();
-        
+
         assert!(scope.contains(&ns1));
         assert!(scope.contains(&ns2));
         assert!(!scope.contains(&Namespace::new("dev").unwrap()));
     }
-    
+
     #[test]
     fn test_scope_to_filter_ir() {
         let scope = NamespaceScope::single(Namespace::new("production").unwrap());
         let filter = scope.to_filter_ir();
-        
+
         assert!(filter.constrains_field("namespace"));
         assert_eq!(filter.clauses.len(), 1);
     }
-    
+
     #[test]
     fn test_scoped_query_effective_filter() {
         let ns = Namespace::new("production").unwrap();
-        let user_filter = FilterBuilder::new()
-            .eq("source", "documents")
-            .build();
-        
-        let query: ScopedQuery<()> = ScopedQuery::in_namespace(ns, ())
-            .with_filters(user_filter);
-        
+        let user_filter = FilterBuilder::new().eq("source", "documents").build();
+
+        let query: ScopedQuery<()> = ScopedQuery::in_namespace(ns, ()).with_filters(user_filter);
+
         let effective = query.effective_filter();
         assert!(effective.constrains_field("namespace"));
         assert!(effective.constrains_field("source"));
     }
-    
+
     #[test]
     fn test_query_request_validation() {
         let ns = Namespace::new("production").unwrap();
         let query: ScopedQuery<()> = ScopedQuery::in_namespace(ns, ());
-        
+
         // Auth allows production
         let auth = Arc::new(AuthScope::for_namespace("production"));
         assert!(QueryRequest::new(query.clone(), auth).is_ok());
-        
+
         // Auth only allows staging
         let auth2 = Arc::new(AuthScope::for_namespace("staging"));
         assert!(QueryRequest::new(query, auth2).is_err());
     }
-    
+
     #[test]
     fn test_query_request_effective_filter() {
         let ns = Namespace::new("production").unwrap();
         let query: ScopedQuery<()> = ScopedQuery::in_namespace(ns, ())
             .with_filters(FilterBuilder::new().eq("type", "article").build());
-        
-        let auth = Arc::new(
-            AuthScope::for_namespace("production")
-                .with_tenant("acme")
-        );
-        
+
+        let auth = Arc::new(AuthScope::for_namespace("production").with_tenant("acme"));
+
         let request = QueryRequest::new(query, auth).unwrap();
         let effective = request.effective_filter();
-        
+
         // Should have: namespace (from scope) + tenant_id (from auth) + type (from user)
         assert!(effective.constrains_field("namespace"));
         assert!(effective.constrains_field("tenant_id"));

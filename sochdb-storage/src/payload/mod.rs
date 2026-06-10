@@ -32,11 +32,11 @@ mod disk_hash_index;
 
 use memmap2::MmapOptions;
 use parking_lot::RwLock;
+use sochdb_core::{Result, SochDBError};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use sochdb_core::{Result, SochDBError};
 
 use disk_hash_index::DiskHashIndex;
 
@@ -747,7 +747,8 @@ mod tests {
 
         // Write with DiskHash backend
         {
-            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
+            let store =
+                PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
             store.append(1, data1, None).unwrap();
             store.append(2, data2, None).unwrap();
             // Explicit save (though Drop also saves)
@@ -756,7 +757,8 @@ mod tests {
 
         // Reopen with DiskHash and verify
         {
-            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
+            let store =
+                PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
             assert_eq!(store.get(1).unwrap().unwrap(), data1);
             assert_eq!(store.get(2).unwrap().unwrap(), data2);
             assert_eq!(store.len(), 2);
@@ -797,7 +799,8 @@ mod tests {
         // Payload data file is shared, but indexes are separate
         // DiskHash backend starts fresh (no cross-backend index migration)
         {
-            let store = PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
+            let store =
+                PayloadStore::open_with_backend(dir.path(), IndexBackend::DiskHash).unwrap();
             // DiskHash has its own index, so it won't see HashMap's entry
             assert_eq!(store.len(), 0);
 

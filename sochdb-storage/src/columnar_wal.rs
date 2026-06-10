@@ -118,7 +118,7 @@ impl WalEntry {
             value,
         }
     }
-    
+
     /// Create a new Delete entry
     pub fn delete(txn_id: u64, timestamp: u64, key: Vec<u8>) -> Self {
         Self {
@@ -129,7 +129,7 @@ impl WalEntry {
             value: Vec::new(),
         }
     }
-    
+
     /// Create a BeginTxn marker
     pub fn begin_txn(txn_id: u64, timestamp: u64) -> Self {
         Self {
@@ -140,7 +140,7 @@ impl WalEntry {
             value: Vec::new(),
         }
     }
-    
+
     /// Create a CommitTxn marker
     pub fn commit_txn(txn_id: u64, timestamp: u64) -> Self {
         Self {
@@ -202,7 +202,7 @@ impl ColumnarWalBlock {
     pub fn new() -> Self {
         Self::with_batch_size(DEFAULT_BATCH_SIZE)
     }
-    
+
     /// Create with custom batch size
     pub fn with_batch_size(batch_size: usize) -> Self {
         Self {
@@ -210,7 +210,7 @@ impl ColumnarWalBlock {
             batch_size,
         }
     }
-    
+
     /// Add an entry to the block
     pub fn add_entry(&mut self, entry: WalEntry) -> bool {
         if self.entries.len() >= self.batch_size {
@@ -219,34 +219,34 @@ impl ColumnarWalBlock {
         self.entries.push(entry);
         true
     }
-    
+
     /// Check if the block is full
     pub fn is_full(&self) -> bool {
         self.entries.len() >= self.batch_size
     }
-    
+
     /// Get number of entries
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-    
+
     /// Get entries
     pub fn entries(&self) -> &[WalEntry] {
         &self.entries
     }
-    
+
     /// Serialize to columnar format
     pub fn serialize(&self) -> Vec<u8> {
         let entry_count = self.entries.len();
         if entry_count == 0 {
             return Vec::new();
         }
-        
+
         // Pre-calculate sizes
         let op_lane_size = entry_count;
         let txn_lane_size = entry_count * 8;
@@ -255,7 +255,7 @@ impl ColumnarWalBlock {
         let key_data_size: usize = self.entries.iter().map(|e| e.key.len()).sum();
         let value_len_size = entry_count * 4; // u32 lengths
         let value_data_size: usize = self.entries.iter().map(|e| e.value.len()).sum();
-        
+
         let header_size = std::mem::size_of::<BlockHeader>();
         let total_size = header_size
             + op_lane_size
@@ -265,31 +265,31 @@ impl ColumnarWalBlock {
             + key_data_size
             + value_len_size
             + value_data_size;
-        
+
         let mut buffer = vec![0u8; total_size];
         let mut offset = header_size;
-        
+
         // Op lane
         let op_lane_offset = offset as u32;
         for entry in &self.entries {
             buffer[offset] = entry.op as u8;
             offset += 1;
         }
-        
+
         // Txn ID lane
         let txn_lane_offset = offset as u32;
         for entry in &self.entries {
             buffer[offset..offset + 8].copy_from_slice(&entry.txn_id.to_le_bytes());
             offset += 8;
         }
-        
+
         // Timestamp lane (could use delta encoding for better compression)
         let ts_lane_offset = offset as u32;
         for entry in &self.entries {
             buffer[offset..offset + 8].copy_from_slice(&entry.timestamp.to_le_bytes());
             offset += 8;
         }
-        
+
         // Key length lane
         let key_len_lane_offset = offset as u32;
         for entry in &self.entries {
@@ -297,7 +297,7 @@ impl ColumnarWalBlock {
             buffer[offset..offset + 2].copy_from_slice(&len.to_le_bytes());
             offset += 2;
         }
-        
+
         // Key data lane
         let key_data_lane_offset = offset as u32;
         for entry in &self.entries {
@@ -305,7 +305,7 @@ impl ColumnarWalBlock {
             buffer[offset..offset + len].copy_from_slice(&entry.key[..len]);
             offset += len;
         }
-        
+
         // Value length lane
         let value_len_lane_offset = offset as u32;
         for entry in &self.entries {
@@ -313,17 +313,17 @@ impl ColumnarWalBlock {
             buffer[offset..offset + 4].copy_from_slice(&len.to_le_bytes());
             offset += 4;
         }
-        
+
         // Value data lane
         let value_data_lane_offset = offset as u32;
         for entry in &self.entries {
             buffer[offset..offset + entry.value.len()].copy_from_slice(&entry.value);
             offset += entry.value.len();
         }
-        
+
         // Calculate CRC32
         let checksum = crc32_simple(&buffer[header_size..offset]);
-        
+
         // Write header
         let header = BlockHeader {
             magic: COLUMNAR_WAL_MAGIC,
@@ -340,7 +340,7 @@ impl ColumnarWalBlock {
             block_size: offset as u32,
             checksum,
         };
-        
+
         // Copy header bytes
         let header_bytes = unsafe {
             std::slice::from_raw_parts(
@@ -349,36 +349,42 @@ impl ColumnarWalBlock {
             )
         };
         buffer[..header_size].copy_from_slice(header_bytes);
-        
+
         buffer.truncate(offset);
         buffer
     }
-    
+
     /// Deserialize from columnar format
     pub fn deserialize(data: &[u8]) -> io::Result<Self> {
         let header_size = std::mem::size_of::<BlockHeader>();
         if data.len() < header_size {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "buffer too small"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "buffer too small",
+            ));
         }
-        
+
         // Read header
         let header = unsafe { &*(data.as_ptr() as *const BlockHeader) };
-        
+
         // Verify magic
         if header.magic != COLUMNAR_WAL_MAGIC {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid magic"));
         }
-        
+
         // Verify checksum
         let expected_checksum = header.checksum;
         let actual_checksum = crc32_simple(&data[header_size..header.block_size as usize]);
         if expected_checksum != actual_checksum {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "checksum mismatch"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "checksum mismatch",
+            ));
         }
-        
+
         let entry_count = header.entry_count as usize;
         let mut entries = Vec::with_capacity(entry_count);
-        
+
         // Parse lanes
         let op_lane = &data[header.op_lane_offset as usize..];
         let txn_lane = &data[header.txn_lane_offset as usize..];
@@ -387,25 +393,27 @@ impl ColumnarWalBlock {
         let key_data_lane = &data[header.key_data_lane_offset as usize..];
         let value_len_lane = &data[header.value_len_lane_offset as usize..];
         let value_data_lane = &data[header.value_data_lane_offset as usize..];
-        
+
         let mut key_offset = 0usize;
         let mut value_offset = 0usize;
-        
+
         for i in 0..entry_count {
             let op = WalOpType::from_u8(op_lane[i])
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid op"))?;
-            
+
             let txn_id = u64::from_le_bytes(txn_lane[i * 8..i * 8 + 8].try_into().unwrap());
             let timestamp = u64::from_le_bytes(ts_lane[i * 8..i * 8 + 8].try_into().unwrap());
-            let key_len = u16::from_le_bytes(key_len_lane[i * 2..i * 2 + 2].try_into().unwrap()) as usize;
-            let value_len = u32::from_le_bytes(value_len_lane[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
-            
+            let key_len =
+                u16::from_le_bytes(key_len_lane[i * 2..i * 2 + 2].try_into().unwrap()) as usize;
+            let value_len =
+                u32::from_le_bytes(value_len_lane[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+
             let key = key_data_lane[key_offset..key_offset + key_len].to_vec();
             key_offset += key_len;
-            
+
             let value = value_data_lane[value_offset..value_offset + value_len].to_vec();
             value_offset += value_len;
-            
+
             entries.push(WalEntry {
                 op,
                 txn_id,
@@ -414,13 +422,13 @@ impl ColumnarWalBlock {
                 value,
             });
         }
-        
+
         Ok(Self {
             entries,
             batch_size: DEFAULT_BATCH_SIZE,
         })
     }
-    
+
     /// Clear the block for reuse
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -448,7 +456,7 @@ impl SimdTimestampDecoder {
     pub fn new(base_ts: u64) -> Self {
         Self { base_ts }
     }
-    
+
     /// Decode delta-encoded timestamps
     ///
     /// Input: array of delta values
@@ -464,23 +472,23 @@ impl SimdTimestampDecoder {
         }
         self.decode_deltas_scalar(deltas, output);
     }
-    
+
     /// AVX2 implementation
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]
     unsafe fn decode_deltas_avx2_impl(&self, deltas: &[u64], output: &mut [u64]) {
         use std::arch::x86_64::*;
-        
+
         let n = deltas.len();
         let mut current = self.base_ts;
         let mut i = 0;
-        
+
         // Process 4 at a time using AVX2
         while i + 4 <= n {
             // Load 4 deltas
             // SAFETY: The caller ensures this function is only called on x86_64 with AVX2 support
             let _d = unsafe { _mm256_loadu_si256(deltas[i..].as_ptr() as *const __m256i) };
-            
+
             // For prefix sum, we need to do it sequentially for correctness
             // AVX2 doesn't have efficient horizontal prefix sum for u64
             // This is a simplified version - real implementation would use
@@ -489,10 +497,10 @@ impl SimdTimestampDecoder {
                 current = current.wrapping_add(deltas[i + j]);
                 output[i + j] = current;
             }
-            
+
             i += 4;
         }
-        
+
         // Handle remainder
         while i < n {
             current = current.wrapping_add(deltas[i]);
@@ -500,7 +508,7 @@ impl SimdTimestampDecoder {
             i += 1;
         }
     }
-    
+
     /// Scalar fallback
     pub fn decode_deltas_scalar(&self, deltas: &[u64], output: &mut [u64]) {
         let mut current = self.base_ts;
@@ -509,7 +517,7 @@ impl SimdTimestampDecoder {
             output[i] = current;
         }
     }
-    
+
     /// Decode without AVX2 (for non-x86)
     #[cfg(not(target_arch = "x86_64"))]
     pub fn decode_deltas_avx2(&self, deltas: &[u64], output: &mut [u64]) {
@@ -533,12 +541,12 @@ impl SimdKeyComparator {
     ) -> Vec<bool> {
         let mut results = vec![false; key_lens.len()];
         let prefix_len = prefix.len();
-        
+
         if prefix_len == 0 {
             results.fill(true);
             return results;
         }
-        
+
         for (i, &len) in key_lens.iter().enumerate() {
             if (len as usize) >= prefix_len {
                 let offset = key_offsets[i] as usize;
@@ -546,10 +554,10 @@ impl SimdKeyComparator {
                 results[i] = key_slice == prefix;
             }
         }
-        
+
         results
     }
-    
+
     /// Non-x86 fallback
     #[cfg(not(target_arch = "x86_64"))]
     pub fn match_prefix_avx2(
@@ -560,12 +568,12 @@ impl SimdKeyComparator {
     ) -> Vec<bool> {
         let mut results = vec![false; key_lens.len()];
         let prefix_len = prefix.len();
-        
+
         if prefix_len == 0 {
             results.fill(true);
             return results;
         }
-        
+
         for (i, &len) in key_lens.iter().enumerate() {
             if (len as usize) >= prefix_len {
                 let offset = key_offsets[i] as usize;
@@ -573,7 +581,7 @@ impl SimdKeyComparator {
                 results[i] = key_slice == prefix;
             }
         }
-        
+
         results
     }
 }
@@ -601,7 +609,7 @@ impl<W: Write> ColumnarWalWriter<W> {
     pub fn new(writer: W) -> Self {
         Self::with_batch_size(writer, DEFAULT_BATCH_SIZE)
     }
-    
+
     /// Create with custom batch size
     pub fn with_batch_size(writer: W, batch_size: usize) -> Self {
         Self {
@@ -612,7 +620,7 @@ impl<W: Write> ColumnarWalWriter<W> {
             blocks_written: AtomicU64::new(0),
         }
     }
-    
+
     /// Write an entry
     pub fn write_entry(&mut self, entry: WalEntry) -> io::Result<()> {
         if !self.current_block.add_entry(entry.clone()) {
@@ -620,35 +628,39 @@ impl<W: Write> ColumnarWalWriter<W> {
             self.flush_block()?;
             // Add the entry to the new block
             if !self.current_block.add_entry(entry) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "entry too large for block"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "entry too large for block",
+                ));
             }
         }
         Ok(())
     }
-    
+
     /// Flush the current block
     pub fn flush_block(&mut self) -> io::Result<()> {
         if self.current_block.is_empty() {
             return Ok(());
         }
-        
+
         let data = self.current_block.serialize();
         self.writer.write_all(&data)?;
-        
-        self.bytes_written.fetch_add(data.len() as u64, Ordering::Relaxed);
+
+        self.bytes_written
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
         self.blocks_written.fetch_add(1, Ordering::Relaxed);
         self.sequence.fetch_add(1, Ordering::Relaxed);
-        
+
         self.current_block.clear();
         Ok(())
     }
-    
+
     /// Flush all pending data
     pub fn flush(&mut self) -> io::Result<()> {
         self.flush_block()?;
         self.writer.flush()
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> WalWriterStats {
         WalWriterStats {
@@ -693,7 +705,7 @@ impl<R: Read> ColumnarWalReader<R> {
             current_pos: 0,
         }
     }
-    
+
     /// Read the next entry
     pub fn next_entry(&mut self) -> io::Result<Option<WalEntry>> {
         // Check if we have entries in the current block
@@ -704,7 +716,7 @@ impl<R: Read> ColumnarWalReader<R> {
                 return Ok(Some(entry));
             }
         }
-        
+
         // Need to read a new block
         match self.read_block()? {
             Some(block) => {
@@ -719,33 +731,33 @@ impl<R: Read> ColumnarWalReader<R> {
             None => Ok(None),
         }
     }
-    
+
     /// Read a block from the reader
     fn read_block(&mut self) -> io::Result<Option<ColumnarWalBlock>> {
         let header_size = std::mem::size_of::<BlockHeader>();
         let mut header_buf = vec![0u8; header_size];
-        
+
         match self.reader.read_exact(&mut header_buf) {
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
             Err(e) => return Err(e),
         }
-        
+
         // Read header to get block size
         let header = unsafe { &*(header_buf.as_ptr() as *const BlockHeader) };
-        
+
         if header.magic != COLUMNAR_WAL_MAGIC {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid magic"));
         }
-        
+
         let _remaining = header.block_size as usize - header_size;
         let mut block_data = header_buf;
         block_data.resize(header.block_size as usize, 0);
         self.reader.read_exact(&mut block_data[header_size..])?;
-        
+
         ColumnarWalBlock::deserialize(&block_data).map(Some)
     }
-    
+
     /// Read all entries
     pub fn read_all(&mut self) -> io::Result<Vec<WalEntry>> {
         let mut entries = Vec::new();
@@ -772,7 +784,7 @@ fn crc32_simple(data: &[u8]) -> u32 {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    
+
     #[test]
     fn test_wal_entry_creation() {
         let entry = WalEntry::put(1, 100, b"key".to_vec(), b"value".to_vec());
@@ -782,11 +794,11 @@ mod tests {
         assert_eq!(entry.key, b"key");
         assert_eq!(entry.value, b"value");
     }
-    
+
     #[test]
     fn test_block_serialize_deserialize() {
         let mut block = ColumnarWalBlock::new();
-        
+
         for i in 0..10 {
             let entry = WalEntry::put(
                 i,
@@ -796,10 +808,10 @@ mod tests {
             );
             assert!(block.add_entry(entry));
         }
-        
+
         let data = block.serialize();
         let decoded = ColumnarWalBlock::deserialize(&data).unwrap();
-        
+
         assert_eq!(decoded.len(), 10);
         for (i, entry) in decoded.entries().iter().enumerate() {
             assert_eq!(entry.txn_id, i as u64);
@@ -808,30 +820,30 @@ mod tests {
             assert_eq!(entry.value, format!("value{}", i).into_bytes());
         }
     }
-    
+
     #[test]
     fn test_block_full() {
         let mut block = ColumnarWalBlock::with_batch_size(5);
-        
+
         for i in 0..5 {
             let entry = WalEntry::put(i, i * 10, vec![i as u8], vec![]);
             assert!(block.add_entry(entry));
         }
-        
+
         assert!(block.is_full());
-        
+
         let entry = WalEntry::put(5, 50, vec![5], vec![]);
         assert!(!block.add_entry(entry)); // Should fail, block full
     }
-    
+
     #[test]
     fn test_writer_reader_roundtrip() {
         let mut buffer = Vec::new();
-        
+
         // Write
         {
             let mut writer = ColumnarWalWriter::with_batch_size(Cursor::new(&mut buffer), 10);
-            
+
             for i in 0..25 {
                 let entry = WalEntry::put(
                     i,
@@ -841,14 +853,14 @@ mod tests {
                 );
                 writer.write_entry(entry).unwrap();
             }
-            
+
             writer.flush().unwrap();
         }
-        
+
         // Read
         let mut reader = ColumnarWalReader::new(Cursor::new(&buffer));
         let entries = reader.read_all().unwrap();
-        
+
         assert_eq!(entries.len(), 25);
         for (i, entry) in entries.iter().enumerate() {
             assert_eq!(entry.txn_id, i as u64);
@@ -857,63 +869,57 @@ mod tests {
             assert_eq!(entry.value, format!("value_{}", i).into_bytes());
         }
     }
-    
+
     #[test]
     fn test_timestamp_decoder() {
         let decoder = SimdTimestampDecoder::new(1000);
         let deltas = vec![10, 20, 30, 40, 50, 60, 70, 80];
         let mut output = vec![0u64; 8];
-        
+
         decoder.decode_deltas_scalar(&deltas, &mut output);
-        
+
         assert_eq!(output, vec![1010, 1030, 1060, 1100, 1150, 1210, 1280, 1360]);
     }
-    
+
     #[test]
     fn test_key_comparator() {
         let key_lens = vec![4u16, 5, 4, 6, 4];
         let key_data = b"key1key12key3key123key4";
         let key_offsets = vec![0u32, 4, 9, 13, 19];
-        
-        let results = SimdKeyComparator::match_prefix_avx2(
-            &key_lens,
-            key_data,
-            &key_offsets,
-            b"key",
-        );
-        
+
+        let results =
+            SimdKeyComparator::match_prefix_avx2(&key_lens, key_data, &key_offsets, b"key");
+
         assert!(results.iter().all(|&r| r)); // All start with "key"
-        
-        let results = SimdKeyComparator::match_prefix_avx2(
-            &key_lens,
-            key_data,
-            &key_offsets,
-            b"key1",
-        );
-        
+
+        let results =
+            SimdKeyComparator::match_prefix_avx2(&key_lens, key_data, &key_offsets, b"key1");
+
         assert_eq!(results, vec![true, true, false, true, false]);
     }
-    
+
     #[test]
     fn test_writer_stats() {
         let buffer = Vec::new();
         let mut writer = ColumnarWalWriter::with_batch_size(Cursor::new(buffer), 10);
-        
+
         for i in 0..5 {
-            writer.write_entry(WalEntry::put(i, i, vec![0], vec![0])).unwrap();
+            writer
+                .write_entry(WalEntry::put(i, i, vec![0], vec![0]))
+                .unwrap();
         }
-        
+
         let stats = writer.stats();
         assert_eq!(stats.current_block_entries, 5);
         assert_eq!(stats.blocks_written, 0);
-        
+
         writer.flush().unwrap();
-        
+
         let stats = writer.stats();
         assert_eq!(stats.current_block_entries, 0);
         assert_eq!(stats.blocks_written, 1);
     }
-    
+
     #[test]
     fn test_crc32() {
         let data = b"hello world";

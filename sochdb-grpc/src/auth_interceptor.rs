@@ -164,15 +164,13 @@ fn auth_error_to_status(err: AuthError) -> Status {
         AuthError::Unauthenticated => {
             Status::unauthenticated("Authentication required. Provide a Bearer token or API key.")
         }
-        AuthError::TokenExpired => {
-            Status::unauthenticated("Authentication token has expired.")
-        }
+        AuthError::TokenExpired => Status::unauthenticated("Authentication token has expired."),
         AuthError::Unauthorized { required } => Status::permission_denied(format!(
             "Insufficient permissions. Required capability: {}",
             required
         )),
         AuthError::RateLimited { retry_after_ms } => {
-            let mut status = Status::resource_exhausted(format!(
+            let status = Status::resource_exhausted(format!(
                 "Rate limit exceeded. Retry after {}ms.",
                 retry_after_ms
             ));

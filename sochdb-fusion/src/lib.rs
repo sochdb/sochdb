@@ -47,7 +47,7 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────┐
-//! │                FusionEngine                      │
+//! │                KnowledgeFusionEngine             │
 //! │  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
 //! │  │ ART      │  │ HNSW     │  │ CSR      │      │
 //! │  │ Index    │──│ Index    │──│ Graph    │      │
@@ -78,15 +78,15 @@
 
 pub mod bitset;
 pub mod candidate_mask;
-pub mod temporal_graph;
 pub mod pipeline;
 pub mod query;
+pub mod temporal_graph;
 pub mod versioned_store;
 
 // Re-export primary types
 pub use bitset::BitSet;
 pub use candidate_mask::{CandidateMask, MaskOp};
-pub use temporal_graph::{TemporalCsrGraph, TemporalEdge, GraphBuilder};
-pub use pipeline::{FusionEngine, FusionResult, FusionConfig};
+pub use pipeline::{FusionConfig, FusionResult, KnowledgeFusionEngine};
 pub use query::{FusionQuery, FusionQueryBuilder, QueryStage};
-pub use versioned_store::{VersionedObjectStore, StoreConfig, VersionedStoreError};
+pub use temporal_graph::{GraphBuilder, TemporalCsrGraph, TemporalEdge};
+pub use versioned_store::{StoreConfig, VersionedObjectStore, VersionedStoreError};

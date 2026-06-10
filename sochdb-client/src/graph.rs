@@ -62,9 +62,9 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use sochdb_core::SochValue;
 use sochdb_core::edge_encoding;
 use sochdb_core::record_id::RecordId;
-use sochdb_core::SochValue;
 
 use crate::ConnectionTrait;
 use crate::error::{ClientError, Result};
@@ -308,11 +308,7 @@ impl<C: ConnectionTrait> GraphOverlay<C> {
     }
 
     /// Get all outgoing edges from a node, optionally filtered by edge type.
-    pub fn get_edges(
-        &self,
-        from_id: &RecordId,
-        edge_type: Option<&str>,
-    ) -> Result<Vec<GraphEdge>> {
+    pub fn get_edges(&self, from_id: &RecordId, edge_type: Option<&str>) -> Result<Vec<GraphEdge>> {
         let prefix = match edge_type {
             Some(et) => edge_encoding::edge_from_type_prefix(&self.namespace, from_id, et),
             None => edge_encoding::edge_from_prefix(&self.namespace, from_id),
@@ -370,7 +366,8 @@ impl<C: ConnectionTrait> GraphOverlay<C> {
                     if decoded.to_key == to_key {
                         if let Some(from_id) = RecordId::from_key(&decoded.from_key) {
                             // We need to scan all edge types from this from_id to find edges to to_id
-                            let from_prefix = edge_encoding::edge_from_prefix(&self.namespace, &from_id);
+                            let from_prefix =
+                                edge_encoding::edge_from_prefix(&self.namespace, &from_id);
                             let from_results = self.conn.scan(&from_prefix)?;
                             for (_, val) in from_results {
                                 if let Some(edge_decoded) = edge_encoding::decode_edge_value(&val) {
@@ -426,7 +423,13 @@ impl<C: ConnectionTrait> GraphOverlay<C> {
         edge_types: Option<&[&str]>,
         node_types: Option<&[&str]>,
     ) -> Result<Vec<RecordId>> {
-        self.traverse(start_id, max_depth, edge_types, node_types, TraversalOrder::BFS)
+        self.traverse(
+            start_id,
+            max_depth,
+            edge_types,
+            node_types,
+            TraversalOrder::BFS,
+        )
     }
 
     /// Depth-first search from a starting node.
@@ -437,7 +440,13 @@ impl<C: ConnectionTrait> GraphOverlay<C> {
         edge_types: Option<&[&str]>,
         node_types: Option<&[&str]>,
     ) -> Result<Vec<RecordId>> {
-        self.traverse(start_id, max_depth, edge_types, node_types, TraversalOrder::DFS)
+        self.traverse(
+            start_id,
+            max_depth,
+            edge_types,
+            node_types,
+            TraversalOrder::DFS,
+        )
     }
 
     fn traverse(
@@ -621,11 +630,7 @@ impl<C: ConnectionTrait> GraphOverlay<C> {
     /// Get all nodes of a specific type.
     ///
     /// Note: This scans all nodes in the namespace, use sparingly for large graphs.
-    pub fn get_nodes_by_type(
-        &self,
-        node_type: &str,
-        limit: usize,
-    ) -> Result<Vec<GraphNode>> {
+    pub fn get_nodes_by_type(&self, node_type: &str, limit: usize) -> Result<Vec<GraphNode>> {
         let prefix = edge_encoding::node_prefix(&self.namespace);
         let results = self.conn.scan(&prefix)?;
 
@@ -636,9 +641,8 @@ impl<C: ConnectionTrait> GraphOverlay<C> {
                     // Reconstruct RecordId from key (lossy — table name is hash)
                     // The node key is [0x01][ns_hash: 4B][rid_key...]
                     let rid_key = &key[5..]; // skip tag + ns_hash
-                    let rid = RecordId::from_key(rid_key).unwrap_or_else(|| {
-                        RecordId::from_string("_unknown", "?")
-                    });
+                    let rid = RecordId::from_key(rid_key)
+                        .unwrap_or_else(|| RecordId::from_string("_unknown", "?"));
                     nodes.push(GraphNode {
                         id: rid,
                         node_type: nt,
@@ -709,7 +713,10 @@ mod tests {
 
     impl ConnectionTrait for MemKV {
         fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-            self.data.lock().unwrap().insert(key.to_vec(), value.to_vec());
+            self.data
+                .lock()
+                .unwrap()
+                .insert(key.to_vec(), value.to_vec());
             Ok(())
         }
 

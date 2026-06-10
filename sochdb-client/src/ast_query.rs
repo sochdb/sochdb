@@ -45,8 +45,8 @@ use std::collections::HashMap;
 use sochdb_core::soch::{SochType, SochValue};
 use sochdb_query::sql::{
     BinaryOperator, ConflictAction, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
-    DropIndexStmt, DropTableStmt, Expr, InsertSource, InsertStmt, Literal, ObjectName,
-    OnConflict, Parser, SelectItem, SelectStmt, SqlDialect, Statement, UpdateStmt,
+    DropIndexStmt, DropTableStmt, Expr, InsertSource, InsertStmt, Literal, Parser, SelectItem,
+    SelectStmt, SqlDialect, Statement, UpdateStmt,
 };
 
 /// Query execution result
@@ -138,11 +138,7 @@ impl<'a> AstQueryExecutor<'a> {
 
     // ===== SELECT Execution =====
 
-    fn execute_select(
-        &self,
-        select: &SelectStmt,
-        params: &[SochValue],
-    ) -> Result<QueryResult> {
+    fn execute_select(&self, select: &SelectStmt, params: &[SochValue]) -> Result<QueryResult> {
         // Extract table name
         let from = select
             .from
@@ -163,9 +159,7 @@ impl<'a> AstQueryExecutor<'a> {
         // Handle column selection
         let columns: Vec<String> = self.extract_select_columns(&select.columns);
         if !columns.is_empty() && columns[0] != "*" {
-            builder = builder.select(
-                &columns.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            );
+            builder = builder.select(&columns.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         }
 
         // Handle WHERE clause
@@ -212,11 +206,7 @@ impl<'a> AstQueryExecutor<'a> {
 
     // ===== INSERT Execution =====
 
-    fn execute_insert(
-        &self,
-        insert: &InsertStmt,
-        params: &[SochValue],
-    ) -> Result<QueryResult> {
+    fn execute_insert(&self, insert: &InsertStmt, params: &[SochValue]) -> Result<QueryResult> {
         let table_name = insert.table.name();
 
         // Get values from source
@@ -225,7 +215,7 @@ impl<'a> AstQueryExecutor<'a> {
             _ => {
                 return Err(ClientError::Parse(
                     "Only VALUES source supported for INSERT".to_string(),
-                ))
+                ));
             }
         };
 
@@ -262,7 +252,7 @@ impl<'a> AstQueryExecutor<'a> {
                             return Ok(QueryResult::Insert(InsertResult {
                                 last_id: None,
                                 rows_inserted: 0,
-                            }))
+                            }));
                         }
                         Err(e) => return Err(e),
                     }
@@ -293,7 +283,7 @@ impl<'a> AstQueryExecutor<'a> {
                             // Would need to delete + insert
                             return Err(ClientError::Parse(
                                 "REPLACE conflict action not fully implemented".to_string(),
-                            ))
+                            ));
                         }
                         Err(e) => return Err(e),
                     }
@@ -308,11 +298,7 @@ impl<'a> AstQueryExecutor<'a> {
 
     // ===== UPDATE Execution =====
 
-    fn execute_update(
-        &self,
-        update: &UpdateStmt,
-        params: &[SochValue],
-    ) -> Result<QueryResult> {
+    fn execute_update(&self, update: &UpdateStmt, params: &[SochValue]) -> Result<QueryResult> {
         let table_name = update.table.name();
         let mut builder = self.conn.update(table_name);
 
@@ -324,7 +310,8 @@ impl<'a> AstQueryExecutor<'a> {
 
         // Apply WHERE clause
         if let Some(where_clause) = &update.where_clause {
-            if let Some((field, _op, value)) = self.extract_simple_condition(where_clause, params)?
+            if let Some((field, _op, value)) =
+                self.extract_simple_condition(where_clause, params)?
             {
                 builder = builder.where_eq(&field, value);
             }
@@ -336,17 +323,14 @@ impl<'a> AstQueryExecutor<'a> {
 
     // ===== DELETE Execution =====
 
-    fn execute_delete(
-        &self,
-        delete: &DeleteStmt,
-        params: &[SochValue],
-    ) -> Result<QueryResult> {
+    fn execute_delete(&self, delete: &DeleteStmt, params: &[SochValue]) -> Result<QueryResult> {
         let table_name = delete.table.name();
         let mut builder = self.conn.delete_from(table_name);
 
         // Apply WHERE clause
         if let Some(where_clause) = &delete.where_clause {
-            if let Some((field, _op, value)) = self.extract_simple_condition(where_clause, params)?
+            if let Some((field, _op, value)) =
+                self.extract_simple_condition(where_clause, params)?
             {
                 builder = builder.where_eq(&field, value);
             }
@@ -413,7 +397,9 @@ impl<'a> AstQueryExecutor<'a> {
             let result = self.conn.drop_table(name.name())?;
             Ok(QueryResult::DropTable(result))
         } else {
-            Err(ClientError::Parse("No table name in DROP TABLE".to_string()))
+            Err(ClientError::Parse(
+                "No table name in DROP TABLE".to_string(),
+            ))
         }
     }
 
@@ -425,12 +411,9 @@ impl<'a> AstQueryExecutor<'a> {
         }
 
         let cols: Vec<&str> = create.columns.iter().map(|c| c.name.as_str()).collect();
-        let result = self.conn.create_index(
-            &create.name,
-            create.table.name(),
-            &cols,
-            create.unique,
-        )?;
+        let result =
+            self.conn
+                .create_index(&create.name, create.table.name(), &cols, create.unique)?;
         Ok(QueryResult::CreateIndex(result))
     }
 
@@ -447,10 +430,7 @@ impl<'a> AstQueryExecutor<'a> {
 
     // ===== Helper Methods =====
 
-    fn extract_table_name(
-        &self,
-        table_ref: &sochdb_query::sql::TableRef,
-    ) -> Result<String> {
+    fn extract_table_name(&self, table_ref: &sochdb_query::sql::TableRef) -> Result<String> {
         match table_ref {
             sochdb_query::sql::TableRef::Table { name, .. } => Ok(name.name().to_string()),
             _ => Err(ClientError::Parse(
@@ -615,8 +595,6 @@ impl SochConnection {
     /// **Note:** `SochConnection` is in-memory only; for persistent storage
     /// use [`EmbeddedConnection::execute_sql`].
     pub fn sql_execute(&self, sql: &str) -> Result<sochdb_query::sql::bridge::ExecutionResult> {
-        use sochdb_query::sql::bridge::ExecutionResult;
-
         let qr = self.query_ast(sql)?;
         Ok(Self::query_result_to_execution_result(qr))
     }
@@ -663,7 +641,10 @@ mod tests {
 
     #[test]
     fn test_dialect_detection() {
-        assert_eq!(SqlDialect::detect("SELECT * FROM users"), SqlDialect::Standard);
+        assert_eq!(
+            SqlDialect::detect("SELECT * FROM users"),
+            SqlDialect::Standard
+        );
         assert_eq!(
             SqlDialect::detect("INSERT IGNORE INTO users VALUES (1)"),
             SqlDialect::MySQL
@@ -686,7 +667,8 @@ mod tests {
 
     #[test]
     fn test_parse_insert_ignore() {
-        let stmt = Parser::parse("INSERT IGNORE INTO users (id, name) VALUES (1, 'Alice')").unwrap();
+        let stmt =
+            Parser::parse("INSERT IGNORE INTO users (id, name) VALUES (1, 'Alice')").unwrap();
         if let Statement::Insert(insert) = stmt {
             assert!(insert.on_conflict.is_some());
         } else {

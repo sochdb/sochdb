@@ -112,7 +112,12 @@ impl BitSet {
     /// Set bit at position `pos`.
     #[inline]
     pub fn set(&mut self, pos: usize) {
-        debug_assert!(pos < self.capacity, "BitSet::set out of bounds: {} >= {}", pos, self.capacity);
+        debug_assert!(
+            pos < self.capacity,
+            "BitSet::set out of bounds: {} >= {}",
+            pos,
+            self.capacity
+        );
         let word = pos / 64;
         let bit = pos % 64;
         if word < self.words.len() {
@@ -127,7 +132,12 @@ impl BitSet {
     /// Clear bit at position `pos`.
     #[inline]
     pub fn clear(&mut self, pos: usize) {
-        debug_assert!(pos < self.capacity, "BitSet::clear out of bounds: {} >= {}", pos, self.capacity);
+        debug_assert!(
+            pos < self.capacity,
+            "BitSet::clear out of bounds: {} >= {}",
+            pos,
+            self.capacity
+        );
         let word = pos / 64;
         let bit = pos % 64;
         if word < self.words.len() {
@@ -147,7 +157,9 @@ impl BitSet {
         }
         let word = pos / 64;
         let bit = pos % 64;
-        self.words.get(word).map_or(false, |w| w & (1u64 << bit) != 0)
+        self.words
+            .get(word)
+            .map_or(false, |w| w & (1u64 << bit) != 0)
     }
 
     /// In-place intersection (AND) with another BitSet.
@@ -272,11 +284,7 @@ impl fmt::Debug for BitSet {
 
 impl fmt::Display for BitSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "BitSet[{}/{}]",
-            self.count, self.capacity
-        )
+        write!(f, "BitSet[{}/{}]", self.count, self.capacity)
     }
 }
 

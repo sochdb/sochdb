@@ -25,16 +25,16 @@
 //! ```text
 //! document     ::= top_level_value
 //! value        ::= simple_object | array | primitive
-//! simple_object::= (key ":" value newline)+ 
+//! simple_object::= (key ":" value newline)+
 //! array        ::= header newline item*
 //! header       ::= name "[" count "]" ( "{" fields "}" )? ":"
 //! item         ::= "-" value newline | row newline
 //! ```
 
-use crate::soch::{SochValue}; // Use shared types from soch.rs
+use crate::soch::SochValue; // Use shared types from soch.rs
 use std::collections::HashMap;
-use toon_format::{self, EncodeOptions, DecodeOptions, Delimiter, Indent};
 use toon_format::types::KeyFoldingMode;
+use toon_format::{self, DecodeOptions, Delimiter, EncodeOptions, Indent};
 
 // ============================================================================
 // TOON Value Types
@@ -102,14 +102,15 @@ pub struct SochDocument {
 impl SochDocument {
     /// Create a new TOON document from a value
     pub fn new(root: SochValue) -> Self {
-        Self {
-            root,
-            version: 1,
-        }
+        Self { root, version: 1 }
     }
 
     /// Create a table-like document (legacy helper)
-    pub fn new_table(_name: impl Into<String>, fields: Vec<String>, rows: Vec<Vec<SochValue>>) -> Self {
+    pub fn new_table(
+        _name: impl Into<String>,
+        fields: Vec<String>,
+        rows: Vec<Vec<SochValue>>,
+    ) -> Self {
         // Convert to Array of Objects for canonical representation
         let fields_str: Vec<String> = fields;
         let mut array = Vec::new();
@@ -122,7 +123,7 @@ impl SochDocument {
             }
             array.push(SochValue::Object(obj));
         }
-        
+
         Self {
             root: SochValue::Array(array),
             version: 1,
@@ -145,10 +146,11 @@ impl SochTextEncoder {
             .with_indent(Indent::Spaces(2))
             .with_delimiter(Delimiter::Comma)
             .with_key_folding(KeyFoldingMode::Safe);
-        
+
         // Use toon_format to encode the SochValue
         // SochValue implements Serialize, so this works directly.
-        toon_format::encode(&doc.root, &options).unwrap_or_else(|e| format!("Error encoding TOON: {}", e))
+        toon_format::encode(&doc.root, &options)
+            .unwrap_or_else(|e| format!("Error encoding TOON: {}", e))
     }
 }
 
@@ -157,16 +159,22 @@ pub struct SochTextParser;
 
 impl SochTextParser {
     pub fn parse(input: &str) -> Result<SochDocument, SochParseError> {
-         Self::parse_with_options(input, DecodeOptions::default())
+        Self::parse_with_options(input, DecodeOptions::default())
     }
-    
-    pub fn parse_with_options(input: &str, options: DecodeOptions) -> Result<SochDocument, SochParseError> {
-        let root: SochValue = toon_format::decode(input, &options)
-            .map_err(|e| SochParseError::RowError { line: 0, cause: e.to_string() })?;
-            
+
+    pub fn parse_with_options(
+        input: &str,
+        options: DecodeOptions,
+    ) -> Result<SochDocument, SochParseError> {
+        let root: SochValue =
+            toon_format::decode(input, &options).map_err(|e| SochParseError::RowError {
+                line: 0,
+                cause: e.to_string(),
+            })?;
+
         Ok(SochDocument::new(root))
     }
-    
+
     // Legacy helper kept for compatibility if needed, but useless now
     pub fn parse_header(_line: &str) -> Result<(String, usize, Vec<String>), SochParseError> {
         Err(SochParseError::InvalidHeader)
@@ -180,7 +188,6 @@ impl SochTokenCounter {
         0
     }
 }
-
 
 /// Parse error types
 #[derive(Debug, Clone)]
@@ -200,7 +207,6 @@ impl std::fmt::Display for SochParseError {
     }
 }
 impl std::error::Error for SochParseError {}
-
 
 // ============================================================================
 // Binary Format (Compact)
@@ -229,28 +235,34 @@ impl SochDbBinaryCodec {
 
     /// Decode binary format to document
     pub fn decode(data: &[u8]) -> Result<SochDocument, SochParseError> {
-        if data.len() < 8 { return Err(SochParseError::InvalidHeader); }
-        if data[0..4] != TOON_MAGIC { return Err(SochParseError::InvalidHeader); }
-        
+        if data.len() < 8 {
+            return Err(SochParseError::InvalidHeader);
+        }
+        if data[0..4] != TOON_MAGIC {
+            return Err(SochParseError::InvalidHeader);
+        }
+
         // Verify checksum
         let stored_checksum = u32::from_le_bytes(data[data.len() - 4..].try_into().unwrap());
         let computed_checksum = crc32fast::hash(&data[..data.len() - 4]);
-        if stored_checksum != computed_checksum { return Err(SochParseError::InvalidValue); }
-        
+        if stored_checksum != computed_checksum {
+            return Err(SochParseError::InvalidValue);
+        }
+
         let data = &data[..data.len() - 4];
         let mut cursor = 4;
-        
+
         let (version, bytes) = Self::read_varint(&data[cursor..])?;
         cursor += bytes;
-        
+
         let (root, _) = Self::read_value(&data[cursor..])?;
-        
+
         Ok(SochDocument {
             root,
             version: version as u32,
         })
     }
-    
+
     fn write_varint(buf: &mut Vec<u8>, mut n: u64) {
         while n > 127 {
             buf.push((n as u8 & 0x7F) | 0x80);
@@ -258,7 +270,7 @@ impl SochDbBinaryCodec {
         }
         buf.push(n as u8 & 0x7F);
     }
-    
+
     fn read_varint(data: &[u8]) -> Result<(u64, usize), SochParseError> {
         let mut result: u64 = 0;
         let mut shift = 0;
@@ -267,7 +279,9 @@ impl SochDbBinaryCodec {
             let byte = data[i];
             result |= ((byte & 0x7F) as u64) << shift;
             i += 1;
-            if byte & 0x80 == 0 { return Ok((result, i)); }
+            if byte & 0x80 == 0 {
+                return Ok((result, i));
+            }
             shift += 7;
         }
         Err(SochParseError::InvalidValue)
@@ -276,132 +290,157 @@ impl SochDbBinaryCodec {
     fn read_string(data: &[u8]) -> Result<(String, usize), SochParseError> {
         let (len, varint_bytes) = Self::read_varint(data)?;
         let len = len as usize;
-        if data.len() < varint_bytes + len { return Err(SochParseError::InvalidValue); }
-        let s = std::str::from_utf8(&data[varint_bytes..varint_bytes+len]).map_err(|_| SochParseError::InvalidValue)?.to_string();
+        if data.len() < varint_bytes + len {
+            return Err(SochParseError::InvalidValue);
+        }
+        let s = std::str::from_utf8(&data[varint_bytes..varint_bytes + len])
+            .map_err(|_| SochParseError::InvalidValue)?
+            .to_string();
         Ok((s, varint_bytes + len))
     }
-    
+
     fn write_value(buf: &mut Vec<u8>, value: &SochValue) {
         match value {
             SochValue::Null => buf.push(SochTypeTag::Null as u8),
             SochValue::Bool(true) => buf.push(SochTypeTag::True as u8),
             SochValue::Bool(false) => buf.push(SochTypeTag::False as u8),
             SochValue::Int(n) => {
-                 // Optimization: FixInts
-                 buf.push(SochTypeTag::Int64 as u8);
-                 buf.extend_from_slice(&n.to_le_bytes());
-            },
+                // Optimization: FixInts
+                buf.push(SochTypeTag::Int64 as u8);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
             SochValue::UInt(n) => {
-                 buf.push(SochTypeTag::UInt as u8);
-                 Self::write_varint(buf, *n);
-            },
+                buf.push(SochTypeTag::UInt as u8);
+                Self::write_varint(buf, *n);
+            }
             SochValue::Float(f) => {
-                 buf.push(SochTypeTag::Float64 as u8);
-                 buf.extend_from_slice(&f.to_le_bytes());
-            },
+                buf.push(SochTypeTag::Float64 as u8);
+                buf.extend_from_slice(&f.to_le_bytes());
+            }
             SochValue::Text(s) => {
-                 buf.push(SochTypeTag::Str32 as u8);
-                 let bytes = s.as_bytes();
-                 buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-                 buf.extend_from_slice(bytes);
-            },
+                buf.push(SochTypeTag::Str32 as u8);
+                let bytes = s.as_bytes();
+                buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                buf.extend_from_slice(bytes);
+            }
             SochValue::Binary(b) => {
-                 buf.push(SochTypeTag::Binary as u8);
-                 Self::write_varint(buf, b.len() as u64);
-                 buf.extend_from_slice(b);
-            },
+                buf.push(SochTypeTag::Binary as u8);
+                Self::write_varint(buf, b.len() as u64);
+                buf.extend_from_slice(b);
+            }
             SochValue::Array(arr) => {
-                 buf.push(SochTypeTag::Array as u8);
-                 Self::write_varint(buf, arr.len() as u64);
-                 for item in arr { Self::write_value(buf, item); }
-            },
+                buf.push(SochTypeTag::Array as u8);
+                Self::write_varint(buf, arr.len() as u64);
+                for item in arr {
+                    Self::write_value(buf, item);
+                }
+            }
             SochValue::Object(map) => {
-                 buf.push(SochTypeTag::Object as u8);
-                 Self::write_varint(buf, map.len() as u64);
-                 for (k, v) in map {
-                     // Key string
-                     let k_bytes = k.as_bytes();
-                     Self::write_varint(buf, k_bytes.len() as u64);
-                     buf.extend_from_slice(k_bytes);
-                     // Value
-                     Self::write_value(buf, v);
-                 }
-            },
+                buf.push(SochTypeTag::Object as u8);
+                Self::write_varint(buf, map.len() as u64);
+                for (k, v) in map {
+                    // Key string
+                    let k_bytes = k.as_bytes();
+                    Self::write_varint(buf, k_bytes.len() as u64);
+                    buf.extend_from_slice(k_bytes);
+                    // Value
+                    Self::write_value(buf, v);
+                }
+            }
             SochValue::Ref { table, id } => {
-                 buf.push(SochTypeTag::Ref as u8);
-                 // table name
-                 let t_bytes = table.as_bytes();
-                 Self::write_varint(buf, t_bytes.len() as u64);
-                 buf.extend_from_slice(t_bytes);
-                 // id
-                 Self::write_varint(buf, *id);
+                buf.push(SochTypeTag::Ref as u8);
+                // table name
+                let t_bytes = table.as_bytes();
+                Self::write_varint(buf, t_bytes.len() as u64);
+                buf.extend_from_slice(t_bytes);
+                // id
+                Self::write_varint(buf, *id);
             }
         }
     }
-    
+
     fn read_value(data: &[u8]) -> Result<(SochValue, usize), SochParseError> {
-        if data.is_empty() { return Err(SochParseError::InvalidValue); }
+        if data.is_empty() {
+            return Err(SochParseError::InvalidValue);
+        }
         let tag = data[0];
         let mut cursor = 1;
-        
+
         match tag {
             0x00 => Ok((SochValue::Null, 1)),
             0x01 => Ok((SochValue::Bool(false), 1)),
             0x02 => Ok((SochValue::Bool(true), 1)),
-            0x33 => { // Int64
-                 if data.len() < cursor + 8 { return Err(SochParseError::InvalidValue); }
-                 let n = i64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
-                 Ok((SochValue::Int(n), cursor+8))
-            },
-            0x41 => { // Float64
-                 if data.len() < cursor + 8 { return Err(SochParseError::InvalidValue); }
-                 let f = f64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
-                 Ok((SochValue::Float(f), cursor+8))
-            },
-            0x62 => { // Str32
-                 if data.len() < cursor + 4 { return Err(SochParseError::InvalidValue); }
-                 let len = u32::from_le_bytes(data[cursor..cursor+4].try_into().unwrap()) as usize;
-                 cursor += 4;
-                 if data.len() < cursor + len { return Err(SochParseError::InvalidValue); }
-                 let s = std::str::from_utf8(&data[cursor..cursor+len]).unwrap().to_string();
-                 Ok((SochValue::Text(s), cursor+len))
-            },
-            0x70 => { // Array
-                 let (len, bytes) = Self::read_varint(&data[cursor..])?;
-                 cursor += bytes;
-                 let mut arr = Vec::new();
-                 for _ in 0..len {
-                     let (val, bytes_read) = Self::read_value(&data[cursor..])?;
-                     cursor += bytes_read;
-                     arr.push(val);
-                 }
-                 Ok((SochValue::Array(arr), cursor))
-            },
-            0xB0 => { // UInt
-                 let (n, bytes) = Self::read_varint(&data[cursor..])?;
-                 Ok((SochValue::UInt(n), cursor+bytes))
-            },
-            0x80 => { // Ref
-                 let (table, table_bytes) = Self::read_string(&data[cursor..])?;
-                 cursor += table_bytes;
-                 let (id, id_bytes) = Self::read_varint(&data[cursor..])?;
-                 Ok((SochValue::Ref { table, id }, cursor+id_bytes))
-            },
-            0x90 => { // Object
-                 let (len, bytes_read) = Self::read_varint(&data[cursor..])?;
-                 cursor += bytes_read;
-                 let mut map = HashMap::new();
-                 for _ in 0..len {
-                     let (k, k_bytes) = Self::read_string(&data[cursor..])?;
-                     cursor += k_bytes;
-                     let (v, v_bytes) = Self::read_value(&data[cursor..])?;
-                     cursor += v_bytes;
-                     map.insert(k, v);
-                 }
-                 Ok((SochValue::Object(map), cursor))
-            },
+            0x33 => {
+                // Int64
+                if data.len() < cursor + 8 {
+                    return Err(SochParseError::InvalidValue);
+                }
+                let n = i64::from_le_bytes(data[cursor..cursor + 8].try_into().unwrap());
+                Ok((SochValue::Int(n), cursor + 8))
+            }
+            0x41 => {
+                // Float64
+                if data.len() < cursor + 8 {
+                    return Err(SochParseError::InvalidValue);
+                }
+                let f = f64::from_le_bytes(data[cursor..cursor + 8].try_into().unwrap());
+                Ok((SochValue::Float(f), cursor + 8))
+            }
+            0x62 => {
+                // Str32
+                if data.len() < cursor + 4 {
+                    return Err(SochParseError::InvalidValue);
+                }
+                let len = u32::from_le_bytes(data[cursor..cursor + 4].try_into().unwrap()) as usize;
+                cursor += 4;
+                if data.len() < cursor + len {
+                    return Err(SochParseError::InvalidValue);
+                }
+                let s = std::str::from_utf8(&data[cursor..cursor + len])
+                    .unwrap()
+                    .to_string();
+                Ok((SochValue::Text(s), cursor + len))
+            }
+            0x70 => {
+                // Array
+                let (len, bytes) = Self::read_varint(&data[cursor..])?;
+                cursor += bytes;
+                let mut arr = Vec::new();
+                for _ in 0..len {
+                    let (val, bytes_read) = Self::read_value(&data[cursor..])?;
+                    cursor += bytes_read;
+                    arr.push(val);
+                }
+                Ok((SochValue::Array(arr), cursor))
+            }
+            0xB0 => {
+                // UInt
+                let (n, bytes) = Self::read_varint(&data[cursor..])?;
+                Ok((SochValue::UInt(n), cursor + bytes))
+            }
+            0x80 => {
+                // Ref
+                let (table, table_bytes) = Self::read_string(&data[cursor..])?;
+                cursor += table_bytes;
+                let (id, id_bytes) = Self::read_varint(&data[cursor..])?;
+                Ok((SochValue::Ref { table, id }, cursor + id_bytes))
+            }
+            0x90 => {
+                // Object
+                let (len, bytes_read) = Self::read_varint(&data[cursor..])?;
+                cursor += bytes_read;
+                let mut map = HashMap::new();
+                for _ in 0..len {
+                    let (k, k_bytes) = Self::read_string(&data[cursor..])?;
+                    cursor += k_bytes;
+                    let (v, v_bytes) = Self::read_value(&data[cursor..])?;
+                    cursor += v_bytes;
+                    map.insert(k, v);
+                }
+                Ok((SochValue::Object(map), cursor))
+            }
             // Add other cases as needed
-            _ => Err(SochParseError::InvalidValue)
+            _ => Err(SochParseError::InvalidValue),
         }
     }
 }
@@ -416,7 +455,7 @@ mod tests {
         obj.insert("id".to_string(), SochValue::Int(1));
         obj.insert("name".to_string(), SochValue::Text("Alice".to_string()));
         let doc = SochDocument::new(SochValue::Object(obj));
-        
+
         // This test now uses canonical encoder
         let encoded = SochTextEncoder::encode(&doc);
         // Canonical output might differ slightly (e.g. sorting), but should contain keys
@@ -424,13 +463,13 @@ mod tests {
         assert!(encoded.contains("1"));
         assert!(encoded.contains("name"));
         assert!(encoded.contains("Alice"));
-        
+
         // Roundtrip binary with new codec name
         let bin = SochDbBinaryCodec::encode(&doc);
         let decoded = SochDbBinaryCodec::decode(&bin).unwrap();
         if let SochValue::Object(map) = decoded.root {
-             // Accessing values. Note: SochValue doesn't impl PartialEq against literal ints easily matching on variant needed
-             // Use string representation or direct match
+            // Accessing values. Note: SochValue doesn't impl PartialEq against literal ints easily matching on variant needed
+            // Use string representation or direct match
             assert_eq!(map.get("id"), Some(&SochValue::Int(1)));
             assert_eq!(map.get("name"), Some(&SochValue::Text("Alice".to_string())));
         } else {
@@ -440,22 +479,19 @@ mod tests {
 
     #[test]
     fn test_array() {
-        let arr = vec![
-            SochValue::Int(1),
-            SochValue::Int(2),
-        ];
+        let arr = vec![SochValue::Int(1), SochValue::Int(2)];
         let doc = SochDocument::new(SochValue::Array(arr));
-        
+
         let encoded = SochTextEncoder::encode(&doc);
         // Should contain values
         assert!(encoded.contains("1"));
         assert!(encoded.contains("2"));
-        
+
         let bin = SochDbBinaryCodec::encode(&doc);
         let decoded = SochDbBinaryCodec::decode(&bin).unwrap();
         if let SochValue::Array(arr) = decoded.root {
-             assert_eq!(arr.len(), 2);
-             assert_eq!(arr[0], SochValue::Int(1));
+            assert_eq!(arr.len(), 2);
+            assert_eq!(arr[0], SochValue::Int(1));
         } else {
             panic!("Expected array");
         }

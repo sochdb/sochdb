@@ -158,7 +158,7 @@ impl ShardTopology {
     /// Create a new topology with given centroids.
     pub fn new(centroids: Vec<Centroid>, config: TopologyConfig) -> Self {
         let total_shards = centroids.iter().map(|c| c.shards.len()).sum();
-        
+
         let mut shard_to_cluster = HashMap::new();
         for centroid in &centroids {
             for &shard in &centroid.shards {
@@ -181,10 +181,7 @@ impl ShardTopology {
     }
 
     /// Build topology from vectors using k-means clustering.
-    pub fn build_from_vectors(
-        vectors: &[Vec<f32>],
-        config: TopologyConfig,
-    ) -> Self {
+    pub fn build_from_vectors(vectors: &[Vec<f32>], config: TopologyConfig) -> Self {
         if vectors.is_empty() {
             return Self::empty(config);
         }
@@ -204,7 +201,7 @@ impl ShardTopology {
         for _ in 0..10 {
             // Assign vectors to nearest centroid
             let mut assignments: Vec<Vec<usize>> = vec![Vec::new(); num_clusters];
-            
+
             for (vec_idx, vector) in vectors.iter().enumerate() {
                 let nearest = Self::find_nearest_centroid(vector, &centroids);
                 assignments[nearest].push(vec_idx);
@@ -222,7 +219,7 @@ impl ShardTopology {
                         new_centroid[i] += v;
                     }
                 }
-                
+
                 let count = assigned.len() as f32;
                 for v in &mut new_centroid {
                     *v /= count;
@@ -294,7 +291,7 @@ impl ShardTopology {
             stats.queries_routed += 1;
             stats.shards_probed += shards.len() as u64;
             stats.avg_fanout = stats.shards_probed as f32 / stats.queries_routed as f32;
-            
+
             for (cluster_id, _) in &probed {
                 if (*cluster_id as usize) < stats.cluster_loads.len() {
                     stats.cluster_loads[*cluster_id as usize] += 1;
@@ -389,7 +386,7 @@ impl ShardRouter {
     pub fn route_adaptive(&self, query: &[f32], target_recall: f32) -> RoutingDecision {
         // Adjust probe depth based on target recall
         let base_probe = self.topology.config.probe_clusters;
-        
+
         let _probe = if target_recall > 0.99 {
             // High recall: probe more clusters
             (base_probe * 2).min(self.topology.num_clusters())
@@ -402,7 +399,7 @@ impl ShardRouter {
 
         // Temporarily adjust config (clone and modify)
         let mut decision = self.topology.route(query);
-        
+
         // For high recall, ensure minimum shard coverage
         if target_recall > 0.95 && decision.shards.len() < 4 {
             // Add more shards from nearby clusters
@@ -410,7 +407,7 @@ impl ShardRouter {
                 self.topology
                     .all_shards()
                     .into_iter()
-                    .take(4 - decision.shards.len())
+                    .take(4 - decision.shards.len()),
             );
         }
 
@@ -455,7 +452,7 @@ mod tests {
     fn test_centroid_distance() {
         let centroid = Centroid::new(0, vec![1.0, 0.0, 0.0]);
         let query = vec![0.0, 0.0, 0.0];
-        
+
         assert!((centroid.distance_squared(&query) - 1.0).abs() < 1e-6);
     }
 
@@ -493,7 +490,7 @@ mod tests {
         // Should probe 2 clusters × 4 shards = 8 shards
         assert_eq!(decision.clusters_probed, 2);
         assert_eq!(decision.shards.len(), 8);
-        
+
         // Work reduction: 8/16 = 0.5
         assert!((decision.work_reduction(16) - 0.5).abs() < 1e-6);
     }
@@ -505,7 +502,7 @@ mod tests {
             shards_per_cluster: 4,
             ..Default::default()
         };
-        
+
         let centroids: Vec<Centroid> = (0..4)
             .map(|i| {
                 let mut c = Centroid::new(i, vec![i as f32; 128]);
@@ -538,7 +535,7 @@ mod tests {
 
         // Low recall: fewer shards
         let low_recall = router.route_adaptive(&query, 0.80);
-        
+
         // High recall: more shards
         let high_recall = router.route_adaptive(&query, 0.99);
 

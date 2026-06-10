@@ -29,11 +29,11 @@
 //! are valid, rather than blindly scanning the filesystem.
 
 use serde::{Deserialize, Serialize};
+use sochdb_core::Result;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use sochdb_core::Result;
 use tracing::{debug, info, warn};
 
 /// Name of the MANIFEST file

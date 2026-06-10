@@ -32,14 +32,13 @@
 //! 4. **Circuit Breaker**: JWKS refresh doesn't add latency in hot path
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
-use ring::hmac;
 use serde::Deserialize;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 // ============================================================================
 // TLS / mTLS Provider (Enterprise Security)
@@ -111,14 +110,22 @@ impl TlsProvider {
                 .and_then(|m| m.modified())
                 .map_err(|e| TlsError::CertReadError(format!("{}: {}", key_path.display(), e)))?;
 
-            let cert_changed = self.last_cert_modified.read().map_or(true, |t| t != cert_modified);
-            let key_changed = self.last_key_modified.read().map_or(true, |t| t != key_modified);
+            let cert_changed = self
+                .last_cert_modified
+                .read()
+                .map_or(true, |t| t != cert_modified);
+            let key_changed = self
+                .last_key_modified
+                .read()
+                .map_or(true, |t| t != key_modified);
 
             if cert_changed || key_changed {
-                let cert_pem = std::fs::read(cert_path)
-                    .map_err(|e| TlsError::CertReadError(format!("{}: {}", cert_path.display(), e)))?;
-                let key_pem = std::fs::read(key_path)
-                    .map_err(|e| TlsError::CertReadError(format!("{}: {}", key_path.display(), e)))?;
+                let cert_pem = std::fs::read(cert_path).map_err(|e| {
+                    TlsError::CertReadError(format!("{}: {}", cert_path.display(), e))
+                })?;
+                let key_pem = std::fs::read(key_path).map_err(|e| {
+                    TlsError::CertReadError(format!("{}: {}", key_path.display(), e))
+                })?;
 
                 // Validate PEM structure before accepting
                 Self::validate_pem(&cert_pem, "CERTIFICATE")?;
@@ -139,11 +146,15 @@ impl TlsProvider {
                 .and_then(|m| m.modified())
                 .map_err(|e| TlsError::CertReadError(format!("{}: {}", ca_path.display(), e)))?;
 
-            let ca_changed = self.last_ca_modified.read().map_or(true, |t| t != ca_modified);
+            let ca_changed = self
+                .last_ca_modified
+                .read()
+                .map_or(true, |t| t != ca_modified);
 
             if ca_changed {
-                let ca_pem = std::fs::read(ca_path)
-                    .map_err(|e| TlsError::CertReadError(format!("{}: {}", ca_path.display(), e)))?;
+                let ca_pem = std::fs::read(ca_path).map_err(|e| {
+                    TlsError::CertReadError(format!("{}: {}", ca_path.display(), e))
+                })?;
 
                 Self::validate_pem(&ca_pem, "CERTIFICATE")?;
 
@@ -159,9 +170,7 @@ impl TlsProvider {
     }
 
     /// Configure a Tonic server builder with TLS (and optionally mTLS).
-    pub fn configure_server(
-        &self,
-    ) -> Result<tonic::transport::ServerTlsConfig, TlsError> {
+    pub fn configure_server(&self) -> Result<tonic::transport::ServerTlsConfig, TlsError> {
         let identity = self
             .identity
             .read()
@@ -269,10 +278,7 @@ impl Role {
                 Capability::ManageCollections,
                 Capability::ManageIndexes,
             ]),
-            Role::Viewer => HashSet::from([
-                Capability::Read,
-                Capability::ViewMetrics,
-            ]),
+            Role::Viewer => HashSet::from([Capability::Read, Capability::ViewMetrics]),
             Role::Custom { capabilities, .. } => capabilities.clone(),
         }
     }
@@ -307,7 +313,10 @@ pub enum RoleScope {
     /// Applies to a specific namespace.
     Namespace(String),
     /// Applies to a specific collection within a namespace.
-    Collection { namespace: String, collection: String },
+    Collection {
+        namespace: String,
+        collection: String,
+    },
 }
 
 /// Security principal (authenticated entity)
@@ -414,7 +423,7 @@ pub struct RateLimiter {
 struct TokenBucket {
     tokens: f64,
     last_update: Instant,
-    rate: f64,    // tokens per second
+    rate: f64, // tokens per second
     capacity: f64,
 }
 
@@ -729,6 +738,17 @@ pub struct SecurityConfig {
     /// Enable API key authentication
     pub api_key_enabled: bool,
 
+    /// Optional server-side secret pepper for API-key hashing.
+    ///
+    /// When set, API keys are stored/looked-up as `HMAC-SHA256(pepper, key)`
+    /// instead of bare `SHA-256(key)`. The pepper is a server-held secret that
+    /// is **not** part of the key store, so a leaked hash table cannot be
+    /// brute-forced offline without also stealing the pepper. Source it from a
+    /// secret manager / KMS (e.g. the `SOCHDB_API_KEY_PEPPER` env var) and rotate
+    /// it through configuration. `None` preserves the legacy bare-SHA-256 scheme
+    /// for backward compatibility.
+    pub api_key_pepper: Option<String>,
+
     /// Default rate limit (requests per second)
     pub rate_limit_default: u64,
     /// Default burst size
@@ -752,6 +772,7 @@ impl Default for SecurityConfig {
             jwt_issuer: None,
             jwt_audience: None,
             api_key_enabled: false,
+            api_key_pepper: None,
             rate_limit_default: 1000,
             rate_limit_burst: 100,
             audit_enabled: true,
@@ -795,17 +816,32 @@ impl SecurityService {
         }
     }
 
-    /// Hash an API key with SHA-256 for storage.
-    fn hash_api_key(key: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(key.as_bytes());
-        let result = hasher.finalize();
-        hex::encode(result)
+    /// Hash an API key for storage.
+    ///
+    /// If a server-side pepper is configured, this computes
+    /// `HMAC-SHA256(pepper, key)` so that a leaked hash store cannot be
+    /// brute-forced offline without the secret pepper. Otherwise it falls back
+    /// to bare `SHA-256(key)` (legacy scheme, safe only for high-entropy keys).
+    fn hash_api_key(&self, key: &str) -> String {
+        match self.config.api_key_pepper.as_deref() {
+            Some(pepper) if !pepper.is_empty() => {
+                use hmac::{Hmac, Mac};
+                let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(pepper.as_bytes())
+                    .expect("HMAC accepts keys of any length");
+                mac.update(key.as_bytes());
+                hex::encode(mac.finalize().into_bytes())
+            }
+            _ => {
+                let mut hasher = Sha256::new();
+                hasher.update(key.as_bytes());
+                hex::encode(hasher.finalize())
+            }
+        }
     }
 
-    /// Register an API key (stored as SHA-256 hash, never plaintext).
+    /// Register an API key (stored as a keyed/peppered hash, never plaintext).
     pub fn register_api_key(&self, key: &str, principal: Principal) {
-        let hash = Self::hash_api_key(key);
+        let hash = self.hash_api_key(key);
         self.api_key_hashes.write().insert(hash, principal);
     }
 
@@ -816,7 +852,7 @@ impl SecurityService {
         password: &str,
         principal: Principal,
     ) -> Result<(), AuthError> {
-        use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+        use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
         use rand::rngs::OsRng;
 
         let salt = SaltString::generate(&mut OsRng);
@@ -835,11 +871,7 @@ impl SecurityService {
     }
 
     /// Verify a username/password pair, returning the user's principal on success.
-    pub fn verify_password(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> Result<Principal, AuthError> {
+    pub fn verify_password(&self, username: &str, password: &str) -> Result<Principal, AuthError> {
         use argon2::{Argon2, PasswordHash, PasswordVerifier};
 
         let creds = self.user_credentials.read();
@@ -922,9 +954,9 @@ impl SecurityService {
                     return self.verify_jwt(token);
                 }
 
-                // Try as API key (SHA-256 hash comparison)
+                // Try as API key (peppered/keyed hash comparison)
                 if self.config.api_key_enabled {
-                    let hash = Self::hash_api_key(token);
+                    let hash = self.hash_api_key(token);
                     if let Some(principal) = self.api_key_hashes.read().get(&hash) {
                         return Ok(principal.clone());
                     }
@@ -958,13 +990,13 @@ impl SecurityService {
             validation.validate_aud = false;
         }
 
-        let token_data = jsonwebtoken::decode::<JwtClaims>(token, key, &validation)
-            .map_err(|e| match e.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
-                jsonwebtoken::errors::ErrorKind::InvalidSignature => {
-                    AuthError::Unauthenticated
+        let token_data =
+            jsonwebtoken::decode::<JwtClaims>(token, key, &validation).map_err(|e| {
+                match e.kind() {
+                    jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
+                    jsonwebtoken::errors::ErrorKind::InvalidSignature => AuthError::Unauthenticated,
+                    _ => AuthError::Internal(format!("JWT verification failed: {}", e)),
                 }
-                _ => AuthError::Internal(format!("JWT verification failed: {}", e)),
             })?;
 
         let claims = token_data.claims;
@@ -1186,7 +1218,11 @@ impl SecretsProvider {
                                 count += 1;
                             }
                             Err(e) => {
-                                tracing::warn!("Failed to read secret {}: {}", file_path.display(), e);
+                                tracing::warn!(
+                                    "Failed to read secret {}: {}",
+                                    file_path.display(),
+                                    e
+                                );
                             }
                         }
                     }
@@ -1285,7 +1321,7 @@ impl SecretsProvider {
             service.register_api_key(
                 &key,
                 Principal {
-                    id: format!("apikey-{}", &SecurityService::hash_api_key(&key)[..8]),
+                    id: format!("apikey-{}", &service.hash_api_key(&key)[..8]),
                     tenant_id: "default".to_string(),
                     capabilities: Role::Editor.capabilities(),
                     expires_at: None,
@@ -1409,7 +1445,8 @@ impl ComplianceManager {
             result: AuditResult::Success,
             context: Some(format!(
                 r#"{{"subject_id":"{}","resource_count":{}}}"#,
-                subject_id, resources.len()
+                subject_id,
+                resources.len()
             )),
             request_id: request_id.to_string(),
             client_ip: None,
@@ -1535,6 +1572,57 @@ mod tests {
     }
 
     #[test]
+    fn test_api_key_pepper_changes_stored_hash() {
+        // With a pepper, the stored hash must differ from bare SHA-256, and a
+        // service configured with a *different* pepper must not authenticate the
+        // same key (the pepper is required to reproduce the hash).
+        let peppered = SecurityService::new(SecurityConfig {
+            api_key_enabled: true,
+            api_key_pepper: Some("server-side-secret".to_string()),
+            ..Default::default()
+        });
+        let bare = SecurityService::new(SecurityConfig {
+            api_key_enabled: true,
+            api_key_pepper: None,
+            ..Default::default()
+        });
+
+        let principal = Principal {
+            id: "svc".to_string(),
+            tenant_id: "t".to_string(),
+            capabilities: HashSet::from([Capability::Read]),
+            expires_at: None,
+            auth_method: AuthMethod::ApiKey,
+        };
+
+        // The peppered (HMAC) hash must not equal the bare SHA-256 hash.
+        assert_ne!(
+            peppered.hash_api_key("my-key"),
+            bare.hash_api_key("my-key"),
+            "pepper must change the stored hash"
+        );
+
+        // Round-trip under the same pepper works.
+        peppered.register_api_key("my-key", principal.clone());
+        assert!(peppered.authenticate(Some("Bearer my-key"), None).is_ok());
+
+        // A service with a different/absent pepper cannot authenticate a key
+        // registered under the original pepper (registers the same plaintext but
+        // produces a different hash, so lookup misses).
+        let other = SecurityService::new(SecurityConfig {
+            api_key_enabled: true,
+            api_key_pepper: Some("a-different-secret".to_string()),
+            ..Default::default()
+        });
+        other.register_api_key("my-key", principal);
+        assert_ne!(
+            peppered.hash_api_key("my-key"),
+            other.hash_api_key("my-key"),
+            "different peppers must yield different hashes"
+        );
+    }
+
+    #[test]
     fn test_audit_logging() {
         let logger = AuditLogger::new(10);
 
@@ -1552,7 +1640,7 @@ mod tests {
 
     #[test]
     fn test_jwt_authentication() {
-        use jsonwebtoken::{encode, EncodingKey, Header};
+        use jsonwebtoken::{EncodingKey, Header, encode};
         use serde::Serialize;
 
         #[derive(Serialize)]
@@ -1601,7 +1689,7 @@ mod tests {
 
     #[test]
     fn test_jwt_expired_token_rejected() {
-        use jsonwebtoken::{encode, EncodingKey, Header};
+        use jsonwebtoken::{EncodingKey, Header, encode};
         use serde::Serialize;
 
         #[derive(Serialize)]
@@ -1636,7 +1724,7 @@ mod tests {
 
     #[test]
     fn test_jwt_invalid_signature_rejected() {
-        use jsonwebtoken::{encode, EncodingKey, Header};
+        use jsonwebtoken::{EncodingKey, Header, encode};
         use serde::Serialize;
 
         #[derive(Serialize)]
@@ -1736,7 +1824,11 @@ mod tests {
     #[test]
     fn test_role_capabilities() {
         assert!(Role::Owner.capabilities().contains(&Capability::Admin));
-        assert!(Role::Owner.capabilities().contains(&Capability::ManageUsers));
+        assert!(
+            Role::Owner
+                .capabilities()
+                .contains(&Capability::ManageUsers)
+        );
         assert!(Role::Editor.capabilities().contains(&Capability::Write));
         assert!(!Role::Editor.capabilities().contains(&Capability::Admin));
         assert!(Role::Viewer.capabilities().contains(&Capability::Read));

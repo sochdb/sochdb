@@ -70,7 +70,6 @@
 
 use crossbeam_epoch::{self as epoch, Atomic, Guard, Owned, Shared};
 use std::mem::MaybeUninit;
-use std::ptr;
 
 // =============================================================================
 // Helper functions for initializing large Atomic arrays
@@ -79,7 +78,8 @@ use std::ptr;
 /// Initialize an array of 48 Atomic<ArtNode> with null values
 fn init_atomic_array_48() -> [Atomic<ArtNode>; 48] {
     // Use MaybeUninit for safe uninitialized array creation
-    let mut arr: [MaybeUninit<Atomic<ArtNode>>; 48] = unsafe { MaybeUninit::uninit().assume_init() };
+    let mut arr: [MaybeUninit<Atomic<ArtNode>>; 48] =
+        unsafe { MaybeUninit::uninit().assume_init() };
     for elem in &mut arr {
         elem.write(Atomic::null());
     }
@@ -89,14 +89,14 @@ fn init_atomic_array_48() -> [Atomic<ArtNode>; 48] {
 
 /// Initialize an array of 256 Atomic<ArtNode> with null values
 fn init_atomic_array_256() -> [Atomic<ArtNode>; 256] {
-    let mut arr: [MaybeUninit<Atomic<ArtNode>>; 256] = unsafe { MaybeUninit::uninit().assume_init() };
+    let mut arr: [MaybeUninit<Atomic<ArtNode>>; 256] =
+        unsafe { MaybeUninit::uninit().assume_init() };
     for elem in &mut arr {
         elem.write(Atomic::null());
     }
     unsafe { std::mem::transmute(arr) }
 }
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
 
 // =============================================================================
 // Node Types
@@ -270,7 +270,7 @@ impl Node4 {
         unsafe {
             let keys_ptr = self.keys.as_ptr() as *mut u8;
             let children_ptr = self.children.as_ptr() as *mut Atomic<ArtNode>;
-            
+
             for i in (pos..n).rev() {
                 *keys_ptr.add(i + 1) = *keys_ptr.add(i);
                 (*children_ptr.add(i + 1)).store(
@@ -318,7 +318,7 @@ impl Node16 {
     /// Find child using SIMD-friendly binary search
     pub fn find_child<'g>(&self, key: u8, guard: &'g Guard) -> Option<Shared<'g, ArtNode>> {
         let n = self.header.num_children.load(Ordering::Acquire);
-        
+
         // Binary search in sorted keys
         let mut lo = 0;
         let mut hi = n;
@@ -330,7 +330,7 @@ impl Node16 {
                 hi = mid;
             }
         }
-        
+
         if lo < n && self.keys[lo] == key {
             let child = self.children[lo].load(Ordering::Acquire, guard);
             if !child.is_null() {
@@ -359,7 +359,7 @@ impl Node16 {
         unsafe {
             let keys_ptr = self.keys.as_ptr() as *mut u8;
             let children_ptr = self.children.as_ptr() as *mut Atomic<ArtNode>;
-            
+
             for i in (pos..n).rev() {
                 *keys_ptr.add(i + 1) = *keys_ptr.add(i);
                 (*children_ptr.add(i + 1)).store(
@@ -410,15 +410,11 @@ impl Node48 {
             return None;
         }
         let child = self.children[(idx - 1) as usize].load(Ordering::Acquire, guard);
-        if !child.is_null() {
-            Some(child)
-        } else {
-            None
-        }
+        if !child.is_null() { Some(child) } else { None }
     }
 
     /// Add a child
-    pub fn add_child(&self, key: u8, child: Owned<ArtNode>, guard: &Guard) -> bool {
+    pub fn add_child(&self, key: u8, child: Owned<ArtNode>, _guard: &Guard) -> bool {
         let n = self.header.num_children.load(Ordering::Acquire);
         if n >= 48 {
             return false;
@@ -427,7 +423,7 @@ impl Node48 {
         unsafe {
             let index_ptr = self.child_index.as_ptr() as *mut u8;
             let children_ptr = self.children.as_ptr() as *mut Atomic<ArtNode>;
-            
+
             *index_ptr.add(key as usize) = (n + 1) as u8;
             (*children_ptr.add(n)).store(child, Ordering::Release);
         }
@@ -465,11 +461,7 @@ impl Node256 {
     /// O(1) direct child lookup
     pub fn find_child<'g>(&self, key: u8, guard: &'g Guard) -> Option<Shared<'g, ArtNode>> {
         let child = self.children[key as usize].load(Ordering::Acquire, guard);
-        if !child.is_null() {
-            Some(child)
-        } else {
-            None
-        }
+        if !child.is_null() { Some(child) } else { None }
     }
 
     /// Add a child (always succeeds for Node256)
@@ -533,7 +525,7 @@ impl ConcurrentART {
 
         while !node.is_null() {
             let node_ref = unsafe { node.deref() };
-            
+
             match node_ref {
                 ArtNode::Leaf(leaf) => {
                     // Check full key match
@@ -548,11 +540,11 @@ impl ConcurrentART {
                         return None;
                     }
                     depth += n.header.prefix_len;
-                    
+
                     if depth >= key.len() {
                         return None;
                     }
-                    
+
                     match n.find_child(key[depth], guard) {
                         Some(child) => {
                             node = child;
@@ -566,11 +558,11 @@ impl ConcurrentART {
                         return None;
                     }
                     depth += n.header.prefix_len;
-                    
+
                     if depth >= key.len() {
                         return None;
                     }
-                    
+
                     match n.find_child(key[depth], guard) {
                         Some(child) => {
                             node = child;
@@ -584,11 +576,11 @@ impl ConcurrentART {
                         return None;
                     }
                     depth += n.header.prefix_len;
-                    
+
                     if depth >= key.len() {
                         return None;
                     }
-                    
+
                     match n.find_child(key[depth], guard) {
                         Some(child) => {
                             node = child;
@@ -602,11 +594,11 @@ impl ConcurrentART {
                         return None;
                     }
                     depth += n.header.prefix_len;
-                    
+
                     if depth >= key.len() {
                         return None;
                     }
-                    
+
                     match n.find_child(key[depth], guard) {
                         Some(child) => {
                             node = child;
@@ -627,7 +619,7 @@ impl ConcurrentART {
         if depth + prefix_len > key.len() {
             return false;
         }
-        
+
         for i in 0..prefix_len {
             if header.prefix[i] != key[depth + i] {
                 return false;
@@ -639,18 +631,23 @@ impl ConcurrentART {
     /// Insert a key-value pair
     ///
     /// Returns the old value if the key existed.
-    pub fn insert(&self, key: Vec<u8>, value: Option<Vec<u8>>, seqno: u64) -> Option<(Option<Vec<u8>>, u64)> {
+    pub fn insert(
+        &self,
+        key: Vec<u8>,
+        value: Option<Vec<u8>>,
+        seqno: u64,
+    ) -> Option<(Option<Vec<u8>>, u64)> {
         let guard = &epoch::pin();
-        
+
         loop {
             let root = self.root.load(Ordering::Acquire, guard);
-            
+
             if root.is_null() {
                 // Empty tree - CAS to set root
                 // Create leaf node fresh for each attempt (Owned cannot be reused after CAS)
                 let leaf = Box::new(LeafNode::new(key.clone(), value.clone(), seqno));
                 let leaf_node = Owned::new(ArtNode::Leaf(leaf));
-                
+
                 match self.root.compare_exchange(
                     Shared::null(),
                     leaf_node,
@@ -672,7 +669,7 @@ impl ConcurrentART {
                     }
                 }
             }
-            
+
             // Tree is non-empty - recursive insert
             // For simplicity, we use a simple lock-based approach for inserts
             // A full implementation would use path copying or optimistic locking
@@ -697,38 +694,41 @@ impl ConcurrentART {
         }
 
         let node_ref = unsafe { node.deref() };
-        
+
         match node_ref {
             ArtNode::Leaf(existing_leaf) => {
                 if existing_leaf.key == key {
                     // Key exists - would need to update in place
                     // For now, return old value
-                    return InsertResult::Success(Some((existing_leaf.value.clone(), existing_leaf.seqno)));
+                    return InsertResult::Success(Some((
+                        existing_leaf.value.clone(),
+                        existing_leaf.seqno,
+                    )));
                 }
-                
+
                 // Different key - need to create internal node to split
                 // Find the first differing byte
                 let existing_key = &existing_leaf.key;
                 let mut common_depth = depth;
-                while common_depth < key.len().min(existing_key.len()) 
-                    && key[common_depth] == existing_key[common_depth] 
+                while common_depth < key.len().min(existing_key.len())
+                    && key[common_depth] == existing_key[common_depth]
                 {
                     common_depth += 1;
                 }
-                
+
                 // Create a new Node4 to hold both leaves
                 let new_node = Node4::new();
-                
+
                 // Add the new leaf
                 let new_leaf = Box::new(LeafNode::new(key.to_vec(), value, seqno));
                 let new_leaf_node = Owned::new(ArtNode::Leaf(new_leaf));
-                
+
                 // Add new leaf with its discriminating byte
                 if common_depth < key.len() {
                     let _ = new_node.add_child(key[common_depth], new_leaf_node, guard);
                 }
-                
-                // Add existing leaf with its discriminating byte  
+
+                // Add existing leaf with its discriminating byte
                 if common_depth < existing_key.len() {
                     let existing_leaf_clone = Box::new(LeafNode::new(
                         existing_key.clone(),
@@ -736,9 +736,10 @@ impl ConcurrentART {
                         existing_leaf.seqno,
                     ));
                     let existing_leaf_node = Owned::new(ArtNode::Leaf(existing_leaf_clone));
-                    let _ = new_node.add_child(existing_key[common_depth], existing_leaf_node, guard);
+                    let _ =
+                        new_node.add_child(existing_key[common_depth], existing_leaf_node, guard);
                 }
-                
+
                 // For a complete implementation, we'd CAS replace the leaf with the new Node4
                 // For now, we signal success since the insert intent was handled
                 // A production implementation needs parent pointer tracking for proper CAS
@@ -811,11 +812,11 @@ mod tests {
     #[test]
     fn test_art_insert_get() {
         let art = ConcurrentART::new();
-        
+
         let old = art.insert(b"hello".to_vec(), Some(b"world".to_vec()), 1);
         assert!(old.is_none());
         assert_eq!(art.len(), 1);
-        
+
         let result = art.get(b"hello");
         assert!(result.is_some());
         let (value, seqno) = result.unwrap();
@@ -829,11 +830,11 @@ mod tests {
         // that doesn't properly link the new Node4 back into the tree.
         // This test verifies basic counting works, but get() may not find all keys.
         let art = ConcurrentART::new();
-        
+
         art.insert(b"key1".to_vec(), Some(b"value1".to_vec()), 1);
         art.insert(b"key2".to_vec(), Some(b"value2".to_vec()), 2);
         art.insert(b"key3".to_vec(), Some(b"value3".to_vec()), 3);
-        
+
         // Verify count was updated (even if tree structure isn't complete)
         assert_eq!(art.len(), 3);
     }
@@ -842,7 +843,7 @@ mod tests {
     fn test_node4_operations() {
         let node = Node4::new();
         let guard = &epoch::pin();
-        
+
         assert!(!node.is_full());
         assert_eq!(node.find_child(b'a', guard), None);
     }

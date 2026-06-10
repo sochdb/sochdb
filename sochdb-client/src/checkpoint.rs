@@ -54,8 +54,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ClientError, Result};
 use crate::ConnectionTrait;
+use crate::error::{ClientError, Result};
 
 // ============================================================================
 // Core Types
@@ -174,14 +174,10 @@ pub trait CheckpointStore {
         state: &[u8],
         metadata: Option<HashMap<String, String>>,
     ) -> Result<CheckpointMeta>;
-    
+
     /// Load the latest checkpoint for a node
-    fn load_checkpoint(
-        &self,
-        run_id: &RunId,
-        node_id: &NodeId,
-    ) -> Result<Option<Checkpoint>>;
-    
+    fn load_checkpoint(&self, run_id: &RunId, node_id: &NodeId) -> Result<Option<Checkpoint>>;
+
     /// Load a specific checkpoint by sequence number
     fn load_checkpoint_at(
         &self,
@@ -189,17 +185,17 @@ pub trait CheckpointStore {
         node_id: &NodeId,
         seq: SeqNo,
     ) -> Result<Option<Checkpoint>>;
-    
+
     /// List all checkpoints for a run
     fn list_checkpoints(&self, run_id: &RunId) -> Result<Vec<CheckpointMeta>>;
-    
+
     /// List checkpoints for a specific node
     fn list_node_checkpoints(
         &self,
         run_id: &RunId,
         node_id: &NodeId,
     ) -> Result<Vec<CheckpointMeta>>;
-    
+
     /// Create a new run
     fn create_run(
         &self,
@@ -207,16 +203,16 @@ pub trait CheckpointStore {
         workflow: &str,
         params: HashMap<String, serde_json::Value>,
     ) -> Result<RunMetadata>;
-    
+
     /// Get run metadata
     fn get_run(&self, run_id: &RunId) -> Result<Option<RunMetadata>>;
-    
+
     /// Update run status
     fn update_run_status(&self, run_id: &RunId, status: RunStatus) -> Result<()>;
-    
+
     /// Append an event to the run's event log
     fn append_event(&self, event: WorkflowEvent) -> Result<SeqNo>;
-    
+
     /// Get events for a run (optionally since a sequence number)
     fn get_events(
         &self,
@@ -224,7 +220,7 @@ pub trait CheckpointStore {
         since_seq: Option<SeqNo>,
         limit: usize,
     ) -> Result<Vec<WorkflowEvent>>;
-    
+
     /// Delete a run and all its checkpoints/events
     fn delete_run(&self, run_id: &RunId) -> Result<bool>;
 }
@@ -246,65 +242,62 @@ impl<C: ConnectionTrait> DefaultCheckpointStore<C> {
     pub fn new(conn: C) -> Self {
         Self { conn }
     }
-    
+
     fn run_meta_key(run_id: &RunId) -> Vec<u8> {
         format!("{}{}/meta", CHECKPOINT_PREFIX, run_id).into_bytes()
     }
-    
+
     fn checkpoint_key(run_id: &RunId, node_id: &NodeId, seq: SeqNo) -> Vec<u8> {
         format!(
             "{}{}/nodes/{}/{:016x}",
             CHECKPOINT_PREFIX, run_id, node_id, seq
-        ).into_bytes()
+        )
+        .into_bytes()
     }
-    
+
     fn checkpoint_prefix(run_id: &RunId, node_id: &NodeId) -> Vec<u8> {
-        format!(
-            "{}{}/nodes/{}/",
-            CHECKPOINT_PREFIX, run_id, node_id
-        ).into_bytes()
+        format!("{}{}/nodes/{}/", CHECKPOINT_PREFIX, run_id, node_id).into_bytes()
     }
-    
+
     fn all_checkpoints_prefix(run_id: &RunId) -> Vec<u8> {
         format!("{}{}/nodes/", CHECKPOINT_PREFIX, run_id).into_bytes()
     }
-    
+
     fn event_key(run_id: &RunId, seq: SeqNo) -> Vec<u8> {
-        format!(
-            "{}{}/events/{:016x}",
-            CHECKPOINT_PREFIX, run_id, seq
-        ).into_bytes()
+        format!("{}{}/events/{:016x}", CHECKPOINT_PREFIX, run_id, seq).into_bytes()
     }
-    
+
     fn events_prefix(run_id: &RunId) -> Vec<u8> {
         format!("{}{}/events/", CHECKPOINT_PREFIX, run_id).into_bytes()
     }
-    
+
     fn now_millis() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
     }
-    
+
     fn get_and_increment_checkpoint_seq(&self, run_id: &RunId) -> Result<SeqNo> {
-        let meta = self.get_run(run_id)?
+        let meta = self
+            .get_run(run_id)?
             .ok_or_else(|| ClientError::NotFound(format!("Run {} not found", run_id)))?;
-        
+
         let new_seq = meta.latest_checkpoint_seq + 1;
         self.update_checkpoint_seq(run_id, new_seq)?;
         Ok(new_seq)
     }
-    
+
     fn get_and_increment_event_seq(&self, run_id: &RunId) -> Result<SeqNo> {
-        let meta = self.get_run(run_id)?
+        let meta = self
+            .get_run(run_id)?
             .ok_or_else(|| ClientError::NotFound(format!("Run {} not found", run_id)))?;
-        
+
         let new_seq = meta.latest_event_seq + 1;
         self.update_event_seq(run_id, new_seq)?;
         Ok(new_seq)
     }
-    
+
     fn update_checkpoint_seq(&self, run_id: &RunId, seq: SeqNo) -> Result<()> {
         let key = Self::run_meta_key(run_id);
         if let Some(data) = self.conn.get(&key)? {
@@ -312,13 +305,13 @@ impl<C: ConnectionTrait> DefaultCheckpointStore<C> {
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
             meta.latest_checkpoint_seq = seq;
             meta.updated_at = Self::now_millis();
-            let value = serde_json::to_vec(&meta)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&meta).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
         Ok(())
     }
-    
+
     fn update_event_seq(&self, run_id: &RunId, seq: SeqNo) -> Result<()> {
         let key = Self::run_meta_key(run_id);
         if let Some(data) = self.conn.get(&key)? {
@@ -326,8 +319,8 @@ impl<C: ConnectionTrait> DefaultCheckpointStore<C> {
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
             meta.latest_event_seq = seq;
             meta.updated_at = Self::now_millis();
-            let value = serde_json::to_vec(&meta)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&meta).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
         Ok(())
@@ -344,7 +337,7 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
     ) -> Result<CheckpointMeta> {
         let seq = self.get_and_increment_checkpoint_seq(run_id)?;
         let timestamp = Self::now_millis();
-        
+
         let checkpoint = Checkpoint {
             run_id: run_id.clone(),
             node_id: node_id.clone(),
@@ -353,12 +346,12 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
             timestamp,
             metadata: metadata.unwrap_or_default(),
         };
-        
+
         let key = Self::checkpoint_key(run_id, node_id, seq);
         let value = serde_json::to_vec(&checkpoint)
             .map_err(|e| ClientError::Serialization(e.to_string()))?;
         self.conn.put(&key, &value)?;
-        
+
         Ok(CheckpointMeta {
             run_id: run_id.clone(),
             node_id: node_id.clone(),
@@ -368,15 +361,11 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
             metadata: checkpoint.metadata,
         })
     }
-    
-    fn load_checkpoint(
-        &self,
-        run_id: &RunId,
-        node_id: &NodeId,
-    ) -> Result<Option<Checkpoint>> {
+
+    fn load_checkpoint(&self, run_id: &RunId, node_id: &NodeId) -> Result<Option<Checkpoint>> {
         let prefix = Self::checkpoint_prefix(run_id, node_id);
         let results = self.conn.scan(&prefix)?;
-        
+
         // Get the latest (highest seq)
         if let Some((_, value)) = results.into_iter().last() {
             let checkpoint: Checkpoint = serde_json::from_slice(&value)
@@ -386,7 +375,7 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
             Ok(None)
         }
     }
-    
+
     fn load_checkpoint_at(
         &self,
         run_id: &RunId,
@@ -402,11 +391,11 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
             Ok(None)
         }
     }
-    
+
     fn list_checkpoints(&self, run_id: &RunId) -> Result<Vec<CheckpointMeta>> {
         let prefix = Self::all_checkpoints_prefix(run_id);
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut metas = Vec::new();
         for (_, value) in results {
             let cp: Checkpoint = serde_json::from_slice(&value)
@@ -420,10 +409,10 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
                 metadata: cp.metadata,
             });
         }
-        
+
         Ok(metas)
     }
-    
+
     fn list_node_checkpoints(
         &self,
         run_id: &RunId,
@@ -431,7 +420,7 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
     ) -> Result<Vec<CheckpointMeta>> {
         let prefix = Self::checkpoint_prefix(run_id, node_id);
         let results = self.conn.scan(&prefix)?;
-        
+
         let mut metas = Vec::new();
         for (_, value) in results {
             let cp: Checkpoint = serde_json::from_slice(&value)
@@ -445,10 +434,10 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
                 metadata: cp.metadata,
             });
         }
-        
+
         Ok(metas)
     }
-    
+
     fn create_run(
         &self,
         run_id: &RunId,
@@ -456,7 +445,7 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
         params: HashMap<String, serde_json::Value>,
     ) -> Result<RunMetadata> {
         let now = Self::now_millis();
-        
+
         let meta = RunMetadata {
             run_id: run_id.clone(),
             workflow: workflow.to_string(),
@@ -467,15 +456,15 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
             latest_checkpoint_seq: 0,
             latest_event_seq: 0,
         };
-        
+
         let key = Self::run_meta_key(run_id);
-        let value = serde_json::to_vec(&meta)
-            .map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let value =
+            serde_json::to_vec(&meta).map_err(|e| ClientError::Serialization(e.to_string()))?;
         self.conn.put(&key, &value)?;
-        
+
         Ok(meta)
     }
-    
+
     fn get_run(&self, run_id: &RunId) -> Result<Option<RunMetadata>> {
         let key = Self::run_meta_key(run_id);
         if let Some(data) = self.conn.get(&key)? {
@@ -486,7 +475,7 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
             Ok(None)
         }
     }
-    
+
     fn update_run_status(&self, run_id: &RunId, status: RunStatus) -> Result<()> {
         let key = Self::run_meta_key(run_id);
         if let Some(data) = self.conn.get(&key)? {
@@ -494,26 +483,26 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
             meta.status = status;
             meta.updated_at = Self::now_millis();
-            let value = serde_json::to_vec(&meta)
-                .map_err(|e| ClientError::Serialization(e.to_string()))?;
+            let value =
+                serde_json::to_vec(&meta).map_err(|e| ClientError::Serialization(e.to_string()))?;
             self.conn.put(&key, &value)?;
         }
         Ok(())
     }
-    
+
     fn append_event(&self, mut event: WorkflowEvent) -> Result<SeqNo> {
         let seq = self.get_and_increment_event_seq(&event.run_id)?;
         event.seq = seq;
         event.timestamp = Self::now_millis();
-        
+
         let key = Self::event_key(&event.run_id, seq);
-        let value = serde_json::to_vec(&event)
-            .map_err(|e| ClientError::Serialization(e.to_string()))?;
+        let value =
+            serde_json::to_vec(&event).map_err(|e| ClientError::Serialization(e.to_string()))?;
         self.conn.put(&key, &value)?;
-        
+
         Ok(seq)
     }
-    
+
     fn get_events(
         &self,
         run_id: &RunId,
@@ -522,14 +511,14 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
     ) -> Result<Vec<WorkflowEvent>> {
         let prefix = Self::events_prefix(run_id);
         let results = self.conn.scan(&prefix)?;
-        
+
         let since = since_seq.unwrap_or(0);
         let mut events = Vec::new();
-        
+
         for (_, value) in results {
             let event: WorkflowEvent = serde_json::from_slice(&value)
                 .map_err(|e| ClientError::Serialization(e.to_string()))?;
-            
+
             if event.seq > since {
                 events.push(event);
                 if events.len() >= limit {
@@ -537,31 +526,31 @@ impl<C: ConnectionTrait> CheckpointStore for DefaultCheckpointStore<C> {
                 }
             }
         }
-        
+
         Ok(events)
     }
-    
+
     fn delete_run(&self, run_id: &RunId) -> Result<bool> {
         // Check if run exists
         if self.get_run(run_id)?.is_none() {
             return Ok(false);
         }
-        
+
         // Delete all checkpoints
         let cp_prefix = Self::all_checkpoints_prefix(run_id);
         for (key, _) in self.conn.scan(&cp_prefix)? {
             self.conn.delete(&key)?;
         }
-        
+
         // Delete all events
         let ev_prefix = Self::events_prefix(run_id);
         for (key, _) in self.conn.scan(&ev_prefix)? {
             self.conn.delete(&key)?;
         }
-        
+
         // Delete run metadata
         self.conn.delete(&Self::run_meta_key(run_id))?;
-        
+
         Ok(true)
     }
 }
@@ -588,10 +577,7 @@ mod hex_serde {
         let s = String::deserialize(deserializer)?;
         (0..s.len())
             .step_by(2)
-            .map(|i| {
-                u8::from_str_radix(&s[i..i + 2], 16)
-                    .map_err(serde::de::Error::custom)
-            })
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(serde::de::Error::custom))
             .collect()
     }
 }
