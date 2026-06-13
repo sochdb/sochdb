@@ -768,7 +768,11 @@ mod tests {
 
     #[test]
     fn test_admission_controller() {
-        let controller = AdmissionController::new(1024 * 1024);
+        // 64 MB global budget so memory is never the binding gate here — this
+        // test exercises the per-class concurrency limit (2). With the old 1 MB
+        // budget, a single low_latency query's 2 MB estimate already exceeded
+        // it, so try_admit rejected before the class limit could be reached.
+        let controller = AdmissionController::new(64 * 1024 * 1024);
         controller.set_class_limit("low_latency", 2);
 
         let budget = QueryBudget::low_latency();

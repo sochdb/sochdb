@@ -1531,8 +1531,11 @@ mod tests {
     #[test]
     fn test_estimate_tokens() {
         assert_eq!(estimate_tokens(""), 0);
-        assert_eq!(estimate_tokens("test"), 1);
-        assert_eq!(estimate_tokens("hello world!"), 3);
+        // estimate_tokens applies the deliberate ~1.15x safety margin (it is a
+        // budget estimate, intentionally conservative): ceil(4/4 * 1.15)=2 and
+        // ceil(3 * 1.15)=4. The old 1/3 expectations ignored the margin.
+        assert_eq!(estimate_tokens("test"), 2);
+        assert_eq!(estimate_tokens("hello world!"), 4);
     }
 
     #[test]

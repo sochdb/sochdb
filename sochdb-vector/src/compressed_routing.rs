@@ -717,8 +717,11 @@ mod tests {
         let rec2 = CentroidCompression::recommend(20_000, dim, cache_32mb);
         assert!(matches!(rec2, CentroidCompression::Fp16));
 
-        // 50k centroids need Int8
-        let rec3 = CentroidCompression::recommend(50_000, dim, cache_32mb);
+        // 40k centroids: FP32 (123MB) and FP16 (61MB) exceed the 32MB cache,
+        // but Int8 (40k*768B = 30.7MB) fits — so Int8 is recommended. (The old
+        // 50k case asserted Int8 but 50k*768B = 36.6MB does NOT fit 32MB, so the
+        // code correctly fell through to PQ — the expectation, not the code, was wrong.)
+        let rec3 = CentroidCompression::recommend(40_000, dim, cache_32mb);
         assert!(matches!(rec3, CentroidCompression::Int8));
     }
 

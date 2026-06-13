@@ -809,11 +809,16 @@ mod tests {
     fn test_sli_histogram() {
         let hist = SliHistogram::latency_histogram();
 
-        // Add some observations
-        hist.observe(500); // 0.5ms
-        hist.observe(1500); // 1.5ms
-        hist.observe(5000); // 5ms
-        hist.observe(50000); // 50ms
+        // A meaningful distribution for the percentile assertions: 60 fast
+        // (1ms) + 40 slow (50ms). Four samples could not exercise p99 — its
+        // rank floor(N * 0.99) landed below the tail bucket. With 100 samples
+        // p50 sits in a low bucket and p99 in the tail regardless of rounding.
+        for _ in 0..60 {
+            hist.observe(1000); // 1ms
+        }
+        for _ in 0..40 {
+            hist.observe(50000); // 50ms
+        }
 
         // p50 should be around 5ms bucket (5000)
         assert!(hist.percentile(50.0) <= 5000);
