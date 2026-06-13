@@ -121,6 +121,18 @@ impl NamespaceServer {
         }
     }
 
+    /// Decrement the vector count for a namespace (on document/collection
+    /// deletion). Without this the quota counter only ever rose, so a
+    /// namespace that repeatedly added and deleted documents would
+    /// permanently exhaust its vector quota despite holding nothing.
+    pub fn decrement_vector_count(&self, namespace: &str, count: u64) {
+        if let Some(mut ns) = self.namespaces.get_mut(namespace) {
+            if let Some(ref mut stats) = ns.stats {
+                stats.vector_count = stats.vector_count.saturating_sub(count);
+            }
+        }
+    }
+
     /// Increment the storage bytes for a namespace.
     pub fn increment_storage_bytes(&self, namespace: &str, bytes: u64) {
         if let Some(mut ns) = self.namespaces.get_mut(namespace) {

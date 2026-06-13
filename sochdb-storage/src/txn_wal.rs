@@ -767,9 +767,16 @@ impl TxnWal {
         Ok(seq)
     }
 
-    /// Force sync to disk
+    /// Force sync to disk.
+    ///
+    /// Must flush the BufWriter BEFORE fsync: `get_ref()` reaches the raw File
+    /// and bypasses the 256 KB buffer, so without an explicit `flush()` the
+    /// just-appended commit/checkpoint record may still sit in userspace and
+    /// `sync_all()` would fsync stale bytes — silently breaking the durability
+    /// guarantee `append_sync`/`commit`/`checkpoint` advertise.
     pub fn sync(&self) -> Result<()> {
-        let writer = self.writer.lock();
+        let mut writer = self.writer.lock();
+        writer.flush()?;
         writer.get_ref().sync_all()?;
         self.bytes_since_sync.store(0, Ordering::Relaxed);
         Ok(())
