@@ -158,63 +158,114 @@ fn main() -> BenchResult<()> {
         ));
     }
 
-    println!("  Databases: {}", databases.iter().map(|d| d.name()).collect::<Vec<_>>().join(", "));
+    println!(
+        "  Databases: {}",
+        databases
+            .iter()
+            .map(|d| d.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     // ── OLTP ──
     if run_oltp {
         println!("\n{}", "▶ OLTP Workloads".bold().green());
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "oltp_seq_write", |db, cfg| {
-            workloads::oltp_sequential_writes(db, cfg)
-        })?;
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "oltp_seq_read", |db, cfg| {
-            workloads::oltp_sequential_reads(db, cfg)
-        })?;
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "oltp_rand_read", |db, cfg| {
-            workloads::oltp_random_reads(db, cfg)
-        })?;
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "oltp_batch_write", |db, cfg| {
-            workloads::oltp_batch_write(db, cfg)
-        })?;
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "oltp_delete", |db, cfg| {
-            workloads::oltp_deletes(db, cfg)
-        })?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "oltp_seq_write",
+            |db, cfg| workloads::oltp_sequential_writes(db, cfg),
+        )?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "oltp_seq_read",
+            |db, cfg| workloads::oltp_sequential_reads(db, cfg),
+        )?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "oltp_rand_read",
+            |db, cfg| workloads::oltp_random_reads(db, cfg),
+        )?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "oltp_batch_write",
+            |db, cfg| workloads::oltp_batch_write(db, cfg),
+        )?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "oltp_delete",
+            |db, cfg| workloads::oltp_deletes(db, cfg),
+        )?;
     }
 
     // ── Analytics ──
     if run_analytics {
         println!("\n{}", "▶ Analytics Workloads".bold().green());
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "analytics_bulk_insert", |db, cfg| {
-            workloads::analytics_bulk_insert(db, cfg)
-        })?;
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "analytics_queries", |db, cfg| {
-            workloads::analytics_queries(db, cfg)
-        })?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "analytics_bulk_insert",
+            |db, cfg| workloads::analytics_bulk_insert(db, cfg),
+        )?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "analytics_queries",
+            |db, cfg| workloads::analytics_queries(db, cfg),
+        )?;
     }
 
     // ── Vector ──
     if run_vector {
         println!("\n{}", "▶ Vector Workloads".bold().green());
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "vector_insert", |db, cfg| {
-            workloads::vector_insert(db, cfg)
-        })?;
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "vector_search", |db, cfg| {
-            workloads::vector_search(db, cfg)
-        })?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "vector_insert",
+            |db, cfg| workloads::vector_insert(db, cfg),
+        )?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "vector_search",
+            |db, cfg| workloads::vector_search(db, cfg),
+        )?;
     }
 
     // ── Mixed ──
     if run_mixed {
         println!("\n{}", "▶ Mixed Workloads".bold().green());
-        run_workload_across(&mut databases, &cfg, &mut suite.results, "mixed_80r_20w", |db, cfg| {
-            workloads::mixed_read_heavy(db, cfg)
-        })?;
+        run_workload_across(
+            &mut databases,
+            &cfg,
+            &mut suite.results,
+            "mixed_80r_20w",
+            |db, cfg| workloads::mixed_read_heavy(db, cfg),
+        )?;
     }
 
     // ── Storage Efficiency ──
     println!("\n{}", "▶ Storage Efficiency".bold().green());
-    run_workload_across(&mut databases, &cfg, &mut suite.results, "storage_efficiency", |db, cfg| {
-        workloads::storage_efficiency(db, cfg)
-    })?;
+    run_workload_across(
+        &mut databases,
+        &cfg,
+        &mut suite.results,
+        "storage_efficiency",
+        |db, cfg| workloads::storage_efficiency(db, cfg),
+    )?;
 
     // ── Teardown ──
     for db in &mut databases {

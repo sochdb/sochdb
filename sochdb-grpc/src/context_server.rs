@@ -138,16 +138,13 @@ impl ContextService for ContextServer {
                         template,
                     ) {
                         Ok(compiled) => {
-                            let truncated = compiled.truncated || compiled.exact_tokens > remaining_budget;
+                            let truncated =
+                                compiled.truncated || compiled.exact_tokens > remaining_budget;
                             let content = MemoryBackend::format_compiled(&compiled, output_fmt);
                             let tokens = compiled.exact_tokens as u32;
                             (content, tokens, truncated)
                         }
-                        Err(e) => (
-                            format!("# {} (error)\n{}\n", section.name, e),
-                            0,
-                            true,
-                        ),
+                        Err(e) => (format!("# {} (error)\n{}\n", section.name, e), 0, true),
                     }
                 }
                 x if x == ContextSectionType::ContextSectionGet as i32 => {
@@ -164,7 +161,11 @@ impl ContextService for ContextServer {
                                 let tokens = MemoryBackend::estimate_tokens_exact(&content);
                                 (content, tokens, false)
                             }
-                            Err(e) => (format!("# {} (write error)\n{}\n", section.name, e), 0, true),
+                            Err(e) => (
+                                format!("# {} (write error)\n{}\n", section.name, e),
+                                0,
+                                true,
+                            ),
                         }
                     } else if let Some(doc_id) = section
                         .options
@@ -179,11 +180,7 @@ impl ContextService for ContextServer {
                         let tokens = MemoryBackend::estimate_tokens_exact(&content);
                         (content, tokens, false)
                     } else {
-                        let content = format!(
-                            "# {}\n[path: {}]\n",
-                            section.name,
-                            section.query
-                        );
+                        let content = format!("# {}\n[path: {}]\n", section.name, section.query);
                         let tokens = MemoryBackend::estimate_tokens_exact(&content);
                         (content, tokens, false)
                     }
@@ -268,12 +265,10 @@ impl ContextService for ContextServer {
             }
         };
 
-        match self.backend.write_episode(
-            &req.namespace,
-            &req.text,
-            req.t_valid_from,
-            metadata,
-        ) {
+        match self
+            .backend
+            .write_episode(&req.namespace, &req.text, req.t_valid_from, metadata)
+        {
             Ok(wr) => Ok(Response::new(WriteEpisodeResponse {
                 episode_id: wr.episode_id.0,
                 t_created: wr.t_created,
@@ -307,9 +302,7 @@ impl ContextService for ContextServer {
         let fmt = proto_format(req.format);
 
         let formatted = match fmt {
-            ContextOutputFormat::Json => {
-                serde_json::json!({ "content": req.content }).to_string()
-            }
+            ContextOutputFormat::Json => serde_json::json!({ "content": req.content }).to_string(),
             ContextOutputFormat::Markdown => {
                 format!("```\n{}\n```", req.content)
             }

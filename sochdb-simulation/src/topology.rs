@@ -111,19 +111,13 @@ impl Operation {
 
     fn core_path(&self) -> Vec<Component> {
         match self {
-            Self::PointRead => vec![
-                Component::MvccCoordinator,
-                Component::MemtableLookup,
-            ],
+            Self::PointRead => vec![Component::MvccCoordinator, Component::MemtableLookup],
             Self::PointWrite => vec![
                 Component::MvccCoordinator,
                 Component::WalWriter,
                 Component::MemtableLookup,
             ],
-            Self::BatchWrite => vec![
-                Component::MvccCoordinator,
-                Component::WalWriter,
-            ],
+            Self::BatchWrite => vec![Component::MvccCoordinator, Component::WalWriter],
             Self::Delete => vec![
                 Component::MvccCoordinator,
                 Component::WalWriter,
@@ -145,13 +139,8 @@ impl Operation {
                 Component::WalWriter,
                 Component::VectorCache,
             ],
-            Self::VectorSearchBruteForce => vec![
-                Component::VectorCache,
-                Component::BruteForceScan,
-            ],
-            Self::VectorSearchHnsw | Self::GrpcHnswSearch => vec![
-                Component::HnswIndex,
-            ],
+            Self::VectorSearchBruteForce => vec![Component::VectorCache, Component::BruteForceScan],
+            Self::VectorSearchHnsw | Self::GrpcHnswSearch => vec![Component::HnswIndex],
             Self::ContextQuery => vec![
                 Component::SochQlParser,
                 Component::QueryPlanner,
@@ -179,14 +168,8 @@ impl Operation {
                 Component::MvccCoordinator,
                 Component::MemtableLookup,
             ],
-            Self::GrpcKvPut => vec![
-                Component::MvccCoordinator,
-                Component::WalWriter,
-            ],
-            Self::GrpcKvGet => vec![
-                Component::MvccCoordinator,
-                Component::MemtableLookup,
-            ],
+            Self::GrpcKvPut => vec![Component::MvccCoordinator, Component::WalWriter],
+            Self::GrpcKvGet => vec![Component::MvccCoordinator, Component::MemtableLookup],
             Self::GrpcVectorInsert => vec![
                 Component::MvccCoordinator,
                 Component::WalWriter,

@@ -36,8 +36,14 @@ static CALIBRATED_DISTRIBUTED: &[(&str, LatencyProfile)] = &[
     ("grpc_hnsw_search_10k", lp(1720.0, 1700.0, 6250.0, 581.0)),
     ("grpc_hnsw_search_50k", lp(2670.0, 2600.0, 8000.0, 374.0)),
     ("grpc_hnsw_search_3_5m", lp(1970.0, 1870.0, 6250.0, 507.0)),
-    ("grpc_hnsw_search_concurrent_8", lp(4000.0, 4000.0, 12_000.0, 1_964.0)),
-    ("grpc_hnsw_search_concurrent_32", lp(15_000.0, 15_000.0, 30_000.0, 2_072.0)),
+    (
+        "grpc_hnsw_search_concurrent_8",
+        lp(4000.0, 4000.0, 12_000.0, 1_964.0),
+    ),
+    (
+        "grpc_hnsw_search_concurrent_32",
+        lp(15_000.0, 15_000.0, 30_000.0, 2_072.0),
+    ),
 ];
 
 const fn lp(mean: f64, p50: f64, p99: f64, throughput: f64) -> LatencyProfile {

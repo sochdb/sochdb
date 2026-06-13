@@ -5,8 +5,8 @@ use crate::component::{Component, SimEnvironment};
 use crate::scenario::{Scenario, ScenarioOp};
 use crate::topology::{Operation, Topology};
 use rand::Rng;
-use rand_chacha::ChaCha8Rng;
 use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 /// Result of simulating a single operation type.
@@ -136,19 +136,20 @@ impl SimulationEngine {
                 .profile_for(workload, is_distributed)
                 .or_else(|| {
                     // Fall back: project from standalone measurement
-                    self.calibration
-                        .profile_for(workload, false)
-                        .map(|p| {
-                            if is_distributed {
-                                self.calibration.project_distributed(p)
-                            } else {
-                                p
-                            }
-                        })
+                    self.calibration.profile_for(workload, false).map(|p| {
+                        if is_distributed {
+                            self.calibration.project_distributed(p)
+                        } else {
+                            p
+                        }
+                    })
                 });
 
             if let Some(base) = profile {
-                let exact = self.calibration.profile_for(workload, is_distributed).is_some();
+                let exact = self
+                    .calibration
+                    .profile_for(workload, is_distributed)
+                    .is_some();
                 let scaled = if exact {
                     base
                 } else {
@@ -161,8 +162,7 @@ impl SimulationEngine {
                         is_distributed,
                     )
                 };
-                let samples =
-                    self.monte_carlo_samples(scaled.mean_us, ops.min(10_000) as usize);
+                let samples = self.monte_carlo_samples(scaled.mean_us, ops.min(10_000) as usize);
                 let mean = samples.iter().sum::<f64>() / samples.len() as f64;
                 (
                     mean,
@@ -256,8 +256,9 @@ impl SimulationEngine {
         let weighted_latency = read_result.mean_latency_us * read_ratio
             + write_result.mean_latency_us * (1.0 - read_ratio);
 
-        let throughput = op_spec.ops as f64 / (op_spec.ops as f64 / read_result.throughput_ops_sec
-            + op_spec.ops as f64 / write_result.throughput_ops_sec);
+        let throughput = op_spec.ops as f64
+            / (op_spec.ops as f64 / read_result.throughput_ops_sec
+                + op_spec.ops as f64 / write_result.throughput_ops_sec);
 
         OpResult {
             workload: "mixed_80r_20w".into(),
@@ -276,7 +277,11 @@ impl SimulationEngine {
         }
     }
 
-    fn component_breakdown(&mut self, path: &[Component], env: &SimEnvironment) -> Vec<ComponentLatency> {
+    fn component_breakdown(
+        &mut self,
+        path: &[Component],
+        env: &SimEnvironment,
+    ) -> Vec<ComponentLatency> {
         let total: f64 = path.iter().map(|c| env.effective_latency_us(*c)).sum();
         path.iter()
             .map(|c| {
@@ -284,7 +289,11 @@ impl SimulationEngine {
                 ComponentLatency {
                     component: c.display_name().into(),
                     latency_us: lat,
-                    pct_of_total: if total > 0.0 { lat / total * 100.0 } else { 0.0 },
+                    pct_of_total: if total > 0.0 {
+                        lat / total * 100.0
+                    } else {
+                        0.0
+                    },
                 }
             })
             .collect()
@@ -332,18 +341,10 @@ mod tests {
         let mut engine = SimulationEngine::new(42);
         let env = SimEnvironment::default();
 
-        let standalone = engine.simulate_operation(
-            Topology::Standalone,
-            Operation::PointRead,
-            1000,
-            &env,
-        );
-        let distributed = engine.simulate_operation(
-            Topology::Distributed,
-            Operation::GrpcKvGet,
-            1000,
-            &env,
-        );
+        let standalone =
+            engine.simulate_operation(Topology::Standalone, Operation::PointRead, 1000, &env);
+        let distributed =
+            engine.simulate_operation(Topology::Distributed, Operation::GrpcKvGet, 1000, &env);
 
         assert!(standalone.mean_latency_us < distributed.mean_latency_us);
         assert!(standalone.throughput_ops_sec > distributed.throughput_ops_sec);
@@ -352,8 +353,15 @@ mod tests {
     #[test]
     fn hnsw_latency_scales_with_vector_count() {
         let mut engine = SimulationEngine::new(42);
-        let small = SimEnvironment { vector_count: 10_000, ..Default::default() };
-        let large = SimEnvironment { vector_count: 3_500_000, ef_search: 64, ..Default::default() };
+        let small = SimEnvironment {
+            vector_count: 10_000,
+            ..Default::default()
+        };
+        let large = SimEnvironment {
+            vector_count: 3_500_000,
+            ef_search: 64,
+            ..Default::default()
+        };
 
         let small_r = engine.simulate_operation_with_workload(
             Topology::Distributed,

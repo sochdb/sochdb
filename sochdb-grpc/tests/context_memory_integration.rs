@@ -35,11 +35,7 @@ async fn context_search_uses_memory_backend() {
         include_schema: false,
     };
 
-    let resp = server
-        .query(Request::new(req))
-        .await
-        .unwrap()
-        .into_inner();
+    let resp = server.query(Request::new(req)).await.unwrap().into_inner();
 
     assert!(resp.error.is_empty());
     assert!(resp.total_tokens > 0);

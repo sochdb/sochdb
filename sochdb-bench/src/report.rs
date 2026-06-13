@@ -16,10 +16,7 @@ pub fn print_workload_comparison(workload: &str, results: &[WorkloadResult]) {
         return;
     }
 
-    println!(
-        "\n{}",
-        format!("━━━ {} ━━━", workload).bold().cyan()
-    );
+    println!("\n{}", format!("━━━ {} ━━━", workload).bold().cyan());
 
     let mut table = Table::new();
     table
@@ -38,10 +35,7 @@ pub fn print_workload_comparison(workload: &str, results: &[WorkloadResult]) {
     ]);
 
     // Find best throughput for highlighting.
-    let best_throughput = results
-        .iter()
-        .map(|r| r.throughput)
-        .fold(0.0f64, f64::max);
+    let best_throughput = results.iter().map(|r| r.throughput).fold(0.0f64, f64::max);
 
     for r in results {
         let is_best = (r.throughput - best_throughput).abs() < 0.01 && r.throughput > 0.0;
@@ -63,7 +57,9 @@ pub fn print_workload_comparison(workload: &str, results: &[WorkloadResult]) {
             Cell::new(format_throughput(r.throughput))
         };
 
-        let size_str = r.extra.get("db_size_bytes")
+        let size_str = r
+            .extra
+            .get("db_size_bytes")
             .and_then(|s| s.parse::<u64>().ok())
             .map(format_bytes)
             .unwrap_or_else(|| "-".to_string());
@@ -91,11 +87,7 @@ pub fn print_workload_comparison(workload: &str, results: &[WorkloadResult]) {
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
         if !filtered.is_empty() {
-            println!(
-                "  {} {}",
-                r.db_name.dimmed(),
-                filtered.join(", ").dimmed()
-            );
+            println!("  {} {}", r.db_name.dimmed(), filtered.join(", ").dimmed());
         }
     }
 }
@@ -151,10 +143,7 @@ pub fn print_suite(suite: &BenchSuite) {
     }
 
     // Summary: wins per database.
-    println!(
-        "\n{}",
-        "── Summary: Wins by Database ──".bold().yellow()
-    );
+    println!("\n{}", "── Summary: Wins by Database ──".bold().yellow());
     let mut wins: HashMap<String, usize> = HashMap::new();
     for (_, results) in &by_workload {
         if let Some(best) = results

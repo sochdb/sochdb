@@ -110,7 +110,9 @@ impl MemoryStore {
             .into_iter()
             .filter_map(|(doc_id, score)| {
                 let text = self.episode_text(&q.namespace, doc_id)?;
-                let episode = self.get_episode(&q.namespace, crate::episode::EpisodeId(doc_id)).ok()?;
+                let episode = self
+                    .get_episode(&q.namespace, crate::episode::EpisodeId(doc_id))
+                    .ok()?;
                 let snippet: String = text.chars().take(256).collect();
                 let provenance = ProvenanceBundle {
                     episode_id: doc_id,

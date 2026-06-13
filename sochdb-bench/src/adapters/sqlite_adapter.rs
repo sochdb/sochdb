@@ -142,7 +142,13 @@ impl BenchDb for SqliteAdapter {
             .execute(
                 "INSERT OR REPLACE INTO analytics (id, timestamp, amount, category, description)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![row.id as i64, row.timestamp, row.amount, row.category, row.description],
+                params![
+                    row.id as i64,
+                    row.timestamp,
+                    row.amount,
+                    row.category,
+                    row.description
+                ],
             )
             .map_err(|e| BenchError::Database(format!("insert analytics: {}", e)))?;
         Ok(())
@@ -303,8 +309,7 @@ impl BenchDb for SqliteAdapter {
     }
 
     fn db_size_bytes(&self) -> BenchResult<u64> {
-        let meta = std::fs::metadata(&self.path)
-            .map_err(|e| BenchError::Io(e))?;
+        let meta = std::fs::metadata(&self.path).map_err(|e| BenchError::Io(e))?;
         let mut total = meta.len();
         // Add WAL and SHM files if they exist.
         let wal = self.path.with_extension("sqlite3-wal");

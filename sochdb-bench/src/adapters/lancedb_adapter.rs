@@ -387,10 +387,7 @@ impl BenchDb for LanceDbAdapter {
             Field::new("id", DataType::UInt64, false),
             Field::new(
                 "vector",
-                DataType::FixedSizeList(
-                    Arc::new(Field::new("item", DataType::Float32, true)),
-                    dim,
-                ),
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
                 false,
             ),
             Field::new("metadata", DataType::Utf8, true),
@@ -398,10 +395,7 @@ impl BenchDb for LanceDbAdapter {
 
         let ids: Vec<u64> = vectors.iter().map(|(id, _, _)| *id).collect();
         let flat: Vec<f32> = vectors.iter().flat_map(|(_, v, _)| v.clone()).collect();
-        let meta: Vec<Option<&str>> = vectors
-            .iter()
-            .map(|(_, _, m)| m.as_deref())
-            .collect();
+        let meta: Vec<Option<&str>> = vectors.iter().map(|(_, _, m)| m.as_deref()).collect();
 
         let values = Float32Array::from(flat);
         let list = FixedSizeListArray::try_new_from_values(values, dim)

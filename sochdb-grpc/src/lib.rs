@@ -69,10 +69,10 @@ pub mod security; // Security baseline: mTLS, AuthZ, audit, rate limiting
 pub mod checkpoint_server;
 pub mod collection_server;
 pub mod context_server;
-pub mod memory_backend;
 pub mod graph_server;
 pub mod kv_server;
 pub mod mcp_server;
+pub mod memory_backend;
 pub mod namespace_server;
 pub mod pg_wire;
 pub mod policy_server;

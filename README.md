@@ -126,21 +126,6 @@ SochDB is a **single database** that replaces your vector DB + relational DB + p
 
 ---
 
-## Why SochDB exists
-
-Most "agent stacks" still glue together:
-
-* a KV store (sessions / state)
-* a vector DB (retrieval)
-* a prompt packer (context budgeting, truncation)
-* a relational DB (metadata)
-
-…and then spend weeks maintaining brittle context assembly and token budgeting.
-
-**SochDB collapses that stack into one LLM‑native substrate**: you store structured data + embeddings + history *and* ask the DB to produce a token‑efficient context payload.
-
----
-
 ## What you can rely on today
 
 ### ✅ LLM + agent primitives
@@ -184,17 +169,6 @@ Most "agent stacks" still glue together:
 - **Single-node only** (no replication / clustering yet)
 ---
 
-## SochDB in one picture
-
-| Problem           | Typical approach               | SochDB approach                     |
-| ----------------- | ------------------------------ | ----------------------------------- |
-| Token waste       | JSON/SQL payload bloat         | **TOON**: dense, table-like output  |
-| RAG plumbing      | External vector DB + glue      | **Built-in HNSW** + quantization    |
-| Context assembly  | multiple reads + custom packer | **One context query** with a budget |
-| I/O amplification | row store reads all columns    | **columnar** + projection pushdown  |
-
----
-
 ## 📦 Quick Start
 
 ### Installation
@@ -203,7 +177,7 @@ Choose your preferred SDK:
 
 ```bash
 # Rust - add to Cargo.toml
-sochdb = "0.5"
+sochdb = "2.0.4"
 ```
 
 ### SDK Repositories
@@ -212,7 +186,10 @@ Language SDKs are maintained in separate packages and repos with their own relea
 
 | Language | Repository | Installation |
 |----------|------------|-------------|
-| **Python** | [`sochdb-python/`](./sochdb-python) | `pip install sochdb` |
+| **Rust** | This repository | `cargo add sochdb` |
+| **Python** | [sochdb-python-sdk](https://github.com/sochdb/sochdb-python-sdk) | `pip install sochdb` |
+| **Node.js/TypeScript** | [sochdb-nodejs-sdk](https://github.com/sochdb/sochdb-nodejs-sdk) | `npm install @sochdb/sochdb` |
+| **Go** | [sochdb-go](https://github.com/sochdb/sochdb-go) | `go get github.com/sochdb/sochdb-go@latest` |
 
 ### 🐳 Docker Deployment
 

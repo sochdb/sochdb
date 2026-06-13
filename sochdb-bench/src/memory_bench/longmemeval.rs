@@ -36,11 +36,7 @@ pub fn load_questions(path: &Path) -> Result<Vec<BenchQuestion>, String> {
         .into_iter()
         .filter(|e| !ABSTENTION.contains(&e.question_type.as_str()))
         .map(|e| {
-            let gold: Vec<u64> = e
-                .answer_session_ids
-                .iter()
-                .map(|s| hash_id(s))
-                .collect();
+            let gold: Vec<u64> = e.answer_session_ids.iter().map(|s| hash_id(s)).collect();
             BenchQuestion {
                 id: e.question_id,
                 category: e.question_type,

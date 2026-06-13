@@ -11,11 +11,11 @@ use crate::{AnalyticsRow, BenchDb, BenchResult, DataGen, LatencyRecorder, Worklo
 
 #[derive(Debug, Clone)]
 pub struct WorkloadConfig {
-    pub scale: usize,       // multiplier — 1 = 10 000 ops, 10 = 100 000, etc.
-    pub value_size: usize,  // bytes per value in KV workloads
-    pub batch_size: usize,  // batch write chunk size
-    pub dim: usize,         // vector dimension
-    pub k: usize,           // top-k for ANN search
+    pub scale: usize,      // multiplier — 1 = 10 000 ops, 10 = 100 000, etc.
+    pub value_size: usize, // bytes per value in KV workloads
+    pub batch_size: usize, // batch write chunk size
+    pub dim: usize,        // vector dimension
+    pub k: usize,          // top-k for ANN search
 }
 
 impl Default for WorkloadConfig {
@@ -59,7 +59,11 @@ pub fn oltp_sequential_writes(
         rec.record(t);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "oltp_seq_write", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "oltp_seq_write",
+        &rec,
+    ))
 }
 
 /// Sequential point reads (read-back after write).
@@ -78,7 +82,11 @@ pub fn oltp_sequential_reads(
         rec.record(t);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "oltp_seq_read", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "oltp_seq_read",
+        &rec,
+    ))
 }
 
 /// Random point reads.
@@ -100,14 +108,15 @@ pub fn oltp_random_reads(
         rec.record(t);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "oltp_rand_read", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "oltp_rand_read",
+        &rec,
+    ))
 }
 
 /// Batch writes in chunks.
-pub fn oltp_batch_write(
-    db: &mut dyn BenchDb,
-    cfg: &WorkloadConfig,
-) -> BenchResult<WorkloadResult> {
+pub fn oltp_batch_write(db: &mut dyn BenchDb, cfg: &WorkloadConfig) -> BenchResult<WorkloadResult> {
     let n = cfg.n();
     let mut gen = DataGen::new(77);
     let mut rec = LatencyRecorder::new();
@@ -123,7 +132,9 @@ pub fn oltp_batch_write(
                 format!("bk:{:08x}", offset).into_bytes()
             })
             .collect();
-        let vals: Vec<Vec<u8>> = (0..count).map(|_| gen.random_value(cfg.value_size)).collect();
+        let vals: Vec<Vec<u8>> = (0..count)
+            .map(|_| gen.random_value(cfg.value_size))
+            .collect();
         let pairs: Vec<(&[u8], &[u8])> = keys
             .iter()
             .zip(vals.iter())
@@ -134,14 +145,15 @@ pub fn oltp_batch_write(
         rec.record_batch(t.elapsed(), count as u64);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "oltp_batch_write", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "oltp_batch_write",
+        &rec,
+    ))
 }
 
 /// Point deletes.
-pub fn oltp_deletes(
-    db: &mut dyn BenchDb,
-    cfg: &WorkloadConfig,
-) -> BenchResult<WorkloadResult> {
+pub fn oltp_deletes(db: &mut dyn BenchDb, cfg: &WorkloadConfig) -> BenchResult<WorkloadResult> {
     let n = (cfg.n() / 5).min(50_000).max(100); // delete ~20%
     let gen = DataGen::new(42);
     let mut rec = LatencyRecorder::new();
@@ -153,7 +165,11 @@ pub fn oltp_deletes(
         rec.record(t);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "oltp_delete", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "oltp_delete",
+        &rec,
+    ))
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -183,7 +199,11 @@ pub fn analytics_bulk_insert(
         rec.record_batch(t.elapsed(), count);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "analytics_bulk_insert", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "analytics_bulk_insert",
+        &rec,
+    ))
 }
 
 /// Run analytics queries: filter, aggregate, group-by, range scan.
@@ -217,7 +237,11 @@ pub fn analytics_queries(
         rec.record(t);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "analytics_queries", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "analytics_queries",
+        &rec,
+    ))
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -225,10 +249,7 @@ pub fn analytics_queries(
 // ────────────────────────────────────────────────────────────────────────────────
 
 /// Insert vectors.
-pub fn vector_insert(
-    db: &mut dyn BenchDb,
-    cfg: &WorkloadConfig,
-) -> BenchResult<WorkloadResult> {
+pub fn vector_insert(db: &mut dyn BenchDb, cfg: &WorkloadConfig) -> BenchResult<WorkloadResult> {
     let n = cfg.n().min(50_000); // cap vector count
     let mut gen = DataGen::new(42);
     let mut rec = LatencyRecorder::new();
@@ -255,14 +276,15 @@ pub fn vector_insert(
         rec.record_batch(t.elapsed(), count);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "vector_insert", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "vector_insert",
+        &rec,
+    ))
 }
 
 /// Vector search queries.
-pub fn vector_search(
-    db: &mut dyn BenchDb,
-    cfg: &WorkloadConfig,
-) -> BenchResult<WorkloadResult> {
+pub fn vector_search(db: &mut dyn BenchDb, cfg: &WorkloadConfig) -> BenchResult<WorkloadResult> {
     let queries = 200;
     let mut gen = DataGen::new(999);
     let mut rec = LatencyRecorder::new();
@@ -274,7 +296,11 @@ pub fn vector_search(
         rec.record(t);
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "vector_search", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "vector_search",
+        &rec,
+    ))
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -302,11 +328,17 @@ pub fn storage_efficiency(
         extra: std::collections::HashMap::new(),
     };
 
-    result.extra.insert("db_size_bytes".into(), size.to_string());
-    result.extra.insert("raw_data_bytes".into(), raw_data.to_string());
+    result
+        .extra
+        .insert("db_size_bytes".into(), size.to_string());
+    result
+        .extra
+        .insert("raw_data_bytes".into(), raw_data.to_string());
     if raw_data > 0 {
         let ratio = size as f64 / raw_data as f64;
-        result.extra.insert("amplification".into(), format!("{:.2}x", ratio));
+        result
+            .extra
+            .insert("amplification".into(), format!("{:.2}x", ratio));
     }
 
     Ok(result)
@@ -317,10 +349,7 @@ pub fn storage_efficiency(
 // ────────────────────────────────────────────────────────────────────────────────
 
 /// 80/20 read-heavy mixed workload.
-pub fn mixed_read_heavy(
-    db: &mut dyn BenchDb,
-    cfg: &WorkloadConfig,
-) -> BenchResult<WorkloadResult> {
+pub fn mixed_read_heavy(db: &mut dyn BenchDb, cfg: &WorkloadConfig) -> BenchResult<WorkloadResult> {
     let n = cfg.n();
     let mut gen = DataGen::new(55);
     let data_gen = DataGen::new(42);
@@ -345,5 +374,9 @@ pub fn mixed_read_heavy(
         }
     }
 
-    Ok(WorkloadResult::from_recorder(db.name(), "mixed_80r_20w", &rec))
+    Ok(WorkloadResult::from_recorder(
+        db.name(),
+        "mixed_80r_20w",
+        &rec,
+    ))
 }

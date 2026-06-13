@@ -2,7 +2,7 @@
 //!
 //! Run with: `cargo bench --bench micro`
 
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use sochdb_bench::adapters::sochdb_adapter::SochDbAdapter;
 use sochdb_bench::adapters::sqlite_adapter::SqliteAdapter;
 use sochdb_bench::{BenchDb, DataGen};
@@ -94,13 +94,18 @@ fn bench_batch_write(c: &mut Criterion) {
             let mut offset = 0u64;
 
             b.iter(|| {
-                let keys: Vec<Vec<u8>> = (0..1000).map(|_| {
-                    offset += 1;
-                    format!("bm:{:08x}", offset).into_bytes()
-                }).collect();
+                let keys: Vec<Vec<u8>> = (0..1000)
+                    .map(|_| {
+                        offset += 1;
+                        format!("bm:{:08x}", offset).into_bytes()
+                    })
+                    .collect();
                 let vals: Vec<Vec<u8>> = (0..1000).map(|_| gen.random_value(256)).collect();
-                let pairs: Vec<(&[u8], &[u8])> = keys.iter().zip(vals.iter())
-                    .map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
+                let pairs: Vec<(&[u8], &[u8])> = keys
+                    .iter()
+                    .zip(vals.iter())
+                    .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                    .collect();
                 db.batch_put(&pairs).unwrap();
             });
         });
@@ -108,5 +113,10 @@ fn bench_batch_write(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_point_write, bench_point_read, bench_batch_write);
+criterion_group!(
+    benches,
+    bench_point_write,
+    bench_point_read,
+    bench_batch_write
+);
 criterion_main!(benches);

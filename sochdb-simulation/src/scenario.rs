@@ -35,18 +35,78 @@ impl Scenario {
             description: "All embedded workloads matching sochdb-bench 10K scale".into(),
             environment: SimEnvironment::default(),
             operations: vec![
-                ScenarioOp { operation: Operation::PointWrite, ops: 10_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::PointRead, ops: 10_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::BatchWrite, ops: 10_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::Delete, ops: 2_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::AnalyticsInsert, ops: 10_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::AnalyticsQuery, ops: 80, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::VectorInsert, ops: 10_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::VectorSearchBruteForce, ops: 200, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::ContextQuery, ops: 100, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::HybridFusion, ops: 100, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::McpToolCall, ops: 50, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::TemporalGraphQuery, ops: 200, read_ratio: None, workload_override: None },
+                ScenarioOp {
+                    operation: Operation::PointWrite,
+                    ops: 10_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::PointRead,
+                    ops: 10_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::BatchWrite,
+                    ops: 10_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::Delete,
+                    ops: 2_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::AnalyticsInsert,
+                    ops: 10_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::AnalyticsQuery,
+                    ops: 80,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::VectorInsert,
+                    ops: 10_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::VectorSearchBruteForce,
+                    ops: 200,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::ContextQuery,
+                    ops: 100,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::HybridFusion,
+                    ops: 100,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::McpToolCall,
+                    ops: 50,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::TemporalGraphQuery,
+                    ops: 200,
+                    read_ratio: None,
+                    workload_override: None,
+                },
             ],
         }
     }
@@ -68,12 +128,42 @@ impl Scenario {
                 group_commit: true,
             },
             operations: vec![
-                ScenarioOp { operation: Operation::GrpcKvPut, ops: 10_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::GrpcKvGet, ops: 10_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::GrpcVectorInsert, ops: 10_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::GrpcHnswSearch, ops: 1_000, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::ContextQuery, ops: 300, read_ratio: None, workload_override: None },
-                ScenarioOp { operation: Operation::McpToolCall, ops: 100, read_ratio: None, workload_override: None },
+                ScenarioOp {
+                    operation: Operation::GrpcKvPut,
+                    ops: 10_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::GrpcKvGet,
+                    ops: 10_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::GrpcVectorInsert,
+                    ops: 10_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::GrpcHnswSearch,
+                    ops: 1_000,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::ContextQuery,
+                    ops: 300,
+                    read_ratio: None,
+                    workload_override: None,
+                },
+                ScenarioOp {
+                    operation: Operation::McpToolCall,
+                    ops: 100,
+                    read_ratio: None,
+                    workload_override: None,
+                },
             ],
         }
     }
@@ -108,14 +198,12 @@ impl Scenario {
         s.name = "Distributed Concurrent Search".into();
         s.description = "Parallel gRPC streams (c=8, c=32)".into();
         s.environment.concurrent_clients = 8;
-        s.operations = vec![
-            ScenarioOp {
-                operation: Operation::GrpcHnswSearch,
-                ops: 1_000,
-                read_ratio: None,
-                workload_override: Some("grpc_hnsw_search_concurrent_8".into()),
-            },
-        ];
+        s.operations = vec![ScenarioOp {
+            operation: Operation::GrpcHnswSearch,
+            ops: 1_000,
+            read_ratio: None,
+            workload_override: Some("grpc_hnsw_search_concurrent_8".into()),
+        }];
         s
     }
 
@@ -132,9 +220,12 @@ impl Scenario {
                 concurrent_clients: 1,
                 ..SimEnvironment::default()
             },
-            operations: vec![
-                ScenarioOp { operation: Operation::ContextQuery, ops: 300, read_ratio: None, workload_override: None },
-            ],
+            operations: vec![ScenarioOp {
+                operation: Operation::ContextQuery,
+                ops: 300,
+                read_ratio: None,
+                workload_override: None,
+            }],
         }
     }
 
@@ -145,14 +236,12 @@ impl Scenario {
             topology: Topology::Standalone,
             description: "SLO mixed workload target".into(),
             environment: SimEnvironment::default(),
-            operations: vec![
-                ScenarioOp {
-                    operation: Operation::PointRead,
-                    ops: 10_000,
-                    read_ratio: Some(0.8),
-                    workload_override: Some("mixed_80r_20w".into()),
-                },
-            ],
+            operations: vec![ScenarioOp {
+                operation: Operation::PointRead,
+                ops: 10_000,
+                read_ratio: Some(0.8),
+                workload_override: Some("mixed_80r_20w".into()),
+            }],
         }
     }
 

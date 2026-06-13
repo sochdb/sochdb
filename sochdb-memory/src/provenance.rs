@@ -43,8 +43,7 @@ impl TrustScore {
         let recency = (-age_secs / cfg.half_life_secs).exp() as f32;
         let source_factor = (source_count as f32).ln_1p().min(3.0) / 3.0;
         let contradiction_penalty = (contradiction_count as f32 * 0.25).min(1.0);
-        let value = (cfg.source_weight * source_factor
-            + cfg.recency_weight * recency
+        let value = (cfg.source_weight * source_factor + cfg.recency_weight * recency
             - cfg.contradiction_weight * contradiction_penalty)
             .clamp(0.0, 1.0);
         Self {

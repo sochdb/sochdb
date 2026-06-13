@@ -2,7 +2,7 @@
 
 use crate::release::gate::{GateKind, GatePriority, ReleaseGate};
 use crate::scenario::Scenario;
-use crate::{ExpectedStore, Grade, SimulationEngine, Scorer};
+use crate::{ExpectedStore, Grade, Scorer, SimulationEngine};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -166,11 +166,21 @@ impl ReleaseValidator {
             .filter(|p| !self.workspace_root.join(p).exists())
             .collect();
         if missing.is_empty() {
-            (GateStatus::Pass, format!("All {} files present", gate.paths.len()))
+            (
+                GateStatus::Pass,
+                format!("All {} files present", gate.paths.len()),
+            )
         } else {
             (
                 GateStatus::Fail,
-                format!("Missing: {}", missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
+                format!(
+                    "Missing: {}",
+                    missing
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             )
         }
     }
@@ -233,7 +243,10 @@ impl ReleaseValidator {
         }
 
         if hits.is_empty() {
-            (GateStatus::Pass, "No hardcoded secrets found in source crates".into())
+            (
+                GateStatus::Pass,
+                "No hardcoded secrets found in source crates".into(),
+            )
         } else {
             (
                 GateStatus::Fail,
@@ -247,10 +260,7 @@ impl ReleaseValidator {
         let scenario = match Scenario::by_id(scenario_id) {
             Some(s) => s,
             None => {
-                return (
-                    GateStatus::Fail,
-                    format!("Unknown scenario: {scenario_id}"),
-                );
+                return (GateStatus::Fail, format!("Unknown scenario: {scenario_id}"));
             }
         };
 
@@ -282,7 +292,10 @@ impl ReleaseValidator {
                     (GateStatus::Pass, truncate_output(&output.stdout, 200))
                 } else {
                     let stderr = truncate_output(&output.stderr, 300);
-                    (GateStatus::Fail, format!("Exit {}: {stderr}", output.status))
+                    (
+                        GateStatus::Fail,
+                        format!("Exit {}: {stderr}", output.status),
+                    )
                 }
             }
             Err(e) => (GateStatus::Fail, format!("Command failed: {e}")),
@@ -301,7 +314,8 @@ impl ReleaseValidator {
                 if stderr.contains("loom") || stderr.contains("cfg(loom)") {
                     (
                         GateStatus::Skip,
-                        "Loom not available in this build — run with RUSTFLAGS=\"--cfg loom\"".into(),
+                        "Loom not available in this build — run with RUSTFLAGS=\"--cfg loom\""
+                            .into(),
                     )
                 } else {
                     (GateStatus::Fail, format!("Loom failed: {stderr}"))
@@ -312,11 +326,26 @@ impl ReleaseValidator {
     }
 
     fn build_scorecard(results: Vec<GateResult>, validate_live: bool) -> ReleaseScorecard {
-        let passed = results.iter().filter(|r| r.status == GateStatus::Pass).count();
-        let warned = results.iter().filter(|r| r.status == GateStatus::Warn).count();
-        let failed = results.iter().filter(|r| r.status == GateStatus::Fail).count();
-        let skipped = results.iter().filter(|r| r.status == GateStatus::Skip).count();
-        let manual = results.iter().filter(|r| r.status == GateStatus::Manual).count();
+        let passed = results
+            .iter()
+            .filter(|r| r.status == GateStatus::Pass)
+            .count();
+        let warned = results
+            .iter()
+            .filter(|r| r.status == GateStatus::Warn)
+            .count();
+        let failed = results
+            .iter()
+            .filter(|r| r.status == GateStatus::Fail)
+            .count();
+        let skipped = results
+            .iter()
+            .filter(|r| r.status == GateStatus::Skip)
+            .count();
+        let manual = results
+            .iter()
+            .filter(|r| r.status == GateStatus::Manual)
+            .count();
         let blocker_failures = results
             .iter()
             .filter(|r| r.status == GateStatus::Fail && r.priority == GatePriority::Blocker)

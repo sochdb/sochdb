@@ -104,11 +104,7 @@ impl LazyNamespaceTable {
     }
 
     pub fn resident_count(&self) -> usize {
-        self.handles
-            .read()
-            .values()
-            .filter(|h| h.hydrated)
-            .count()
+        self.handles.read().values().filter(|h| h.hydrated).count()
     }
 
     pub fn eviction_count(&self) -> u64 {

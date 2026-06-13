@@ -1,8 +1,6 @@
 //! Shared bridge from gRPC ContextService to sochdb-memory + ContextCompiler.
 
-use sochdb_memory::{
-    EpisodeWrite, MemoryQuery, MemoryStore, QueryLanes, WriteResult,
-};
+use sochdb_memory::{EpisodeWrite, MemoryQuery, MemoryStore, QueryLanes, WriteResult};
 use sochdb_query::{
     CompiledContext, ContextCandidate, ContextCompiler, ContextSpec, ContextTemplate,
     count_tokens_exact,
@@ -76,11 +74,7 @@ impl MemoryBackend {
         };
         let hits = self.store.query(&mq);
 
-        let bm25: Vec<(u64, f32)> = hits
-            .hits
-            .iter()
-            .map(|h| (h.doc_id, h.score))
-            .collect();
+        let bm25: Vec<(u64, f32)> = hits.hits.iter().map(|h| (h.doc_id, h.score)).collect();
 
         let mut candidates = HashMap::new();
         let now = SystemTime::now()
@@ -89,7 +83,9 @@ impl MemoryBackend {
             .unwrap_or(0.0);
 
         for hit in &hits.hits {
-            if let Ok(ep) = self.store.get_episode(namespace, sochdb_memory::EpisodeId(hit.doc_id))
+            if let Ok(ep) = self
+                .store
+                .get_episode(namespace, sochdb_memory::EpisodeId(hit.doc_id))
             {
                 candidates.insert(
                     hit.doc_id,

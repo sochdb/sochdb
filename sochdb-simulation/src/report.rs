@@ -11,7 +11,10 @@ pub fn print_scenario_result(result: &ScenarioResult) {
         result.scenario_name.bold(),
         result.topology.cyan()
     );
-    println!("  Simulated {} total operations", result.total_simulated_ops);
+    println!(
+        "  Simulated {} total operations",
+        result.total_simulated_ops
+    );
 
     let mut table = Table::new();
     table.set_header(vec![
@@ -38,7 +41,11 @@ pub fn print_scenario_result(result: &ScenarioResult) {
 }
 
 pub fn print_component_breakdown(op: &OpResult) {
-    println!("\n{} {}", "Component breakdown:".bold(), op.workload.underline());
+    println!(
+        "\n{} {}",
+        "Component breakdown:".bold(),
+        op.workload.underline()
+    );
     let mut table = Table::new();
     table.set_header(vec!["Component", "Latency (μs)", "% of Total"]);
 
@@ -54,8 +61,9 @@ pub fn print_component_breakdown(op: &OpResult) {
 }
 
 pub fn print_topology_comparison(standalone: &OpResult, distributed: &OpResult) {
-    let overhead_pct =
-        (distributed.mean_latency_us - standalone.mean_latency_us) / standalone.mean_latency_us * 100.0;
+    let overhead_pct = (distributed.mean_latency_us - standalone.mean_latency_us)
+        / standalone.mean_latency_us
+        * 100.0;
 
     println!(
         "\n{} {} — distributed adds {:.1}% latency overhead",

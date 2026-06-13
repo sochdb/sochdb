@@ -58,7 +58,11 @@ impl Scorer {
 
             if op.workload == "context_query" {
                 if let Some(qs) = op.quality_score {
-                    for metric in ["retrieval_recall_at_5", "retrieval_mrr", "retrieval_ndcg_at_5"] {
+                    for metric in [
+                        "retrieval_recall_at_5",
+                        "retrieval_mrr",
+                        "retrieval_ndcg_at_5",
+                    ] {
                         if let Some(t) = self.store.target_by_workload(metric) {
                             scored.push(self.score_quality(metric, qs, t));
                             op_scored = true;
@@ -154,9 +158,21 @@ impl Scorer {
         results
     }
 
-    fn score_quality(&self, workload: &str, simulated: f64, target: &ExpectedTarget) -> ScoredResult {
+    fn score_quality(
+        &self,
+        workload: &str,
+        simulated: f64,
+        target: &ExpectedTarget,
+    ) -> ScoredResult {
         let expected = target.score.unwrap_or(0.0);
-        score_metric(workload, "quality", simulated, expected, target.tolerance_pct, TargetUnit::Ratio)
+        score_metric(
+            workload,
+            "quality",
+            simulated,
+            expected,
+            target.tolerance_pct,
+            TargetUnit::Ratio,
+        )
     }
 
     pub fn print_scorecard(&self, card: &Scorecard) {
@@ -178,7 +194,14 @@ impl Scorer {
         );
 
         let mut table = Table::new();
-        table.set_header(vec!["Workload", "Grade", "Metric", "Simulated", "Expected", "Δ%"]);
+        table.set_header(vec![
+            "Workload",
+            "Grade",
+            "Metric",
+            "Simulated",
+            "Expected",
+            "Δ%",
+        ]);
 
         for r in &card.results {
             let grade_cell = match r.grade {
@@ -226,7 +249,10 @@ fn score_metric(
     };
 
     let grade = match unit {
-        TargetUnit::Throughput | TargetUnit::ThroughputFloor | TargetUnit::Ratio | TargetUnit::RatioFloor => {
+        TargetUnit::Throughput
+        | TargetUnit::ThroughputFloor
+        | TargetUnit::Ratio
+        | TargetUnit::RatioFloor => {
             if simulated >= expected * (1.0 - tolerance_pct / 100.0) {
                 if simulated >= expected {
                     Grade::Pass

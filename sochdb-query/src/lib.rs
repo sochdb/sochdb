@@ -175,8 +175,8 @@ pub use memory_compaction::{
 
 // Task 6: Exact token counting
 pub use exact_token_counter::{
-    count_tokens_exact, count_tokens_heuristic, ExactBudgetEnforcer, ExactTokenCounter,
-    HeuristicTokenCounter, TokenCounter,
+    ExactBudgetEnforcer, ExactTokenCounter, HeuristicTokenCounter, TokenCounter,
+    count_tokens_exact, count_tokens_heuristic,
 };
 
 // Task 7: Semantic triggers

@@ -60,8 +60,14 @@ pub fn print_release_scorecard(card: &ReleaseScorecard) {
             continue;
         }
 
-        let cat_pass = cat_results.iter().filter(|r| r.status == GateStatus::Pass).count();
-        let cat_fail = cat_results.iter().filter(|r| r.status == GateStatus::Fail).count();
+        let cat_pass = cat_results
+            .iter()
+            .filter(|r| r.status == GateStatus::Pass)
+            .count();
+        let cat_fail = cat_results
+            .iter()
+            .filter(|r| r.status == GateStatus::Fail)
+            .count();
 
         println!(
             "\n{} {} ({}/{} pass)",
@@ -102,10 +108,7 @@ pub fn print_release_scorecard(card: &ReleaseScorecard) {
 
 pub fn print_release_checklist(gates: &[crate::release::gate::ReleaseGate]) {
     print_release_banner();
-    println!(
-        "\n{}\n",
-        "Full release checklist (10 areas)".bold()
-    );
+    println!("\n{}\n", "Full release checklist (10 areas)".bold());
 
     for cat in GateCategory::all() {
         let cat_gates: Vec<_> = gates.iter().filter(|g| g.category == cat.name()).collect();

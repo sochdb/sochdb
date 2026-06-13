@@ -99,11 +99,7 @@ pub fn run_retrieval_suite(
             exact_context_tokens: exact_tokens,
             retrieval_latency_us: result.query_latency_us,
             ingestion_lag_us: ingestion_lag,
-            lanes_used: result
-                .lanes_used
-                .iter()
-                .map(|l| format!("{l:?}"))
-                .collect(),
+            lanes_used: result.lanes_used.iter().map(|l| format!("{l:?}")).collect(),
         });
     }
 
@@ -137,9 +133,15 @@ pub fn run_retrieval_suite(
         .copied()
         .unwrap_or(0);
 
-    let mut token_counts: Vec<usize> = per_question.iter().map(|r| r.exact_context_tokens).collect();
+    let mut token_counts: Vec<usize> = per_question
+        .iter()
+        .map(|r| r.exact_context_tokens)
+        .collect();
     token_counts.sort_unstable();
-    let median_tokens = token_counts.get(token_counts.len() / 2).copied().unwrap_or(0);
+    let median_tokens = token_counts
+        .get(token_counts.len() / 2)
+        .copied()
+        .unwrap_or(0);
 
     let mut lags: Vec<u64> = per_question.iter().map(|r| r.ingestion_lag_us).collect();
     lags.sort_unstable();

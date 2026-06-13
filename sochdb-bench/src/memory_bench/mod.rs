@@ -5,4 +5,4 @@ pub mod locomo;
 pub mod longmemeval;
 pub mod scoring;
 
-pub use scoring::{MemoryBenchReport, QuestionResult, run_retrieval_suite};
+pub use scoring::{run_retrieval_suite, MemoryBenchReport, QuestionResult};

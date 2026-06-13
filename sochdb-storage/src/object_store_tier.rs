@@ -105,9 +105,8 @@ impl ObjectStoreTier {
             .config
             .local_cache_dir
             .join(format!("{segment_id}.seg"));
-        let payload = serde_json::to_string(&self.delta_docs).map_err(|e| {
-            ObjectStoreError::Manifest(e.to_string())
-        })?;
+        let payload = serde_json::to_string(&self.delta_docs)
+            .map_err(|e| ObjectStoreError::Manifest(e.to_string()))?;
         std::fs::write(&cache_path, payload)?;
 
         self.sealed_segments.push(desc.clone());
@@ -120,8 +119,8 @@ impl ObjectStoreTier {
             return Ok(());
         }
         let data = std::fs::read_to_string(manifest_path)?;
-        let segments: Vec<SegmentDescriptor> = serde_json::from_str(&data)
-            .map_err(|e| ObjectStoreError::Manifest(e.to_string()))?;
+        let segments: Vec<SegmentDescriptor> =
+            serde_json::from_str(&data).map_err(|e| ObjectStoreError::Manifest(e.to_string()))?;
         self.sealed_segments = segments;
         Ok(())
     }

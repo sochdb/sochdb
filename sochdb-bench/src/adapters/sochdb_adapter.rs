@@ -70,7 +70,7 @@ impl SochDbAdapter {
         let path = dir.join("sochdb_data");
         std::fs::create_dir_all(&path)?;
         let mut config = DatabaseConfig::throughput_optimized();
-        config.group_commit = false;      // direct commit for single-threaded bench
+        config.group_commit = false; // direct commit for single-threaded bench
         config.sync_mode = SyncMode::Off; // no fsync per commit (matches SQLite WAL+NORMAL)
         let db = Database::open_with_config(&path, config)
             .map_err(|e| BenchError::Database(format!("SochDB open: {}", e)))?;
@@ -297,7 +297,10 @@ impl BenchDb for SochDbAdapter {
             values.insert("id".to_string(), SochValue::UInt(row.id));
             values.insert("timestamp".to_string(), SochValue::Int(row.timestamp));
             values.insert("amount".to_string(), SochValue::Float(row.amount));
-            values.insert("category".to_string(), SochValue::Text(row.category.clone()));
+            values.insert(
+                "category".to_string(),
+                SochValue::Text(row.category.clone()),
+            );
             values.insert(
                 "description".to_string(),
                 SochValue::Text(row.description.clone()),
@@ -317,7 +320,10 @@ impl BenchDb for SochDbAdapter {
                     values.insert("id".to_string(), SochValue::UInt(row.id));
                     values.insert("timestamp".to_string(), SochValue::Int(row.timestamp));
                     values.insert("amount".to_string(), SochValue::Float(row.amount));
-                    values.insert("category".to_string(), SochValue::Text(row.category.clone()));
+                    values.insert(
+                        "category".to_string(),
+                        SochValue::Text(row.category.clone()),
+                    );
                     values.insert(
                         "description".to_string(),
                         SochValue::Text(row.description.clone()),
@@ -404,10 +410,7 @@ impl BenchDb for SochDbAdapter {
             .iter()
             .map(|(id, _, _)| format!("vec:{:08x}", id).into_bytes())
             .collect();
-        let values: Vec<Vec<u8>> = vectors
-            .iter()
-            .map(|(_, v, _)| vector_to_bytes(v))
-            .collect();
+        let values: Vec<Vec<u8>> = vectors.iter().map(|(_, v, _)| vector_to_bytes(v)).collect();
         let pairs: Vec<(&[u8], &[u8])> = keys
             .iter()
             .zip(values.iter())

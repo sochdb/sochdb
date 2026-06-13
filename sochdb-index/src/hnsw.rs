@@ -10126,7 +10126,6 @@ impl HnswIndex {
         updated
     }
 
-
     /// Prune connections — intentionally a no-op.
     ///
     /// During batch construction, over-degree hubs are the ONLY bridge
@@ -10388,7 +10387,10 @@ mod tests {
         let index = HnswIndex::new(16, config);
 
         let n = 600usize;
-        assert!(n <= 50_000, "must stay under EXACT_MAX_N to hit the exact path");
+        assert!(
+            n <= 50_000,
+            "must stay under EXACT_MAX_N to hit the exact path"
+        );
         for i in 0..n {
             let mut v = vec![0.0f32; 16];
             v[i % 16] = (i as f32) + 1.0;
@@ -10413,7 +10415,10 @@ mod tests {
         let before = probe(&index);
 
         let updated = index.rebuild_layer0_exact();
-        assert_eq!(updated, n, "exact rebuild should update every node at small N");
+        assert_eq!(
+            updated, n,
+            "exact rebuild should update every node at small N"
+        );
 
         for i in 0..n {
             let node = index.nodes.get(&(i as u128)).unwrap();
@@ -10431,7 +10436,12 @@ mod tests {
             before,
             after
         );
-        assert!(after >= n * 9 / 10, "recall too low after rebuild: {}/{}", after, n);
+        assert!(
+            after >= n * 9 / 10,
+            "recall too low after rebuild: {}/{}",
+            after,
+            n
+        );
     }
 
     #[test]
@@ -10744,12 +10754,19 @@ mod tests {
         }
 
         // All vectors present and the index is still searchable.
-        assert!(index.len() >= 200 + n_threads * per, "missing inserts: {}", index.len());
+        assert!(
+            index.len() >= 200 + n_threads * per,
+            "missing inserts: {}",
+            index.len()
+        );
         let mut q = vec![0.0f32; 16];
         q[1100 % 16] = 1100.0 * 0.5 + 1.0;
         q[(1100 * 3) % 16] += 1100.0 * 0.25;
         let res = index.search(&q, 5).unwrap();
-        assert!(!res.is_empty(), "search returned nothing after concurrent inserts");
+        assert!(
+            !res.is_empty(),
+            "search returned nothing after concurrent inserts"
+        );
     }
 
     /// Regression for the `set_ef_search` data race (UB). The runtime ef

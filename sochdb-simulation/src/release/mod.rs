@@ -39,9 +39,7 @@ pub fn filter_gates<'a>(
     gates
         .iter()
         .filter(|g| {
-            cat_filter
-                .map(|cf| g.category == cf.name())
-                .unwrap_or(true)
+            cat_filter.map(|cf| g.category == cf.name()).unwrap_or(true)
                 && priority.map(|p| g.priority == p).unwrap_or(true)
         })
         .collect()

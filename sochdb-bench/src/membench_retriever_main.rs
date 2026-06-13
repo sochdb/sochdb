@@ -61,7 +61,9 @@ fn main() -> Result<(), String> {
         std::fs::read_to_string(path).map_err(|e| e.to_string())?
     } else {
         let mut buf = String::new();
-        io::stdin().read_to_string(&mut buf).map_err(|e| e.to_string())?;
+        io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| e.to_string())?;
         buf
     };
 
@@ -124,6 +126,9 @@ fn main() -> Result<(), String> {
         results,
     };
 
-    println!("{}", serde_json::to_string(&out).map_err(|e| e.to_string())?);
+    println!(
+        "{}",
+        serde_json::to_string(&out).map_err(|e| e.to_string())?
+    );
     Ok(())
 }

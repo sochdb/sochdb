@@ -306,6 +306,8 @@ pub use epoch_mvcc::{
     CommitResult, EpochManager, EpochMvccStore, EpochSnapshot, EpochTransaction, EpochVersionChain,
     GcStats, StoreStats, VersionEntry,
 };
+pub use lazy_namespace::{LazyNamespaceConfig, LazyNamespaceTable};
+pub use object_store_tier::{ObjectStoreTier, ObjectStoreTierConfig, SegmentDescriptor};
 pub use optimized_scan::{
     EntrySource, FileRange, LevelFiles, RangeScanner, ScanConfig, ScanStats, TournamentTree,
     VersionedEntry,
@@ -318,8 +320,6 @@ pub use sstable::{
     SSTableBuilder, SSTableBuilderOptions, SSTableBuilderResult, SSTableFormat, Section,
     SectionType, TableMetadata, XorFilterPolicy,
 };
-pub use lazy_namespace::{LazyNamespaceConfig, LazyNamespaceTable};
-pub use object_store_tier::{ObjectStoreTier, ObjectStoreTierConfig, SegmentDescriptor};
 pub use tiered_memtable::{HotEntry, SortedBatch, TieredMemTable};
 pub use vectorized_scan::{
     ColumnVector,

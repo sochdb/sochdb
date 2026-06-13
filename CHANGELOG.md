@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.4] - 2026-06-13
+
+Production-hardening release. (Crate version line; the `0.5.x` entries below are
+the earlier project-version line.)
+
+### Fixed
+
+- **boot_fsm reentrant `RwLock` self-deadlock** (`sochdb-kernel`) — `transition_to`
+  held `phase.write()` then called `remaining_budget()`, which re-acquired
+  `phase.read()`; parking_lot locks are not reentrant, so this deadlocked on the
+  first booting transition (could hang production boot). Now uses a non-locking
+  `remaining_budget_for(phase)`.
+- **stratified_skiplist lock-free lost-update** (`sochdb-storage`) — `find_position`
+  re-read `current.next` after its compare loop, so a concurrent insert could be
+  linked out of order and orphaned (counted in `len` but unreachable to `get`).
+  Now uses the successor the loop actually compared. Verified 140/140 hammer runs.
+- **HNSW default-drift** — the gRPC `create_index` and FFI `hnsw_new` hardcoded the
+  old cheap build params (m=16), bypassing `HnswConfig::default()`. They now inherit
+  the engine defaults (m=32 / m0=64 / ef_construction=256 / F32), reaching
+  **recall@10 = 0.972 on Cohere-1M (768-d, cosine)** out of the box. The Python,
+  Node, and Go SDKs were fixed to match (separate repos).
+- **`set_ef_search` data race (UB)** — replaced an unsynchronized `*mut HnswConfig`
+  write with an atomic; `search_fast`/`search_ultra`/`search_batch` now honor a
+  runtime ef override.
+- **crates.io publish order** — `sochdb-vector` and `sochdb-memory` were missing from
+  the publish sequence, so `sochdb-grpc` failed to publish; added in topo order.
+- Several stale/flaky unit tests corrected (product behavior unchanged).
+
+### Changed
+
+- **HNSW build-quality defaults raised** to m=32 / m0=64 / ef_construction=256 / F32
+  (was m=16 / m0=32 / ef_construction=200) for 95+ recall without tuning.
+- **CI** slimmed to fast single-platform Rust validation (fmt + build + test) on push;
+  cross-platform builds, crates.io publish, and deeper lint stay in the release flow.
+- Formatted the entire codebase with `cargo fmt`.
+
+---
+
 ## [0.5.0] - 2026-02-15
 
 ### Changed

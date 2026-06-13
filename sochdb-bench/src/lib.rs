@@ -83,7 +83,8 @@ pub trait BenchDb: Send {
     fn range_scan_ts(&mut self, start: i64, end: i64) -> BenchResult<usize>;
 
     // ── vector ops ──
-    fn insert_vector(&mut self, id: u64, vector: &[f32], metadata: Option<&str>) -> BenchResult<()>;
+    fn insert_vector(&mut self, id: u64, vector: &[f32], metadata: Option<&str>)
+        -> BenchResult<()>;
     fn insert_vector_batch(
         &mut self,
         vectors: &[(u64, Vec<f32>, Option<String>)],
@@ -261,7 +262,7 @@ pub struct WorkloadResult {
     pub workload: String,
     pub ops: u64,
     pub total_secs: f64,
-    pub throughput: f64,           // ops/sec
+    pub throughput: f64, // ops/sec
     pub p50_us: f64,
     pub p99_us: f64,
     pub p999_us: f64,
@@ -305,11 +306,7 @@ fn chrono_now() -> String {
 }
 
 impl WorkloadResult {
-    pub fn from_recorder(
-        db_name: &str,
-        workload: &str,
-        rec: &LatencyRecorder,
-    ) -> Self {
+    pub fn from_recorder(db_name: &str, workload: &str, rec: &LatencyRecorder) -> Self {
         Self {
             db_name: db_name.to_string(),
             workload: workload.to_string(),

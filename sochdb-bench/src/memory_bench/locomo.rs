@@ -34,7 +34,12 @@ fn session_keys(conv: &LocomoConversation) -> Vec<String> {
         .filter(|k| k.starts_with("session_") && !k.ends_with("_date_time"))
         .cloned()
         .collect();
-    keys.sort_by_key(|k| k.split('_').last().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0));
+    keys.sort_by_key(|k| {
+        k.split('_')
+            .last()
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0)
+    });
     keys
 }
 
@@ -93,7 +98,8 @@ pub fn load_questions(
                 .filter_map(|part| {
                     let part = part.trim();
                     let session_token = part.split(':').next()?.replace('D', "");
-                    if session_token.is_empty() || !session_token.chars().all(|c| c.is_ascii_digit())
+                    if session_token.is_empty()
+                        || !session_token.chars().all(|c| c.is_ascii_digit())
                     {
                         return None;
                     }

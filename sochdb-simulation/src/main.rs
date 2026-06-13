@@ -4,8 +4,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 use sochdb_simulation::{
     release::{self, gate::GatePriority},
-    report, scenario::Scenario, topology::Topology, ExpectedStore, ReleaseValidator,
-    SimulationEngine, Scorer,
+    report,
+    scenario::Scenario,
+    topology::Topology,
+    ExpectedStore, ReleaseValidator, Scorer, SimulationEngine,
 };
 use std::path::{Path, PathBuf};
 
@@ -122,7 +124,15 @@ fn main() {
             checklist,
             export,
             workspace,
-        } => run_release(category.as_deref(), priority, validate, full, checklist, export.as_deref(), workspace.as_deref()),
+        } => run_release(
+            category.as_deref(),
+            priority,
+            validate,
+            full,
+            checklist,
+            export.as_deref(),
+            workspace.as_deref(),
+        ),
     }
 }
 
@@ -161,7 +171,11 @@ fn run_release(
         "▸".cyan(),
         filtered.len(),
         if validate {
-            if full { " (live + full)" } else { " (live)" }
+            if full {
+                " (live + full)"
+            } else {
+                " (live)"
+            }
         } else {
             " (fast: static blockers + perf simulation)"
         }
@@ -246,7 +260,9 @@ fn run_simulation(
         println!("\n{} Exported to {}", "✓".green(), path.display());
     }
 
-    let any_fail = all_scorecards.iter().any(|c| c.overall_grade == sochdb_simulation::Grade::Fail);
+    let any_fail = all_scorecards
+        .iter()
+        .any(|c| c.overall_grade == sochdb_simulation::Grade::Fail);
     if any_fail {
         std::process::exit(1);
     }
@@ -256,8 +272,10 @@ fn run_topology_comparison(engine: &mut SimulationEngine) {
     use sochdb_simulation::{component::SimEnvironment, topology::Operation};
 
     let env = SimEnvironment::default();
-    let standalone = engine.simulate_operation(Topology::Standalone, Operation::PointRead, 10_000, &env);
-    let distributed = engine.simulate_operation(Topology::Distributed, Operation::GrpcKvGet, 10_000, &env);
+    let standalone =
+        engine.simulate_operation(Topology::Standalone, Operation::PointRead, 10_000, &env);
+    let distributed =
+        engine.simulate_operation(Topology::Distributed, Operation::GrpcKvGet, 10_000, &env);
     report::print_topology_comparison(&standalone, &distributed);
 }
 

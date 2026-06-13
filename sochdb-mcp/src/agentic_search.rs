@@ -44,11 +44,19 @@ impl AgenticCorpus {
         });
         let numeric_id = hash_id(&id);
         self.index.write().unwrap().insert(numeric_id, text);
-        self.docs.write().unwrap().insert(id.clone(), text.to_string());
+        self.docs
+            .write()
+            .unwrap()
+            .insert(id.clone(), text.to_string());
         id
     }
 
-    pub fn grep(&self, pattern: &str, scope: Option<&str>, limit: usize) -> Result<Vec<LineHit>, String> {
+    pub fn grep(
+        &self,
+        pattern: &str,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<LineHit>, String> {
         let re = Regex::new(pattern).map_err(|e| e.to_string())?;
         let docs = self.docs.read().unwrap();
         let index = self.index.read().unwrap();
@@ -95,7 +103,9 @@ impl AgenticCorpus {
 
     pub fn peek(&self, doc_id: &str, start: usize, end: usize) -> Result<String, String> {
         let docs = self.docs.read().unwrap();
-        let text = docs.get(doc_id).ok_or_else(|| format!("doc not found: {doc_id}"))?;
+        let text = docs
+            .get(doc_id)
+            .ok_or_else(|| format!("doc not found: {doc_id}"))?;
         let lines: Vec<&str> = text.lines().collect();
         let s = start.saturating_sub(1);
         let e = end.min(lines.len());
@@ -165,9 +175,5 @@ fn extract_literal(pattern: &str) -> Option<String> {
         .chars()
         .filter(|c| c.is_alphanumeric() || c.is_whitespace())
         .collect();
-    if run.len() >= 3 {
-        Some(run)
-    } else {
-        None
-    }
+    if run.len() >= 3 { Some(run) } else { None }
 }

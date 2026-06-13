@@ -393,7 +393,8 @@ fn groupby_q6(t: &GroupbyTable) -> (usize, usize) {
             vals[n / 2]
         };
         let mean: f64 = vals.iter().sum::<f64>() / n as f64;
-        let _var: f64 = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1).max(1) as f64;
+        let _var: f64 =
+            vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1).max(1) as f64;
     }
     (n_groups, 4)
 }
@@ -434,13 +435,15 @@ fn groupby_q9(t: &GroupbyTable) -> (usize, usize) {
     for i in 0..t.n {
         let x = t.v1[i] as f64;
         let y = t.v2[i] as f64;
-        let e = map.entry((&t.id2[i], t.id4[i])).or_insert((0.0, 0.0, 0.0, 0.0, 0.0, 0));
-        e.0 += x;      // sum_x
-        e.1 += y;      // sum_y
-        e.2 += x * y;  // sum_xy
-        e.3 += x * x;  // sum_x2
-        e.4 += y * y;  // sum_y2
-        e.5 += 1;      // count
+        let e = map
+            .entry((&t.id2[i], t.id4[i]))
+            .or_insert((0.0, 0.0, 0.0, 0.0, 0.0, 0));
+        e.0 += x; // sum_x
+        e.1 += y; // sum_y
+        e.2 += x * y; // sum_xy
+        e.3 += x * x; // sum_x2
+        e.4 += y * y; // sum_y2
+        e.5 += 1; // count
     }
     (map.len(), 3)
 }
@@ -552,10 +555,7 @@ fn run_groupby(csv_path: &Path) {
     let t0 = Instant::now();
     let table = GroupbyTable::load_csv(csv_path);
     let load_secs = t0.elapsed().as_secs_f64();
-    eprintln!(
-        "[SochDB] Loaded {} rows in {:.2}s",
-        table.n, load_secs
-    );
+    eprintln!("[SochDB] Loaded {} rows in {:.2}s", table.n, load_secs);
 
     type QueryFn = fn(&GroupbyTable) -> (usize, usize);
     let queries: Vec<(&str, QueryFn)> = vec![
@@ -598,34 +598,64 @@ fn run_join(x_path: &Path, small_path: &Path, medium_path: &Path, big_path: &Pat
     for run in 1..=2 {
         let t0 = Instant::now();
         let (rows, cols) = join_q1(&x, &small);
-        emit("small inner on int", run, t0.elapsed().as_secs_f64(), rows, cols);
+        emit(
+            "small inner on int",
+            run,
+            t0.elapsed().as_secs_f64(),
+            rows,
+            cols,
+        );
     }
 
     // q2: medium inner on int
     for run in 1..=2 {
         let t0 = Instant::now();
         let (rows, cols) = join_q2(&x, &medium);
-        emit("medium inner on int", run, t0.elapsed().as_secs_f64(), rows, cols);
+        emit(
+            "medium inner on int",
+            run,
+            t0.elapsed().as_secs_f64(),
+            rows,
+            cols,
+        );
     }
 
     // q3: medium outer on int
     for run in 1..=2 {
         let t0 = Instant::now();
         let (rows, cols) = join_q3(&x, &medium);
-        emit("medium outer on int", run, t0.elapsed().as_secs_f64(), rows, cols);
+        emit(
+            "medium outer on int",
+            run,
+            t0.elapsed().as_secs_f64(),
+            rows,
+            cols,
+        );
     }
 
     // q4: medium inner on factor
     for run in 1..=2 {
         let t0 = Instant::now();
         let (rows, cols) = join_q4(&x, &medium);
-        emit("medium inner on factor", run, t0.elapsed().as_secs_f64(), rows, cols);
+        emit(
+            "medium inner on factor",
+            run,
+            t0.elapsed().as_secs_f64(),
+            rows,
+            cols,
+        );
     }
 
     // q5: big inner on int
     for run in 1..=2 {
         let t0 = Instant::now();
         let (rows, cols) = join_q5(&x, &big);
-        emit("big inner on int", run, t0.elapsed().as_secs_f64(), rows, cols);
+        emit(
+            "big inner on int",
+            run,
+            t0.elapsed().as_secs_f64(),
+            rows,
+            cols,
+        );
     }
 }

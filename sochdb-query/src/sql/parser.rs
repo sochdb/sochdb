@@ -2258,7 +2258,10 @@ mod tests {
         }
         // A reasonably-nested expression still parses fine (no false positive).
         let ok = format!("SELECT {}1{} FROM t", "(".repeat(20), ")".repeat(20));
-        assert!(Parser::parse(&ok).is_ok(), "20-deep nesting must still parse");
+        assert!(
+            Parser::parse(&ok).is_ok(),
+            "20-deep nesting must still parse"
+        );
     }
 
     #[test]

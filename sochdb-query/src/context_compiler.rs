@@ -251,11 +251,7 @@ fn jaccard(a: &str, b: &str) -> f32 {
     }
     let inter = sa.intersection(&sb).count() as f32;
     let union = sa.union(&sb).count() as f32;
-    if union == 0.0 {
-        0.0
-    } else {
-        inter / union
-    }
+    if union == 0.0 { 0.0 } else { inter / union }
 }
 
 #[cfg(test)]

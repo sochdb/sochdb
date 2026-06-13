@@ -97,7 +97,10 @@ impl BenchDb for DuckDbAdapter {
         let mut rows = stmt
             .query(params![key])
             .map_err(|e| BenchError::Database(format!("get: {}", e)))?;
-        match rows.next().map_err(|e| BenchError::Database(format!("next: {}", e)))? {
+        match rows
+            .next()
+            .map_err(|e| BenchError::Database(format!("next: {}", e)))?
+        {
             Some(row) => {
                 let val: Vec<u8> = row
                     .get(0)

@@ -24,10 +24,7 @@ impl MemoryStore {
 
     /// Embed an episode and store its vector for semantic retrieval.
     pub fn enrich_episode(&self, job: &EnrichmentJob) -> Result<(), String> {
-        let mut embedding = self
-            .embedder
-            .embed(&job.text)
-            .map_err(|e| e.to_string())?;
+        let mut embedding = self.embedder.embed(&job.text).map_err(|e| e.to_string())?;
         self.embedder.normalize(&mut embedding);
 
         let mut namespaces = self.namespaces.write();

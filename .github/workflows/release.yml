@@ -263,35 +263,43 @@ jobs:
             cd ..
           }
           
-          # ── Publish in STRICT dependency order ──
-          # The graph is:
-          #   sochdb-core       → (no sochdb deps)
-          #   sochdb-kernel     → core
-          #   sochdb-index      → core
-          #   sochdb-storage    → core, index
-          #   sochdb-query      → core, storage, index
-          #   sochdb-client     → core, storage, index, query  (published as 'sochdb')
-          #   sochdb-grpc       → core, index, kernel
-          #   sochdb-mcp        → client(sochdb), core, query
-          
+          # ── Publish in STRICT topological order ──
+          # Every crate's INTERNAL (path) deps must already be on crates.io
+          # before it publishes, or cargo fails with "no matching package".
+          # Keep this graph in sync whenever a crate gains a new sochdb-* dep —
+          # sochdb-vector and sochdb-memory were missing here, which is why
+          # sochdb-grpc (which depends on both) failed to publish:
+          #   sochdb-core    → (none)
+          #   sochdb-kernel  → core
+          #   sochdb-index   → core
+          #   sochdb-storage → core, index
+          #   sochdb-query   → core, storage, index
+          #   sochdb-vector  → core, storage, index
+          #   sochdb-memory  → core, storage, query, vector, index
+          #   sochdb-client  → core, storage, index, query                  (published as 'sochdb')
+          #   sochdb-grpc    → core, kernel, index, storage, query, vector, memory
+          #   sochdb-mcp     → core, query
+
           # Layer 0: no internal deps
           publish_crate sochdb-core
-          
+
           # Layer 1: depends only on core
           publish_crate sochdb-kernel
           publish_crate sochdb-index
-          
+
           # Layer 2: depends on core + index
           publish_crate sochdb-storage
-          
+
           # Layer 3: depends on core + storage + index
           publish_crate sochdb-query
-          
-          # Layer 4: depends on everything above
-          publish_crate sochdb-client sochdb  # Published as 'sochdb' on crates.io
-          publish_crate sochdb-grpc
-          
-          # Layer 5: depends on client
+          publish_crate sochdb-vector
+
+          # Layer 4: depends on core + storage + query + vector + index
+          publish_crate sochdb-memory
+
+          # Layer 5: top-level crates — need every layer above
+          publish_crate sochdb-client sochdb  # published as 'sochdb' on crates.io
+          publish_crate sochdb-grpc           # needs vector + memory (now published above)
           publish_crate sochdb-mcp
 
   # ===========================================================================

@@ -45,8 +45,7 @@ fn main() -> Result<(), String> {
                 &args.namespace,
                 &args.data,
             )?;
-            let questions =
-                sochdb_bench::memory_bench::longmemeval::load_questions(&args.data)?;
+            let questions = sochdb_bench::memory_bench::longmemeval::load_questions(&args.data)?;
             let lags = std::collections::HashMap::new();
             sochdb_bench::memory_bench::scoring::run_retrieval_suite(
                 &store,

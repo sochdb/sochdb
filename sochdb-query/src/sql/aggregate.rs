@@ -111,12 +111,9 @@ pub fn is_aggregate_query(select: &SelectStmt) -> bool {
 fn contains_aggregate(expr: &Expr) -> bool {
     match expr {
         Expr::Function(f) => {
-            AggFn::from_name(f.name.name()).is_some()
-                || f.args.iter().any(contains_aggregate)
+            AggFn::from_name(f.name.name()).is_some() || f.args.iter().any(contains_aggregate)
         }
-        Expr::BinaryOp { left, right, .. } => {
-            contains_aggregate(left) || contains_aggregate(right)
-        }
+        Expr::BinaryOp { left, right, .. } => contains_aggregate(left) || contains_aggregate(right),
         Expr::UnaryOp { expr, .. } => contains_aggregate(expr),
         Expr::IsNull { expr, .. } => contains_aggregate(expr),
         Expr::Case {
@@ -165,8 +162,7 @@ fn collect_from_expr(expr: &Expr, specs: &mut Vec<AggSpec>, seen: &mut HashSet<S
         Expr::Function(f) => {
             if let Some(func) = AggFn::from_name(f.name.name()) {
                 let arg = f.args.first().cloned();
-                let is_star =
-                    matches!(arg.as_ref(), Some(Expr::Column(c)) if c.column == "*");
+                let is_star = matches!(arg.as_ref(), Some(Expr::Column(c)) if c.column == "*");
                 let arg = if is_star { None } else { arg };
                 let key = render_agg_key(func, arg.as_ref(), f.distinct);
                 if seen.insert(key.clone()) {
@@ -251,8 +247,7 @@ pub fn render_expr_name(expr: &Expr) -> String {
         Expr::Function(f) => {
             if let Some(func) = AggFn::from_name(f.name.name()) {
                 let arg = f.args.first();
-                let is_star =
-                    matches!(arg, Some(Expr::Column(c)) if c.column == "*");
+                let is_star = matches!(arg, Some(Expr::Column(c)) if c.column == "*");
                 render_agg_key(func, if is_star { None } else { arg }, f.distinct)
             } else {
                 let args: Vec<String> = f.args.iter().map(render_expr_name).collect();
@@ -303,11 +298,7 @@ fn binary_op_symbol(op: &BinaryOperator) -> &'static str {
 /// `agg_values`, when provided, resolves aggregate function calls by their
 /// canonical key — used for HAVING / ORDER BY / projection over finalized
 /// group rows.
-fn eval_scalar(
-    expr: &Expr,
-    row: &HashMap<String, SochValue>,
-    params: &[SochValue],
-) -> SochValue {
+fn eval_scalar(expr: &Expr, row: &HashMap<String, SochValue>, params: &[SochValue]) -> SochValue {
     match expr {
         Expr::Column(c) => {
             if let Some(t) = &c.table {
@@ -783,21 +774,16 @@ impl Acc {
                 }
                 let mid = vals.len() / 2;
                 if vals.len() % 2 == 1 {
-                    let (_, m, _) =
-                        vals.select_nth_unstable_by(mid, |a, b| {
-                            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                        });
+                    let (_, m, _) = vals.select_nth_unstable_by(mid, |a, b| {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    });
                     SochValue::Float(*m)
                 } else {
                     // Even count: average the two middle values.
-                    let (lo, hi_first, _) =
-                        vals.select_nth_unstable_by(mid, |a, b| {
-                            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                    let lo_max = lo
-                        .iter()
-                        .copied()
-                        .fold(f64::NEG_INFINITY, f64::max);
+                    let (lo, hi_first, _) = vals.select_nth_unstable_by(mid, |a, b| {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let lo_max = lo.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                     SochValue::Float((lo_max + *hi_first) / 2.0)
                 }
             }
@@ -937,45 +923,44 @@ fn accumulate_fast<'a>(
         })
         .collect::<Option<Vec<_>>>()?;
 
-    let accumulate_chunk = |chunk: &'a [HashMap<String, SochValue>]| -> Vec<(GroupKey<'a>, GroupState)> {
-        let mut order: Vec<(GroupKey<'a>, GroupState)> = Vec::new();
-        let mut index: HashMap<GroupKey<'a>, usize> = HashMap::new();
-        for row in chunk {
-            let key = make_group_key(row, &group_cols);
-            let idx = match index.get(&key) {
-                Some(&i) => i,
-                None => {
-                    let state = GroupState {
-                        key_values: group_cols
-                            .iter()
-                            .map(|c| col_get(row, c).clone())
-                            .collect(),
-                        first_row: row.clone(),
-                        accs: specs.iter().map(Acc::new).collect(),
-                    };
-                    order.push((key.clone(), state));
-                    index.insert(key, order.len() - 1);
-                    order.len() - 1
-                }
-            };
-            let accs = &mut order[idx].1.accs;
-            for (acc, arg) in accs.iter_mut().zip(arg_cols.iter()) {
-                match arg {
-                    None => acc.update(None),
-                    Some(col) => acc.update(Some(col_get(row, col))),
+    let accumulate_chunk =
+        |chunk: &'a [HashMap<String, SochValue>]| -> Vec<(GroupKey<'a>, GroupState)> {
+            let mut order: Vec<(GroupKey<'a>, GroupState)> = Vec::new();
+            let mut index: HashMap<GroupKey<'a>, usize> = HashMap::new();
+            for row in chunk {
+                let key = make_group_key(row, &group_cols);
+                let idx = match index.get(&key) {
+                    Some(&i) => i,
+                    None => {
+                        let state = GroupState {
+                            key_values: group_cols
+                                .iter()
+                                .map(|c| col_get(row, c).clone())
+                                .collect(),
+                            first_row: row.clone(),
+                            accs: specs.iter().map(Acc::new).collect(),
+                        };
+                        order.push((key.clone(), state));
+                        index.insert(key, order.len() - 1);
+                        order.len() - 1
+                    }
+                };
+                let accs = &mut order[idx].1.accs;
+                for (acc, arg) in accs.iter_mut().zip(arg_cols.iter()) {
+                    match arg {
+                        None => acc.update(None),
+                        Some(col) => acc.update(Some(col_get(row, col))),
+                    }
                 }
             }
-        }
-        order
-    };
+            order
+        };
 
     let merged: Vec<(GroupKey<'a>, GroupState)> = if rows.len() >= PARALLEL_THRESHOLD {
         let n_threads = rayon::current_num_threads().max(1);
         let chunk_size = (rows.len() / (n_threads * 4)).max(16_384);
-        let partials: Vec<Vec<(GroupKey<'a>, GroupState)>> = rows
-            .par_chunks(chunk_size)
-            .map(accumulate_chunk)
-            .collect();
+        let partials: Vec<Vec<(GroupKey<'a>, GroupState)>> =
+            rows.par_chunks(chunk_size).map(accumulate_chunk).collect();
         // Merge chunk partials in chunk order.
         let mut order: Vec<(GroupKey<'a>, GroupState)> = Vec::new();
         let mut index: HashMap<GroupKey<'a>, usize> = HashMap::new();
@@ -1092,9 +1077,7 @@ pub fn execute_aggregate(
 
     // ---- HAVING ----
     if let Some(having) = &select.having {
-        out_rows.retain(|row| {
-            matches!(eval_scalar(having, row, params), SochValue::Bool(true))
-        });
+        out_rows.retain(|row| matches!(eval_scalar(having, row, params), SochValue::Bool(true)));
     }
 
     // ---- ORDER BY (may reference aggregates or aliases) ----
@@ -1154,10 +1137,7 @@ pub fn execute_aggregate(
                 // SELECT * with GROUP BY: project group keys then aggregates.
                 for name in &group_names {
                     columns.push(name.clone());
-                    projections.push((
-                        name.clone(),
-                        Expr::Column(ColumnRef::new(name.clone())),
-                    ));
+                    projections.push((name.clone(), Expr::Column(ColumnRef::new(name.clone()))));
                 }
                 for spec in &specs {
                     columns.push(spec.key.clone());
@@ -1238,12 +1218,7 @@ mod tests {
             }
         }
 
-        fn with_table(
-            mut self,
-            name: &str,
-            cols: &[&str],
-            rows: Vec<Vec<SochValue>>,
-        ) -> Self {
+        fn with_table(mut self, name: &str, cols: &[&str], rows: Vec<Vec<SochValue>>) -> Self {
             let rows = rows
                 .into_iter()
                 .map(|vals| {
@@ -1411,10 +1386,8 @@ mod tests {
         // q4-like: SELECT id1, id3, avg(v1) AS m FROM x GROUP BY id1, id3
         let mut b = bench_bridge();
         let rows = rows_of(
-            b.execute(
-                "SELECT id1, id3, avg(v1) AS m FROM x GROUP BY id1, id3 ORDER BY id1, id3",
-            )
-            .unwrap(),
+            b.execute("SELECT id1, id3, avg(v1) AS m FROM x GROUP BY id1, id3 ORDER BY id1, id3")
+                .unwrap(),
         );
         assert_eq!(rows.len(), 4);
         assert_eq!(get(&rows[0], "m"), &f(1.0));
@@ -1442,11 +1415,8 @@ mod tests {
 
     #[test]
     fn median_odd_count() {
-        let conn = DataConn::new().with_table(
-            "t",
-            &["v"],
-            vec![vec![f(5.0)], vec![f(1.0)], vec![f(3.0)]],
-        );
+        let conn =
+            DataConn::new().with_table("t", &["v"], vec![vec![f(5.0)], vec![f(1.0)], vec![f(3.0)]]);
         let mut b = SqlBridge::new(conn);
         let rows = rows_of(b.execute("SELECT median(v) AS m FROM t").unwrap());
         assert_eq!(get(&rows[0], "m"), &f(3.0));
@@ -1482,10 +1452,8 @@ mod tests {
         );
         let mut b = SqlBridge::new(conn);
         let rows = rows_of(
-            b.execute(
-                "SELECT g, count(*) AS n, count(v) AS nv FROM t GROUP BY g ORDER BY g",
-            )
-            .unwrap(),
+            b.execute("SELECT g, count(*) AS n, count(v) AS nv FROM t GROUP BY g ORDER BY g")
+                .unwrap(),
         );
         assert_eq!(rows.len(), 2);
         assert_eq!(get(&rows[0], "n"), &i(2));
@@ -1535,7 +1503,8 @@ mod tests {
         let conn = DataConn::new().with_table("e", &["v"], vec![]);
         let mut b = SqlBridge::new(conn);
         let rows = rows_of(
-            b.execute("SELECT count(*) AS n, sum(v) AS s FROM e").unwrap(),
+            b.execute("SELECT count(*) AS n, sum(v) AS s FROM e")
+                .unwrap(),
         );
         assert_eq!(rows.len(), 1, "ungrouped agg over empty input = one row");
         assert_eq!(get(&rows[0], "n"), &i(0));
@@ -1547,18 +1516,16 @@ mod tests {
         let conn = DataConn::new().with_table("e", &["g", "v"], vec![]);
         let mut b = SqlBridge::new(conn);
         let rows = rows_of(
-            b.execute("SELECT g, sum(v) AS s FROM e GROUP BY g").unwrap(),
+            b.execute("SELECT g, sum(v) AS s FROM e GROUP BY g")
+                .unwrap(),
         );
         assert!(rows.is_empty());
     }
 
     #[test]
     fn sum_overflow_promotes_to_float() {
-        let conn = DataConn::new().with_table(
-            "t",
-            &["v"],
-            vec![vec![i(i64::MAX)], vec![i(i64::MAX)]],
-        );
+        let conn =
+            DataConn::new().with_table("t", &["v"], vec![vec![i(i64::MAX)], vec![i(i64::MAX)]]);
         let mut b = SqlBridge::new(conn);
         let rows = rows_of(b.execute("SELECT sum(v) AS s FROM t").unwrap());
         match get(&rows[0], "s") {
@@ -1645,8 +1612,7 @@ mod tests {
             let cnt = vals.len() as f64;
             let sum: f64 = vals.iter().sum();
             let mean = sum / cnt;
-            let var =
-                vals.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (cnt - 1.0);
+            let var = vals.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (cnt - 1.0);
             let mut sorted = vals.clone();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let med = if sorted.len() % 2 == 1 {
@@ -1681,7 +1647,9 @@ mod tests {
     #[test]
     fn unaliased_aggregate_column_name_is_canonical() {
         let mut b = bench_bridge();
-        let result = b.execute("SELECT id1, sum(v1) FROM x GROUP BY id1").unwrap();
+        let result = b
+            .execute("SELECT id1, sum(v1) FROM x GROUP BY id1")
+            .unwrap();
         let cols = result.columns().unwrap().clone();
         assert!(cols.contains(&"sum(v1)".to_string()), "cols={:?}", cols);
     }
