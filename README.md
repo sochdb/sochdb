@@ -177,7 +177,7 @@ Choose your preferred SDK:
 
 ```bash
 # Rust - add to Cargo.toml
-sochdb = "0.5"
+sochdb = "2.0.4"
 ```
 
 ### SDK Repositories
