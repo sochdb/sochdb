@@ -332,7 +332,16 @@ impl BootStateMachine {
 
     /// Get time remaining in current phase budget
     pub fn remaining_budget(&self) -> Duration {
-        let phase = *self.phase.read();
+        self.remaining_budget_for(*self.phase.read())
+    }
+
+    /// Remaining budget for an explicitly-supplied phase, WITHOUT locking
+    /// `self.phase`. Callers that already hold the `self.phase` lock (e.g.
+    /// `transition_to`, which holds the write guard) MUST use this and pass the
+    /// phase value they hold — calling the public `remaining_budget()` there
+    /// re-locks `self.phase` and self-deadlocks (parking_lot RwLock is not
+    /// reentrant).
+    fn remaining_budget_for(&self, phase: BootPhase) -> Duration {
         let elapsed = self.phase_start.read().elapsed();
         let budget = match phase {
             BootPhase::Init => self.budgets.init_budget,
@@ -418,8 +427,10 @@ impl BootStateMachine {
             });
         }
 
-        // Check budget exceeded
-        if self.remaining_budget() == Duration::ZERO && current.is_booting() {
+        // Check budget exceeded. Use the lock-free variant with the phase we
+        // already hold the write lock on — calling remaining_budget() here would
+        // re-read-lock self.phase and self-deadlock.
+        if self.remaining_budget_for(current) == Duration::ZERO && current.is_booting() {
             *phase = BootPhase::Failed;
             *self.failure_reason.write() =
                 Some(format!("Budget exceeded in phase {}", current.name()));
