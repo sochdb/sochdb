@@ -27,6 +27,7 @@
 //! let stmt = Parser::parse("SELECT * FROM users WHERE id = 1")?;
 //! ```
 
+pub mod aggregate;
 pub mod ast;
 pub mod bridge;
 pub mod compatibility;
