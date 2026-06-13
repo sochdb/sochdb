@@ -36,15 +36,13 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
-use crate::hnsw::{HnswConfig, HnswIndex};
+use crate::hnsw::{HnswConfig, HnswIndex, MAX_M};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 use std::time::SystemTime;
-
-const MAX_M: usize = 32;
 
 /// Serializable snapshot of HNSW index state
 #[derive(Serialize, Deserialize)]

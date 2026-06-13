@@ -213,10 +213,12 @@ impl CollectionService for CollectionServer {
         let key = Self::collection_key(&req.namespace, &req.name);
 
         match self.collections.remove(&key) {
-            Some(_) => {
-                // Decrement collection count in namespace stats
+            Some((_, removed)) => {
+                // Decrement collection AND vector counts in namespace stats —
+                // dropping a collection releases every vector it held.
                 if let Some(ref ns) = self.ns_server {
                     ns.decrement_collection_count(&req.namespace);
+                    ns.decrement_vector_count(&req.namespace, removed.documents.len() as u64);
                 }
                 Ok(Response::new(DeleteCollectionResponse {
                     success: true,
@@ -248,7 +250,11 @@ impl CollectionService for CollectionServer {
 
         match self.collections.get(&key) {
             Some(data) => {
-                let added_count = req.documents.len() as u64;
+                // Count only genuinely-new documents: a duplicate id (within
+                // the batch or already present) overwrites via DashMap::insert
+                // rather than adding a row, so counting req.documents.len()
+                // over-counted the quota and leaked capacity on every re-upsert.
+                let mut added_count = 0u64;
                 let mut ids = Vec::new();
                 for doc in req.documents {
                     let id = if doc.id.is_empty() {
@@ -260,7 +266,9 @@ impl CollectionService for CollectionServer {
 
                     let mut stored_doc = doc;
                     stored_doc.id = id.clone();
-                    data.documents.insert(id, stored_doc);
+                    if data.documents.insert(id, stored_doc).is_none() {
+                        added_count += 1;
+                    }
                 }
 
                 // Track vectors added in namespace stats
@@ -399,10 +407,16 @@ impl CollectionService for CollectionServer {
 
         match self.collections.get(&key) {
             Some(data) => match data.documents.remove(&req.document_id) {
-                Some(_) => Ok(Response::new(DeleteDocumentResponse {
-                    success: true,
-                    error: String::new(),
-                })),
+                Some(_) => {
+                    // Release the vector-quota slot this document held.
+                    if let Some(ref ns) = self.ns_server {
+                        ns.decrement_vector_count(&req.namespace, 1);
+                    }
+                    Ok(Response::new(DeleteDocumentResponse {
+                        success: true,
+                        error: String::new(),
+                    }))
+                }
                 None => Ok(Response::new(DeleteDocumentResponse {
                     success: false,
                     error: format!("Document '{}' not found", req.document_id),

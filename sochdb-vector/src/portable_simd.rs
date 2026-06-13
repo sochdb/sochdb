@@ -642,9 +642,12 @@ impl ScanOps {
         self.kernel
             .l2_squared_batch_f32(query, vectors, dim, &mut distances);
 
-        // Get top-k indices
+        // Get top-k indices. Use total_cmp, not partial_cmp().unwrap(): a NaN
+        // distance (e.g. from an Inf in the input vector — Inf-Inf=NaN) makes
+        // partial_cmp return None and the unwrap panics. total_cmp is a true
+        // total order that sinks NaN deterministically.
         let mut indices: Vec<usize> = (0..n).collect();
-        indices.sort_by(|&a, &b| distances[a].partial_cmp(&distances[b]).unwrap());
+        indices.sort_by(|&a, &b| distances[a].total_cmp(&distances[b]));
 
         indices
             .into_iter()
@@ -666,9 +669,10 @@ impl ScanOps {
 
         self.kernel.dot_batch_f32(query, vectors, dim, &mut scores);
 
-        // Get top-k indices (descending for dot product)
+        // Get top-k indices (descending for dot product). total_cmp avoids the
+        // NaN panic that partial_cmp().unwrap() would hit on Inf/NaN scores.
         let mut indices: Vec<usize> = (0..n).collect();
-        indices.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap());
+        indices.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
 
         indices
             .into_iter()

@@ -1204,18 +1204,24 @@ fn eval_binary_op(lhs: &CoreSochValue, op: &BinaryOperator, rhs: &CoreSochValue)
         BinaryOperator::Plus => numeric_op(lhs, rhs, |a, b| a + b, |a, b| a + b),
         BinaryOperator::Minus => numeric_op(lhs, rhs, |a, b| a - b, |a, b| a - b),
         BinaryOperator::Multiply => numeric_op(lhs, rhs, |a, b| a * b, |a, b| a * b),
-        BinaryOperator::Divide => numeric_op(
-            lhs,
-            rhs,
-            |a, b| if b != 0 { a / b } else { 0 },
-            |a, b| if b != 0.0 { a / b } else { 0.0 },
-        ),
-        BinaryOperator::Modulo => numeric_op(
-            lhs,
-            rhs,
-            |a, b| if b != 0 { a % b } else { 0 },
-            |a, b| if b != 0.0 { a % b } else { 0.0 },
-        ),
+        // Division/modulo by zero yields SQL NULL, not a silent 0. Returning 0
+        // here corrupted results: `WHERE x / 0 > 1` evaluated to `0 > 1`
+        // (false) and `UPDATE SET z = a / 0` stored 0. NULL also matches the
+        // aggregate-path evaluator (sql/aggregate.rs eval_binary).
+        BinaryOperator::Divide => {
+            if is_numeric_zero(rhs) {
+                CoreSochValue::Null
+            } else {
+                numeric_op(lhs, rhs, |a, b| a / b, |a, b| a / b)
+            }
+        }
+        BinaryOperator::Modulo => {
+            if is_numeric_zero(rhs) {
+                CoreSochValue::Null
+            } else {
+                numeric_op(lhs, rhs, |a, b| a % b, |a, b| a % b)
+            }
+        }
         BinaryOperator::Like => {
             if let (CoreSochValue::Text(s), CoreSochValue::Text(pattern)) = (lhs, rhs) {
                 CoreSochValue::Bool(sql_like_match(s, pattern))
@@ -1250,6 +1256,16 @@ fn eval_unary_op(op: &UnaryOperator, val: &CoreSochValue) -> CoreSochValue {
 }
 
 /// Numeric operation helper.
+/// True if the value is a numeric zero (used to guard divide/modulo, which
+/// must yield SQL NULL rather than a silent 0 on a zero divisor).
+fn is_numeric_zero(v: &CoreSochValue) -> bool {
+    match v {
+        CoreSochValue::Int(0) | CoreSochValue::UInt(0) => true,
+        CoreSochValue::Float(f) => *f == 0.0,
+        _ => false,
+    }
+}
+
 fn numeric_op(
     lhs: &CoreSochValue,
     rhs: &CoreSochValue,

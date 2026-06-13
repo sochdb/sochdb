@@ -543,77 +543,35 @@ impl UnifiedScorer {
 // F16/BF16 conversion utilities
 // ============================================================================
 
+// f16/bf16 conversions delegate to the `half` crate (already a dependency,
+// also used by vector_quantized.rs/compression.rs). The previous hand-rolled
+// converters mangled NaN: `f32_to_f16` did `0x7C00 | (frac >> 13)`, turning
+// any NaN whose payload lived in the low 13 bits (e.g. 0x7F800001) into +Inf,
+// and `f32_to_bf16`'s plain `>> 16` truncation turned low-payload NaN into
+// +Inf likewise. half's conversions preserve NaN and round correctly.
+
 /// Convert f32 to f16 (IEEE 754 half-precision).
 #[inline]
 fn f32_to_f16(x: f32) -> u16 {
-    let bits = x.to_bits();
-    let sign = (bits >> 31) as u16;
-    let exp = ((bits >> 23) & 0xFF) as i32;
-    let frac = bits & 0x7FFFFF;
-
-    if exp == 0xFF {
-        // Inf or NaN
-        (sign << 15) | 0x7C00 | ((frac >> 13) as u16)
-    } else if exp > 142 {
-        // Overflow to infinity
-        (sign << 15) | 0x7C00
-    } else if exp < 113 {
-        // Underflow to zero or subnormal
-        if exp < 103 {
-            sign << 15
-        } else {
-            let frac = frac | 0x800000;
-            let shift = 126 - exp;
-            (sign << 15) | ((frac >> shift) as u16)
-        }
-    } else {
-        let new_exp = ((exp - 127 + 15) as u16) << 10;
-        let new_frac = (frac >> 13) as u16;
-        (sign << 15) | new_exp | new_frac
-    }
+    half::f16::from_f32(x).to_bits()
 }
 
 /// Convert f16 to f32.
 #[inline]
 fn f16_to_f32(x: u16) -> f32 {
-    let sign = ((x >> 15) as u32) << 31;
-    let exp = ((x >> 10) & 0x1F) as u32;
-    let frac = (x & 0x3FF) as u32;
-
-    let bits = if exp == 0 {
-        if frac == 0 {
-            sign
-        } else {
-            // Subnormal
-            let mut frac = frac;
-            let mut exp = 1u32;
-            while (frac & 0x400) == 0 {
-                frac <<= 1;
-                exp -= 1;
-            }
-            frac &= 0x3FF;
-            sign | ((exp + 127 - 15) << 23) | (frac << 13)
-        }
-    } else if exp == 31 {
-        // Inf or NaN
-        sign | 0x7F800000 | (frac << 13)
-    } else {
-        sign | ((exp + 127 - 15) << 23) | (frac << 13)
-    };
-
-    f32::from_bits(bits)
+    half::f16::from_bits(x).to_f32()
 }
 
 /// Convert f32 to bf16 (Brain float).
 #[inline]
 fn f32_to_bf16(x: f32) -> u16 {
-    (x.to_bits() >> 16) as u16
+    half::bf16::from_f32(x).to_bits()
 }
 
 /// Convert bf16 to f32.
 #[inline]
 fn bf16_to_f32(x: u16) -> f32 {
-    f32::from_bits((x as u32) << 16)
+    half::bf16::from_bits(x).to_f32()
 }
 
 #[cfg(test)]
@@ -625,6 +583,33 @@ mod tests {
         assert!(QuantLevel::F32 < QuantLevel::I8);
         assert!(QuantLevel::I8 < QuantLevel::PQ);
         assert!(QuantLevel::PQ < QuantLevel::BPS);
+    }
+
+    #[test]
+    fn test_f16_bf16_preserve_nan_not_infinity() {
+        // Regression: the old hand-rolled converters turned a NaN whose payload
+        // lived in the low bits (e.g. 0x7F800001) into +Infinity. half-crate
+        // delegation must keep NaN as NaN for both f16 and bf16.
+        for payload in [0x7F800001u32, 0x7F801000, 0x7FC00000, 0xFF800042] {
+            let x = f32::from_bits(payload);
+            assert!(x.is_nan(), "test input must be NaN");
+            assert!(
+                f16_to_f32(f32_to_f16(x)).is_nan(),
+                "f16 round-trip turned NaN 0x{:08X} into {:?}",
+                payload,
+                f16_to_f32(f32_to_f16(x))
+            );
+            assert!(
+                bf16_to_f32(f32_to_bf16(x)).is_nan(),
+                "bf16 round-trip turned NaN 0x{:08X} into {:?}",
+                payload,
+                bf16_to_f32(f32_to_bf16(x))
+            );
+        }
+        // Sanity: finite + inf still round-trip sensibly.
+        assert_eq!(f16_to_f32(f32_to_f16(1.5)), 1.5);
+        assert!(f16_to_f32(f32_to_f16(f32::INFINITY)).is_infinite());
+        assert!(bf16_to_f32(f32_to_bf16(f32::NEG_INFINITY)).is_infinite());
     }
 
     #[test]

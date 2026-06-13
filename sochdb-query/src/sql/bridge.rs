@@ -419,12 +419,32 @@ impl<C: SqlConnection> SqlBridge<C> {
         // Check table-level permission for SELECT
         self.check_table_permission(&table_name, PermissionOp::Select)?;
 
-        // Extract column names
-        let columns = self.extract_select_columns(&select.columns)?;
-
         // Extract LIMIT/OFFSET
         let limit = self.extract_limit(&select.limit)?;
         let offset = self.extract_limit(&select.offset)?;
+
+        // Aggregate / GROUP BY queries: fetch WHERE-filtered rows (all
+        // columns, no ordering/limit pushdown), then run the aggregation
+        // operator over them.
+        if super::aggregate::is_aggregate_query(select) {
+            let input = self.conn.select(
+                &table_name,
+                &[],
+                select.where_clause.as_ref(),
+                &[],
+                None,
+                None,
+                params,
+            )?;
+            let rows = match input {
+                ExecutionResult::Rows { rows, .. } => rows,
+                _ => Vec::new(),
+            };
+            return super::aggregate::execute_aggregate(select, &rows, params, limit, offset);
+        }
+
+        // Extract column names
+        let columns = self.extract_select_columns(&select.columns)?;
 
         self.conn.select(
             &table_name,
@@ -464,6 +484,13 @@ impl<C: SqlConnection> SqlBridge<C> {
                     .eval_join_predicate(expr, row, params)
                     .unwrap_or(false)
             });
+        }
+
+        // Aggregate / GROUP BY over the joined row set.
+        if super::aggregate::is_aggregate_query(select) {
+            let limit = self.extract_limit(&select.limit)?;
+            let offset = self.extract_limit(&select.offset)?;
+            return super::aggregate::execute_aggregate(select, &rows, params, limit, offset);
         }
 
         // Apply ORDER BY

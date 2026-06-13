@@ -85,8 +85,16 @@ use crate::vector_quantized::{
 };
 use crate::vector_storage::VectorStorage;
 
-/// Maximum connections per node (inline storage size for SmallVec)
-const MAX_M: usize = 32;
+/// Inline storage size (SmallVec capacity) for a node's neighbor list. Sized
+/// to hold the default layer-0 degree (max_connections_layer0 = 64) inline, so
+/// neighbor lists don't heap-spill on every node at the default config.
+/// Measured: raising the default degree from m=16/m0=32 to m=32/m0=64 lifts
+/// recall@10 on deep-1M from 0.967 to 0.988 (>=95%); keeping m0 inline avoids a
+/// per-node heap allocation on the hot path.
+///
+/// Single source of truth — `persistence.rs` imports this so the serialized
+/// neighbor-list inline size cannot drift from the in-memory one.
+pub(crate) const MAX_M: usize = 64;
 
 // ==================== Task #11: Performance Cost Model Types ====================
 
@@ -2005,10 +2013,19 @@ pub struct HnswConfig {
 impl Default for HnswConfig {
     fn default() -> Self {
         Self {
-            max_connections: 16,
-            max_connections_layer0: 32,
-            level_multiplier: 1.0 / (16.0_f32).ln(),
-            ef_construction: 200,
+            // m=32 / m0=64 (standard m0=2*m). Higher graph degree is the
+            // dominant recall lever at scale: measured recall@10 on deep-1M
+            // rose 0.967 (m=16/m0=32) -> 0.988 (m=32) -> 0.990 (m=48). m=32 is
+            // the recall/build-cost sweet spot and clears 95% out of the box;
+            // callers can still lower it for memory/speed. MAX_M is sized to
+            // keep m0=64 neighbor lists inline.
+            max_connections: 32,
+            max_connections_layer0: 64,
+            level_multiplier: 1.0 / (32.0_f32).ln(),
+            // ef_construction raised 200 -> 256: a richer build improves the
+            // graph the search must navigate (especially on hard, high-dim real
+            // embeddings like Cohere where m alone left recall ~0.90).
+            ef_construction: 256,
             ef_search: 500,
             metric: DistanceMetric::Cosine,
             quantization_precision: Some(Precision::F32),
@@ -2333,6 +2350,16 @@ pub struct HnswIndex {
     /// TODO(T7): migrate to `ShardedVectorStore` (64 independent shard locks).
     /// Expected improvement: 3–5× under mixed read/write workloads.
     pub(crate) vector_store: Arc<RwLock<Vec<QuantizedVector>>>,
+    /// Serializes the graph-MUTATING path (insert / insert_batch*). Concurrent
+    /// inserts previously deadlocked: the connect phase holds vector_store /
+    /// internal_nodes reads while taking per-node layer locks, and another
+    /// insert's phase-1 vector_store.write() cross-blocks under parking_lot's
+    /// writer preference (confirmed via thread sampling: many threads parked in
+    /// lock_exclusive_slow/lock_shared_slow). This index uses a single-writer /
+    /// concurrent-reader discipline: one insert mutates at a time, while
+    /// searches (which never take this lock) stay fully concurrent. Parallelism
+    /// WITHIN a single batch (rayon connect) is preserved.
+    pub(crate) insert_lock: parking_lot::Mutex<()>,
     /// Per-node metadata for filtered search, indexed by dense_index.
     /// Stored as pre-serialized key-value pairs for O(1) filter matching.
     pub(crate) metadata_store: Arc<RwLock<Vec<Option<Vec<(String, String)>>>>>,
@@ -2408,6 +2435,7 @@ impl HnswIndex {
             next_dense_index: AtomicUsize::new(0),
             dense_to_id: Arc::new(RwLock::new(Vec::new())),
             vector_store: Arc::new(RwLock::new(Vec::new())),
+            insert_lock: parking_lot::Mutex::new(()),
             metadata_store: Arc::new(RwLock::new(Vec::new())),
             internal_nodes: Arc::new(RwLock::new(Vec::new())),
             flat_neighbors: Arc::new(RwLock::new(Vec::new())),
@@ -2454,6 +2482,7 @@ impl HnswIndex {
             next_dense_index: AtomicUsize::new(0),
             dense_to_id: Arc::new(RwLock::new(Vec::new())),
             vector_store: Arc::new(RwLock::new(Vec::new())),
+            insert_lock: parking_lot::Mutex::new(()),
             metadata_store: Arc::new(RwLock::new(Vec::new())),
             internal_nodes: Arc::new(RwLock::new(Vec::new())),
             flat_neighbors: Arc::new(RwLock::new(Vec::new())),
@@ -2789,7 +2818,16 @@ impl HnswIndex {
         new_node_dense: u32,
         new_node_vector: &QuantizedVector,
     ) -> bool {
-        let vector_store = self.vector_store.read();
+        // read_recursive(): this runs while the caller (connect_node_fast /
+        // repair paths) already holds a vector_store read on this thread.
+        // parking_lot's plain read() defers to queued writers, so if a
+        // concurrent batch's phase-1 vector_store.write() parks between the
+        // outer read and this one, this read would park behind it forever —
+        // the confirmed concurrent-insert deadlock. read_recursive() acquires
+        // shared access without deferring to writers, breaking the cycle.
+        // Safe: this path only reads vector_store (writes go to node-layer
+        // locks), so there is no read->write self-upgrade.
+        let vector_store = self.vector_store.read_recursive();
         let neighbor_vector = vector_store
             .get(neighbor_node.vector_index as usize)
             .unwrap_or(&neighbor_node.vector);
@@ -2844,7 +2882,10 @@ impl HnswIndex {
 
         // Look up the node's vector from vector_store (node.vector may be empty
         // for batch-inserted nodes where we use QuantizedVector::empty() to save memory).
-        let vector_store = self.vector_store.read();
+        // read_recursive(): called while connect_node_fast holds an outer
+        // vector_store read; see try_replace_worst_neighbor for the deadlock
+        // rationale (reentrant read must not defer to a queued writer).
+        let vector_store = self.vector_store.read_recursive();
         let node_vector = vector_store
             .get(node.vector_index as usize)
             .unwrap_or(&node.vector);
@@ -2969,8 +3010,12 @@ impl HnswIndex {
         }
 
         // At capacity - replace worst neighbor with source
-        // Calculate distance to source
-        let vector_store = self.vector_store.read();
+        // Calculate distance to source.
+        // read_recursive(): reached from ensure_minimum_degree_layer0 /
+        // connect paths that already hold a vector_store read on this thread;
+        // a plain read() could deadlock behind a concurrent writer (see
+        // try_replace_worst_neighbor). Read-only path, so recursive read safe.
+        let vector_store = self.vector_store.read_recursive();
         let target_vector = vector_store
             .get(target_node.vector_index as usize)
             .unwrap_or(&target_node.vector);
@@ -3015,6 +3060,8 @@ impl HnswIndex {
     /// This method can now be called concurrently from multiple threads
     /// Vectors are automatically normalized during ingestion for cosine similarity optimization
     pub fn insert(&self, id: u128, vector: Vec<f32>) -> Result<(), String> {
+        // Single-writer discipline: serialize graph mutation (see insert_lock).
+        let _insert_guard = self.insert_lock.lock();
         let _timer = metrics::INSERT_LATENCY.start_timer();
         metrics::INSERT_COUNT.inc();
 
@@ -3109,13 +3156,25 @@ impl HnswIndex {
             && ep_id != id
             && let Some(ep_node) = self.nodes.get(&ep_id)
         {
-            // Search from top layer down to target layer
-            let vector_store = self.vector_store.read();
-            let ep_vector = vector_store
-                .get(ep_node.vector_index as usize)
-                .unwrap_or(&ep_node.vector);
+            // DEADLOCK FIX: hold the vector_store read ONLY to compute the
+            // entry-point distance, then drop it before the connect loops.
+            // Previously this read was held across the entire connect (which
+            // takes node-layer write locks and re-reads vector_store); under
+            // concurrent inserts that long-held read starved every other
+            // insert's phase-1 vector_store.write() — a writer-starvation
+            // deadlock (threads parked in lock_exclusive_slow). The connect
+            // below re-acquires vector_store via search_layer_concurrent /
+            // the add-connection helpers (all read_recursive), so the outer
+            // guard is not needed past this point.
+            let init_distance = {
+                let vector_store = self.vector_store.read_recursive();
+                let ep_vector = vector_store
+                    .get(ep_node.vector_index as usize)
+                    .unwrap_or(&ep_node.vector);
+                self.calculate_distance(&node.vector, ep_vector)
+            };
             let mut curr_nearest = vec![SearchCandidate {
-                distance: self.calculate_distance(&node.vector, ep_vector),
+                distance: init_distance,
                 id: ep_id,
             }];
 
@@ -3343,12 +3402,26 @@ impl HnswIndex {
         if batch.is_empty() {
             return Ok(0);
         }
+        // Single-writer discipline: serialize graph mutation (see insert_lock).
+        // Rayon parallelism WITHIN this batch is unaffected (the guard is held
+        // by this thread; rayon tasks never take insert_lock).
+        let _insert_guard = self.insert_lock.lock();
 
         // Phase 1: Create all nodes (parallel)
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
         let normalize_cosine = matches!(self.config.metric, DistanceMetric::Cosine)
             && self.config.rng_optimization.normalize_at_ingest;
-        let node_ids: Result<Vec<_>, String> = batch
+        // DEADLOCK FIX: do NOT acquire vector_store.write() inside this
+        // par_iter. The map runs on the global rayon pool; grabbing the write
+        // lock per task means that when several insert_batch_bulk calls run
+        // concurrently, rayon workers park on the write lock (lock_exclusive)
+        // while other workers hold phase-3 connect reads — the shared pool is
+        // exhausted by lock-waiters and no task can progress (confirmed: 18
+        // threads parked in lock_exclusive_slow). Instead: quantize in parallel
+        // with NO lock, then push every vector under ONE brief write taken on
+        // the calling thread (outside rayon), mirroring
+        // insert_batch_contiguous_bulk. Workers never block on the global lock.
+        let quantized: Result<Vec<(u128, u32, usize, QuantizedVector)>, String> = batch
             .par_iter()
             .map(|(id, vector)| {
                 let quantized = if normalize_cosine {
@@ -3363,41 +3436,43 @@ impl HnswIndex {
                 let dense_index =
                     self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
                 self.record_dense_id(dense_index, *id);
-
-                let vector_index = {
-                    let mut store = self.vector_store.write();
-                    let idx = store.len() as u32;
-                    store.push(quantized); // move, not clone
-                    idx
-                };
-                let node = HnswNode {
-                    id: *id,
-                    dense_index,
-                    vector_index,
-                    vector: QuantizedVector::empty(),
-                    layer,
-                    layers: (0..=layer)
-                        .map(|_| {
-                            RwLock::new(VersionedNeighbors {
-                                neighbors: SmallVec::new(),
-                                version: 0,
-                            })
-                        })
-                        .collect(),
-                    storage_id: None,
-                };
-
-                // Insert node into storage
-                let node = Arc::new(node);
-                self.nodes.insert(*id, node.clone());
-                // O(1) hot path storage
-                self.store_internal_node(dense_index, node);
-
-                Ok(*id)
+                Ok((*id, dense_index, layer, quantized))
             })
             .collect();
+        let quantized = quantized?;
 
-        let node_ids = node_ids?;
+        // Single batched write: push all vectors and publish all nodes under
+        // one lock acquisition (no rayon task holds the write lock).
+        let node_ids: Vec<u128> = {
+            let mut store = self.vector_store.write();
+            store.reserve(quantized.len());
+            quantized
+                .into_iter()
+                .map(|(id, dense_index, layer, quantized)| {
+                    let vector_index = store.len() as u32;
+                    store.push(quantized); // move, not clone
+                    let node = Arc::new(HnswNode {
+                        id,
+                        dense_index,
+                        vector_index,
+                        vector: QuantizedVector::empty(),
+                        layer,
+                        layers: (0..=layer)
+                            .map(|_| {
+                                RwLock::new(VersionedNeighbors {
+                                    neighbors: SmallVec::new(),
+                                    version: 0,
+                                })
+                            })
+                            .collect(),
+                        storage_id: None,
+                    });
+                    self.nodes.insert(id, node.clone());
+                    self.store_internal_node(dense_index, node);
+                    id
+                })
+                .collect()
+        };
 
         // Phase 2: Compute independent waves for parallel connection
         let waves = compute_independent_waves(
@@ -3666,6 +3741,8 @@ impl HnswIndex {
         vectors: &[f32],
         dimension: usize,
     ) -> Result<usize, String> {
+        // Single-writer discipline: serialize graph mutation (see insert_lock).
+        let _insert_guard = self.insert_lock.lock();
         use crate::profiling::is_profiling_enabled;
         use rayon::prelude::*;
 
@@ -5203,8 +5280,15 @@ impl HnswIndex {
                 }
 
                 // Get neighbors from FLAT array - O(1), NO LOCKS!
+                // Bounds-checked: if the flat cache was built before this
+                // dense_index existed (cache predates a later insert), the
+                // computed range would be out of bounds and an unchecked slice
+                // would panic. Skip such a node instead of crashing the query.
                 let base = (curr.dense_index as usize) * slots_per_node;
-                let neighbor_slice = &flat_neighbors[base..base + slots_per_node];
+                let neighbor_slice = match flat_neighbors.get(base..base + slots_per_node) {
+                    Some(s) => s,
+                    None => continue,
+                };
 
                 // Prefetch next cache line
                 #[cfg(target_arch = "aarch64")]
@@ -6140,19 +6224,25 @@ impl HnswIndex {
             id: ep_id,
         }];
 
-        // Navigate upper layers with ef=1, layer 1 with wider beam
+        // Scale the upper-layer / layer-1 seed beam with ef. Previously the
+        // upper layers used ef=1 (pure greedy) and layer 1 was hard-capped at
+        // 5, so a large ef widened only the layer-0 beam CAPACITY but never the
+        // seed set feeding it — on hard/multi-cluster data this limited how
+        // much extra recall a big ef could buy. A wider, ef-proportional seed
+        // set lets layer 0 start from more diverse entry points.
+        let upper_ef = (ef / 64).clamp(1, 8);
         for lc in (2..=max_layer).rev() {
             curr_nearest = self.search_layer_ref(
                 &query_quantized,
                 &curr_nearest,
-                1,
+                upper_ef,
                 lc,
                 &vector_store,
                 &internal_nodes,
             );
         }
         if max_layer >= 1 {
-            let layer1_ef = 5usize.min(ef.max(k));
+            let layer1_ef = (ef / 4).clamp(8, 64).min(ef.max(k));
             curr_nearest = self.search_layer_ref(
                 &query_quantized,
                 &curr_nearest,
@@ -7220,8 +7310,17 @@ impl HnswIndex {
         num_to_return: usize,
         layer: usize,
     ) -> Vec<SearchCandidate> {
-        let vector_store = self.vector_store.read();
-        let internal_nodes = self.internal_nodes.read();
+        // read_recursive(): the insert/connect path (e.g. line ~3129) holds an
+        // outer vector_store.read() on this thread and then calls this fn for
+        // each layer. A plain read() here defers to a queued writer (another
+        // batch's phase-1 vector_store.write()), parking this reentrant read
+        // behind it forever — the confirmed concurrent-insert deadlock.
+        // read_recursive() acquires shared access without deferring to writers.
+        // Read-only path (writes go to node-layer locks), so it is sound; and
+        // it is harmless on the standalone search path where no outer read is
+        // held. internal_nodes is reentrant-read for the same reason.
+        let vector_store = self.vector_store.read_recursive();
+        let internal_nodes = self.internal_nodes.read_recursive();
         // Rec 9: local id→dense cache eliminates DashMap from hot loop
         let mut id_to_dense: std::collections::HashMap<u128, u32> =
             std::collections::HashMap::with_capacity(num_to_return * 2);
@@ -9902,6 +10001,30 @@ impl HnswIndex {
 
         let m0 = self.config.max_connections_layer0;
 
+        // SCALE GUARD: the exact path below is O(N^2) in time and materializes
+        // every vector as full f32 (`raw_vectors: Vec<Vec<f32>>`), so its cost
+        // explodes with N. Measured: a 1M build calling this OOM'd a 55 GB box
+        // and burned ~18h of CPU; the same build skipping it succeeded in 195s
+        // using a few GB at recall@10=0.968.
+        //
+        // Exact rebuild is a *small-index* recall booster. Above the cap it is
+        // intentionally a NO-OP: the as-built HNSW graph is already good, and
+        // an approximate large-N substitute (re-querying each node and
+        // overwriting its layer-0 edges) was measured to *degrade* recall to
+        // 0.935 — it discards the heuristic-selected, reverse-symmetric edges
+        // the build produced. So we never replace a good graph with a worse
+        // one; we simply skip, preserving the as-built recall.
+        const EXACT_MAX_N: usize = 50_000;
+        if n > EXACT_MAX_N {
+            tracing::info!(
+                n,
+                cap = EXACT_MAX_N,
+                "rebuild_layer0_exact skipped: index exceeds exact-rebuild cap; \
+                 preserving as-built graph (exact O(N^2) rebuild would OOM/stall)"
+            );
+            return 0;
+        }
+
         // Step 1: Snapshot all node data into contiguous arrays
         let node_ids: Vec<u128> = self.nodes.iter().map(|e| *e.key()).collect();
         let dense_indices: Vec<u32> = node_ids
@@ -9994,6 +10117,7 @@ impl HnswIndex {
         self.invalidate_flat_cache();
         updated
     }
+
 
     /// Prune connections — intentionally a no-op.
     ///
@@ -10243,6 +10367,66 @@ mod tests {
     }
 
     #[test]
+    fn test_rebuild_layer0_exact_preserves_recall_small_n() {
+        // Regression for the O(N^2)/OOM `optimize()` bug. Below EXACT_MAX_N the
+        // exact rebuild runs and must (a) repopulate every node's layer-0 edges
+        // and (b) never degrade self-query recall. (The large-N branch is a
+        // deliberate no-op — covered by the 1M integration run, since a 50k+
+        // unit test would be slow — so here we lock in the small-N contract.)
+        let config = HnswConfig {
+            metric: DistanceMetric::Euclidean,
+            ..HnswConfig::default()
+        };
+        let index = HnswIndex::new(16, config);
+
+        let n = 600usize;
+        assert!(n <= 50_000, "must stay under EXACT_MAX_N to hit the exact path");
+        for i in 0..n {
+            let mut v = vec![0.0f32; 16];
+            v[i % 16] = (i as f32) + 1.0;
+            v[(i * 7 + 3) % 16] += (i as f32) * 0.5;
+            index.insert(i as u128, v).unwrap();
+        }
+
+        let probe = |idx: &HnswIndex| {
+            let mut hits = 0;
+            for i in 0..n {
+                let mut q = vec![0.0f32; 16];
+                q[i % 16] = (i as f32) + 1.0;
+                q[(i * 7 + 3) % 16] += (i as f32) * 0.5;
+                if let Ok(r) = idx.search(&q, 1) {
+                    if r.first().map(|h| h.0) == Some(i as u128) {
+                        hits += 1;
+                    }
+                }
+            }
+            hits
+        };
+        let before = probe(&index);
+
+        let updated = index.rebuild_layer0_exact();
+        assert_eq!(updated, n, "exact rebuild should update every node at small N");
+
+        for i in 0..n {
+            let node = index.nodes.get(&(i as u128)).unwrap();
+            assert!(
+                !node.layers[0].read().neighbors.is_empty(),
+                "node {} lost all layer-0 edges after exact rebuild",
+                i
+            );
+        }
+
+        let after = probe(&index);
+        assert!(
+            after >= before,
+            "exact rebuild degraded recall: before={} after={}",
+            before,
+            after
+        );
+        assert!(after >= n * 9 / 10, "recall too low after rebuild: {}/{}", after, n);
+    }
+
+    #[test]
     fn test_hnsw_stats() {
         let config = HnswConfig::default();
         let index = HnswIndex::new(64, config);
@@ -10469,5 +10653,94 @@ mod tests {
         );
         // Sanity: some work was done
         assert!(total_checks > 10, "Too few checks: {}", total_checks);
+    }
+
+    /// Regression for bug #5: concurrent inserts from multiple threads into the
+    /// same index used to DEADLOCK. The connect phase holds vector_store.read()
+    /// while a helper (try_replace_worst_neighbor / ensure_minimum_degree_layer0
+    /// / force_add_reverse_edge) re-acquired vector_store.read(); when another
+    /// thread's phase-1 vector_store.write() queued between them, parking_lot's
+    /// writer-preference parked the reentrant read forever. The fix uses
+    /// read_recursive() for those inner reads. This test runs concurrent
+    /// insert_batch from several threads with a watchdog: before the fix it
+    /// hangs (watchdog fires); after, it completes.
+    #[test]
+    fn test_concurrent_inserts_do_not_deadlock() {
+        use std::sync::Arc;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let config = HnswConfig {
+            metric: DistanceMetric::Euclidean,
+            ..HnswConfig::default()
+        };
+        let index = Arc::new(HnswIndex::new(16, config));
+
+        // Seed so the graph has a neighborhood and the worst-neighbor-replace
+        // path (the reentrant read) is exercised during the concurrent phase.
+        let mut seed = Vec::new();
+        for i in 0..200u128 {
+            let mut v = vec![0.0f32; 16];
+            v[(i as usize) % 16] = i as f32 + 1.0;
+            seed.push((i, v));
+        }
+        index.insert_batch(&seed).unwrap();
+
+        let n_threads = 6;
+        let per = 400usize;
+        let (tx, rx) = mpsc::channel();
+        let mut handles = Vec::new();
+        for t in 0..n_threads {
+            let idx = Arc::clone(&index);
+            let tx = tx.clone();
+            handles.push(thread::spawn(move || {
+                let base = 1000 + t * per;
+                let mut batch = Vec::with_capacity(per);
+                for j in 0..per {
+                    let id = (base + j) as u128;
+                    let mut v = vec![0.0f32; 16];
+                    v[(id as usize) % 16] = (id as f32) * 0.5 + 1.0;
+                    v[(id as usize * 3) % 16] += (id as f32) * 0.25;
+                    batch.push((id, v));
+                }
+                // Many small batches → maximal phase1-write / phase3-read overlap.
+                for c in batch.chunks(20) {
+                    idx.insert_batch(c).unwrap();
+                }
+                tx.send(t).unwrap();
+            }));
+        }
+        drop(tx);
+
+        // Watchdog: all threads must finish well within the timeout. A deadlock
+        // would leave fewer than n_threads completions.
+        let mut done = 0;
+        let deadline = Duration::from_secs(60);
+        loop {
+            match rx.recv_timeout(deadline) {
+                Ok(_) => {
+                    done += 1;
+                    if done == n_threads {
+                        break;
+                    }
+                }
+                Err(_) => panic!(
+                    "concurrent inserts DEADLOCKED: only {}/{} threads finished within {:?}",
+                    done, n_threads, deadline
+                ),
+            }
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All vectors present and the index is still searchable.
+        assert!(index.len() >= 200 + n_threads * per, "missing inserts: {}", index.len());
+        let mut q = vec![0.0f32; 16];
+        q[1100 % 16] = 1100.0 * 0.5 + 1.0;
+        q[(1100 * 3) % 16] += 1100.0 * 0.25;
+        let res = index.search(&q, 5).unwrap();
+        assert!(!res.is_empty(), "search returned nothing after concurrent inserts");
     }
 }

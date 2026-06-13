@@ -425,7 +425,12 @@ impl WalSegmentManager {
         segment.offset += record_len as u64;
 
         if self.config.sync_on_write {
+            // `flush()` only pushes the BufWriter into the kernel page cache;
+            // a true "sync on every write" durability guarantee additionally
+            // needs an fsync, matching rotate_segment()/shutdown(). Without it
+            // an acknowledged write is lost on power loss.
             segment.file.flush()?;
+            segment.file.get_ref().sync_all()?;
         }
 
         Ok(lsn)

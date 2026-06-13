@@ -63,16 +63,31 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Maximum expression nesting depth. Recursive-descent expression parsing
+/// (`parse_expr` → … → `parse_primary_expr` → `parse_expr` on `(`, subscript,
+/// CASE, etc.) has no natural bound, so a pathological input like
+/// `((((((…))))))` or `NOT NOT NOT …` would recurse until the thread stack
+/// overflows and the process aborts (SIGABRT) — a DoS on attacker-controlled
+/// SQL. We cap depth and return a parse error instead. 256 is far deeper than
+/// any legitimate query yet leaves ample stack headroom.
+const MAX_EXPR_DEPTH: usize = 256;
+
 /// SQL Parser
 pub struct Parser<'a> {
     tokens: Vec<Token<'a>>,
     pos: usize,
+    /// Current expression-recursion depth (see [`MAX_EXPR_DEPTH`]).
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
     /// Create a new parser from tokens
     pub fn new(tokens: Vec<Token<'a>>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     /// Parse a SQL string into a statement
@@ -1478,8 +1493,32 @@ impl<'a> Parser<'a> {
 
     // ========== Expression Parsing ==========
 
+    /// Enter one level of expression recursion, erroring if too deep.
+    /// Paired with `exit_recursion` so the depth counter stays balanced across
+    /// sibling expressions on the success path.
+    #[inline]
+    fn enter_recursion(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_EXPR_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::new(
+                "expression nesting too deep",
+                self.current_span(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn exit_recursion(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_or_expr()
+        self.enter_recursion()?;
+        let r = self.parse_or_expr();
+        self.exit_recursion();
+        r
     }
 
     fn parse_or_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1513,15 +1552,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_not_expr(&mut self) -> Result<Expr, ParseError> {
-        if self.match_token(&TokenKind::Not) {
-            let expr = self.parse_not_expr()?;
-            Ok(Expr::UnaryOp {
+        self.enter_recursion()?;
+        let r = if self.match_token(&TokenKind::Not) {
+            self.parse_not_expr().map(|expr| Expr::UnaryOp {
                 op: UnaryOperator::Not,
                 expr: Box::new(expr),
             })
         } else {
             self.parse_comparison_expr()
-        }
+        };
+        self.exit_recursion();
+        r
     }
 
     fn parse_comparison_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1701,32 +1742,26 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary_expr(&mut self) -> Result<Expr, ParseError> {
-        match &self.peek().kind {
-            TokenKind::Minus => {
+        // Guard the `- - - …` / `+ +` / `~ ~` prefix chains, which self-recurse
+        // without passing through parse_expr.
+        let op = match &self.peek().kind {
+            TokenKind::Minus => Some(UnaryOperator::Minus),
+            TokenKind::Plus => Some(UnaryOperator::Plus),
+            TokenKind::BitNot => Some(UnaryOperator::BitNot),
+            _ => None,
+        };
+        match op {
+            Some(op) => {
                 self.advance();
-                let expr = self.parse_unary_expr()?;
-                Ok(Expr::UnaryOp {
-                    op: UnaryOperator::Minus,
+                self.enter_recursion()?;
+                let inner = self.parse_unary_expr();
+                self.exit_recursion();
+                inner.map(|expr| Expr::UnaryOp {
+                    op,
                     expr: Box::new(expr),
                 })
             }
-            TokenKind::Plus => {
-                self.advance();
-                let expr = self.parse_unary_expr()?;
-                Ok(Expr::UnaryOp {
-                    op: UnaryOperator::Plus,
-                    expr: Box::new(expr),
-                })
-            }
-            TokenKind::BitNot => {
-                self.advance();
-                let expr = self.parse_unary_expr()?;
-                Ok(Expr::UnaryOp {
-                    op: UnaryOperator::BitNot,
-                    expr: Box::new(expr),
-                })
-            }
-            _ => self.parse_primary_expr(),
+            None => self.parse_primary_expr(),
         }
     }
 
@@ -2198,6 +2233,32 @@ mod tests {
     fn test_simple_select() {
         let stmt = Parser::parse("SELECT * FROM users").unwrap();
         assert!(matches!(stmt, Statement::Select(_)));
+    }
+
+    #[test]
+    fn test_deeply_nested_expr_errors_not_panics() {
+        // Regression: unbounded recursive-descent recursion used to overflow
+        // the stack (SIGABRT) on attacker-controlled SQL. Now it must return a
+        // parse error well within stack limits. Three vectors: parentheses,
+        // NOT chains, unary-minus chains.
+        let depth = MAX_EXPR_DEPTH + 50;
+        for (open, close) in [("(", ")"), ("NOT ", ""), ("-", "")] {
+            let expr = format!(
+                "SELECT {}1{} FROM t",
+                open.repeat(depth),
+                close.repeat(depth)
+            );
+            let r = Parser::parse(&expr);
+            assert!(
+                r.is_err(),
+                "depth {} of {:?} should error, not parse/panic",
+                depth,
+                open
+            );
+        }
+        // A reasonably-nested expression still parses fine (no false positive).
+        let ok = format!("SELECT {}1{} FROM t", "(".repeat(20), ")".repeat(20));
+        assert!(Parser::parse(&ok).is_ok(), "20-deep nesting must still parse");
     }
 
     #[test]

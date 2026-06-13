@@ -117,7 +117,16 @@ impl MemoryStore {
     pub fn write_episode(&self, write: EpisodeWrite) -> MemoryResult<WriteResult> {
         let start = Instant::now();
         let t_created = self.hlc.next();
-        let t_valid = write.t_valid_from.unwrap_or(t_created);
+        // Default validity-start to wall-clock unix milliseconds, matching the
+        // `as_of=<unix_ms>` query contract. `t_created` is a raw HLC tick
+        // (`physical_micros << 16 | logical`, ~1e21), so defaulting to it made
+        // the bi-temporal filter `t_valid_from <= as_of` always false for any
+        // realistic `as_of` — silently returning zero results for every
+        // episode written without an explicit validity time (the common case).
+        // Callers that pass `t_valid_from` keep their own time domain.
+        let t_valid = write
+            .t_valid_from
+            .unwrap_or_else(|| HybridLogicalClock::physical_time(t_created) / 1000);
 
         let mut namespaces = self.namespaces.write();
         let ns = namespaces
