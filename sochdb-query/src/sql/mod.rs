@@ -639,10 +639,10 @@ impl SqlExecutor {
 
                 match (&val, &pattern_val) {
                     (SochValue::Text(s), SochValue::Text(p)) => {
-                        let regex_pattern = p.replace('%', ".*").replace('_', ".");
-                        let matches = regex::Regex::new(&format!("^{}$", regex_pattern))
-                            .map(|re| re.is_match(s))
-                            .unwrap_or(false);
+                        // Route through the canonical LIKE matcher so SQL `LIKE`
+                        // behaves identically across every query path and treats
+                        // regex metacharacters (`.`, `*`, `[`, ...) as literals.
+                        let matches = crate::like::like_match(s, p);
                         Ok(SochValue::Bool(if *negated { !matches } else { matches }))
                     }
                     _ => Ok(SochValue::Bool(false)),
