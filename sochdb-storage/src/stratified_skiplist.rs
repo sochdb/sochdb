@@ -345,20 +345,25 @@ where
         let mut current = self.head;
 
         for level in (0..max_height).rev() {
-            loop {
-                let next_node = unsafe { (*current).tower.get(level) };
-                if next_node.is_null() {
-                    break;
-                }
-
-                let next_key = unsafe { &(*next_node).key };
+            // `succ` MUST be the successor the loop actually compared against
+            // (first node with key >= `key`, or null) — NOT a fresh re-read of
+            // current.next afterwards. A concurrent insert can splice a node
+            // with key < `key` between `current` and the old successor in the
+            // window between the loop deciding to stop and a re-read; capturing
+            // that as next[level] makes `insert` link the new node BEFORE the
+            // smaller-key node, mis-ordering the level-0 chain and orphaning it
+            // (counted in len, unreachable to ordered get). Keeping next[]
+            // consistent with the comparison means the level-0 CAS expecting
+            // `succ` fails and retries on exactly that race.
+            let mut succ = unsafe { (*current).tower.get(level) };
+            while !succ.is_null() {
+                let next_key = unsafe { &(*succ).key };
                 match next_key.cmp(key) {
                     Ordering::Less => {
-                        current = next_node;
+                        current = succ;
+                        succ = unsafe { (*current).tower.get(level) };
                     }
-                    Ordering::Equal | Ordering::Greater => {
-                        break;
-                    }
+                    Ordering::Equal | Ordering::Greater => break,
                 }
             }
 
@@ -367,7 +372,7 @@ where
             } else {
                 current
             };
-            next[level] = unsafe { (*current).tower.get(level) };
+            next[level] = succ;
         }
     }
 
