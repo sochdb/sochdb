@@ -10798,7 +10798,11 @@ mod tests {
 
         // The override is observable through get_ef_search and drives search.
         index.set_ef_search(123);
-        assert_eq!(index.get_ef_search(), 123, "runtime ef override not observed");
+        assert_eq!(
+            index.get_ef_search(),
+            123,
+            "runtime ef override not observed"
+        );
         let mut q = vec![0.0f32; 16];
         q[3] = 42.0;
         q[(42 * 7) % 16] += 42.0 * 0.3;

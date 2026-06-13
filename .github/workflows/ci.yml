@@ -47,7 +47,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -68,6 +68,12 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      # clippy WITHOUT `-D warnings`: it gates on real clippy errors but does not
+      # fail the build on the codebase's existing warnings (those are tracked
+      # separately). Keeps lint meaningful while staying green.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
 
   # ===========================================================================
   # Test — build + test the workspace (Linux x86_64 only)
