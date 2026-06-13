@@ -518,7 +518,7 @@ impl PyHnswIndex {
         py: Python<'py>,
         queries: PyReadonlyArray2<'py, f32>,
         k: usize,
-        ef_search: Option<usize>, // TODO: Support runtime ef_search override
+        ef_search: Option<usize>,
     ) -> PyResult<(Py<PyArray2<u64>>, Py<PyArray2<f32>>)> {
         let shape = queries.shape();
         let num_queries = shape[0];
@@ -546,7 +546,15 @@ impl PyHnswIndex {
                     let start = i * d;
                     let end = start + d;
                     let query = &queries_vec[start..end];
-                    inner.search(query, k).unwrap_or_default()
+                    // Honor the runtime ef_search override when supplied: a
+                    // higher ef widens the beam → better recall at lower QPS,
+                    // which is exactly the recall/QPS tradeoff curve ANN
+                    // benchmarks sweep. Without an override, fall back to the
+                    // index's configured/adaptive ef via `search`.
+                    match ef_search {
+                        Some(ef) => inner.search_with_ef(query, k, ef).unwrap_or_default(),
+                        None => inner.search(query, k).unwrap_or_default(),
+                    }
                 })
                 .collect::<Vec<_>>()
         });
