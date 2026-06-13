@@ -243,16 +243,20 @@ mod tests {
             "{{'descr': '<f4', 'fortran_order': False, 'shape': ({}, {}), }}",
             n, d
         );
-        // Pad to 64-byte boundary
+        // Pad so (10 + header_len) is a multiple of 64, with the header string
+        // terminated by '\n' and the newline COUNTED in header_len (npy spec).
+        // This keeps the data section 64-byte aligned — required because
+        // NpyReader::vectors() reinterprets it as &[f32] via from_raw_parts,
+        // which is UB (and panics in debug builds) on a misaligned pointer.
+        // The old code wrote the '\n' separately and excluded it from
+        // header_len, so data_offset was 1 byte short and misaligned.
         let padding = 64 - ((10 + header.len()) % 64);
-        let padded_header = format!("{}{}", header, " ".repeat(padding - 1));
+        let padded_header = format!("{}{}\n", header, " ".repeat(padding - 1));
 
-        // Header length
+        // Header length (includes the trailing newline)
         let header_len = padded_header.len() as u16;
         file.write_all(&header_len.to_le_bytes()).unwrap();
-        // Header content + newline
         file.write_all(padded_header.as_bytes()).unwrap();
-        file.write_all(b"\n").unwrap();
 
         // Data: n*d floats
         let data: Vec<f32> = (0..n * d).map(|i| i as f32 * 0.01).collect();
