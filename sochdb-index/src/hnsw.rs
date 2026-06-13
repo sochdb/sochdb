@@ -5110,7 +5110,7 @@ impl HnswIndex {
         let candidates = self.search_layer_zero_lock(
             query,
             &curr_nearest,
-            self.config.ef_search.max(k),
+            self.effective_ef_search().max(k),
             0,
             &vector_store,
             &internal_nodes,
@@ -5218,7 +5218,7 @@ impl HnswIndex {
         let candidates = self.search_layer_zero_flat(
             query,
             &curr_nearest,
-            self.config.ef_search.max(k),
+            self.effective_ef_search().max(k),
             &vector_store,
             &internal_nodes,
             &flat_neighbors,
@@ -5839,7 +5839,7 @@ impl HnswIndex {
         };
 
         // Task #9: Try IVF coarse routing for high-dimensional vectors
-        if let Some(ivf_candidates) = self.ivf_coarse_routing(query, self.config.ef_search) {
+        if let Some(ivf_candidates) = self.ivf_coarse_routing(query, self.effective_ef_search()) {
             return self.search_ivf_candidates(&query_quantized, &ivf_candidates, k);
         }
 
@@ -5875,7 +5875,7 @@ impl HnswIndex {
 
         // At layer 1, use wider beam to collect multiple entry points
         if max_layer >= 1 {
-            let layer1_ef = 5.min(self.config.ef_search.max(k));
+            let layer1_ef = 5.min(self.effective_ef_search().max(k));
             curr_nearest = self.search_layer_ref(
                 &query_quantized,
                 &curr_nearest,
@@ -5890,7 +5890,7 @@ impl HnswIndex {
         let candidates = self.search_layer_ref(
             &query_quantized,
             &curr_nearest,
-            self.config.ef_search.max(k),
+            self.effective_ef_search().max(k),
             0,
             &vector_store,
             &internal_nodes,
@@ -6056,7 +6056,7 @@ impl HnswIndex {
             let candidates = self.search_layer_concurrent(
                 query_quantized,
                 &curr_nearest,
-                self.config.ef_search.max(k),
+                self.effective_ef_search().max(k),
                 0,
             );
 
@@ -7087,27 +7087,35 @@ impl HnswIndex {
         self.adaptive_ef.store(ef, AtomicOrdering::Relaxed);
     }
 
-    /// Get the current ef_search value from config
-    pub fn get_ef_search(&self) -> usize {
-        self.config.ef_search
+    /// The search-time `ef` actually used by every runtime search path.
+    ///
+    /// Single source of truth for the effective beam width: seeded from
+    /// `config.ef_search` at construction and updated atomically by
+    /// [`set_ef_search`](Self::set_ef_search) and `calibrate_ef`. The
+    /// `config.ef_search` field itself stays immutable after construction, so
+    /// concurrent searches never race a writer.
+    #[inline]
+    pub(crate) fn effective_ef_search(&self) -> usize {
+        self.adaptive_ef.load(AtomicOrdering::Relaxed)
     }
 
-    /// Set the ef_search value at runtime for higher recall
+    /// Get the current effective ef_search value (honors runtime overrides).
+    pub fn get_ef_search(&self) -> usize {
+        self.effective_ef_search()
+    }
+
+    /// Set the ef_search value at runtime for higher recall.
     ///
     /// Higher ef_search = better recall but slower search.
     /// Recommended: ef_search >= 2 * k for good recall, or 100-200 for high recall.
+    ///
+    /// Stored in the `adaptive_ef` atomic (not the immutable config), so this is
+    /// a lock-free, data-race-free store that every concurrent search picks up
+    /// on its next query. The previous implementation cast `&self.config` to
+    /// `*mut HnswConfig` and wrote through it — a data race (hence undefined
+    /// behaviour) against any search reading `config.ef_search` concurrently.
     pub fn set_ef_search(&self, ef_search: usize) {
-        // SAFETY: We use interior mutability pattern here
-        // The config is effectively immutable after construction,
-        // but ef_search is a hot parameter that users need to tune.
-        // This is safe because:
-        // 1. ef_search is only read during search (not construction)
-        // 2. Concurrent reads during write are acceptable (eventual consistency)
-        // 3. The field is a simple usize (atomic on most platforms)
-        let config_ptr = &self.config as *const HnswConfig as *mut HnswConfig;
-        unsafe {
-            (*config_ptr).ef_search = ef_search;
-        }
+        self.adaptive_ef.store(ef_search, AtomicOrdering::Relaxed);
     }
 
     /// Task #1: Zero-lock search layer - takes pre-acquired references
@@ -10742,5 +10750,73 @@ mod tests {
         q[(1100 * 3) % 16] += 1100.0 * 0.25;
         let res = index.search(&q, 5).unwrap();
         assert!(!res.is_empty(), "search returned nothing after concurrent inserts");
+    }
+
+    /// Regression for the `set_ef_search` data race (UB). The runtime ef
+    /// override must be an atomic store that concurrent searches read without a
+    /// data race, AND it must actually take effect on the search paths. Before
+    /// the fix, `set_ef_search` cast `&self.config` to `*mut HnswConfig` and
+    /// wrote through it while other threads read `config.ef_search` — undefined
+    /// behaviour. Now it is an `AtomicUsize` store/load.
+    #[test]
+    fn test_set_ef_search_is_atomic_and_effective() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+
+        let config = HnswConfig {
+            metric: DistanceMetric::Euclidean,
+            ..HnswConfig::default()
+        };
+        let index = Arc::new(HnswIndex::new(16, config));
+
+        let mut seed = Vec::new();
+        for i in 0..500u128 {
+            let mut v = vec![0.0f32; 16];
+            v[(i as usize) % 16] = i as f32 + 1.0;
+            v[(i as usize * 7) % 16] += (i as f32) * 0.3;
+            seed.push((i, v));
+        }
+        index.insert_batch(&seed).unwrap();
+
+        // The override is observable through get_ef_search and drives search.
+        index.set_ef_search(123);
+        assert_eq!(index.get_ef_search(), 123, "runtime ef override not observed");
+        let mut q = vec![0.0f32; 16];
+        q[3] = 42.0;
+        q[(42 * 7) % 16] += 42.0 * 0.3;
+        assert!(!index.search(&q, 5).unwrap().is_empty());
+
+        // One thread hammers set_ef_search while four search concurrently. Under
+        // the old `*mut config` write this was a data race; it must now run
+        // cleanly to completion.
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let idx = Arc::clone(&index);
+            let stop = Arc::clone(&stop);
+            thread::spawn(move || {
+                let mut ef = 16usize;
+                while !stop.load(Ordering::Relaxed) {
+                    ef = if ef >= 512 { 16 } else { ef + 16 };
+                    idx.set_ef_search(ef);
+                }
+            })
+        };
+        let mut readers = Vec::new();
+        for t in 0..4u128 {
+            let idx = Arc::clone(&index);
+            readers.push(thread::spawn(move || {
+                for _ in 0..3000 {
+                    let mut q = vec![0.0f32; 16];
+                    q[(t as usize * 3) % 16] = (t as f32 + 1.0) * 10.0;
+                    assert!(!idx.search(&q, 5).unwrap().is_empty());
+                }
+            }));
+        }
+        for h in readers {
+            h.join().unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
     }
 }
