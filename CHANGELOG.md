@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.6] - 2026-06-14
+
+### Fixed
+
+- **`HnswIndex::search_exact` / `search_exact_f64` SIGSEGV on batch-inserted
+  indexes** (`sochdb-index`) — both exact-search paths read each node's vector via
+  `entry.value().vector` directly. Nodes added through the batch-contiguous bulk
+  path (`insert_batch_contiguous_bulk`) store a zero-length dummy in
+  `HnswNode.vector` (the real vector lives in `vector_store`), so the empty slice
+  was fed to the fixed-dimension SIMD distance kernels, causing an out-of-bounds
+  read (`SIGSEGV`, `KERN_INVALID_ADDRESS`). Reproduced 100% via the Python SDK's
+  `vector_search_exact` after a `> scaffold-size` `insert_batch`. Both paths now
+  fetch the vector via `vector_store.get(node.vector_index).unwrap_or(&node.vector)`
+  like every other search path. Adds a release-mode regression test that builds via
+  the batch path and asserts both exact paths match brute-force ground truth.
+
+---
+
 ## [2.0.4] - 2026-06-13
 
 Production-hardening release. (Crate version line; the `0.5.x` entries below are

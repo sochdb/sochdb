@@ -6870,12 +6870,24 @@ impl HnswIndex {
             QuantizedVector::from_f32(ndarray::Array1::from_vec(query.to_vec()), precision)
         };
 
+        // Fetch each node's vector from vector_store. For batch-inserted nodes
+        // HnswNode.vector is a zero-length dummy (the real vector lives in
+        // vector_store; see insert_batch_contiguous_bulk), so reading
+        // entry.value().vector directly feeds an empty slice to the
+        // fixed-dimension SIMD distance kernels -> out-of-bounds read / SIGSEGV.
+        // Every other search path uses this same vector_store.get(...).unwrap_or
+        // accessor; search_exact must too.
+        let vector_store = self.vector_store.read();
         let mut distances: Vec<(u128, f32)> = self
             .nodes
             .iter()
             .map(|entry| {
                 let id = *entry.key();
-                let distance = self.calculate_distance(&query_quantized, &entry.value().vector);
+                let node = entry.value();
+                let node_vector = vector_store
+                    .get(node.vector_index as usize)
+                    .unwrap_or(&node.vector);
+                let distance = self.calculate_distance(&query_quantized, node_vector);
                 (id, distance)
             })
             .collect();
@@ -6934,6 +6946,12 @@ impl HnswIndex {
         // Collect node refs into a Vec so Rayon can partition them
         let node_entries: Vec<_> = self.nodes.iter().collect();
 
+        // Real vectors live in vector_store for batch-inserted nodes (HnswNode.vector
+        // is a zero-length dummy there). Borrow it as a slice the parallel closure can
+        // share; reading entry.value().vector directly would yield empty vectors.
+        let vector_store_guard = self.vector_store.read();
+        let vector_store: &[QuantizedVector] = &vector_store_guard;
+
         // Parallel fold: each thread builds a local top-k heap, then reduce merges them
         let top_k: Vec<(u128, f64)> = node_entries
             .par_iter()
@@ -6941,7 +6959,10 @@ impl HnswIndex {
                 || BinaryHeap::<(OrderedFloat<f64>, u128)>::with_capacity(k + 1),
                 |mut heap, entry| {
                     let id = *entry.key();
-                    let node_vec = &entry.value().vector;
+                    let node = entry.value();
+                    let node_vec = vector_store
+                        .get(node.vector_index as usize)
+                        .unwrap_or(&node.vector);
 
                     // Get f32 slice without allocation
                     let node_f32_owned;
