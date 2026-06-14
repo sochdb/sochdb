@@ -94,6 +94,94 @@ mod rng_optimization_tests {
         );
     }
 
+    /// Regression test for the AVX2/FMA runtime-dispatch guard (HD-7).
+    ///
+    /// The dimension-specialized inline kernels execute AVX2+FMA intrinsics with
+    /// no per-call feature check; `calculate_distance` only enters them when
+    /// `dim_specialized_kernels_available()` is true. This forces that guard
+    /// false — the path an x86_64 CPU without AVX2/FMA takes — for every
+    /// specialized dimension and metric, asserting the generic fallback (a) does
+    /// not panic / SIGILL and (b) matches the native specialized path to within
+    /// floating-point reordering error. Runs on every host, so the fallback is
+    /// covered even on AVX2-capable CI runners.
+    #[test]
+    fn test_distance_fallback_matches_specialized_kernels() {
+        use crate::hnsw::FORCE_GENERIC_DISTANCE;
+
+        // Deterministic pseudo-random vector with components in [-0.5, 0.5).
+        let make = |dim: usize, seed: u64| -> QuantizedVector {
+            let mut s = seed;
+            let v: Vec<f32> = (0..dim)
+                .map(|_| {
+                    s = s
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    ((s >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+                })
+                .collect();
+            QuantizedVector::F32(Array1::from_vec(v))
+        };
+
+        // RAII guard so the thread-local resets even if an assertion panics.
+        struct ForceGeneric;
+        impl ForceGeneric {
+            fn on() -> Self {
+                FORCE_GENERIC_DISTANCE.with(|f| f.set(true));
+                ForceGeneric
+            }
+        }
+        impl Drop for ForceGeneric {
+            fn drop(&mut self) {
+                FORCE_GENERIC_DISTANCE.with(|f| f.set(false));
+            }
+        }
+
+        let dims = [128usize, 256, 384, 512, 768, 1024, 1536, 3072];
+        let metrics = [
+            DistanceMetric::Cosine,
+            DistanceMetric::Euclidean,
+            DistanceMetric::DotProduct,
+        ];
+
+        for &dim in &dims {
+            let a = make(dim, 0x1234_5678);
+            let b = make(dim, 0x9abc_def0);
+            for &metric in &metrics {
+                let config = HnswConfig {
+                    metric,
+                    // Disable the normalized fast path so calculate_distance
+                    // reaches the dimension-specialized kernel dispatch.
+                    rng_optimization: RngOptimizationConfig {
+                        normalize_at_ingest: false,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let index = HnswIndex::new(dim, config);
+
+                // Native path: inline AVX2 on x86+AVX2, NEON on aarch64.
+                let native = index.calculate_distance(&a, &b);
+
+                // Forced generic fallback: the AVX2-absent x86_64 path.
+                let fallback = {
+                    let _g = ForceGeneric::on();
+                    index.calculate_distance(&a, &b)
+                };
+
+                assert!(
+                    native.is_finite() && fallback.is_finite(),
+                    "non-finite distance: dim={dim} metric={metric:?} native={native} fallback={fallback}"
+                );
+                let tol = 1e-3 * (1.0 + native.abs().max(fallback.abs()));
+                assert!(
+                    (native - fallback).abs() <= tol,
+                    "fallback diverges from specialized kernel: dim={dim} metric={metric:?} \
+                     native={native} fallback={fallback} tol={tol}"
+                );
+            }
+        }
+    }
+
     /// Test that triangle inequality gating produces same results as original RNG
     #[test]
     fn test_triangle_inequality_equivalence() {

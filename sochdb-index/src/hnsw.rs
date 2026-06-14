@@ -96,6 +96,16 @@ use crate::vector_storage::VectorStorage;
 /// neighbor-list inline size cannot drift from the in-memory one.
 pub(crate) const MAX_M: usize = 64;
 
+// Test-only override that forces `calculate_distance` down the runtime-guarded
+// generic distance path, so the AVX2-absent fallback (see
+// `HnswIndex::dim_specialized_kernels_available`) can be exercised on any host
+// — including AVX2-capable CI runners and aarch64. Thread-local, so it is
+// parallel-test safe; compiled out entirely in non-test builds.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FORCE_GENERIC_DISTANCE: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
 // ==================== Task #11: Performance Cost Model Types ====================
 
 /// Adaptive performance monitor for automatic parameter optimization
@@ -8130,6 +8140,12 @@ impl HnswIndex {
     /// so the check is a cheap relaxed load after the first call.
     #[inline]
     fn dim_specialized_kernels_available() -> bool {
+        #[cfg(test)]
+        {
+            if FORCE_GENERIC_DISTANCE.with(|f| f.get()) {
+                return false;
+            }
+        }
         #[cfg(target_arch = "x86_64")]
         {
             std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
