@@ -3369,7 +3369,12 @@ impl HnswIndex {
         // =========================================================================
 
         let existing_nodes = self.nodes.len();
-        let scaffold_threshold = 10 * self.config.max_connections_layer0;
+        // Converged with insert_batch_contiguous (the production ingest path):
+        // a 2*M0 backbone seeds the parallel bulk phase just as well as the old
+        // 10*M0, while moving ~8x fewer inserts through the serialized scaffold
+        // (640 -> 128 at the default M0=64), so most inserts go through the
+        // parallel bulk path. Recall is gate-verified unchanged (recall_latency).
+        let scaffold_threshold = 2 * self.config.max_connections_layer0;
 
         // Only use scaffold if graph is cold (few existing nodes)
         if existing_nodes < scaffold_threshold {

@@ -112,7 +112,13 @@ fn main() {
     let n = env_usize("RECALL_N", 3000);
     let q = env_usize("RECALL_QUERIES", 100);
     let k = 10usize;
-    let dims = [768usize, 1536, 3072];
+    // RECALL_DIMS=768,1536 restricts the dimensions probed (faster iteration);
+    // defaults to the three the HD-1/HD-3 refactors target.
+    let dims: Vec<usize> = std::env::var("RECALL_DIMS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|d| d.trim().parse().ok()).collect())
+        .filter(|v: &Vec<usize>| !v.is_empty())
+        .unwrap_or_else(|| vec![768, 1536, 3072]);
 
     println!("HNSW recall@{k} + latency gate  (N={n}, queries={q}, metric=Cosine, seeded)\n");
     println!(
