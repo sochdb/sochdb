@@ -96,6 +96,16 @@ use crate::vector_storage::VectorStorage;
 /// neighbor-list inline size cannot drift from the in-memory one.
 pub(crate) const MAX_M: usize = 64;
 
+// Test-only override that forces `calculate_distance` down the runtime-guarded
+// generic distance path, so the AVX2-absent fallback (see
+// `HnswIndex::dim_specialized_kernels_available`) can be exercised on any host
+// — including AVX2-capable CI runners and aarch64. Thread-local, so it is
+// parallel-test safe; compiled out entirely in non-test builds.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FORCE_GENERIC_DISTANCE: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
 // ==================== Task #11: Performance Cost Model Types ====================
 
 /// Adaptive performance monitor for automatic parameter optimization
@@ -3359,7 +3369,12 @@ impl HnswIndex {
         // =========================================================================
 
         let existing_nodes = self.nodes.len();
-        let scaffold_threshold = 10 * self.config.max_connections_layer0;
+        // Converged with insert_batch_contiguous (the production ingest path):
+        // a 2*M0 backbone seeds the parallel bulk phase just as well as the old
+        // 10*M0, while moving ~8x fewer inserts through the serialized scaffold
+        // (640 -> 128 at the default M0=64), so most inserts go through the
+        // parallel bulk path. Recall is gate-verified unchanged (recall_latency).
+        let scaffold_threshold = 2 * self.config.max_connections_layer0;
 
         // Only use scaffold if graph is cold (few existing nodes)
         if existing_nodes < scaffold_threshold {
@@ -8117,6 +8132,35 @@ impl HnswIndex {
         }
     }
 
+    /// Whether the dimension-specialized inline SIMD kernels may be dispatched
+    /// on this host.
+    ///
+    /// The `*_distance_inline_*` kernels call AVX2+FMA intrinsics directly with
+    /// no per-call feature check, so on x86_64 they are sound only when the CPU
+    /// actually advertises `avx2`+`fma`. When it does not, callers must take the
+    /// runtime-guarded generic path instead (`*_quantized` in `vector_quantized`,
+    /// which dispatches through `simd_distance`). On aarch64 the kernels use NEON
+    /// (an architectural baseline) and on other targets a scalar fallback, so
+    /// both are always safe. `std::is_x86_feature_detected!` caches its result,
+    /// so the check is a cheap relaxed load after the first call.
+    #[inline]
+    fn dim_specialized_kernels_available() -> bool {
+        #[cfg(test)]
+        {
+            if FORCE_GENERIC_DISTANCE.with(|f| f.get()) {
+                return false;
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            true
+        }
+    }
+
     /// Calculate distance between vectors with inline optimization for common dimensions
     ///
     /// **Task 5 Implementation**: Specialized inline kernels for dimensions [128, 256, 512, 768, 1536]
@@ -8140,83 +8184,90 @@ impl HnswIndex {
 
                 // Inline kernels for most common embedding dimensions
                 // Covers: 128, 256, 384 (MiniLM), 512, 768 (BERT), 1024 (Cohere), 1536 (OpenAI), 3072 (OpenAI large)
-                match (self.config.metric, dim) {
-                    (DistanceMetric::Cosine, 128) => {
-                        return self.cosine_distance_inline_128(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Cosine, 256) => {
-                        return self.cosine_distance_inline_256(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Cosine, 384) => {
-                        return self.cosine_distance_inline_384(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Cosine, 512) => {
-                        return self.cosine_distance_inline_512(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Cosine, 768) => {
-                        return self.cosine_distance_inline_768(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Cosine, 1024) => {
-                        return self.cosine_distance_inline_1024(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Cosine, 1536) => {
-                        return self.cosine_distance_inline_1536(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Cosine, 3072) => {
-                        return self.cosine_distance_inline_3072(a_slice, b_slice);
-                    }
+                //
+                // The inline kernels invoke AVX2+FMA intrinsics unconditionally,
+                // so dispatch to them only when the host supports those features;
+                // otherwise fall through to the runtime-guarded generic path below
+                // (prevents UB / SIGILL on x86_64 CPUs without AVX2+FMA).
+                if Self::dim_specialized_kernels_available() {
+                    match (self.config.metric, dim) {
+                        (DistanceMetric::Cosine, 128) => {
+                            return self.cosine_distance_inline_128(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Cosine, 256) => {
+                            return self.cosine_distance_inline_256(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Cosine, 384) => {
+                            return self.cosine_distance_inline_384(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Cosine, 512) => {
+                            return self.cosine_distance_inline_512(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Cosine, 768) => {
+                            return self.cosine_distance_inline_768(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Cosine, 1024) => {
+                            return self.cosine_distance_inline_1024(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Cosine, 1536) => {
+                            return self.cosine_distance_inline_1536(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Cosine, 3072) => {
+                            return self.cosine_distance_inline_3072(a_slice, b_slice);
+                        }
 
-                    (DistanceMetric::Euclidean, 128) => {
-                        return self.l2_distance_inline_128(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Euclidean, 256) => {
-                        return self.l2_distance_inline_256(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Euclidean, 384) => {
-                        return self.l2_distance_inline_384(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Euclidean, 512) => {
-                        return self.l2_distance_inline_512(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Euclidean, 768) => {
-                        return self.l2_distance_inline_768(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Euclidean, 1024) => {
-                        return self.l2_distance_inline_1024(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Euclidean, 1536) => {
-                        return self.l2_distance_inline_1536(a_slice, b_slice);
-                    }
-                    (DistanceMetric::Euclidean, 3072) => {
-                        return self.l2_distance_inline_3072(a_slice, b_slice);
-                    }
+                        (DistanceMetric::Euclidean, 128) => {
+                            return self.l2_distance_inline_128(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Euclidean, 256) => {
+                            return self.l2_distance_inline_256(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Euclidean, 384) => {
+                            return self.l2_distance_inline_384(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Euclidean, 512) => {
+                            return self.l2_distance_inline_512(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Euclidean, 768) => {
+                            return self.l2_distance_inline_768(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Euclidean, 1024) => {
+                            return self.l2_distance_inline_1024(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Euclidean, 1536) => {
+                            return self.l2_distance_inline_1536(a_slice, b_slice);
+                        }
+                        (DistanceMetric::Euclidean, 3072) => {
+                            return self.l2_distance_inline_3072(a_slice, b_slice);
+                        }
 
-                    (DistanceMetric::DotProduct, 128) => {
-                        return -self.dot_product_inline_128(a_slice, b_slice);
-                    }
-                    (DistanceMetric::DotProduct, 256) => {
-                        return -self.dot_product_inline_256(a_slice, b_slice);
-                    }
-                    (DistanceMetric::DotProduct, 384) => {
-                        return -self.dot_product_inline_384(a_slice, b_slice);
-                    }
-                    (DistanceMetric::DotProduct, 512) => {
-                        return -self.dot_product_inline_512(a_slice, b_slice);
-                    }
-                    (DistanceMetric::DotProduct, 768) => {
-                        return -self.dot_product_inline_768(a_slice, b_slice);
-                    }
-                    (DistanceMetric::DotProduct, 1024) => {
-                        return -self.dot_product_inline_1024(a_slice, b_slice);
-                    }
-                    (DistanceMetric::DotProduct, 1536) => {
-                        return -self.dot_product_inline_1536(a_slice, b_slice);
-                    }
-                    (DistanceMetric::DotProduct, 3072) => {
-                        return -self.dot_product_inline_3072(a_slice, b_slice);
-                    }
+                        (DistanceMetric::DotProduct, 128) => {
+                            return -self.dot_product_inline_128(a_slice, b_slice);
+                        }
+                        (DistanceMetric::DotProduct, 256) => {
+                            return -self.dot_product_inline_256(a_slice, b_slice);
+                        }
+                        (DistanceMetric::DotProduct, 384) => {
+                            return -self.dot_product_inline_384(a_slice, b_slice);
+                        }
+                        (DistanceMetric::DotProduct, 512) => {
+                            return -self.dot_product_inline_512(a_slice, b_slice);
+                        }
+                        (DistanceMetric::DotProduct, 768) => {
+                            return -self.dot_product_inline_768(a_slice, b_slice);
+                        }
+                        (DistanceMetric::DotProduct, 1024) => {
+                            return -self.dot_product_inline_1024(a_slice, b_slice);
+                        }
+                        (DistanceMetric::DotProduct, 1536) => {
+                            return -self.dot_product_inline_1536(a_slice, b_slice);
+                        }
+                        (DistanceMetric::DotProduct, 3072) => {
+                            return -self.dot_product_inline_3072(a_slice, b_slice);
+                        }
 
-                    _ => {} // Fall through to generic SIMD implementation
+                        _ => {} // Fall through to generic SIMD implementation
+                    }
                 }
             }
         }
