@@ -164,11 +164,16 @@ impl MemoryBlock {
     /// Returns None if the block doesn't have enough space.
     #[inline]
     fn allocate(&self, size: usize, align: usize) -> Option<NonNull<u8>> {
+        let base = self.data.as_ptr() as usize;
         loop {
             let current = self.offset.load(Ordering::Relaxed);
 
-            // Calculate aligned offset
-            let aligned = (current + align - 1) & !(align - 1);
+            // Align the absolute address, not just the offset. The block base is
+            // only guaranteed to be `MIN_ALIGN`-aligned, so aligning the offset
+            // alone does not guarantee the returned pointer meets `align`.
+            let current_addr = base + current;
+            let aligned_addr = (current_addr + align - 1) & !(align - 1);
+            let aligned = aligned_addr - base;
             let new_offset = aligned + size;
 
             if new_offset > self.size {
