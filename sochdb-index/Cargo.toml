@@ -97,3 +97,7 @@ harness = false
 [[bench]]
 name = "perf_regression"
 harness = false
+
+[[bench]]
+name = "recall_latency"
+harness = false
