@@ -5,7 +5,15 @@
 
 ## What is SochDB?
 
-SochDB is a **single database** that replaces your vector DB + relational DB + prompt packer stack. Store structured data, embeddings, and conversation history together—then ask SochDB to assemble token-optimized context for your LLM.
+SochDB is an **embedded, AI-native database** that puts your structured data, embeddings, and agent memory in **one engine, one file** — then assembles token-budgeted context for your LLM in a single query.
+
+Instead of wiring a relational DB + a vector DB + a cache + prompt-packing glue, you get it all on one ACID, columnar storage engine — embedded, offline-capable, no servers:
+
+- **SQL** — SQL-92-compatible with `JOIN`s, aggregates (`GROUP BY` / `SUM` / `AVG` / `HAVING`), and MySQL/PostgreSQL/SQLite dialect normalization
+- **Vector + keyword hybrid search** — HNSW vectors fused with BM25 via Reciprocal Rank Fusion
+- **Bi-temporal knowledge graph** — relationships with point-in-time ("as-of") recall
+- **Context Query Builder** — multi-source fusion under a token budget, with TOON dense output
+- **Full ACID** — MVCC + WAL + Serializable Snapshot Isolation
 
 ## Comparison
 
@@ -95,7 +103,7 @@ SochDB is a **single database** that replaces your vector DB + relational DB + p
                                       │
                     ┌─────────────────┴─────────────────┐
                     │  😎 What you actually ship:       │
-                    │  • Single ~700KB embedded DB      │
+                    │  • Single ~2.5MB embedded lib     │
                     │  • Zero external dependencies     │
                     │  • Works offline                  │
                     │  • Deploys anywhere               │
@@ -117,10 +125,11 @@ SochDB is a **single database** that replaces your vector DB + relational DB + p
 
 ## Key Features
 
+🗃️ **Real SQL** — SQL-92-compatible engine with `JOIN`s, aggregates (`GROUP BY`/`SUM`/`AVG`/`HAVING`), and MySQL/PostgreSQL/SQLite dialect normalization  
 🧠 **Context Query Builder** — Assemble system + user + history + retrieval under a token budget  
 🔍 **Hybrid Search** — HNSW vectors + BM25 keywords with reciprocal rank fusion  
-🕸️ **Graph Overlay** — Lightweight relationship tracking for agent memory  
-⚡ **Embedded-First** — ~700KB binary, no runtime dependencies, SQLite-style simplicity  
+🕸️ **Graph + Time-Travel** — Property graph with bi-temporal, point-in-time recall  
+⚡ **Embedded-First** — single ~2.5 MB native library, no runtime dependencies, SQLite-style simplicity  
 🔒 **Full ACID** — MVCC + WAL + Serializable Snapshot Isolation  
 📊 **Columnar Storage** — Read only the columns you need  
 
@@ -164,9 +173,6 @@ SochDB is a **single database** that replaces your vector DB + relational DB + p
 - **Bulk vector operations** for high-throughput ingestion
   - **BatchAccumulator**: deferred graph construction — 4–5× faster inserts via zero-FFI numpy accumulation + single bulk Rayon-parallel HNSW build
 
-### Known limits
-
-- **Single-node only** (no replication / clustering yet)
 ---
 
 ## 📦 Quick Start
@@ -1562,11 +1568,12 @@ cargo bench
 
 ---
 
-## ⚠️ Before heavy production use
+## 🛠 Running in production
 
-* **Single node** (no replication / clustering)
-* **WAL growth**: call `checkpoint()` periodically for long-running services (auto-trigger config available via `CheckpointConfig`)
-* **Group commit**: tune per workload (disable for strictly sequential writes)
+SochDB runs as a **single-node embedded engine** today (distributed replication/clustering is on the [roadmap](#-cloud-roadmap)) — ideal for local-first, edge, and per-service deployments. A couple of knobs let you tune it to your workload:
+
+* **Checkpointing**: call `checkpoint()` periodically for long-running services to keep the WAL compact — or enable automatic triggering via `CheckpointConfig`.
+* **Group commit**: tune per workload for throughput vs. latency (disable for strictly sequential writes).
 
 ---
 
