@@ -55,7 +55,8 @@ fn search_exact_does_not_crash_768_cosine_default() {
         })
         .collect();
     truth.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    let truth_top: std::collections::HashSet<u128> = truth[..10].iter().map(|(id, _)| *id).collect();
+    let truth_top: std::collections::HashSet<u128> =
+        truth[..10].iter().map(|(id, _)| *id).collect();
 
     // This is the call that segfaults via the SDK (hnsw_search_exact -> search_exact).
     let res = index.search_exact(&q, 10).expect("search_exact failed");
@@ -70,7 +71,9 @@ fn search_exact_does_not_crash_768_cosine_default() {
     );
 
     // The f64 variant must also read real vectors (it returned empty-vector garbage before).
-    let res_f64 = index.search_exact_f64(&q, 10).expect("search_exact_f64 failed");
+    let res_f64 = index
+        .search_exact_f64(&q, 10)
+        .expect("search_exact_f64 failed");
     let got_f64: std::collections::HashSet<u128> = res_f64.iter().map(|(id, _)| *id).collect();
     assert!(
         got_f64.intersection(&truth_top).count() >= 9,

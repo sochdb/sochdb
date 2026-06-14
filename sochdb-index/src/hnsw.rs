@@ -5113,7 +5113,7 @@ impl HnswIndex {
         let candidates = self.search_layer_zero_lock(
             query,
             &curr_nearest,
-            self.effective_ef_search().max(k),
+            self.beam_for(k),
             0,
             &vector_store,
             &internal_nodes,
@@ -5221,7 +5221,7 @@ impl HnswIndex {
         let candidates = self.search_layer_zero_flat(
             query,
             &curr_nearest,
-            self.effective_ef_search().max(k),
+            self.beam_for(k),
             &vector_store,
             &internal_nodes,
             &flat_neighbors,
@@ -5557,7 +5557,10 @@ impl HnswIndex {
     ) -> Vec<SearchCandidate> {
         // Rec 9: local id→dense cache eliminates DashMap from hot loop
         let mut id_to_dense: rustc_hash::FxHashMap<u128, u32> =
-            rustc_hash::FxHashMap::with_capacity_and_hasher(num_to_return * 2, rustc_hash::FxBuildHasher::default());
+            rustc_hash::FxHashMap::with_capacity_and_hasher(
+                num_to_return * 2,
+                rustc_hash::FxBuildHasher::default(),
+            );
 
         with_scratch_buffers(|scratch| {
             // Initialize with entry points — resolve dense via internal_nodes or DashMap fallback
@@ -5893,7 +5896,7 @@ impl HnswIndex {
         let candidates = self.search_layer_ref(
             &query_quantized,
             &curr_nearest,
-            self.effective_ef_search().max(k),
+            self.beam_for(k),
             0,
             &vector_store,
             &internal_nodes,
@@ -6056,12 +6059,8 @@ impl HnswIndex {
                 curr_nearest = self.search_layer_concurrent(query_quantized, &curr_nearest, 1, lc);
             }
 
-            let candidates = self.search_layer_concurrent(
-                query_quantized,
-                &curr_nearest,
-                self.effective_ef_search().max(k),
-                0,
-            );
+            let candidates =
+                self.search_layer_concurrent(query_quantized, &curr_nearest, self.beam_for(k), 0);
 
             per_query_candidates.push(candidates);
         }
@@ -6664,7 +6663,10 @@ impl HnswIndex {
         let mut results: BinaryHeap<Reverse<SearchCandidate>> = BinaryHeap::new();
         let mut visited: HashSet<u32> = HashSet::with_capacity(ef.saturating_mul(8).max(64));
         let mut id_to_dense: rustc_hash::FxHashMap<u128, u32> =
-            rustc_hash::FxHashMap::with_capacity_and_hasher(ef.saturating_mul(8).max(64), rustc_hash::FxBuildHasher::default());
+            rustc_hash::FxHashMap::with_capacity_and_hasher(
+                ef.saturating_mul(8).max(64),
+                rustc_hash::FxBuildHasher::default(),
+            );
 
         let use_normalized = self.use_normalized_fast_path();
 
@@ -7123,6 +7125,19 @@ impl HnswIndex {
         self.adaptive_ef.load(AtomicOrdering::Relaxed)
     }
 
+    /// Per-query layer-0 search beam width, capped to `max(2k, EF_FLOOR)`.
+    ///
+    /// Recall@k plateaus once the beam exceeds ~2k, so a flat ef_search (e.g.
+    /// 500) wastes ~1.7-2.7x search latency for typical small k at no recall
+    /// gain. The `.max(k)` keeps large-k callers (e.g. filtered over-fetch that
+    /// requests many candidates) at a wide-enough beam, so this never starves
+    /// them. `effective_ef_search()` is still honored as the upper bound.
+    #[inline]
+    pub(crate) fn beam_for(&self, k: usize) -> usize {
+        const EF_FLOOR: usize = 64;
+        self.effective_ef_search().min((2 * k).max(EF_FLOOR)).max(k)
+    }
+
     /// Get the current effective ef_search value (honors runtime overrides).
     pub fn get_ef_search(&self) -> usize {
         self.effective_ef_search()
@@ -7160,7 +7175,10 @@ impl HnswIndex {
     ) -> Vec<SearchCandidate> {
         // Rec 9: local id→dense cache eliminates DashMap from hot loop
         let mut id_to_dense: rustc_hash::FxHashMap<u128, u32> =
-            rustc_hash::FxHashMap::with_capacity_and_hasher(num_to_return * 2, rustc_hash::FxBuildHasher::default());
+            rustc_hash::FxHashMap::with_capacity_and_hasher(
+                num_to_return * 2,
+                rustc_hash::FxBuildHasher::default(),
+            );
 
         with_scratch_buffers(|scratch| {
             for ep in entry_points {
@@ -7355,7 +7373,10 @@ impl HnswIndex {
         let internal_nodes = self.internal_nodes.read_recursive();
         // Rec 9: local id→dense cache eliminates DashMap from hot loop
         let mut id_to_dense: rustc_hash::FxHashMap<u128, u32> =
-            rustc_hash::FxHashMap::with_capacity_and_hasher(num_to_return * 2, rustc_hash::FxBuildHasher::default());
+            rustc_hash::FxHashMap::with_capacity_and_hasher(
+                num_to_return * 2,
+                rustc_hash::FxBuildHasher::default(),
+            );
 
         with_scratch_buffers(|scratch| {
             for ep in entry_points {
