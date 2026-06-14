@@ -2311,7 +2311,7 @@ mod sharded_vector_store_tests {
 pub struct HnswIndex {
     pub(crate) config: HnswConfig,
     /// Node storage using DashMap (sharded RwLocks, NOT lock-free but highly concurrent)
-    pub(crate) nodes: Arc<DashMap<u128, Arc<HnswNode>>>,
+    pub(crate) nodes: Arc<DashMap<u128, Arc<HnswNode>, rustc_hash::FxBuildHasher>>,
     /// Atomic navigation state: packed (dense_entry_point, max_layer) in a single AtomicU64.
     /// Replaces separate RwLock<Option<u128>> entry_point + RwLock<usize> max_layer
     /// to eliminate TOCTOU race where a reader could see (entry_point=A, max_layer=B)
@@ -2420,7 +2420,7 @@ impl HnswIndex {
         let max_neighbors = config.max_connections * 2; // Layer 0 has 2*M neighbors
         Self {
             config,
-            nodes: Arc::new(DashMap::new()),
+            nodes: Arc::new(DashMap::with_hasher(rustc_hash::FxBuildHasher::default())),
             nav_state: AtomicNavigationState::new(),
             dimension,
             adaptive_ef: AtomicUsize::new(default_ef),
@@ -2467,7 +2467,7 @@ impl HnswIndex {
         let max_neighbors = config.max_connections * 2;
         Self {
             config,
-            nodes: Arc::new(DashMap::new()),
+            nodes: Arc::new(DashMap::with_hasher(rustc_hash::FxBuildHasher::default())),
             nav_state: AtomicNavigationState::new(),
             dimension,
             adaptive_ef: AtomicUsize::new(default_ef),
@@ -2838,17 +2838,20 @@ impl HnswIndex {
         let mut worst_idx = 0;
         let mut worst_dist = f32::NEG_INFINITY;
 
-        for (idx, &existing_neighbor_id) in layer_data.neighbors.iter().enumerate() {
-            if let Some(existing_id) = self.dense_to_node_id(existing_neighbor_id) {
-                if let Some(existing_node) = self.nodes.get(&existing_id) {
-                    let existing_vector = vector_store
-                        .get(existing_node.vector_index as usize)
-                        .unwrap_or(&existing_node.vector);
-                    let dist = self.calculate_distance_pq(neighbor_vector, existing_vector);
-                    if dist > worst_dist {
-                        worst_dist = dist;
-                        worst_idx = idx;
-                    }
+        // Resolve existing neighbors via the O(1) internal_nodes array (the list
+        // already stores dense indices) instead of a dense->id->DashMap round-trip.
+        // Same vectors/distances => recall-neutral; removes a parallel-build
+        // contention point (this gave the largest insert speedup in profiling).
+        let internal_nodes = self.internal_nodes.read_recursive();
+        for (idx, &existing_dense) in layer_data.neighbors.iter().enumerate() {
+            if let Some(Some(existing_node)) = internal_nodes.get(existing_dense as usize) {
+                let existing_vector = vector_store
+                    .get(existing_node.vector_index as usize)
+                    .unwrap_or(&existing_node.vector);
+                let dist = self.calculate_distance_pq(neighbor_vector, existing_vector);
+                if dist > worst_dist {
+                    worst_dist = dist;
+                    worst_idx = idx;
                 }
             }
         }
@@ -5553,8 +5556,8 @@ impl HnswIndex {
         internal_nodes: &[Option<Arc<HnswNode>>],
     ) -> Vec<SearchCandidate> {
         // Rec 9: local id→dense cache eliminates DashMap from hot loop
-        let mut id_to_dense: std::collections::HashMap<u128, u32> =
-            std::collections::HashMap::with_capacity(num_to_return * 2);
+        let mut id_to_dense: rustc_hash::FxHashMap<u128, u32> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(num_to_return * 2, rustc_hash::FxBuildHasher::default());
 
         with_scratch_buffers(|scratch| {
             // Initialize with entry points — resolve dense via internal_nodes or DashMap fallback
@@ -6651,7 +6654,7 @@ impl HnswIndex {
         F: Fn(u128) -> bool,
     {
         use std::cmp::Reverse;
-        use std::collections::{BinaryHeap, HashMap, HashSet};
+        use std::collections::{BinaryHeap, HashSet};
 
         // Frontier: SearchCandidate's Ord is reversed, so this max-heap pops the
         // CLOSEST unexpanded node first.
@@ -6660,8 +6663,8 @@ impl HnswIndex {
         // result at peek() so it can be evicted for a closer allowed node.
         let mut results: BinaryHeap<Reverse<SearchCandidate>> = BinaryHeap::new();
         let mut visited: HashSet<u32> = HashSet::with_capacity(ef.saturating_mul(8).max(64));
-        let mut id_to_dense: HashMap<u128, u32> =
-            HashMap::with_capacity(ef.saturating_mul(8).max(64));
+        let mut id_to_dense: rustc_hash::FxHashMap<u128, u32> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(ef.saturating_mul(8).max(64), rustc_hash::FxBuildHasher::default());
 
         let use_normalized = self.use_normalized_fast_path();
 
@@ -7135,8 +7138,8 @@ impl HnswIndex {
         internal_nodes: &[Option<Arc<HnswNode>>],
     ) -> Vec<SearchCandidate> {
         // Rec 9: local id→dense cache eliminates DashMap from hot loop
-        let mut id_to_dense: std::collections::HashMap<u128, u32> =
-            std::collections::HashMap::with_capacity(num_to_return * 2);
+        let mut id_to_dense: rustc_hash::FxHashMap<u128, u32> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(num_to_return * 2, rustc_hash::FxBuildHasher::default());
 
         with_scratch_buffers(|scratch| {
             for ep in entry_points {
@@ -7209,7 +7212,7 @@ impl HnswIndex {
         scratch: &mut crate::scratch_buffers::ScratchBuffers,
         vector_store: &[QuantizedVector],
         internal_nodes: &[Option<Arc<HnswNode>>],
-        id_to_dense: &mut std::collections::HashMap<u128, u32>,
+        id_to_dense: &mut rustc_hash::FxHashMap<u128, u32>,
     ) {
         use std::cmp::Reverse;
         const PREFETCH_DISTANCE: usize = 4;
@@ -7330,8 +7333,8 @@ impl HnswIndex {
         let vector_store = self.vector_store.read_recursive();
         let internal_nodes = self.internal_nodes.read_recursive();
         // Rec 9: local id→dense cache eliminates DashMap from hot loop
-        let mut id_to_dense: std::collections::HashMap<u128, u32> =
-            std::collections::HashMap::with_capacity(num_to_return * 2);
+        let mut id_to_dense: rustc_hash::FxHashMap<u128, u32> =
+            rustc_hash::FxHashMap::with_capacity_and_hasher(num_to_return * 2, rustc_hash::FxBuildHasher::default());
 
         with_scratch_buffers(|scratch| {
             for ep in entry_points {
@@ -7400,7 +7403,7 @@ impl HnswIndex {
         scratch: &mut crate::scratch_buffers::ScratchBuffers,
         vector_store: &[QuantizedVector],
         internal_nodes: &[Option<Arc<HnswNode>>],
-        id_to_dense: &mut std::collections::HashMap<u128, u32>,
+        id_to_dense: &mut rustc_hash::FxHashMap<u128, u32>,
     ) {
         use std::cmp::Reverse;
         // Fast-path: if not constructing, skip the RwLock entirely.
@@ -8082,6 +8085,12 @@ impl HnswIndex {
     /// - Direct register allocation for small vectors
     #[inline]
     pub(crate) fn calculate_distance(&self, a: &QuantizedVector, b: &QuantizedVector) -> f32 {
+        // Normalized fast path: cosine on unit-normalized vectors == 1 - dot(a,b).
+        // Skip the redundant norm SIMD work (3 accumulators -> 1); identical
+        // ordering for unit vectors, so recall is unchanged.
+        if self.use_normalized_fast_path() {
+            return self.calculate_distance_normalized(a, b);
+        }
         // Fast path for common dimensions with inline SIMD kernels
         if let (QuantizedVector::F32(a_arr), QuantizedVector::F32(b_arr)) = (a, b) {
             if let (Some(a_slice), Some(b_slice)) = (a_arr.as_slice(), b_arr.as_slice()) {
