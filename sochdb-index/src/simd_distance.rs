@@ -308,18 +308,50 @@ pub unsafe fn dot_product_avx2(a: &[f32], b: &[f32]) -> f32 {
     use std::arch::x86_64::*;
 
     let n = a.len();
-    let mut sum = _mm256_setzero_ps();
+    // Four independent accumulators to hide FMA latency (~4-5 cyc) with ILP — a
+    // single dependent chain is latency-bound at ~1 FMA / 4-5 cyc, leaving the
+    // FMA units idle. Mirrors l2_squared_avx2 / dot_product_neon. Float
+    // reassociation only (≈1e-6, within the SIMD-vs-scalar consistency tolerance).
+    let mut sum0 = _mm256_setzero_ps();
+    let mut sum1 = _mm256_setzero_ps();
+    let mut sum2 = _mm256_setzero_ps();
+    let mut sum3 = _mm256_setzero_ps();
 
     let chunks = n / 8;
+    let chunks4 = chunks / 4;
     let a_ptr = a.as_ptr();
     let b_ptr = b.as_ptr();
 
-    for i in 0..chunks {
+    for i in 0..chunks4 {
+        let base = i * 32;
+
+        let va0 = _mm256_loadu_ps(a_ptr.add(base));
+        let vb0 = _mm256_loadu_ps(b_ptr.add(base));
+        sum0 = _mm256_fmadd_ps(va0, vb0, sum0);
+
+        let va1 = _mm256_loadu_ps(a_ptr.add(base + 8));
+        let vb1 = _mm256_loadu_ps(b_ptr.add(base + 8));
+        sum1 = _mm256_fmadd_ps(va1, vb1, sum1);
+
+        let va2 = _mm256_loadu_ps(a_ptr.add(base + 16));
+        let vb2 = _mm256_loadu_ps(b_ptr.add(base + 16));
+        sum2 = _mm256_fmadd_ps(va2, vb2, sum2);
+
+        let va3 = _mm256_loadu_ps(a_ptr.add(base + 24));
+        let vb3 = _mm256_loadu_ps(b_ptr.add(base + 24));
+        sum3 = _mm256_fmadd_ps(va3, vb3, sum3);
+    }
+
+    for i in (chunks4 * 4)..chunks {
         let offset = i * 8;
         let va = _mm256_loadu_ps(a_ptr.add(offset));
         let vb = _mm256_loadu_ps(b_ptr.add(offset));
-        sum = _mm256_fmadd_ps(va, vb, sum);
+        sum0 = _mm256_fmadd_ps(va, vb, sum0);
     }
+
+    let sum01 = _mm256_add_ps(sum0, sum1);
+    let sum23 = _mm256_add_ps(sum2, sum3);
+    let sum = _mm256_add_ps(sum01, sum23);
 
     // Horizontal sum
     let sum_high = _mm256_extractf128_ps(sum, 1);
@@ -458,18 +490,50 @@ pub unsafe fn dot_product_avx512(a: &[f32], b: &[f32]) -> f32 {
     use std::arch::x86_64::*;
 
     let n = a.len();
-    let mut sum = _mm512_setzero_ps();
+    // Four independent accumulators for FMA-latency-hiding ILP (see
+    // dot_product_avx2). Float reassociation only; within consistency tolerance.
+    let mut sum0 = _mm512_setzero_ps();
+    let mut sum1 = _mm512_setzero_ps();
+    let mut sum2 = _mm512_setzero_ps();
+    let mut sum3 = _mm512_setzero_ps();
 
     let chunks = n / 16;
+    let chunks4 = chunks / 4;
     let a_ptr = a.as_ptr();
     let b_ptr = b.as_ptr();
 
-    for i in 0..chunks {
+    for i in 0..chunks4 {
+        let base = i * 64;
+        sum0 = _mm512_fmadd_ps(
+            _mm512_loadu_ps(a_ptr.add(base)),
+            _mm512_loadu_ps(b_ptr.add(base)),
+            sum0,
+        );
+        sum1 = _mm512_fmadd_ps(
+            _mm512_loadu_ps(a_ptr.add(base + 16)),
+            _mm512_loadu_ps(b_ptr.add(base + 16)),
+            sum1,
+        );
+        sum2 = _mm512_fmadd_ps(
+            _mm512_loadu_ps(a_ptr.add(base + 32)),
+            _mm512_loadu_ps(b_ptr.add(base + 32)),
+            sum2,
+        );
+        sum3 = _mm512_fmadd_ps(
+            _mm512_loadu_ps(a_ptr.add(base + 48)),
+            _mm512_loadu_ps(b_ptr.add(base + 48)),
+            sum3,
+        );
+    }
+
+    for i in (chunks4 * 4)..chunks {
         let offset = i * 16;
         let va = _mm512_loadu_ps(a_ptr.add(offset));
         let vb = _mm512_loadu_ps(b_ptr.add(offset));
-        sum = _mm512_fmadd_ps(va, vb, sum);
+        sum0 = _mm512_fmadd_ps(va, vb, sum0);
     }
+
+    let sum = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
 
     // Reduce to scalar
     let mut result = _mm512_reduce_add_ps(sum);
