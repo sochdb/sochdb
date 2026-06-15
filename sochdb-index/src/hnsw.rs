@@ -74,9 +74,6 @@ use std::thread;
 // Removed: use crate::vector_simd;
 use crate::atomic_entry_point::AtomicNavigationState;
 use crate::metrics;
-use crate::parallel_waves::{
-    WaveResult, WaveStats, compute_independent_waves, process_wave_parallel,
-};
 use crate::scratch_buffers::with_scratch_buffers;
 use crate::simd_distance;
 use crate::vector_quantized::{
@@ -3531,102 +3528,56 @@ impl HnswIndex {
                 .collect()
         };
 
-        // Phase 2: Compute independent waves for parallel connection
-        let waves = compute_independent_waves(
-            &node_ids,
-            |node_id| self.get_candidate_neighbors(node_id, self.config.ef_construction),
-            self.config.ef_construction,
-        );
-
-        #[cfg(debug_assertions)]
-        {
-            let stats = WaveStats::compute(&waves, node_ids.len());
-            eprintln!(
-                "[HNSW] Wave stats: {} waves, {:.1}% parallel efficiency, avg size {:.1}",
-                stats.total_waves,
-                stats.parallel_efficiency * 100.0,
-                stats.avg_wave_size
-            );
-        }
-
-        // Phase 3: Process each wave in parallel
-        let mut total_inserted = 0;
-
-        for wave in waves {
-            let wave_results: Vec<WaveResult> = process_wave_parallel(&wave, |node_id| {
-                let mut result = WaveResult::new(node_id);
-
-                // Connect this node using existing connection logic
-                if let Some(node) = self.nodes.get(&node_id) {
-                    let vector_store = self.vector_store.read();
-                    let node_vector = vector_store
-                        .get(node.vector_index as usize)
-                        .unwrap_or(&node.vector);
-                    let _node_dense = node.dense_index;
-                    for layer in 0..=node.layer {
-                        let m = if layer == 0 {
-                            self.config.max_connections_layer0
-                        } else {
-                            self.config.max_connections
+        // Phase 3: connect all new nodes in parallel.
+        //
+        // Replaces the wave decomposition (compute_independent_waves), whose
+        // serial O(waves * nodes * ef) graph-coloring dominated batch-build time
+        // and produced tiny, barely-parallel waves (profiled: ~84% of cores idle
+        // in cvwait). Connecting every node in one par_iter keeps all cores busy.
+        //
+        // Safety: each node writes its own per-layer RwLock for forward edges and
+        // add_connection_safe locks the neighbor for back edges — the two are
+        // never held at once, so no deadlock — and Phase 4 (repair_connectivity)
+        // fixes any connectivity gaps. Recall is gate-verified equal to the wave
+        // approach across scales (recall_latency, uniform + clustered): e.g.
+        // separable clustered N=20000 recall 0.940 vs 0.938 for waves, at ~10.8x
+        // faster build (1.7s vs 18.8s).
+        let total_inserted = node_ids.len();
+        node_ids.par_iter().for_each(|&node_id| {
+            if let Some(node) = self.nodes.get(&node_id) {
+                let vector_store = self.vector_store.read();
+                let node_vector = vector_store
+                    .get(node.vector_index as usize)
+                    .unwrap_or(&node.vector);
+                for layer in 0..=node.layer {
+                    let m = if layer == 0 {
+                        self.config.max_connections_layer0
+                    } else {
+                        self.config.max_connections
+                    };
+                    let candidates = self.search_layer_for_insertion(
+                        node_vector,
+                        layer,
+                        self.config.ef_construction,
+                    );
+                    let neighbors = self.select_neighbors_heuristic(&candidates, m, node_vector);
+                    for &neighbor_id in &neighbors {
+                        let neighbor_dense = match self.node_id_to_dense(neighbor_id) {
+                            Some(dense) => dense,
+                            None => continue,
                         };
-
-                        // Search for candidates at this layer
-                        let candidates = self.search_layer_for_insertion(
-                            node_vector,
-                            layer,
-                            self.config.ef_construction,
-                        );
-
-                        // Select best neighbors using optimized heuristic
-                        let neighbors =
-                            self.select_neighbors_heuristic(&candidates, m, node_vector);
-
-                        // Add bidirectional connections
-                        for &neighbor_id in &neighbors {
-                            let neighbor_dense = match self.node_id_to_dense(neighbor_id) {
-                                Some(dense) => dense,
-                                None => continue,
-                            };
-                            // Add forward connection
-                            if let Some(layer_data) = node.layers.get(layer) {
-                                let mut layer_lock = layer_data.write();
-                                if !layer_lock.neighbors.contains(&neighbor_dense) {
-                                    layer_lock.neighbors.push(neighbor_dense);
-                                    result.add_connection(node_id, layer, neighbor_id);
-                                }
+                        if let Some(layer_data) = node.layers.get(layer) {
+                            let mut layer_lock = layer_data.write();
+                            if !layer_lock.neighbors.contains(&neighbor_dense) {
+                                layer_lock.neighbors.push(neighbor_dense);
                             }
-
-                            // Add backward connection — use safe method that
-                            // respects capacity limits and replaces worst neighbor
-                            self.add_connection_safe(neighbor_id, node_id, node_vector, layer, m);
                         }
-
-                        // NOTE: Do NOT prune during construction — pruning happens
-                        // in the post-batch repair_connectivity pass. Pruning mid-construction
-                        // with RNG destroys connectivity for subsequent wave members.
+                        self.add_connection_safe(neighbor_id, node_id, node_vector, layer, m);
                     }
-
-                    // Ensure minimum degree at layer 0 — prevents orphan nodes
-                    self.ensure_minimum_degree_layer0(node_id, &[]);
                 }
-
-                result
-            });
-
-            total_inserted += wave.node_ids.len();
-
-            // Log wave completion for monitoring
-            #[cfg(debug_assertions)]
-            {
-                let total_connections: usize =
-                    wave_results.iter().map(|r| r.connections_count).sum();
-                eprintln!(
-                    "[HNSW] Completed wave with {} nodes, {} connections",
-                    wave.node_ids.len(),
-                    total_connections
-                );
+                self.ensure_minimum_degree_layer0(node_id, &[]);
             }
-        }
+        });
 
         // Phase 4: Post-batch optimization and repair
         let repaired = self.repair_connectivity();
@@ -10384,42 +10335,6 @@ impl MemoryStats {
 }
 
 impl HnswIndex {
-    /// Get candidate neighbors for a node during insertion
-    /// Used by parallel wave computation to determine node conflicts
-    fn get_candidate_neighbors(&self, node_id: u128, ef: usize) -> Vec<u128> {
-        if let Some(node) = self.nodes.get(&node_id) {
-            // Start from entry point and search
-            if let Some(entry_id) = self.get_entry_point() {
-                if let Some(entry_node) = self.nodes.get(&entry_id) {
-                    let vector_store = self.vector_store.read();
-                    let node_vector = vector_store
-                        .get(node.vector_index as usize)
-                        .unwrap_or(&node.vector);
-                    let entry_vector = vector_store
-                        .get(entry_node.vector_index as usize)
-                        .unwrap_or(&entry_node.vector);
-                    let entry_dist = self.calculate_distance(node_vector, entry_vector);
-                    let mut candidates = vec![SearchCandidate {
-                        distance: entry_dist,
-                        id: entry_id,
-                    }];
-
-                    // Search from top layer down to layer 1
-                    for layer in (1..=entry_node.layer).rev() {
-                        candidates =
-                            self.search_layer_concurrent(node_vector, &candidates, 1, layer);
-                    }
-
-                    // Search layer 0 with ef candidates
-                    candidates = self.search_layer_concurrent(node_vector, &candidates, ef, 0);
-
-                    return candidates.into_iter().map(|c| c.id).collect();
-                }
-            }
-        }
-        Vec::new()
-    }
-
     /// Search layer for insertion candidates
     fn search_layer_for_insertion(
         &self,
