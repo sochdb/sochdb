@@ -48,6 +48,7 @@
 //! 3. **Uncommitted Rollback**: Transactions without commit record are discarded
 //! 4. **Checkpoint Safety**: Checkpoint marker allows safe WAL truncation
 
+use crate::encryption::EncryptionEngine;
 use byteorder::{LittleEndian, ReadBytesExt};
 use parking_lot::Mutex;
 use sochdb_core::{Result, SochDBError, WalRecordType};
@@ -56,6 +57,7 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -118,6 +120,75 @@ const CHECKSUM_SIZE: usize = 4;
 
 /// Default capacity for transaction-local WAL buffer (32 KB - typical batch of 100-500 writes)
 const DEFAULT_TXN_BUFFER_CAPACITY: usize = 32 * 1024;
+
+// =============================================================================
+// At-rest encryption framing (Task 3B)
+// =============================================================================
+//
+// When the WAL's `EncryptionEngine` is enabled, each record is written as an
+// encrypted frame instead of the plaintext frame above:
+//
+// ```text
+//   plaintext frame:  [content_len:u32][type|txn|ts|klen|vlen|key|val|crc32]
+//   encrypted frame:  [outer_len:u32  ][ver|nonce(12)|ciphertext+tag(16)]
+// ```
+//
+// `outer_len` is the length of the AEAD envelope (ciphertext.len()); the inner
+// plaintext that the envelope protects is the record BODY — exactly the bytes
+// after `content_len` in the plaintext frame (`type..crc32`). On decrypt the
+// body is parsed by [`TxnWalEntry::parse_body`], reusing the same field layout +
+// CRC check as the plaintext path.
+//
+// The per-record AAD binds {format_version, db_uuid, dek_epoch, file-relative
+// record ordinal} so a record cannot be reordered, duplicated, spliced from
+// another DB, or read under a downgraded format without failing authentication.
+// The reader reconstructs the identical AAD from its own trusted state (the
+// keyring's db_uuid/epoch and a 0-based counter of records read from this file),
+// NEVER from the attacker-controllable on-disk bytes.
+
+/// Encode a record BODY (`type|txn|ts|klen|vlen|key|val|crc32`) — the bytes the
+/// AEAD envelope protects, identical to `to_bytes()` minus the length prefix.
+/// Used by the encrypted write paths to materialize a record before sealing it.
+fn encode_record_body(
+    record_type: WalRecordType,
+    txn_id: u64,
+    timestamp_us: u64,
+    key: &[u8],
+    value: &[u8],
+) -> Vec<u8> {
+    let body_len = (RECORD_HEADER_SIZE - 4) + key.len() + value.len() + CHECKSUM_SIZE;
+    let mut body = Vec::with_capacity(body_len);
+    let mut hasher = crc32fast::Hasher::new();
+    let rt = record_type as u8;
+    body.push(rt);
+    hasher.update(&[rt]);
+    let t = txn_id.to_le_bytes();
+    body.extend_from_slice(&t);
+    hasher.update(&t);
+    let ts = timestamp_us.to_le_bytes();
+    body.extend_from_slice(&ts);
+    hasher.update(&ts);
+    let kl = (key.len() as u32).to_le_bytes();
+    body.extend_from_slice(&kl);
+    hasher.update(&kl);
+    let vl = (value.len() as u32).to_le_bytes();
+    body.extend_from_slice(&vl);
+    hasher.update(&vl);
+    body.extend_from_slice(key);
+    hasher.update(key);
+    body.extend_from_slice(value);
+    hasher.update(value);
+    body.extend_from_slice(&hasher.finalize().to_le_bytes());
+    body
+}
+
+/// AAD layout version for the WAL record binding. Part of the on-disk contract.
+const WAL_AAD_VERSION: u8 = 1;
+/// AAD length: version(1) + db_uuid(16) + dek_epoch(4) + record_ordinal(8).
+const WAL_AAD_LEN: usize = 1 + 16 + 4 + 8;
+/// Upper bound on a single WAL frame's on-disk length, to reject a corrupted
+/// length prefix before it triggers a multi-GB `read_exact` allocation/DoS.
+const MAX_WAL_FRAME_LEN: u32 = 512 * 1024 * 1024;
 
 // =============================================================================
 // Transaction-Local WAL Buffer - Zero Lock Overhead During Transaction
@@ -444,10 +515,16 @@ impl TxnWalEntry {
         buf
     }
 
-    /// Deserialize from bytes with torn write detection
+    /// Deserialize a PLAINTEXT WAL frame from a reader, with torn-write detection.
+    ///
+    /// This is the legacy / unencrypted reader. The live replay path on an
+    /// encrypted WAL does NOT use this — it uses [`TxnWal::read_record`], which
+    /// decrypts first and then calls [`Self::parse_body`]. Keeping this method
+    /// plaintext-only ensures a stray caller can never silently mis-parse
+    /// ciphertext as a plaintext frame.
     ///
     /// Returns error if:
-    /// - Length field indicates data is too short
+    /// - Length field indicates data is too short or implausibly large
     /// - CRC32 checksum mismatch (corruption or torn write)
     /// - Invalid record type
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<Self> {
@@ -456,35 +533,42 @@ impl TxnWalEntry {
         if content_len < (RECORD_HEADER_SIZE - 4 + CHECKSUM_SIZE) as u32 {
             return Err(SochDBError::Corruption("WAL entry too short".into()));
         }
+        if content_len > MAX_WAL_FRAME_LEN {
+            return Err(SochDBError::Corruption(format!(
+                "WAL entry length {content_len} exceeds maximum {MAX_WAL_FRAME_LEN}"
+            )));
+        }
 
-        // Record type
-        let record_type_byte = reader.read_u8()?;
+        // Read the whole body, then parse. A short read here (torn tail) surfaces
+        // as Io(UnexpectedEof), which replay treats as a clean end-of-WAL.
+        let mut body = vec![0u8; content_len as usize];
+        reader.read_exact(&mut body)?;
+        Self::parse_body(&body)
+    }
+
+    /// Parse a record BODY (`type|txn|ts|klen|vlen|key|val|crc32`) and verify its
+    /// CRC. This is the bytes after the `content_len` prefix in a plaintext frame,
+    /// and is exactly what the AEAD envelope protects in an encrypted frame — so
+    /// both the plaintext and decrypt paths share this single parser.
+    pub fn parse_body(body: &[u8]) -> Result<Self> {
+        let mut cur = std::io::Cursor::new(body);
+
+        let record_type_byte = cur.read_u8()?;
         let record_type = WalRecordType::try_from(record_type_byte).map_err(|_| {
             SochDBError::Corruption(format!("Invalid record type: {}", record_type_byte))
         })?;
 
-        // Transaction ID
-        let txn_id = reader.read_u64::<LittleEndian>()?;
+        let txn_id = cur.read_u64::<LittleEndian>()?;
+        let timestamp_us = cur.read_u64::<LittleEndian>()?;
+        let key_len = cur.read_u32::<LittleEndian>()? as usize;
+        let value_len = cur.read_u32::<LittleEndian>()? as usize;
 
-        // Timestamp
-        let timestamp_us = reader.read_u64::<LittleEndian>()?;
-
-        // Key length
-        let key_len = reader.read_u32::<LittleEndian>()? as usize;
-
-        // Value length
-        let value_len = reader.read_u32::<LittleEndian>()? as usize;
-
-        // Key data
         let mut key = vec![0u8; key_len];
-        reader.read_exact(&mut key)?;
-
-        // Value data
+        cur.read_exact(&mut key)?;
         let mut value = vec![0u8; value_len];
-        reader.read_exact(&mut value)?;
+        cur.read_exact(&mut value)?;
 
-        // CRC32 Checksum
-        let stored_checksum = reader.read_u32::<LittleEndian>()?;
+        let stored_checksum = cur.read_u32::<LittleEndian>()?;
 
         let entry = Self {
             record_type,
@@ -506,6 +590,14 @@ impl TxnWalEntry {
 
         Ok(entry)
     }
+
+    /// The record BODY bytes (`type..crc32`) — i.e. `to_bytes()` without the
+    /// leading 4-byte content_len. This is what gets fed to the AEAD on the
+    /// encrypted write path.
+    fn body_bytes(&self) -> Vec<u8> {
+        let full = self.to_bytes();
+        full[4..].to_vec()
+    }
 }
 
 /// Transaction-aware Write-Ahead Log
@@ -523,11 +615,47 @@ pub struct TxnWal {
     /// Cached timestamp (microseconds since epoch)
     /// Updated periodically to avoid syscall per write
     cached_timestamp_us: AtomicU64,
+    /// At-rest encryption engine. `disabled()` (identity passthrough) for a
+    /// plaintext WAL — in which case every write/read path is byte-identical to
+    /// the pre-3B format. When enabled, records are written/read as encrypted
+    /// frames (see the framing notes above).
+    encryption: Arc<EncryptionEngine>,
+    /// 16-byte database identity bound into each record's AAD (cross-DB splice
+    /// defense). All-zero / unused when encryption is disabled.
+    db_uuid: [u8; 16],
+    /// Active DEK epoch bound into each record's AAD (downgrade-across-rotation
+    /// defense). 0 / unused when encryption is disabled.
+    dek_epoch: u32,
+    /// File-relative count of records written to the CURRENT WAL file (reset on
+    /// truncate). Used as the per-record AAD ordinal so reorder/duplication
+    /// within a file fails authentication. All writes hold the `writer` lock, so
+    /// this counter is only mutated under that lock; it is read locklessly by the
+    /// (single-threaded) replay paths.
+    records_in_file: AtomicU64,
 }
 
 impl TxnWal {
-    /// Create a new WAL or open existing one
+    /// Create a new plaintext WAL or open an existing one.
+    ///
+    /// Uses a disabled (passthrough) encryption engine, so the on-disk format is
+    /// byte-identical to the pre-encryption WAL. This is the constructor used by
+    /// every non-live caller (tests, tools); the live durable-storage path uses
+    /// [`Self::new_with_encryption`] to thread the keyring's engine in.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::new_with_encryption(path, Arc::new(EncryptionEngine::disabled()), [0u8; 16], 0)
+    }
+
+    /// Create/open a WAL with an explicit at-rest encryption engine.
+    ///
+    /// When `engine` is enabled, records are written and replayed as encrypted
+    /// frames bound to `db_uuid` + `dek_epoch` (see framing notes). When it is
+    /// disabled, this behaves exactly like [`Self::new`].
+    pub fn new_with_encryption<P: AsRef<Path>>(
+        path: P,
+        encryption: Arc<EncryptionEngine>,
+        db_uuid: [u8; 16],
+        dek_epoch: u32,
+    ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
         // Ensure parent directory exists
@@ -552,12 +680,76 @@ impl TxnWal {
             sequence: AtomicU64::new(0),
             bytes_since_sync: AtomicU64::new(0),
             cached_timestamp_us: AtomicU64::new(now_us),
+            encryption,
+            db_uuid,
+            dek_epoch,
+            records_in_file: AtomicU64::new(0),
         };
 
         // Recover state from existing WAL
         wal.recover_state()?;
 
         Ok(wal)
+    }
+
+    /// Build the per-record AAD for a given file-relative ordinal. The reader
+    /// reconstructs this from its own trusted state, never from on-disk bytes.
+    #[inline]
+    fn record_aad(&self, ordinal: u64) -> [u8; WAL_AAD_LEN] {
+        let mut aad = [0u8; WAL_AAD_LEN];
+        aad[0] = WAL_AAD_VERSION;
+        aad[1..17].copy_from_slice(&self.db_uuid);
+        aad[17..21].copy_from_slice(&self.dek_epoch.to_le_bytes());
+        aad[21..29].copy_from_slice(&ordinal.to_le_bytes());
+        aad
+    }
+
+    /// Frame a single record body for the encrypted write path:
+    /// `[outer_len:u32][version|nonce|ciphertext+tag]`, AAD-bound to `ordinal`.
+    #[inline]
+    fn encrypt_frame(&self, body: &[u8], ordinal: u64) -> Result<Vec<u8>> {
+        let env = self
+            .encryption
+            .encrypt_with_aad(body, &self.record_aad(ordinal))?;
+        let mut out = Vec::with_capacity(4 + env.len());
+        out.extend_from_slice(&(env.len() as u32).to_le_bytes());
+        out.extend_from_slice(&env);
+        Ok(out)
+    }
+
+    /// Read the next record from a replay reader, decrypting if the WAL is
+    /// encrypted. Returns the record and advances `*ordinal`.
+    ///
+    /// Error taxonomy (the linchpin of fail-loud recovery):
+    /// - `Io(UnexpectedEof)` reading the length prefix or a short body read at
+    ///   the physical tail ⇒ clean torn-tail / end-of-WAL (callers tolerate).
+    /// - `Encryption(_)` (AEAD auth failure / wrong key / bad envelope) or
+    ///   `Corruption(_)` (CRC / bad framing) ⇒ HARD error; callers MUST abort
+    ///   recovery rather than treat it as EOF.
+    fn read_record<R: Read>(&self, reader: &mut R, ordinal: &mut u64) -> Result<TxnWalEntry> {
+        if !self.encryption.is_enabled() {
+            let entry = TxnWalEntry::from_reader(reader)?;
+            *ordinal += 1;
+            return Ok(entry);
+        }
+        // Encrypted frame: [outer_len][envelope]
+        let outer_len = reader.read_u32::<LittleEndian>()?; // EOF here = clean end
+        if outer_len > MAX_WAL_FRAME_LEN {
+            return Err(SochDBError::Corruption(format!(
+                "encrypted WAL frame length {outer_len} exceeds maximum {MAX_WAL_FRAME_LEN}"
+            )));
+        }
+        let mut env = vec![0u8; outer_len as usize];
+        reader.read_exact(&mut env)?; // short read = torn tail (UnexpectedEof)
+        // Decrypt with the AAD reconstructed for THIS ordinal. A wrong key, a
+        // reordered/spliced record, or tampering fails here as Encryption(_),
+        // which is a hard error — never a silent EOF.
+        let body = self
+            .encryption
+            .decrypt_with_aad(&env, &self.record_aad(*ordinal))?;
+        let entry = TxnWalEntry::parse_body(&body)?;
+        *ordinal += 1;
+        Ok(entry)
     }
 
     /// Recover state (next txn ID, sequence) from existing WAL
@@ -578,9 +770,10 @@ impl TxnWal {
         let our_pid = std::process::id() as u64;
         let pid_base = our_pid << 32;
         let mut max_our_counter: u64 = 0;
+        let mut ordinal: u64 = 0;
 
         loop {
-            match TxnWalEntry::from_reader(&mut reader) {
+            match self.read_record(&mut reader, &mut ordinal) {
                 Ok(entry) => {
                     count += 1;
                     // Only track counters from entries that belong to our PID
@@ -595,8 +788,14 @@ impl TxnWal {
                 Err(SochDBError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     break;
                 }
-                Err(_) => {
-                    // Ignore corruption at end of WAL (incomplete write)
+                Err(e) => {
+                    // Encrypted: a non-EOF error (AEAD auth failure / tamper /
+                    // corruption) is NEVER a torn tail — fail loud rather than
+                    // silently truncate. Plaintext: tolerate trailing corruption
+                    // as an incomplete final write (legacy behavior).
+                    if self.encryption.is_enabled() {
+                        return Err(e);
+                    }
                     break;
                 }
             }
@@ -611,6 +810,9 @@ impl TxnWal {
 
         self.next_txn_id.store(next_id, Ordering::SeqCst);
         self.sequence.store(count, Ordering::SeqCst);
+        // The current file already holds `count` records, so the next encrypted
+        // write must continue the AAD ordinal sequence from there.
+        self.records_in_file.store(count, Ordering::SeqCst);
 
         Ok(())
     }
@@ -653,8 +855,8 @@ impl TxnWal {
     /// The group commit path (`EventDrivenGroupCommit`) is responsible for
     /// calling `flush()` + `sync()` after batching multiple commit records.
     pub fn append(&self, entry: &TxnWalEntry) -> Result<u64> {
-        let bytes = entry.to_bytes();
         let mut writer = self.writer.lock();
+        let bytes = self.frame_under_lock(entry)?;
 
         writer.write_all(&bytes)?;
         // Don't flush here - BufWriter will batch writes automatically.
@@ -667,13 +869,26 @@ impl TxnWal {
         Ok(seq)
     }
 
+    /// Serialize one entry into its on-disk frame, allocating the per-record
+    /// ordinal when encrypted. MUST be called with the `writer` lock held so the
+    /// ordinal matches the order bytes hit the file.
+    #[inline]
+    fn frame_under_lock(&self, entry: &TxnWalEntry) -> Result<Vec<u8>> {
+        if self.encryption.is_enabled() {
+            let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+            self.encrypt_frame(&entry.body_bytes(), ord)
+        } else {
+            Ok(entry.to_bytes())
+        }
+    }
+
     /// Append entry without flushing (for batched writes)
     ///
     /// Caller must call flush() or sync() afterward to ensure durability.
     #[inline]
     pub fn append_no_flush(&self, entry: &TxnWalEntry) -> Result<u64> {
-        let bytes = entry.to_bytes();
         let mut writer = self.writer.lock();
+        let bytes = self.frame_under_lock(entry)?;
 
         writer.write_all(&bytes)?;
         // No flush - let BufWriter buffer the writes
@@ -702,9 +917,25 @@ impl TxnWal {
         let timestamp_us = self.get_cached_timestamp();
 
         let total_len = RECORD_HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
-        let mut hasher = crc32fast::Hasher::new();
 
         let mut writer = self.writer.lock();
+
+        // Encrypted mode cannot stream field-by-field (the AEAD needs the whole
+        // body to compute its synthetic IV + tag), so materialize the body into a
+        // scratch buffer, seal it, and write one framed envelope. The plaintext
+        // path below keeps its zero-alloc streaming fast path untouched.
+        if self.encryption.is_enabled() {
+            let body = encode_record_body(WalRecordType::Data, txn_id, timestamp_us, key, value);
+            let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+            let frame = self.encrypt_frame(&body, ord)?;
+            writer.write_all(&frame)?;
+            let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
+            self.bytes_since_sync
+                .fetch_add(frame.len() as u64, Ordering::Relaxed);
+            return Ok(seq);
+        }
+
+        let mut hasher = crc32fast::Hasher::new();
 
         // Length (not included in CRC)
         let content_len = (total_len - 4) as u32;
@@ -802,6 +1033,40 @@ impl TxnWal {
         }
 
         let mut writer = self.writer.lock();
+
+        if self.encryption.is_enabled() {
+            // The buffer holds concatenated plaintext frames
+            // `[content_len][body]...`. Re-frame each as an AEAD envelope bound to
+            // its own file-relative ordinal, preserving per-record framing (so a
+            // torn tail discards exactly one record).
+            let buf = &buffer.buffer;
+            let mut pos = 0usize;
+            let mut total_written = 0u64;
+            while pos + 4 <= buf.len() {
+                let content_len =
+                    u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]])
+                        as usize;
+                pos += 4;
+                if pos + content_len > buf.len() {
+                    return Err(SochDBError::Corruption(
+                        "txn buffer truncated mid-record during encrypted flush".into(),
+                    ));
+                }
+                let body = &buf[pos..pos + content_len];
+                pos += content_len;
+                let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+                let frame = self.encrypt_frame(body, ord)?;
+                writer.write_all(&frame)?;
+                total_written += frame.len() as u64;
+            }
+            let seq = self
+                .sequence
+                .fetch_add(buffer.entry_count as u64, Ordering::SeqCst);
+            self.bytes_since_sync
+                .fetch_add(total_written, Ordering::Relaxed);
+            return Ok(seq);
+        }
+
         writer.write_all(&buffer.buffer)?;
 
         let seq = self
@@ -911,13 +1176,14 @@ impl TxnWal {
             std::collections::HashMap::new();
         let mut result = Vec::new();
         let mut txn_count = 0;
+        let mut ordinal: u64 = 0;
 
         // Single pass in WAL order. Transaction ids are process-local and
         // short-lived CLI processes can reuse the same ids after restart, so
         // grouping the entire WAL by txn_id would merge unrelated transactions
         // and replay older writes after newer ones.
         loop {
-            match TxnWalEntry::from_reader(&mut reader) {
+            match self.read_record(&mut reader, &mut ordinal) {
                 Ok(entry) => match entry.record_type {
                     WalRecordType::TxnBegin => {
                         pending_writes.insert(entry.txn_id, Vec::new());
@@ -945,7 +1211,15 @@ impl TxnWal {
                 Err(SochDBError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     break;
                 }
-                Err(_) => {
+                Err(e) => {
+                    // Encrypted WALs must fail loud on a non-EOF error so a wrong
+                    // key / tamper / corruption can never masquerade as EOF and
+                    // silently drop committed data. (Wrong key is already excluded
+                    // earlier by the keyring canary, so this is genuine corruption
+                    // or tampering.) Plaintext keeps the legacy torn-tail tolerance.
+                    if self.encryption.is_enabled() {
+                        return Err(e);
+                    }
                     break;
                 }
             }
@@ -962,9 +1236,10 @@ impl TxnWal {
         let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
         let mut count = 0u64;
+        let mut ordinal: u64 = 0;
 
         loop {
-            match TxnWalEntry::from_reader(&mut reader) {
+            match self.read_record(&mut reader, &mut ordinal) {
                 Ok(entry) => {
                     callback(entry)?;
                     count += 1;
@@ -973,7 +1248,11 @@ impl TxnWal {
                     break;
                 }
                 Err(e) => {
-                    // Log warning but continue (may be incomplete entry at end)
+                    // Encrypted: fail loud (never silently drop committed data on a
+                    // non-EOF error). Plaintext: tolerate a trailing incomplete entry.
+                    if self.encryption.is_enabled() {
+                        return Err(e);
+                    }
                     eprintln!("WAL replay warning: {:?}", e);
                     break;
                 }
@@ -1002,6 +1281,9 @@ impl TxnWal {
         file.sync_all()?;
         self.sequence.store(0, Ordering::SeqCst);
         self.bytes_since_sync.store(0, Ordering::Relaxed);
+        // The file restarts at offset 0, so per-record AAD ordinals restart too;
+        // a fresh reader of the truncated file will count from 0 to match.
+        self.records_in_file.store(0, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1331,8 +1613,9 @@ impl TxnWal {
         let mut all_txns: HashSet<u64> = HashSet::new();
 
         // Read all records, stopping at first corruption (torn write)
+        let mut ordinal: u64 = 0;
         loop {
-            match TxnWalEntry::from_reader(&mut reader) {
+            match self.read_record(&mut reader, &mut ordinal) {
                 Ok(entry) => {
                     stats.total_records += 1;
                     if entry.txn_id > stats.max_txn_id {
@@ -1363,8 +1646,15 @@ impl TxnWal {
                     // Clean EOF
                     break;
                 }
-                Err(_) => {
-                    // Corruption or torn write - stop here
+                Err(e) => {
+                    // Encrypted: an AEAD auth failure / tamper / corruption is a
+                    // hard error — abort recovery rather than silently truncating
+                    // committed data (wrong key is already caught by the keyring
+                    // canary at open). Plaintext: treat trailing corruption as a
+                    // torn write and stop.
+                    if self.encryption.is_enabled() {
+                        return Err(e);
+                    }
                     stats.torn_records += 1;
                     break;
                 }
@@ -1613,5 +1903,163 @@ mod tests {
         let mut cursor = std::io::Cursor::new(bytes);
         let recovered = TxnWalEntry::from_reader(&mut cursor).unwrap();
         assert_eq!(recovered.checksum(), entry1.checksum());
+    }
+}
+
+#[cfg(test)]
+mod encryption_wal_tests {
+    use super::*;
+    use crate::encryption::EncryptionEngine;
+    use tempfile::tempdir;
+
+    fn enc(key: u8) -> Arc<EncryptionEngine> {
+        Arc::new(EncryptionEngine::new(&[key; 32]))
+    }
+    const UUID: [u8; 16] = [9u8; 16];
+
+    /// Write a committed txn (begin/data/commit) and one aborted txn via the
+    /// encrypted paths, then reopen with the same key and crash-recover.
+    #[test]
+    fn encrypted_write_then_recover_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("enc.wal");
+
+        {
+            let wal = TxnWal::new_with_encryption(&path, enc(7), UUID, 0).unwrap();
+            // committed txn via append + write_no_flush_refs + flush_buffer paths
+            let t1 = wal.begin_transaction().unwrap();
+            wal.write(t1, b"alpha".to_vec(), b"one".to_vec()).unwrap();
+            wal.write_no_flush_refs(t1, b"beta", b"two").unwrap();
+            // also exercise the buffer/flush_buffer batch path
+            let mut buf = TxnWalBuffer::new(t1);
+            buf.append(b"gamma", b"three");
+            wal.flush_buffer(&buf).unwrap();
+            wal.commit_transaction(t1).unwrap();
+
+            // aborted txn must NOT survive
+            let t2 = wal.begin_transaction().unwrap();
+            wal.write(t2, b"ghost".to_vec(), b"x".to_vec()).unwrap();
+            wal.abort_transaction(t2).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // On-disk bytes must NOT contain the plaintext values.
+        let raw = std::fs::read(&path).unwrap();
+        assert!(!contains(&raw, b"alpha"));
+        assert!(!contains(&raw, b"three"));
+
+        let wal = TxnWal::new_with_encryption(&path, enc(7), UUID, 0).unwrap();
+        let (writes, stats) = wal.crash_recovery().unwrap();
+        let keys: Vec<_> = writes.iter().map(|(k, _)| k.clone()).collect();
+        assert!(keys.contains(&b"alpha".to_vec()));
+        assert!(keys.contains(&b"beta".to_vec()));
+        assert!(keys.contains(&b"gamma".to_vec()));
+        assert!(!keys.contains(&b"ghost".to_vec()), "aborted txn leaked");
+        assert_eq!(stats.committed_txns, 1);
+    }
+
+    /// Wrong key at the WAL layer must FAIL LOUD, not silently return empty.
+    /// (In production the keyring canary catches this even earlier; this proves
+    /// the replay path itself never swallows an AEAD failure as EOF.)
+    #[test]
+    fn wrong_key_fails_loud_not_empty() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("enc.wal");
+        {
+            let wal = TxnWal::new_with_encryption(&path, enc(1), UUID, 0).unwrap();
+            let t = wal.begin_transaction().unwrap();
+            wal.write(t, b"k".to_vec(), b"v".to_vec()).unwrap();
+            wal.commit_transaction(t).unwrap();
+            wal.sync().unwrap();
+        }
+        // Reopen with the WRONG key: recover_state runs in the constructor and
+        // must surface a hard error rather than an "empty" success.
+        let opened = TxnWal::new_with_encryption(&path, enc(2), UUID, 0);
+        assert!(opened.is_err(), "wrong key opened silently (data-loss bug)");
+        match opened.err().unwrap() {
+            SochDBError::Encryption(_) => {}
+            other => panic!("expected Encryption error, got {other:?}"),
+        }
+    }
+
+    /// Tampering with a committed encrypted record must fail recovery loud.
+    #[test]
+    fn tamper_midstream_fails_loud() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("enc.wal");
+        {
+            let wal = TxnWal::new_with_encryption(&path, enc(5), UUID, 0).unwrap();
+            let t = wal.begin_transaction().unwrap();
+            wal.write(t, b"k1".to_vec(), b"v1".to_vec()).unwrap();
+            wal.commit_transaction(t).unwrap();
+            wal.sync().unwrap();
+        }
+        // Flip a byte well inside the file (not the final torn-tail region).
+        let mut raw = std::fs::read(&path).unwrap();
+        let mid = raw.len() / 2;
+        raw[mid] ^= 0xFF;
+        std::fs::write(&path, &raw).unwrap();
+
+        let opened = TxnWal::new_with_encryption(&path, enc(5), UUID, 0);
+        // Either the constructor's recover_state errors, or a later crash_recovery
+        // does — but it must NEVER silently accept tampered ciphertext.
+        let failed = opened.is_err()
+            || opened
+                .ok()
+                .map(|w| w.crash_recovery().is_err())
+                .unwrap_or(true);
+        assert!(failed, "tampered encrypted WAL was silently accepted");
+    }
+
+    /// The disabled engine must write a record's bytes EXACTLY as the legacy
+    /// `to_bytes()` frame (no added encryption framing / format drift), while the
+    /// enabled engine must NOT (it adds the AEAD envelope and is unreadable by the
+    /// plaintext reader). Records embed wall-clock timestamps, so we compare a
+    /// single fixed entry object against its own `to_bytes()` for determinism.
+    #[test]
+    fn disabled_engine_is_byte_identical_to_plaintext() {
+        let dir = tempdir().unwrap();
+
+        let entry = TxnWalEntry::data(42, b"k1".to_vec(), b"v1".to_vec());
+        let golden = entry.to_bytes();
+
+        // Disabled engine: file bytes == to_bytes() exactly.
+        let p_dis = dir.path().join("disabled.wal");
+        {
+            let wal = TxnWal::new_with_encryption(
+                &p_dis,
+                Arc::new(EncryptionEngine::disabled()),
+                [0u8; 16],
+                0,
+            )
+            .unwrap();
+            wal.append(&entry).unwrap();
+            wal.sync().unwrap();
+        }
+        assert_eq!(
+            std::fs::read(&p_dis).unwrap(),
+            golden,
+            "disabled-engine append diverged from legacy plaintext frame"
+        );
+
+        // Enabled engine: file bytes differ and are NOT plaintext-parseable.
+        let p_enc = dir.path().join("enc.wal");
+        {
+            let wal = TxnWal::new_with_encryption(&p_enc, enc(3), UUID, 0).unwrap();
+            wal.append(&entry).unwrap();
+            wal.sync().unwrap();
+        }
+        let enc_bytes = std::fs::read(&p_enc).unwrap();
+        assert_ne!(enc_bytes, golden);
+        let mut cur = std::io::Cursor::new(&enc_bytes);
+        assert!(
+            TxnWalEntry::from_reader(&mut cur).is_err()
+                || cur.position() as usize != enc_bytes.len(),
+            "ciphertext frame must not parse cleanly as a plaintext record"
+        );
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
     }
 }

@@ -85,8 +85,7 @@ pub mod correctness_testing; // Property-based correctness testing (Task 13)
 pub mod database; // Database Kernel (shared by embedded + server)
 pub mod durability_contract; // Durability contract hardening (Task 4)
 pub mod durable_storage; // Fully wired durable storage with MVCC
-#[cfg(feature = "experimental")]
-pub mod encryption; // Data-at-rest encryption (AES-256-GCM-SIV) [quarantined: unwired]
+pub mod encryption; // Data-at-rest encryption (AES-256-GCM-SIV envelope) — now wired (Task 3B)
 pub mod ffi;
 pub mod group_commit; // Event-driven Group Commit (Task 4)
 pub mod hlc; // Hybrid Logical Clock for commit timestamps (mm.md Task 1.3)
@@ -95,6 +94,7 @@ pub mod io_isolation; // I/O isolation policy with cache partitioning (Task 5)
 pub mod ipc; // IPC Protocol with multiplexing (mm.md Task 7.1)
 #[cfg(unix)]
 pub mod ipc_server; // Unix Socket IPC Server (Task 3)
+pub mod keyring; // KEK/DEK envelope: HKDF-derived DEK, wrapped + persisted, fail-closed (Task 3B)
 pub mod learned_index_integration;
 pub mod lock; // Advisory file locking for database exclusivity
 pub mod lscs;
@@ -320,10 +320,14 @@ pub use durable_storage::{
 pub struct DurabilityCapabilities {
     /// Crash-consistent WAL recovery (txn_wal / RecoveryStats / durability_contract). Live.
     pub crash_recovery: bool,
-    /// At-rest encryption (AES-256-GCM-SIV). The `encryption` module exists but
-    /// is quarantined behind `experimental` and unwired — not on the live path.
+    /// At-rest encryption (AES-256-GCM-SIV envelope). Wired into the live WAL path
+    /// (Task 3B): inactive by default, active per-database when a key is configured.
+    /// The build-level `durability_capabilities()` reports the DEFAULT (false);
+    /// query `DurableStorage::durability_capabilities()` for the live per-instance
+    /// state.
     pub at_rest_encryption: bool,
-    /// Point-in-time recovery via WAL archiving. `pitr` module, quarantined/unwired.
+    /// Point-in-time recovery via WAL archiving. `pitr` module — substrate landing
+    /// incrementally (Task 3B); reported true per-instance once archiving is active.
     pub point_in_time_recovery: bool,
     /// ARIES-style checkpointing. `aries_recovery` / `checkpoint` modules, quarantined/unwired.
     pub aries_checkpoint: bool,
@@ -331,10 +335,12 @@ pub struct DurabilityCapabilities {
     pub wal_fencing: bool,
 }
 
-/// The durability capabilities of the current build — a function of what is
-/// actually wired, not of documentation. The quarantined subsystems require the
-/// `experimental` feature AND live wiring that does not yet exist (Task 3B), so
-/// they report `false` here regardless of feature flags.
+/// The DEFAULT durability capabilities of the current build — a function of what
+/// is actually wired, not of documentation. At-rest encryption is now wired into
+/// the live WAL path (Task 3B) but is INACTIVE unless a key is configured, so the
+/// build default reports it `false`. For the live per-database state (which
+/// reflects whether encryption is actually active on that instance), call
+/// [`durable_storage::DurableStorage::durability_capabilities`].
 pub const fn durability_capabilities() -> DurabilityCapabilities {
     DurabilityCapabilities {
         crash_recovery: true,

@@ -108,8 +108,11 @@ use smallvec::SmallVec;
 
 use crossbeam_skiplist::SkipMap;
 
+use crate::DurabilityCapabilities;
 use crate::deferred_index::{DeferredIndexConfig, DeferredSortedIndex};
+use crate::encryption::EncryptionKey;
 use crate::group_commit::EventDrivenGroupCommit;
+use crate::keyring;
 use crate::txn_wal::{TxnWal, TxnWalBuffer, TxnWalEntry};
 use sochdb_core::version_chain::{
     BinarySearchChain, ChainEntry, MvccVersionChain, MvccVersionChainMut, Timestamp, TxnId,
@@ -2463,6 +2466,48 @@ pub struct DurableStorage {
     /// Database lock for exclusive access (None = no locking)
     #[allow(dead_code)]
     db_lock: Option<crate::lock::DatabaseLock>,
+    /// Whether at-rest encryption is active for this instance (drives the live
+    /// per-instance durability matrix). Set from the resolved keyring at open.
+    at_rest_encrypted: bool,
+}
+
+/// Encryption configuration for opening a [`DurableStorage`].
+///
+/// `disabled()` (the default for the legacy open variants) keeps the database
+/// plaintext and byte-compatible with pre-encryption binaries. `with_kek()`
+/// supplies the Key-Encryption-Key — the operator secret that *wraps* a
+/// per-database data key; it is never used verbatim as the cipher key (see
+/// [`crate::keyring`]). A wrong/missing KEK for an encrypted database fails
+/// closed at open (the DB will refuse to open, never silently read as plaintext).
+pub struct StorageEncryption {
+    /// The KEK. `None` ⇒ plaintext database.
+    pub kek: Option<EncryptionKey>,
+    /// Human-readable identifier for the key source (e.g. "env:SOCHDB_ENCRYPTION_KEY",
+    /// "embedded", "kms:..."). Bound into the keyring for provenance.
+    pub source_id: String,
+}
+
+impl StorageEncryption {
+    /// Plaintext (no encryption) — the default.
+    pub fn disabled() -> Self {
+        Self {
+            kek: None,
+            source_id: "none".to_string(),
+        }
+    }
+
+    /// Encrypt at rest under the given KEK.
+    pub fn with_kek(kek: EncryptionKey, source_id: impl Into<String>) -> Self {
+        Self {
+            kek: Some(kek),
+            source_id: source_id.into(),
+        }
+    }
+
+    /// Whether a key is configured (i.e. encryption is requested).
+    pub fn is_enabled(&self) -> bool {
+        self.kek.is_some()
+    }
 }
 
 impl DurableStorage {
@@ -2507,7 +2552,58 @@ impl DurableStorage {
         enable_ordered_index: bool,
         memtable_type: MemTableType,
     ) -> Result<Self> {
-        Self::open_with_full_config_internal(path, enable_ordered_index, memtable_type, true)
+        Self::open_with_full_config_internal(
+            path,
+            enable_ordered_index,
+            memtable_type,
+            true,
+            StorageEncryption::disabled(),
+        )
+    }
+
+    /// Open with at-rest encryption configured via [`StorageEncryption`].
+    ///
+    /// With `StorageEncryption::disabled()` this is identical to
+    /// [`Self::open_with_full_config`]. With a KEK, the database is opened (or
+    /// created) encrypted: a per-DB data key is generated and wrapped into the
+    /// keyring on first open, and a wrong/missing key on a subsequent open fails
+    /// closed. Reads are unaffected (the live read path is in-memory); only the
+    /// WAL write/recovery path pays the AEAD cost.
+    pub fn open_with_encryption<P: AsRef<Path>>(
+        path: P,
+        enable_ordered_index: bool,
+        memtable_type: MemTableType,
+        encryption: StorageEncryption,
+    ) -> Result<Self> {
+        Self::open_with_full_config_internal(
+            path,
+            enable_ordered_index,
+            memtable_type,
+            true,
+            encryption,
+        )
+    }
+
+    /// The live, per-instance durability capabilities of THIS database.
+    ///
+    /// Unlike the build-level [`crate::durability_capabilities`] (which reports
+    /// defaults), this reflects the actual resolved state — notably whether
+    /// at-rest encryption is active for this opened instance.
+    pub fn durability_capabilities(&self) -> DurabilityCapabilities {
+        DurabilityCapabilities {
+            crash_recovery: true,
+            at_rest_encryption: self.at_rest_encrypted,
+            // PITR / ARIES / fencing remain unwired on the live path (landing
+            // incrementally in Task 3B).
+            point_in_time_recovery: false,
+            aries_checkpoint: false,
+            wal_fencing: false,
+        }
+    }
+
+    /// Whether at-rest encryption is active for this instance.
+    pub fn is_encrypted(&self) -> bool {
+        self.at_rest_encrypted
     }
 
     /// Open without locking (for testing crash recovery scenarios)
@@ -2517,7 +2613,13 @@ impl DurableStorage {
     /// the storage instance. In production, always use `open_with_full_config`.
     #[cfg(test)]
     pub fn open_without_lock<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::open_with_full_config_internal(path, true, MemTableType::Standard, false)
+        Self::open_with_full_config_internal(
+            path,
+            true,
+            MemTableType::Standard,
+            false,
+            StorageEncryption::disabled(),
+        )
     }
 
     /// Open an ephemeral (in-memory-like) DurableStorage backed by a temp directory.
@@ -2546,6 +2648,7 @@ impl DurableStorage {
             true,
             MemTableType::Standard,
             false, // No lock needed for ephemeral
+            StorageEncryption::disabled(),
         )?;
         Ok(EphemeralHandle {
             storage,
@@ -2558,8 +2661,13 @@ impl DurableStorage {
     /// Same as `open_ephemeral()` but with group commit for higher throughput.
     pub fn open_ephemeral_with_group_commit() -> Result<EphemeralHandle> {
         let tmp = tempfile::tempdir().map_err(|e| SochDBError::Io(e))?;
-        let mut storage =
-            Self::open_with_full_config_internal(tmp.path(), true, MemTableType::Standard, false)?;
+        let mut storage = Self::open_with_full_config_internal(
+            tmp.path(),
+            true,
+            MemTableType::Standard,
+            false,
+            StorageEncryption::disabled(),
+        )?;
 
         let wal = storage.wal.clone();
         let gc = EventDrivenGroupCommit::new(move |txn_ids: &[u64]| {
@@ -2587,6 +2695,7 @@ impl DurableStorage {
         enable_ordered_index: bool,
         memtable_type: MemTableType,
         acquire_lock: bool,
+        encryption: StorageEncryption,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         std::fs::create_dir_all(&path)?;
@@ -2602,7 +2711,25 @@ impl DurableStorage {
         };
 
         let wal_path = path.join("wal.log");
-        let wal = Arc::new(TxnWal::new(&wal_path)?);
+
+        // Resolve at-rest encryption from the keyring BEFORE touching the WAL.
+        // - A fresh DB (no wal.log yet) with a KEK ⇒ create an encrypted keyring.
+        // - An existing plaintext DB with a KEK ⇒ refused (must migrate explicitly).
+        // - An encrypted DB with a wrong/missing KEK ⇒ refused fail-closed.
+        let is_new_db = !wal_path.exists();
+        let enc_state = keyring::load_or_init(
+            &path,
+            encryption.kek.as_ref(),
+            &encryption.source_id,
+            is_new_db,
+        )?;
+        let at_rest_encrypted = enc_state.is_encrypted();
+        let wal = Arc::new(TxnWal::new_with_encryption(
+            &wal_path,
+            enc_state.engine(),
+            enc_state.db_uuid(),
+            enc_state.key_epoch(),
+        )?);
 
         let storage = Self {
             path,
@@ -2620,6 +2747,7 @@ impl DurableStorage {
             last_commit_us: AtomicU64::new(0),
             fsync_latency_us: AtomicU64::new(5000), // 5ms default
             db_lock,
+            at_rest_encrypted,
         };
 
         // Check if recovery needed
@@ -2746,7 +2874,13 @@ impl DurableStorage {
         };
 
         // Open WITHOUT exclusive file lock (concurrent MVCC handles coordination)
-        Self::open_with_full_config_internal(path, enable_ordered_index, memtable_type, false)
+        Self::open_with_full_config_internal(
+            path,
+            enable_ordered_index,
+            memtable_type,
+            false,
+            StorageEncryption::disabled(),
+        )
     }
 
     /// Get the memtable type being used
@@ -3577,6 +3711,101 @@ mod tests {
             assert_eq!(v, Some(b"data".to_vec()));
             storage.abort(txn).unwrap();
         }
+    }
+
+    /// At-rest encryption end-to-end through the live DurableStorage engine
+    /// (Task 3B): an encrypted DB round-trips committed data, never leaks
+    /// plaintext to the WAL file, flips the per-instance durability matrix, and
+    /// fails CLOSED on a wrong or missing key (never a silent plaintext/empty
+    /// open).
+    #[test]
+    fn test_at_rest_encryption_end_to_end() {
+        let dir = tempdir().unwrap();
+        let kek = || EncryptionKey::new([0xABu8; 32]);
+
+        // Phase 1: create an encrypted DB, write committed data, clean close.
+        {
+            let storage = DurableStorage::open_with_encryption(
+                dir.path(),
+                true,
+                MemTableType::Standard,
+                StorageEncryption::with_kek(kek(), "test"),
+            )
+            .unwrap();
+            assert!(storage.is_encrypted());
+            assert!(storage.durability_capabilities().at_rest_encryption);
+            storage.set_sync_mode(2);
+            let t = storage.begin_transaction().unwrap();
+            storage
+                .write(t, b"secret-key".to_vec(), b"secret-value".to_vec())
+                .unwrap();
+            storage.commit(t).unwrap();
+        } // clean drop releases the file lock
+
+        // The keyring exists and the WAL bytes do not leak the plaintext record.
+        assert!(dir.path().join("keyring.json").exists());
+        let raw = std::fs::read(dir.path().join("wal.log")).unwrap();
+        assert!(!contains(&raw, b"secret-value"), "value leaked to WAL");
+        assert!(!contains(&raw, b"secret-key"), "key leaked to WAL");
+
+        // Phase 2: reopen with the CORRECT key, recover, read back.
+        {
+            let storage = DurableStorage::open_with_encryption(
+                dir.path(),
+                true,
+                MemTableType::Standard,
+                StorageEncryption::with_kek(kek(), "test"),
+            )
+            .unwrap();
+            storage.recover().unwrap();
+            let t = storage.begin_transaction().unwrap();
+            assert_eq!(
+                storage.read(t, b"secret-key").unwrap(),
+                Some(b"secret-value".to_vec()),
+                "committed encrypted data must round-trip"
+            );
+            storage.abort(t).unwrap();
+        }
+
+        // Phase 3: WRONG key must fail closed (keyring canary), not open empty.
+        {
+            let wrong = DurableStorage::open_with_encryption(
+                dir.path(),
+                true,
+                MemTableType::Standard,
+                StorageEncryption::with_kek(EncryptionKey::new([0x00u8; 32]), "test"),
+            );
+            assert!(wrong.is_err(), "wrong KEK must fail closed");
+        }
+
+        // Phase 4: opening an encrypted DB with NO key must fail closed.
+        {
+            let no_key = DurableStorage::open_with_encryption(
+                dir.path(),
+                true,
+                MemTableType::Standard,
+                StorageEncryption::disabled(),
+            );
+            assert!(
+                no_key.is_err(),
+                "encrypted DB opened without key must fail closed"
+            );
+        }
+    }
+
+    /// A plaintext DB reports at_rest_encryption=false on the live matrix.
+    #[test]
+    fn test_plaintext_db_reports_unencrypted() {
+        let dir = tempdir().unwrap();
+        let storage = DurableStorage::open_without_lock(dir.path()).unwrap();
+        assert!(!storage.is_encrypted());
+        assert!(!storage.durability_capabilities().at_rest_encryption);
+        assert!(storage.durability_capabilities().crash_recovery);
+        assert!(!dir.path().join("keyring.json").exists());
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
     }
 
     /// Crash-atomicity invariant (Task 4 — completes the Task 1 single-writer

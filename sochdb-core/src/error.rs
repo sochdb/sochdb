@@ -100,6 +100,16 @@ pub enum SochDBError {
 
     #[error("Split-brain detected in WAL: {0}")]
     SplitBrain(String),
+
+    /// Data-at-rest encryption / key-management failure.
+    ///
+    /// This is a HARD error: it is deliberately distinct from `Io` so that WAL
+    /// replay loops can tell a genuine torn-tail (`Io(UnexpectedEof)` at a frame
+    /// boundary, which is tolerated) apart from an AEAD authentication failure /
+    /// wrong-or-missing key / format mismatch (which must abort recovery rather
+    /// than be silently treated as end-of-WAL). See `txn_wal` replay.
+    #[error("Encryption error: {0}")]
+    Encryption(String),
 }
 
 pub type Result<T> = std::result::Result<T, SochDBError>;

@@ -31,6 +31,13 @@ embedded-sync = []
 # quarantined behind this feature so the default build surface (and attack
 # surface) stays minimal. Enable explicitly to compile them: `--features experimental`.
 experimental = []
+# Data-at-rest encryption (AES-256-GCM-SIV envelope) and Point-in-Time Recovery.
+# The crypto/keyring/PITR *code* now compiles in the default build (so its tests
+# run in CI and it can be wired into DurableStorage); these features exist to
+# gate higher-level wiring/CLI surfaces and to document intent. Encryption is
+# inert at runtime unless a key is configured (fail-closed; see keyring).
+encryption = []
+pitr = ["encryption"]
 
 [dependencies]
 sochdb-core = { version = "2.0.8", path = "../sochdb-core" }
@@ -67,6 +74,12 @@ arc-swap = "1.6"
 aes-gcm-siv = "0.11"
 rand = "0.8"
 zeroize = { version = "1.8", features = ["derive"] }
+# HKDF-SHA256 for deriving per-DB DEK/wrapping subkeys from the supplied KEK,
+# so the operator secret is never used verbatim as cipher key material.
+hkdf = "0.12"
+# HMAC-SHA256 to authenticate the keyring descriptor (so `encrypted=false`
+# cannot be silently forged to downgrade an encrypted DB to plaintext reads).
+hmac = "0.12"
 lz4_flex = "0.11"
 similar = "2.5"
 uuid = { version = "1.8", features = ["v4"] }
