@@ -99,6 +99,9 @@ pub mod learned_index_integration;
 pub mod lock; // Advisory file locking for database exclusivity
 pub mod lscs;
 pub mod mvcc_concurrent; // Concurrent MVCC for multi-reader single-writer (Task: Concurrent Embedded)
+#[deprecated(
+    note = "Unused duplicate; live MVCC is mvcc_concurrent::ConcurrentMvcc + durable_storage::MvccMemTable. Scheduled for removal (Task 2 consolidation)."
+)]
 pub mod mvcc_new;
 pub mod mvcc_snapshot;
 pub mod page_manager;
@@ -107,6 +110,9 @@ pub mod pitr; // Point-in-Time Recovery with WAL archiving (Task 11) [quarantine
 #[cfg(feature = "experimental")]
 pub mod production_wal; // Production WAL with ARIES recovery (mm.md Task 3) [quarantined: unwired]
 pub mod ssi; // Serializable Snapshot Isolation (Task 2)
+#[deprecated(
+    note = "Unused; SSI lives in ssi/MvccManager. Scheduled for removal (Task 2 consolidation)."
+)]
 pub mod ssi_scaling; // SSI scaling guardrails with range locks (Task 7)
 pub mod storage_engine;
 pub mod streaming_iterator; // Streaming Iterator Architecture (mm.md Task 4)
@@ -121,18 +127,30 @@ pub mod wal_integration;
 pub mod zero_copy_safety; // Zero-Copy Validation Layer (Task 5) // FFI bindings for Python SDK
 
 // Performance optimization modules
+#[deprecated(
+    note = "Unused duplicate; live learned index is learned_index_integration. Scheduled for removal (Task 2 consolidation)."
+)]
 pub mod adaptive_learned_index;
+#[deprecated(
+    note = "Unused duplicate memtable; live memtables are lscs::ColumnarMemtable + durable_storage::MvccMemTable. Scheduled for removal (Task 2 consolidation)."
+)]
 pub mod adaptive_memtable; // Adaptive memtable sizing with memory pressure (Task 10)
 pub mod batch_wal; // Batched WAL with vectored I/O (Task 3)
 pub mod deferred_index; // Deferred sorted index with LSM-style compaction (Rec 2)
 pub mod dirty_tracking; // Batched dirty tracking with MPSC queue
 pub mod index_policy; // Per-table index policy
 pub mod key_buffer; // Cache-line aligned key buffer (Task 2)
+#[deprecated(
+    note = "Unused duplicate memtable; live memtables are lscs::ColumnarMemtable + durable_storage::MvccMemTable. Scheduled for removal (Task 2 consolidation)."
+)]
 pub mod lockfree_memtable; // Lock-free read path with hazard pointers (Task 4)
 pub mod packed_row;
 pub mod queue_index; // Queue-optimized index structure (Task: Queue Index Policy) // Unified row storage with delta encoding (Task 1)
 
 // PhD-Level Architectural Optimizations (December 2025)
+#[deprecated(
+    note = "Unused duplicate; live learned index is learned_index_integration. Scheduled for removal (Task 2 consolidation)."
+)]
 pub mod clr_learned_index; // CLR Learned Index for sorted runs (Task 3)
 #[cfg(feature = "experimental")]
 pub mod columnar_wal; // Columnar WAL Layout (Task 4) [quarantined: unwired]
@@ -147,6 +165,9 @@ pub mod polymorphic_value; // Polymorphic Value Encoding (Task 12)
 #[cfg(feature = "experimental")]
 pub mod rl_workload; // RL Workload Classifier (Task 10) [quarantined: unwired]
 pub mod shard_coalesced; // Shard-Coalesced Batch DashMap (Task 6)
+#[deprecated(
+    note = "Unused duplicate memtable; live memtables are lscs::ColumnarMemtable + durable_storage::MvccMemTable. Scheduled for removal (Task 2 consolidation)."
+)]
 pub mod stratified_skiplist; // Stratified SkipList with Deferred Promotion (Task 2) // io_uring WAL Submission (Task 11)
 
 // New performance modules (Recommendations 1-9)
@@ -220,7 +241,9 @@ pub use wal_integration::{
 };
 
 // Re-exports for performance optimization modules
+#[allow(deprecated)]
 pub use adaptive_learned_index::{AdaptiveLearnedIndex, LearnedIndexStats, PiecewiseLinearModel};
+#[allow(deprecated)]
 pub use adaptive_memtable::{
     AdaptiveMemtableConfig, AdaptiveMemtableSizer, AdaptiveMemtableStats, DEFAULT_BASE_SIZE,
     MAX_MEMTABLE_SIZE, MIN_MEMTABLE_SIZE,
@@ -229,6 +252,7 @@ pub use batch_wal::{
     BatchAccumulator, BatchedWalReader, BatchedWalStats, BatchedWalWriter, ConcurrentBatchedWal,
     DEFAULT_MAX_BATCH_BYTES, DEFAULT_MAX_BATCH_SIZE,
 };
+#[allow(deprecated)]
 pub use clr_learned_index::{ClrIndex, ClrLookupResult, ClrStats, IndexedSortedRun};
 pub use key_buffer::{
     ArenaKey,
@@ -240,6 +264,7 @@ pub use key_buffer::{
     KeyBuffer,
     MAX_KEY_LENGTH,
 };
+#[allow(deprecated)]
 pub use lockfree_memtable::{
     HazardDomain,
     INLINE_VALUE_SIZE,
@@ -264,6 +289,7 @@ pub use bloom::{BlockedBloomFilter, BloomFilter, LevelAdaptiveFPR, UnifiedBloomF
 pub use compression::{CompressionEngine, CompressionStats, StorageTier};
 pub use manifest::{FileMetadata, LsmState, Manifest, VersionEdit};
 pub use memory::{MemoryBudget, MemoryTracker, WriteBufferManager, WriteBufferStats};
+#[allow(deprecated)]
 pub use mvcc_new::{
     ColumnGroupRef, ReadVersion, Snapshot, SnapshotGuard, VersionGuard, VersionSet,
     VersionSetStats, VersionSetStatsSnapshot,
