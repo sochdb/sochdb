@@ -3579,6 +3579,69 @@ mod tests {
         }
     }
 
+    /// Crash-atomicity invariant (Task 4 — completes the Task 1 single-writer
+    /// contract). `test_crash_recovery` proves committed data survives a crash;
+    /// this proves the other half: recovery must NOT resurrect aborted or
+    /// in-flight (never-committed) writes. Together they assert the live
+    /// single-writer engine's commit is atomic AND durable across a crash.
+    #[test]
+    fn test_crash_recovery_atomicity() {
+        let dir = tempdir().unwrap();
+
+        // Phase 1: one committed write, one aborted, one in-flight at crash.
+        {
+            let storage = DurableStorage::open_without_lock(dir.path()).unwrap();
+            storage.set_sync_mode(2); // FULL: fsync every commit before the "crash"
+
+            // Committed — must survive.
+            let t1 = storage.begin_transaction().unwrap();
+            storage
+                .write(t1, b"committed".to_vec(), b"durable".to_vec())
+                .unwrap();
+            storage.commit(t1).unwrap();
+
+            // Aborted — must NOT be resurrected.
+            let t2 = storage.begin_transaction().unwrap();
+            storage
+                .write(t2, b"aborted".to_vec(), b"rolledback".to_vec())
+                .unwrap();
+            storage.abort(t2).unwrap();
+
+            // In-flight (never committed) at crash time — must NOT be resurrected.
+            let t3 = storage.begin_transaction().unwrap();
+            storage
+                .write(t3, b"inflight".to_vec(), b"lost".to_vec())
+                .unwrap();
+
+            // Simulate a crash: skip Drop / clean shutdown.
+            std::mem::forget(storage);
+        }
+
+        // Phase 2: reopen + recover; assert atomicity.
+        {
+            let storage = DurableStorage::open_without_lock(dir.path()).unwrap();
+            storage.recover().unwrap();
+
+            let t = storage.begin_transaction().unwrap();
+            assert_eq!(
+                storage.read(t, b"committed").unwrap(),
+                Some(b"durable".to_vec()),
+                "committed write must survive the crash"
+            );
+            assert_eq!(
+                storage.read(t, b"aborted").unwrap(),
+                None,
+                "aborted write must not be resurrected by recovery"
+            );
+            assert_eq!(
+                storage.read(t, b"inflight").unwrap(),
+                None,
+                "uncommitted in-flight write must not be resurrected by recovery"
+            );
+            storage.abort(t).unwrap();
+        }
+    }
+
     #[test]
     fn test_scan_prefix() {
         let dir = tempdir().unwrap();
