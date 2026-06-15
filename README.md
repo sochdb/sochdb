@@ -203,15 +203,15 @@ SochDB includes a production-ready Docker setup with gRPC server:
 
 ```bash
 # Pull and run from Docker Hub
-docker pull sushanth53/sochdb:latest
-docker run -d -p 50051:50051 sushanth53/sochdb:latest
+docker pull sochdb/sochdb:latest
+docker run -d -p 50051:50051 sochdb/sochdb:latest
 
 # Or use docker-compose
 cd docker
 docker compose up -d
 ```
 
-**Docker Hub:** [`sushanth53/sochdb`](https://hub.docker.com/r/sushanth53/sochdb)
+**Docker Hub:** [`sochdb/sochdb`](https://hub.docker.com/r/sochdb/sochdb)
 
 **Features:**
 - ✅ Production-ready image (159MB)
