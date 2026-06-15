@@ -345,16 +345,27 @@ impl SsiManager {
         }
     }
 
-    /// Begin a new transaction
+    /// Begin a new transaction (allocates an SSI-internal id).
     pub fn begin(&self) -> Result<(TxnId, Timestamp), SsiConflictError> {
         let txn_id = self.next_txn_id.fetch_add(1, Ordering::SeqCst);
+        let start_ts = self.begin_with_id(txn_id)?;
+        Ok((txn_id, start_ts))
+    }
+
+    /// Begin a transaction under a caller-supplied id.
+    ///
+    /// Lets an outer coordinator (e.g. `MvccTransactionManager`) keep ONE
+    /// consistent transaction identity across both managers, so later
+    /// `record_read`/`record_write`/`commit` calls keyed by that id resolve to
+    /// the transaction created here. Allocates only the SSI start timestamp.
+    pub fn begin_with_id(&self, txn_id: TxnId) -> Result<Timestamp, SsiConflictError> {
         let start_ts = self.timestamp.fetch_add(1, Ordering::SeqCst);
 
         let txn = SsiTransaction::new(txn_id, start_ts);
         self.transactions.write().insert(txn_id, txn);
         self.txn_states.set_status(txn_id, SsiTxnStatus::Active);
 
-        Ok((txn_id, start_ts))
+        Ok(start_ts)
     }
 
     /// Record a read and check for rw-antidependencies

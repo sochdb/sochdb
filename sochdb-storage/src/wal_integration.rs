@@ -633,9 +633,14 @@ impl MvccTransactionManager {
         // Update min snapshot for GC
         self.update_min_snapshot();
 
-        // For SSI, register with SSI manager
+        // For SSI, register with the SSI manager under the SAME txn id this
+        // manager uses, so later record_read/record_write/commit (keyed by
+        // txn_id) resolve to this transaction. Previously begin() allocated a
+        // divergent SSI-internal id, so a Serializable txn created after any
+        // non-Serializable begin was recorded under the wrong/non-existent id
+        // (Task 1B).
         if isolation_level == IsolationLevel::Serializable {
-            self.ssi_manager.begin().ok();
+            self.ssi_manager.begin_with_id(txn_id).ok();
         }
 
         Ok(txn_id)
@@ -1273,6 +1278,37 @@ mod tests {
         let _value = manager.read(txn2, b"key1").unwrap();
 
         manager.commit(txn2).unwrap();
+    }
+
+    /// Regression test for the SSI transaction-id divergence (Task 1B).
+    ///
+    /// `begin` allocates txn ids from the outer counter on EVERY begin, but only
+    /// advances `SsiManager`'s independent counter on Serializable begins. So
+    /// after any non-Serializable begin, a later Serializable transaction's
+    /// outer id no longer matches the id SsiManager stored it under, and
+    /// `read`'s `ssi_manager.record_read(outer_id, ...)` looks up a non-existent
+    /// SSI transaction — spuriously failing the read. The fix threads one
+    /// identity (begin_with_id) so both sides agree.
+    #[test]
+    fn test_ssi_txn_id_divergence_serializable_read() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("ssi_divergence.wal");
+        let manager = MvccTransactionManager::new(wal_path, |_, _| Ok(())).unwrap();
+
+        // A non-Serializable begin advances the outer counter but NOT the SSI one.
+        let _si = manager.begin(IsolationLevel::SnapshotIsolation).unwrap();
+
+        // Serializable begin: the outer id is now ahead of the SSI-assigned id.
+        let ser = manager.begin(IsolationLevel::Serializable).unwrap();
+
+        // A Serializable read records into SSI under the OUTER id. With the
+        // divergence bug this errors ("SSI conflict: Transaction not found").
+        let res = manager.read(ser, b"key");
+        assert!(
+            res.is_ok(),
+            "Serializable read failed due to SSI txn-id divergence: {:?}",
+            res.err()
+        );
     }
 
     #[test]
