@@ -148,3 +148,9 @@ harness = false
 [[bench]]
 name = "bench_comparison"
 harness = false
+
+# `loom` is a custom cfg enabled via RUSTFLAGS="--cfg loom" for the Loom
+# concurrency model checker (tests/loom_concurrency.rs). Declare it so the
+# unexpected_cfgs lint does not flag it (otherwise every build warns).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

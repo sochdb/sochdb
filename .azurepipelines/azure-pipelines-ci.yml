@@ -70,3 +70,23 @@ steps:
   # so they cannot rot silently while gated out of the default build.
   - script: cargo check -p sochdb-storage -p sochdb-query -p sochdb-index --features experimental
     displayName: 'Compile-check experimental modules'
+
+  # Reproducible census of the `unsafe` surface (Task 0). Informational: prints
+  # the per-crate + total `unsafe` keyword count so the figure is never quoted
+  # from memory and growth is visible in the log. Non-blocking.
+  - script: bash unsafe_census.sh
+    displayName: 'Unsafe-site census'
+    continueOnError: true
+
+  # Miri small gate over pure-Rust aliasing/UB in the epoch-partitioned arena
+  # (epoch_arena) — exactly the class that caught the MemoryBlock absolute-address
+  # alignment bug. NON-BLOCKING during bring-up (Miri may need per-test compat
+  # tweaks); promote to a hard gate once green, then widen to lockfree_epoch /
+  # generational_slab. Miri cannot interpret SIMD/FFI/mmap, so the scope stays
+  # narrow by test-name filter. (Next CI gate to add: ASAN/Valgrind over the
+  # SIMD/FFI/mmap surface on the nightly schedule — heavier, deferred.)
+  - script: |
+      rustup toolchain install nightly --component miri
+      cargo +nightly miri test -p sochdb-storage epoch_arena
+    displayName: 'Miri (epoch arena, non-blocking bring-up)'
+    continueOnError: true
