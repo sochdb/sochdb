@@ -39,7 +39,7 @@
 //! - Wave count typically 3-5 for random high-D embeddings
 
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// A wave of nodes that can be processed in parallel
 /// All nodes in a wave have non-overlapping neighborhoods
@@ -59,6 +59,20 @@ pub fn compute_independent_waves<F>(
 where
     F: Fn(u128) -> Vec<u128> + Sync,
 {
+    // The graph is static while waves are computed (Phase 3 mutates the graph
+    // only AFTER this returns), so each node's candidate set is pure. Compute
+    // them ONCE, in parallel: each call is an ef-wide graph search and is the
+    // dominant cost. The previous code re-ran neighbor_fn for every remaining
+    // node in every wave — O(waves * nodes) searches on a single thread, which
+    // left the rest of the cores idle (rayon workers parked) during batch
+    // build. Caching reduces that to O(nodes) searches spread across all cores
+    // and does not change the greedy coloring, so the waves — and therefore the
+    // constructed graph and recall — are identical.
+    let neighbor_map: HashMap<u128, Vec<u128>> = nodes
+        .par_iter()
+        .map(|&node| (node, neighbor_fn(node)))
+        .collect();
+
     let mut waves = Vec::new();
     let mut remaining: HashSet<u128> = nodes.iter().copied().collect();
 
@@ -68,7 +82,7 @@ where
 
         // Greedy graph coloring: add nodes that don't conflict with current wave
         for &node in &remaining {
-            let neighbors = neighbor_fn(node);
+            let neighbors = &neighbor_map[&node];
 
             // Check if this node conflicts with any neighbors already in wave
             let conflicts = neighbors.iter().any(|n| wave_neighborhood.contains(n))
@@ -76,7 +90,7 @@ where
 
             if !conflicts {
                 wave_nodes.push(node);
-                wave_neighborhood.extend(neighbors);
+                wave_neighborhood.extend(neighbors.iter().copied());
                 wave_neighborhood.insert(node); // Node itself is also "occupied"
             }
         }
