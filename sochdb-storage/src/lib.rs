@@ -303,8 +303,13 @@ pub use validation::{SSTableValidator, validate_sstable_file};
 
 // Re-exports for durable storage
 pub use durable_storage::{
-    ArenaMvccMemTable, DurableStorage, EphemeralHandle, MvccMemTable, TransactionMode,
+    ArenaMvccMemTable, DurableStorage, EphemeralHandle, MvccMemTable, StorageEncryption,
+    TransactionMode,
 };
+// At-rest encryption public surface (Task 3B), reachable from the crate root
+// alongside DurableStorage::open_with_encryption.
+pub use encryption::{EncryptionEngine, EncryptionError, EncryptionKey, generate_key};
+pub use keyring::EncryptionState;
 
 // ============================================================================
 // Truth-in-capabilities: durability feature matrix (Task 3A)

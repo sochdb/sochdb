@@ -46,6 +46,7 @@ use std::sync::Arc;
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use zeroize::Zeroize;
 
 use crate::encryption::{EncryptionEngine, EncryptionKey, derive_subkey, generate_key};
 use sochdb_core::{Result, SochDBError};
@@ -320,17 +321,21 @@ fn create_encrypted(
 fn verify_mac(file: &KeyringFile, kek: &EncryptionKey) -> Result<()> {
     let salt = decode_fixed::<16>(&file.salt, "salt")?;
     let mac_key = derive_subkey(kek.as_bytes(), &salt, INFO_MAC);
-    let expected = compute_mac(&mac_key, file);
     let actual = hex::decode(&file.mac)
         .map_err(|_| SochDBError::Encryption("malformed keyring mac".into()))?;
-    if !constant_time_eq(&expected, &actual) {
-        return Err(SochDBError::Encryption(
+    // Use HMAC's own vetted constant-time tag verification rather than a
+    // hand-rolled compare, so the constant-time property is not at the mercy of
+    // optimizer transforms.
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(mac_key.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(&mac_input(file));
+    mac.verify_slice(&actual).map_err(|_| {
+        SochDBError::Encryption(
             "keyring authentication failed: wrong encryption key or tampered \
              keyring; refusing to open"
                 .to_string(),
-        ));
-    }
-    Ok(())
+        )
+    })
 }
 
 fn open_encrypted(file: KeyringFile, kek: &EncryptionKey) -> Result<EncryptionState> {
@@ -344,7 +349,7 @@ fn open_encrypted(file: KeyringFile, kek: &EncryptionKey) -> Result<EncryptionSt
     let wrap_engine = EncryptionEngine::from_key(&wrap_key);
     let wrapped_dek = hex::decode(&file.wrapped_dek)
         .map_err(|_| SochDBError::Encryption("malformed wrapped_dek".into()))?;
-    let dek_bytes = wrap_engine
+    let mut dek_bytes = wrap_engine
         .decrypt_with_aad(
             &wrapped_dek,
             &wrap_aad(&db_uuid, epoch, &file.kek_source_id),
@@ -355,13 +360,19 @@ fn open_encrypted(file: KeyringFile, kek: &EncryptionKey) -> Result<EncryptionSt
             )
         })?;
     if dek_bytes.len() != 32 {
+        dek_bytes.zeroize();
         return Err(SochDBError::Encryption(
             "unwrapped DEK is not 32 bytes".into(),
         ));
     }
+    // Move the plaintext DEK into the zeroize-on-drop wrapper and wipe the
+    // transient heap/stack copies the AEAD left behind — the DEK decrypts ALL
+    // data, so it must not linger in freed memory / swap / core dumps.
     let mut dek_arr = [0u8; 32];
     dek_arr.copy_from_slice(&dek_bytes);
+    dek_bytes.zeroize();
     let dek = EncryptionKey::new(dek_arr);
+    dek_arr.zeroize();
 
     // Canary check: prove the DEK actually decrypts data before touching WAL.
     let dek_engine = EncryptionEngine::from_key(&dek);
@@ -401,18 +412,6 @@ fn decode_fixed<const N: usize>(hexstr: &str, what: &str) -> Result<[u8; N]> {
     Ok(a)
 }
 
-/// Constant-time equality for MAC comparison.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 /// Atomically persist the keyring: write temp, fsync file, rename, fsync dir.
 fn write_keyring_atomic(db_dir: &Path, path: &Path, file: &KeyringFile) -> Result<()> {
     fs::create_dir_all(db_dir)?;
@@ -425,9 +424,14 @@ fn write_keyring_atomic(db_dir: &Path, path: &Path, file: &KeyringFile) -> Resul
         f.sync_all()?;
     }
     fs::rename(&tmp, path)?;
-    // fsync the directory so the rename is durable.
-    if let Ok(dir) = fs::File::open(db_dir) {
-        let _ = dir.sync_all();
+    // fsync the directory so the rename is durable. On Unix a real I/O error
+    // here must surface (the keyring's durability rests on this — a lost rename
+    // can orphan the DEK). On non-Unix, opening a directory handle isn't
+    // supported, so this is best-effort there.
+    #[cfg(unix)]
+    {
+        let dir = fs::File::open(db_dir)?;
+        dir.sync_all()?;
     }
     Ok(())
 }
