@@ -16,6 +16,46 @@ mod rng_optimization_tests {
     use ndarray::Array1;
     use std::collections::HashSet;
 
+    /// Lock the HnswConfig speed/recall presets so their values cannot drift
+    /// silently (the recall_latency characterization is keyed to them).
+    #[test]
+    fn test_config_presets() {
+        let d = HnswConfig::default();
+        let hr = HnswConfig::high_recall();
+        // Default IS the high-recall preset (the safe, deep-1M-tuned config).
+        assert_eq!(hr.max_connections_layer0, 64);
+        assert_eq!(hr.ef_construction, 256);
+        assert_eq!(d.max_connections_layer0, hr.max_connections_layer0);
+        assert_eq!(d.ef_construction, hr.ef_construction);
+
+        let b = HnswConfig::balanced();
+        assert_eq!(
+            (
+                b.max_connections,
+                b.max_connections_layer0,
+                b.ef_construction
+            ),
+            (16, 32, 200)
+        );
+
+        let f = HnswConfig::fast();
+        assert_eq!(
+            (
+                f.max_connections,
+                f.max_connections_layer0,
+                f.ef_construction
+            ),
+            (12, 24, 128)
+        );
+
+        // Strictly decreasing graph degree: fast < balanced < high_recall.
+        assert!(f.max_connections_layer0 < b.max_connections_layer0);
+        assert!(b.max_connections_layer0 < hr.max_connections_layer0);
+        // level_multiplier stays consistent with m (1/ln(m)).
+        assert!((b.level_multiplier - 1.0 / (16.0_f32).ln()).abs() < 1e-6);
+        assert!((f.level_multiplier - 1.0 / (12.0_f32).ln()).abs() < 1e-6);
+    }
+
     /// Test vector normalization during ingestion
     #[test]
     fn test_normalize_at_ingest() {

@@ -66,6 +66,18 @@ fn gen_vectors(n: usize, dim: usize, seed: u64) -> Vec<Vec<f32>> {
         .collect()
 }
 
+/// `count` points scattered around the given cluster centers (center + noise),
+/// round-robin over centers. Approximates how real embeddings group by topic —
+/// a higher-recall regime than uniform random.
+fn around_centers(centers: &[Vec<f32>], count: usize, noise: f32, rng: &mut Rng) -> Vec<Vec<f32>> {
+    (0..count)
+        .map(|i| {
+            let c = &centers[i % centers.len()];
+            c.iter().map(|&x| x + noise * rng.unit()).collect()
+        })
+        .collect()
+}
+
 /// Cosine distance on raw vectors. Order-equivalent to the index's normalized
 /// cosine, so it is a valid ground truth for recall regardless of normalization.
 fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
@@ -120,19 +132,55 @@ fn main() {
         .filter(|v: &Vec<usize>| !v.is_empty())
         .unwrap_or_else(|| vec![768, 1536, 3072]);
 
-    println!("HNSW recall@{k} + latency gate  (N={n}, queries={q}, metric=Cosine, seeded)\n");
+    // RECALL_DATA=clustered uses a Gaussian-mixture (realistic, higher-recall
+    // regime); default "uniform" is the pessimistic random regime.
+    let clustered = std::env::var("RECALL_DATA")
+        .map(|s| s == "clustered")
+        .unwrap_or(false);
+    let clusters = env_usize("RECALL_CLUSTERS", 64).max(1);
+
+    // RECALL_PRESET selects the HnswConfig preset under test (default = crate Default).
+    let preset = std::env::var("RECALL_PRESET").unwrap_or_else(|_| "default".to_string());
+    let base = match preset.as_str() {
+        "high_recall" => HnswConfig::high_recall(),
+        "balanced" => HnswConfig::balanced(),
+        "fast" => HnswConfig::fast(),
+        _ => HnswConfig::default(),
+    };
+
+    let data_label = if clustered {
+        format!("clustered/{clusters}")
+    } else {
+        "uniform".to_string()
+    };
+    println!(
+        "HNSW recall@{k} gate  (N={n}, q={q}, data={data_label}, preset={preset}, m0={}, ef_c={}, seeded)\n",
+        base.max_connections_layer0, base.ef_construction
+    );
     println!(
         "{:>6} {:>10} {:>10} {:>9} {:>9} {:>9} {:>9}",
         "dim", "recall@10", "build_ms", "p50_us", "p95_us", "p99_us", "mean_us"
     );
 
     for &dim in &dims {
-        let data = gen_vectors(n, dim, 0x00C0_FFEE ^ dim as u64);
-        let queries = gen_vectors(q, dim, 0x0000_BEEF ^ dim as u64);
+        let (data, queries) = if clustered {
+            let mut rng = Rng((0x00C0_FFEE ^ dim as u64) | 1);
+            let centers: Vec<Vec<f32>> = (0..clusters)
+                .map(|_| (0..dim).map(|_| rng.unit()).collect())
+                .collect();
+            let data = around_centers(&centers, n, 0.15, &mut rng);
+            let queries = around_centers(&centers, q, 0.15, &mut rng);
+            (data, queries)
+        } else {
+            (
+                gen_vectors(n, dim, 0x00C0_FFEE ^ dim as u64),
+                gen_vectors(q, dim, 0x0000_BEEF ^ dim as u64),
+            )
+        };
 
         let config = HnswConfig {
             metric: DistanceMetric::Cosine,
-            ..Default::default()
+            ..base.clone()
         };
         let index = HnswIndex::new(dim, config);
 

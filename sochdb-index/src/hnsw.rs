@@ -2044,6 +2044,45 @@ impl Default for HnswConfig {
     }
 }
 
+impl HnswConfig {
+    /// Maximum-recall preset — identical to [`HnswConfig::default`]: m=32 / m0=64
+    /// / ef_construction=256. Tuned on deep-1M (recall@10 0.967@m16 -> 0.988@m32).
+    /// Highest build cost and memory; the safe choice for hard, high-dimensional
+    /// real embeddings where recall is not saturated.
+    pub fn high_recall() -> Self {
+        Self::default()
+    }
+
+    /// Balanced preset (the hnswlib/Chroma norm): m=16 / m0=32 / ef_construction=200.
+    /// Roughly halves graph degree and per-insert build effort versus
+    /// [`high_recall`](Self::high_recall); recall is near-saturated on
+    /// well-clustered embeddings but can trail on hard data. Validate against
+    /// your own data with the `recall_latency` bench before adopting as default.
+    pub fn balanced() -> Self {
+        Self {
+            max_connections: 16,
+            max_connections_layer0: 32,
+            level_multiplier: 1.0 / (16.0_f32).ln(),
+            ef_construction: 200,
+            ..Self::default()
+        }
+    }
+
+    /// Latency/throughput-first preset: m=12 / m0=24 / ef_construction=128.
+    /// Fastest build and search; adopt only where recall headroom is known to
+    /// exist (clean, well-separated embeddings). Always validate recall with the
+    /// `recall_latency` bench first — this trades recall for speed by design.
+    pub fn fast() -> Self {
+        Self {
+            max_connections: 12,
+            max_connections_layer0: 24,
+            level_multiplier: 1.0 / (12.0_f32).ln(),
+            ef_construction: 128,
+            ..Self::default()
+        }
+    }
+}
+
 /// Configuration for adaptive ef_search
 ///
 /// **Gap #4 Implementation**: Adaptive ef selection based on target recall.
