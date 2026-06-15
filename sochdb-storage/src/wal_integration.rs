@@ -536,7 +536,13 @@ impl MvccVersionChain {
     }
 }
 
-/// Full MVCC Transaction Manager with WAL and Group Commit
+/// Full MVCC Transaction Manager with WAL and Group Commit.
+///
+/// NOTE (concurrency contract): this is a complete but **standalone, unwired**
+/// manager. The live engine's contract is multi-reader/single-writer via
+/// `DurableStorage` (see `transaction.rs`), which does NOT use this type. It is
+/// retained as a self-contained reference implementation; construct it only if
+/// you own its lifecycle. It is not the production transaction path.
 ///
 /// Provides ACID transactions with:
 /// - Multi-Version Concurrency Control

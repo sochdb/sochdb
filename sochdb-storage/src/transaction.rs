@@ -22,46 +22,46 @@
 //!
 //! ## Implementation Guide
 //!
-//! There are THREE transaction manager implementations in SochDB. Here's when to use each:
+//! **The live concurrency contract is multi-reader, single-writer.** Production
+//! isolation and durability run through `DurableStorage` (`database.rs` /
+//! `durable_storage.rs`): lock-free MVCC snapshot reads via `ConcurrentMvcc`,
+//! writes serialized by a single-writer lock (`acquire_writer`, "serialize WAL
+//! commits across processes"), and SSI conflict validation via `MvccManager`.
+//! WAL crash recovery is wired here (`txn_wal` / `RecoveryStats` /
+//! `durability_contract`). There is **no concurrent-writer (wired SSI) path on
+//! the live engine** — do not assume one exists.
 //!
-//! ### 1. `MvccTransactionManager` (wal_integration.rs) - **RECOMMENDED FOR PRODUCTION**
+//! SochDB contains three transaction-manager types; only the first is on the
+//! live path:
 //!
-//! Full-featured transaction manager with:
-//! - ✅ WAL-based durability (fsync on commit)
-//! - ✅ MVCC snapshot isolation
-//! - ✅ Serializable Snapshot Isolation (SSI)
-//! - ✅ Group commit for high throughput
-//! - ✅ Version chains with garbage collection
+//! ### 1. `DurableStorage` + `MvccManager` (durable_storage.rs) — LIVE / PRODUCTION
+//!
+//! The actual production path. Single-writer write coordination + MVCC snapshot
+//! reads, with `MvccManager` providing SSI rw-antidependency validation and the
+//! storage layer providing WAL durability and crash recovery.
+//!
+//! ### 2. `MvccTransactionManager` (wal_integration.rs) — STANDALONE, NOT WIRED
+//!
+//! A complete, self-contained manager (WAL durability, MVCC snapshot isolation,
+//! optional SSI, group commit, version-chain GC). Despite being feature-rich it
+//! has **no functional caller in the engine** — `DurableStorage` does not use
+//! it — so it is **not** the production path. Use it only if you explicitly
+//! construct and own one; it does not participate in the live database's
+//! single-writer concurrency contract. (Its SSI read/write tracking is correct
+//! as of the Task 1B id-divergence fix, but it remains unwired.)
 //!
 //! ```ignore
 //! use sochdb_storage::wal_integration::MvccTransactionManager;
-//!
-//! let txm = MvccTransactionManager::new("wal.log", |key, value| {
-//!     // Apply callback
-//!     Ok(())
-//! })?;
-//!
+//! let txm = MvccTransactionManager::new("wal.log", |_key, _value| Ok(()))?;
 //! let txn_id = txm.begin(IsolationLevel::Serializable)?;
 //! txm.write(txn_id, b"key", b"value")?;
-//! txm.commit(txn_id)?; // fsync guarantee
+//! txm.commit(txn_id)?;
 //! ```
 //!
-//! ### 2. `MvccManager` (durable_storage.rs) - SSI VALIDATION ONLY
+//! ### 3. `TransactionManager` (mvcc_snapshot.rs) — `#[deprecated]`
 //!
-//! Provides SSI conflict detection but delegates durability to storage layer.
-//! Used internally by `DurableStorage` for transaction tracking.
-//!
-//! - ✅ SSI rw-antidependency detection
-//! - ✅ Bloom filter optimization for read/write sets
-//! - ❌ No WAL (relies on caller for durability)
-//!
-//! ### 3. `TransactionManager` (mvcc_snapshot.rs) - **DEPRECATED FOR NEW CODE**
-//!
-//! Minimal snapshot isolation without durability. Only suitable for:
-//! - Unit testing
-//! - Ephemeral in-memory operations
-//!
-//! **Do not use for production workloads requiring crash recovery.**
+//! Minimal snapshot isolation without durability. Unit tests / ephemeral
+//! in-memory only. **Not for production workloads requiring crash recovery.**
 //!
 //! ## Transaction Coordinator Trait
 //!
