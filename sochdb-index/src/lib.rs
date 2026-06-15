@@ -84,7 +84,6 @@ pub mod lockfree_hnsw; // Lock-free HNSW with CAS operations (mm.md Task 5) [qua
 pub mod metrics;
 pub mod node_ordering; // Locality-driven node ordering: BFS/RCM/Hilbert (P0 optimization)
 pub mod optimized_search; // Optimized HNSW search with CSR + internal IDs + batched expansion
-pub mod parallel_waves; // Wave-based parallel graph construction (Task 3)
 pub mod persistence;
 pub mod product_quantization;
 pub mod scratch_buffers; // Thread-local scratch buffer pool (Task 10)
