@@ -19,18 +19,18 @@
 # === Image Publishing ===
 # Push to Artifact Registry:
 #   gcloud auth configure-docker us-docker.pkg.dev
-#   docker tag sochdb/sochdb-grpc:latest us-docker.pkg.dev/sochdb-public/sochdb/sochdb-grpc:2.0.8
-#   docker push us-docker.pkg.dev/sochdb-public/sochdb/sochdb-grpc:2.0.8
+#   docker tag sochdb/sochdb-grpc:latest us-docker.pkg.dev/sochdb-public/sochdb/sochdb-grpc:2.0.9
+#   docker push us-docker.pkg.dev/sochdb-public/sochdb/sochdb-grpc:2.0.9
 
 # === Application Schema ===
 # GCP Marketplace apps use a schema.yaml to define parameters:
 x-google-marketplace:
   schemaVersion: v2
   applicationApiVersion: v1beta1
-  publishedVersion: "2.0.8"
+  publishedVersion: "2.0.9"
   publishedVersionMetadata:
     releaseNote: >
-      SochDB 2.0.8 — MultiShardHnswIndex production readiness,
+      SochDB 2.0.9 — MultiShardHnswIndex production readiness,
       Context Queries, token budgeting, gRPC + REST API.
   images:
     sochdb-grpc:
