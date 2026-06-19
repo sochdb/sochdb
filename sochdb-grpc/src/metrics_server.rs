@@ -40,7 +40,7 @@
 //! use sochdb_grpc::metrics_server;
 //!
 //! // Spawns the HTTP server in a background thread
-//! let handle = metrics_server::start(9090);
+//! let handle = metrics_server::start("127.0.0.1".to_string(), 9090);
 //! ```
 
 use lazy_static::lazy_static;
@@ -258,7 +258,7 @@ impl Drop for MetricsServerHandle {
 /// Returns a handle that can be used to shut down the server.
 /// The server runs in a background OS thread (not a tokio task)
 /// to avoid blocking the async runtime.
-pub fn start(port: u16) -> MetricsServerHandle {
+pub fn start(host: String, port: u16) -> MetricsServerHandle {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
 
@@ -270,7 +270,7 @@ pub fn start(port: u16) -> MetricsServerHandle {
     let thread = thread::Builder::new()
         .name("sochdb-metrics-http".to_string())
         .spawn(move || {
-            run_server(port, shutdown_clone);
+            run_server(&host, port, shutdown_clone);
         })
         .expect("failed to spawn metrics HTTP thread");
 
@@ -280,8 +280,11 @@ pub fn start(port: u16) -> MetricsServerHandle {
     }
 }
 
-fn run_server(port: u16, shutdown: Arc<AtomicBool>) {
-    let addr = format!("0.0.0.0:{}", port);
+fn run_server(host: &str, port: u16, shutdown: Arc<AtomicBool>) {
+    // Bind to the operator-chosen host (default loopback) rather than a
+    // hardcoded 0.0.0.0 — the unauthenticated /metrics endpoint must not be
+    // forced onto all interfaces when the operator asked for 127.0.0.1.
+    let addr = format!("{}:{}", host, port);
     let server = match tiny_http::Server::http(&addr) {
         Ok(s) => s,
         Err(e) => {

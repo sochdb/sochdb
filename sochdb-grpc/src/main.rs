@@ -167,7 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start Prometheus metrics HTTP server (Task 8)
     let _metrics_handle = if args.metrics_port > 0 {
-        Some(sochdb_grpc::metrics_server::start(args.metrics_port))
+        Some(sochdb_grpc::metrics_server::start(
+            args.host.clone(),
+            args.metrics_port,
+        ))
     } else {
         tracing::info!("Prometheus metrics endpoint disabled");
         None
@@ -414,11 +417,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder
         .add_service(health_service)
-        .add_service(
+        // SECURITY: the vector service MUST be wrapped with the auth interceptor
+        // like every other service — otherwise the interceptor never runs for
+        // vector RPCs, extract_principal falls back to an (over-privileged)
+        // anonymous principal, and the entire vector data plane is readable /
+        // writable / destroyable with no credentials EVEN WHEN --auth is on.
+        // Configure the message-size limits on the inner server first, then wrap
+        // it in the interceptor (max_*_message_size is not available post-wrap).
+        .add_service(tonic::codegen::InterceptedService::new(
             VectorIndexServiceServer::new(vector_server)
                 .max_decoding_message_size(64 * 1024 * 1024)
                 .max_encoding_message_size(64 * 1024 * 1024),
-        )
+            auth.clone(),
+        ))
         .add_service(GraphServiceServer::with_interceptor(
             graph_server,
             auth.clone(),

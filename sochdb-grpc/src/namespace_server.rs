@@ -222,13 +222,18 @@ impl NamespaceService for NamespaceServer {
 
     async fn list_namespaces(
         &self,
-        _request: Request<ListNamespacesRequest>,
+        request: Request<ListNamespacesRequest>,
     ) -> Result<Response<ListNamespacesResponse>, Status> {
-        let principal = extract_principal(&_request);
+        let principal = extract_principal(&request);
         require_capability(&principal, &Capability::Read)?;
+        // SECURITY: scope the listing to namespaces the caller may actually
+        // access (Admin sees all; a tenant sees only its own + "default"),
+        // mirroring get_namespace/delete_namespace. Returning every namespace
+        // leaks all tenants' names, descriptions and quotas to any Read principal.
         let namespaces: Vec<Namespace> = self
             .namespaces
             .iter()
+            .filter(|entry| require_namespace_access(&principal, entry.key()).is_ok())
             .map(|entry| entry.value().clone())
             .collect();
 
@@ -379,5 +384,56 @@ mod tests {
         assert!(server.check_collection_quota("prod").is_err());
         server.decrement_collection_count("prod");
         assert!(server.check_collection_quota("prod").is_ok());
+    }
+
+    /// SECURITY (CWE-639/200): list_namespaces must be tenant-scoped — a
+    /// non-admin tenant sees only its own namespace (+ "default"), never other
+    /// tenants' names/quotas.
+    #[tokio::test]
+    async fn list_namespaces_is_tenant_scoped() {
+        use crate::security::{AuthMethod, Principal};
+        use std::collections::HashSet;
+
+        let server = NamespaceServer::new();
+        for n in ["tenant-a", "tenant-b", "default"] {
+            server.namespaces.insert(
+                n.to_string(),
+                Namespace {
+                    name: n.to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        // Non-admin principal for tenant-a, Read capability only.
+        let principal = Principal {
+            id: "ua".to_string(),
+            tenant_id: "tenant-a".to_string(),
+            capabilities: HashSet::from([Capability::Read]),
+            expires_at: None,
+            auth_method: AuthMethod::Anonymous,
+        };
+        let mut req = Request::new(ListNamespacesRequest {});
+        req.extensions_mut().insert(principal);
+
+        let names: Vec<String> = server
+            .list_namespaces(req)
+            .await
+            .unwrap()
+            .into_inner()
+            .namespaces
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
+
+        assert!(
+            names.contains(&"tenant-a".to_string()),
+            "own namespace visible"
+        );
+        assert!(names.contains(&"default".to_string()), "default visible");
+        assert!(
+            !names.contains(&"tenant-b".to_string()),
+            "must NOT leak another tenant's namespace"
+        );
     }
 }

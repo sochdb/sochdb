@@ -40,6 +40,12 @@ use sochdb_query::sql::{BridgeExecutionResult, SqlBridge};
 // ============================================================================
 
 /// Protocol version 3.0 (major=3, minor=0 → 196608)
+/// Upper bound on a PG-wire message length (incl. the 4-byte length field).
+/// Rejects an attacker-controlled length from triggering an unbounded / sign-
+/// extended `vec![0u8; n]` allocation (CWE-770/789). 16 MiB is generous for SQL
+/// text while preventing the ~2 GB-per-connection memory-exhaustion DoS.
+const MAX_PG_MSG_LEN: i32 = 16 * 1024 * 1024;
+
 const PROTOCOL_VERSION_3: i32 = 196608;
 
 /// SSL request magic number
@@ -417,11 +423,15 @@ async fn handle_connection<E: PgSqlExecutor>(
             Ok(t) => t,
             Err(_) => break, // Client disconnected
         };
-        let msg_len = stream.read_i32().await? as usize;
-        if msg_len < 4 {
+        // Validate the length as a signed i32 BEFORE the usize cast: a negative
+        // value would sign-extend to a huge usize and bypass a `< 4` check, and a
+        // large positive value would trigger a multi-GB allocation below. Reject
+        // out-of-range lengths (drop the connection) — mirrors the startup cap.
+        let msg_len = stream.read_i32().await?;
+        if msg_len < 4 || msg_len > MAX_PG_MSG_LEN {
             break;
         }
-        let payload_len = msg_len - 4;
+        let payload_len = (msg_len - 4) as usize;
 
         match msg_type {
             MSG_QUERY => {
