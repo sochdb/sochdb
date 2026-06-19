@@ -2949,7 +2949,9 @@ impl EmbeddedConnection {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
+    /// // `EmbeddedConnection` is part of the `embedded` feature surface; this
+    /// // example is illustrative (not compiled under default features).
     /// let conn = EmbeddedConnection::open("my.db").unwrap();
     /// conn.execute_sql("CREATE TABLE users (id INT, name TEXT)").unwrap();
     /// conn.execute_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap();
@@ -3118,6 +3120,33 @@ pub struct DurableConnection {
     _ephemeral_dir: Option<tempfile::TempDir>,
 }
 
+/// A 32-byte Key-Encryption-Key (KEK) for at-rest encryption.
+///
+/// `Debug` is redacted so the key never leaks into logs. The bytes are the KEK
+/// that *wraps* a per-database data key (see `sochdb_storage::keyring`); they are
+/// never used verbatim as the cipher key. Convert to the storage KEK at open
+/// time. Note: this client-side copy is not zeroized on drop (the storage
+/// `EncryptionKey` it is converted into is); avoid holding it longer than needed.
+#[derive(Clone)]
+pub struct ClientKek([u8; 32]);
+
+impl ClientKek {
+    /// Build a KEK from raw 32 bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) fn bytes(&self) -> [u8; 32] {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for ClientKek {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ClientKek(<redacted 32 bytes>)")
+    }
+}
+
 /// Connection configuration for DurableConnection
 ///
 /// Mirrors sochdb_storage::DatabaseConfig but exposed at the client level.
@@ -3138,6 +3167,10 @@ pub struct ConnectionConfig {
     pub group_commit_batch_size: usize,
     /// Maximum wait time for group commit in microseconds
     pub group_commit_max_wait_us: u64,
+    /// At-rest encryption KEK. `None` => plaintext (default). When set, the
+    /// database is opened (or created on first open) encrypted; a wrong/missing
+    /// key for an already-encrypted database fails closed at open.
+    pub encryption_key: Option<ClientKek>,
 }
 
 /// Durability contract for a [`DurableConnection`] (Task 4 — Explicit Durability
@@ -3202,6 +3235,7 @@ impl Default for ConnectionConfig {
             enable_ordered_index: true,
             group_commit_batch_size: 100,
             group_commit_max_wait_us: 10_000,
+            encryption_key: None,
         }
     }
 }
@@ -3219,6 +3253,7 @@ impl ConnectionConfig {
             enable_ordered_index: false,
             group_commit_batch_size: 1000,
             group_commit_max_wait_us: 50_000,
+            encryption_key: None,
         }
     }
 
@@ -3234,6 +3269,7 @@ impl ConnectionConfig {
             enable_ordered_index: true,
             group_commit_batch_size: 10,
             group_commit_max_wait_us: 1_000,
+            encryption_key: None,
         }
     }
 
@@ -3249,7 +3285,15 @@ impl ConnectionConfig {
             enable_ordered_index: true,
             group_commit_batch_size: 1,
             group_commit_max_wait_us: 0,
+            encryption_key: None,
         }
+    }
+
+    /// Set the at-rest encryption KEK (32 raw bytes). The database will be
+    /// opened (or created) encrypted; the KEK wraps a per-database data key.
+    pub fn with_encryption_key(mut self, kek: [u8; 32]) -> Self {
+        self.encryption_key = Some(ClientKek::from_bytes(kek));
+        self
     }
 }
 
@@ -3281,12 +3325,26 @@ impl DurableConnection {
     /// )?;
     /// ```
     pub fn open_with_config(path: impl AsRef<Path>, config: ConnectionConfig) -> Result<Self> {
-        // Map client config to storage config
-        let storage = if config.enable_ordered_index {
-            DurableStorage::open(path.as_ref())
-        } else {
-            DurableStorage::open_with_config(path.as_ref(), false) // No ordered index
-        }
+        use sochdb_storage::durable_storage::MemTableType;
+        use sochdb_storage::{EncryptionKey, StorageEncryption};
+
+        // Resolve at-rest encryption from the config KEK (None => plaintext).
+        let encryption = match &config.encryption_key {
+            Some(kek) => StorageEncryption::with_kek(
+                EncryptionKey::new(kek.bytes()),
+                "embedded:sochdb-client",
+            ),
+            None => StorageEncryption::disabled(),
+        };
+
+        // Map client config to storage config. Both legacy branches used the
+        // Standard memtable, so preserve that while threading encryption through.
+        let storage = DurableStorage::open_with_encryption(
+            path.as_ref(),
+            config.enable_ordered_index,
+            MemTableType::Standard,
+            encryption,
+        )
         .map_err(|e| ClientError::Storage(e.to_string()))?;
 
         // Apply sync mode from config
@@ -4298,6 +4356,62 @@ mod tests {
             let v = conn.get(b"persist").unwrap();
             assert_eq!(v, Some(b"this data".to_vec()));
             conn.abort_txn().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_durable_connection_encryption_roundtrip() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let kek = [0xC7u8; 32];
+
+        // Phase 1: create encrypted via the SDK config channel, write + commit.
+        {
+            let conn = DurableConnection::open_with_config(
+                dir.path(),
+                ConnectionConfig::default().with_encryption_key(kek),
+            )
+            .unwrap();
+            conn.begin_txn().unwrap();
+            conn.put(b"secret", b"value").unwrap();
+            conn.commit_txn().unwrap();
+        }
+        assert!(dir.path().join("keyring.json").exists());
+        let wal = std::fs::read(dir.path().join("wal.log")).unwrap();
+        assert!(
+            !wal.windows(5).any(|w| w == b"value"),
+            "plaintext value leaked into WAL"
+        );
+
+        // Phase 2: reopen with the correct KEK, recover, read back.
+        {
+            let conn = DurableConnection::open_with_config(
+                dir.path(),
+                ConnectionConfig::default().with_encryption_key(kek),
+            )
+            .unwrap();
+            conn.recover().unwrap();
+            conn.begin_txn().unwrap();
+            assert_eq!(conn.get(b"secret").unwrap(), Some(b"value".to_vec()));
+            conn.abort_txn().unwrap();
+        }
+
+        // Phase 3: wrong KEK fails closed.
+        {
+            let wrong = DurableConnection::open_with_config(
+                dir.path(),
+                ConnectionConfig::default().with_encryption_key([0u8; 32]),
+            );
+            assert!(wrong.is_err(), "wrong KEK must fail closed");
+        }
+
+        // Phase 4: opening the encrypted DB with no key fails closed.
+        {
+            let no_key = DurableConnection::open(dir.path());
+            assert!(
+                no_key.is_err(),
+                "encrypted DB opened without key must fail closed"
+            );
         }
     }
 

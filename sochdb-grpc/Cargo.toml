@@ -29,6 +29,8 @@ sochdb-storage = { version = "2.0.9", path = "../sochdb-storage" }
 sochdb-query = { version = "2.0.9", path = "../sochdb-query" }
 sochdb-memory = { version = "2.0.9", path = "../sochdb-memory" }
 sochdb-vector = { version = "2.0.9", path = "../sochdb-vector" }
+# Wipe the transient at-rest encryption KEK stack copy after handing it to storage.
+zeroize = "1.8"
 
 # gRPC / Protocol Buffers
 tonic = { version = "0.13", features = ["tls-ring", "transport"] }

@@ -82,6 +82,7 @@ use sochdb_core::{Result, SochDBError, SochValue};
 
 // Re-export key types
 pub use crate::durable_storage::RecoveryStats;
+use crate::durable_storage::StorageEncryption;
 
 /// Database configuration
 #[derive(Debug, Clone)]
@@ -1016,14 +1017,31 @@ impl Database {
 
     /// Open with custom configuration
     pub fn open_with_config<P: AsRef<Path>>(path: P, config: DatabaseConfig) -> Result<Arc<Self>> {
+        Self::open_with_config_and_encryption(path, config, StorageEncryption::disabled())
+    }
+
+    /// Open with custom configuration AND at-rest encryption.
+    ///
+    /// Threads the supplied [`StorageEncryption`] (the KEK envelope) down to the
+    /// keyring + WAL. `StorageEncryption::disabled()` is exactly plaintext
+    /// [`Self::open_with_config`]. With a KEK the database is opened (or created
+    /// on first open) encrypted; a wrong/missing key for an already-encrypted DB
+    /// fails closed. `StorageEncryption` is move-only (zeroizing), so it is a
+    /// by-value parameter rather than a `DatabaseConfig` field.
+    pub fn open_with_config_and_encryption<P: AsRef<Path>>(
+        path: P,
+        config: DatabaseConfig,
+        encryption: StorageEncryption,
+    ) -> Result<Arc<Self>> {
         let path = path.as_ref().to_path_buf();
 
         // Use IndexPolicy-based storage configuration for automatic memtable selection
         // This derives ordered index and memtable type from the policy
-        let storage = Arc::new(DurableStorage::open_with_policy(
+        let storage = Arc::new(DurableStorage::open_with_policy_encrypted(
             &path,
             config.default_index_policy,
             config.group_commit,
+            encryption,
         )?);
 
         // Propagate sync_mode from config to storage engine.
@@ -1098,6 +1116,23 @@ impl Database {
         path: P,
         config: DatabaseConfig,
     ) -> Result<Arc<Self>> {
+        Self::open_concurrent_with_config_and_encryption(
+            path,
+            config,
+            StorageEncryption::disabled(),
+        )
+    }
+
+    /// Open in concurrent (multi-reader) mode with at-rest encryption.
+    ///
+    /// The encryption-aware sibling of [`Self::open_concurrent_with_config`] —
+    /// makes the multi-process path able to open an encrypted database instead of
+    /// failing closed for lack of a key channel.
+    pub fn open_concurrent_with_config_and_encryption<P: AsRef<Path>>(
+        path: P,
+        config: DatabaseConfig,
+        encryption: StorageEncryption,
+    ) -> Result<Arc<Self>> {
         use crate::mvcc_concurrent::ConcurrentMvcc;
 
         let path = path.as_ref().to_path_buf();
@@ -1108,9 +1143,10 @@ impl Database {
 
         // Open storage WITHOUT exclusive lock (concurrent MVCC handles coordination)
         // We use a special internal method that skips the file lock
-        let storage = Arc::new(DurableStorage::open_for_concurrent(
+        let storage = Arc::new(DurableStorage::open_for_concurrent_encrypted(
             &path,
             config.default_index_policy,
+            encryption,
         )?);
 
         // Propagate sync_mode from config to storage engine
@@ -2688,6 +2724,100 @@ mod tests {
         let val = db.get(txn2, b"key1").unwrap();
         assert_eq!(val, Some(b"value1".to_vec()));
         db.abort(txn2).unwrap();
+    }
+
+    #[test]
+    fn test_database_encryption_end_to_end() {
+        use crate::durable_storage::StorageEncryption;
+        use crate::encryption::EncryptionKey;
+
+        let dir = tempdir().unwrap();
+        let kek = [0x5Au8; 32];
+        let enc = || StorageEncryption::with_kek(EncryptionKey::new(kek), "test");
+
+        // Create encrypted DB through the kernel, write committed data.
+        {
+            let db = Database::open_with_config_and_encryption(
+                dir.path(),
+                DatabaseConfig::default(),
+                enc(),
+            )
+            .unwrap();
+            assert!(db.storage.is_encrypted());
+            let txn = db.begin_transaction().unwrap();
+            db.put(txn, b"secret", b"value").unwrap();
+            db.commit(txn).unwrap();
+            db.shutdown().unwrap();
+        }
+        assert!(dir.path().join("keyring.json").exists());
+
+        // Reopen with the correct KEK -> committed data round-trips.
+        {
+            let db = Database::open_with_config_and_encryption(
+                dir.path(),
+                DatabaseConfig::default(),
+                enc(),
+            )
+            .unwrap();
+            let txn = db.begin_transaction().unwrap();
+            assert_eq!(db.get(txn, b"secret").unwrap(), Some(b"value".to_vec()));
+            db.abort(txn).unwrap();
+            db.shutdown().unwrap();
+        }
+
+        // Wrong KEK -> fail closed (no silent plaintext/empty open).
+        {
+            let wrong = Database::open_with_config_and_encryption(
+                dir.path(),
+                DatabaseConfig::default(),
+                StorageEncryption::with_kek(EncryptionKey::new([0u8; 32]), "test"),
+            );
+            assert!(wrong.is_err(), "wrong KEK must fail closed at the kernel");
+        }
+
+        // No key on an encrypted DB -> fail closed.
+        {
+            let no_key = Database::open_with_config(dir.path(), DatabaseConfig::default());
+            assert!(
+                no_key.is_err(),
+                "encrypted DB opened without key must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn test_database_concurrent_encryption() {
+        use crate::durable_storage::StorageEncryption;
+        use crate::encryption::EncryptionKey;
+
+        let dir = tempdir().unwrap();
+        let kek = [0x33u8; 32];
+
+        {
+            let db = Database::open_concurrent_with_config_and_encryption(
+                dir.path(),
+                DatabaseConfig::default(),
+                StorageEncryption::with_kek(EncryptionKey::new(kek), "test"),
+            )
+            .unwrap();
+            assert!(db.storage.is_encrypted());
+            let txn = db.begin_transaction().unwrap();
+            db.put(txn, b"ck", b"cv").unwrap();
+            db.commit(txn).unwrap();
+            db.shutdown().unwrap();
+        }
+
+        // Reopen concurrent with correct key.
+        let db = Database::open_concurrent_with_config_and_encryption(
+            dir.path(),
+            DatabaseConfig::default(),
+            StorageEncryption::with_kek(EncryptionKey::new(kek), "test"),
+        )
+        .unwrap();
+        let txn = db.begin_transaction().unwrap();
+        assert_eq!(db.get(txn, b"ck").unwrap(), Some(b"cv".to_vec()));
+        db.abort(txn).unwrap();
+        db.shutdown().unwrap();
     }
 
     #[test]

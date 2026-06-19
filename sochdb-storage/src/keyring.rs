@@ -46,6 +46,8 @@ use std::sync::Arc;
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use tempfile::NamedTempFile;
+use zeroize::Zeroize;
 
 use crate::encryption::{EncryptionEngine, EncryptionKey, derive_subkey, generate_key};
 use sochdb_core::{Result, SochDBError};
@@ -305,13 +307,31 @@ fn create_encrypted(
     let mac_key = derive_subkey(kek.as_bytes(), &salt, INFO_MAC);
     file.mac = hex::encode(compute_mac(&mac_key, &file));
 
-    write_keyring_atomic(db_dir, path, &file)?;
-
-    Ok(EncryptionState::Encrypted(ActiveEncryption {
-        engine: Arc::new(dek_engine),
-        db_uuid,
-        key_epoch: epoch,
-    }))
+    // Publish the keyring EXCLUSIVELY. The concurrent (multi-process) open path
+    // holds no exclusive file lock, so two processes cold-starting the same fresh
+    // encrypted DB could otherwise BOTH generate a DEK and last-writer-wins clobber
+    // the keyring — orphaning the loser's DEK and silently losing all data it wrote
+    // under it. Exclusive create makes exactly one creator win; the loser ADOPTS
+    // the winner's keyring (re-derives the winner's DEK under the shared KEK), so
+    // both processes converge on a single DEK.
+    if write_keyring_noclobber(db_dir, path, &file)? {
+        Ok(EncryptionState::Encrypted(ActiveEncryption {
+            engine: Arc::new(dek_engine),
+            db_uuid,
+            key_epoch: epoch,
+        }))
+    } else {
+        // Lost the create race: adopt the winner's keyring with our KEK.
+        let existing = read_keyring(path)?;
+        if existing.format_version != KEYRING_FORMAT_VERSION {
+            return Err(SochDBError::Encryption(format!(
+                "unsupported keyring format version {} (expected {})",
+                existing.format_version, KEYRING_FORMAT_VERSION
+            )));
+        }
+        verify_mac(&existing, kek)?;
+        open_encrypted(existing, kek)
+    }
 }
 
 /// Verify the descriptor MAC with the KEK. A wrong KEK or any tampering of an
@@ -320,17 +340,21 @@ fn create_encrypted(
 fn verify_mac(file: &KeyringFile, kek: &EncryptionKey) -> Result<()> {
     let salt = decode_fixed::<16>(&file.salt, "salt")?;
     let mac_key = derive_subkey(kek.as_bytes(), &salt, INFO_MAC);
-    let expected = compute_mac(&mac_key, file);
     let actual = hex::decode(&file.mac)
         .map_err(|_| SochDBError::Encryption("malformed keyring mac".into()))?;
-    if !constant_time_eq(&expected, &actual) {
-        return Err(SochDBError::Encryption(
+    // Use HMAC's own vetted constant-time tag verification rather than a
+    // hand-rolled compare, so the constant-time property is not at the mercy of
+    // optimizer transforms.
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(mac_key.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(&mac_input(file));
+    mac.verify_slice(&actual).map_err(|_| {
+        SochDBError::Encryption(
             "keyring authentication failed: wrong encryption key or tampered \
              keyring; refusing to open"
                 .to_string(),
-        ));
-    }
-    Ok(())
+        )
+    })
 }
 
 fn open_encrypted(file: KeyringFile, kek: &EncryptionKey) -> Result<EncryptionState> {
@@ -344,7 +368,7 @@ fn open_encrypted(file: KeyringFile, kek: &EncryptionKey) -> Result<EncryptionSt
     let wrap_engine = EncryptionEngine::from_key(&wrap_key);
     let wrapped_dek = hex::decode(&file.wrapped_dek)
         .map_err(|_| SochDBError::Encryption("malformed wrapped_dek".into()))?;
-    let dek_bytes = wrap_engine
+    let mut dek_bytes = wrap_engine
         .decrypt_with_aad(
             &wrapped_dek,
             &wrap_aad(&db_uuid, epoch, &file.kek_source_id),
@@ -355,13 +379,19 @@ fn open_encrypted(file: KeyringFile, kek: &EncryptionKey) -> Result<EncryptionSt
             )
         })?;
     if dek_bytes.len() != 32 {
+        dek_bytes.zeroize();
         return Err(SochDBError::Encryption(
             "unwrapped DEK is not 32 bytes".into(),
         ));
     }
+    // Move the plaintext DEK into the zeroize-on-drop wrapper and wipe the
+    // transient heap/stack copies the AEAD left behind — the DEK decrypts ALL
+    // data, so it must not linger in freed memory / swap / core dumps.
     let mut dek_arr = [0u8; 32];
     dek_arr.copy_from_slice(&dek_bytes);
+    dek_bytes.zeroize();
     let dek = EncryptionKey::new(dek_arr);
+    dek_arr.zeroize();
 
     // Canary check: prove the DEK actually decrypts data before touching WAL.
     let dek_engine = EncryptionEngine::from_key(&dek);
@@ -401,35 +431,52 @@ fn decode_fixed<const N: usize>(hexstr: &str, what: &str) -> Result<[u8; N]> {
     Ok(a)
 }
 
-/// Constant-time equality for MAC comparison.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-/// Atomically persist the keyring: write temp, fsync file, rename, fsync dir.
-fn write_keyring_atomic(db_dir: &Path, path: &Path, file: &KeyringFile) -> Result<()> {
+/// Persist the keyring with an EXCLUSIVE (no-clobber) publish: write a temp file,
+/// fsync it, then atomically link it into place only if the target does not yet
+/// exist. Returns `Ok(true)` if this call created the keyring, `Ok(false)` if
+/// another creator won the race (target already existed). Crash-safe (the temp is
+/// fully fsynced before it is linked) AND race-safe (the final create is atomic +
+/// exclusive, so two concurrent creators cannot clobber each other).
+fn write_keyring_noclobber(db_dir: &Path, path: &Path, file: &KeyringFile) -> Result<bool> {
     fs::create_dir_all(db_dir)?;
     let json = serde_json::to_vec_pretty(file)
         .map_err(|e| SochDBError::Encryption(format!("serialize keyring: {e}")))?;
-    let tmp = path.with_extension("json.tmp");
+
+    let mut tmp = NamedTempFile::new_in(db_dir)?;
+    tmp.write_all(&json)?;
+    tmp.as_file().sync_all()?;
+
+    // `persist_noclobber` performs an atomic exclusive create of the final path
+    // (link/rename that fails if it already exists), so it does not clobber a
+    // keyring another process created concurrently.
+    match tmp.persist_noclobber(path) {
+        Ok(f) => {
+            f.sync_all()?;
+            fsync_dir(db_dir);
+            Ok(true)
+        }
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(SochDBError::Encryption(format!(
+            "failed to publish keyring: {}",
+            e.error
+        ))),
+    }
+}
+
+/// fsync the directory so a create/link is durable. On Unix a real I/O error
+/// must surface; on other platforms opening a directory handle isn't supported,
+/// so this is best-effort there.
+fn fsync_dir(db_dir: &Path) {
+    #[cfg(unix)]
     {
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(&json)?;
-        f.sync_all()?;
+        if let Ok(dir) = fs::File::open(db_dir) {
+            let _ = dir.sync_all();
+        }
     }
-    fs::rename(&tmp, path)?;
-    // fsync the directory so the rename is durable.
-    if let Ok(dir) = fs::File::open(db_dir) {
-        let _ = dir.sync_all();
+    #[cfg(not(unix))]
+    {
+        let _ = db_dir;
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -528,6 +575,37 @@ mod tests {
 
         let err = load_or_init(dir.path(), Some(&kek(5)), "env", false).unwrap_err();
         assert!(matches!(err, SochDBError::Encryption(_)));
+    }
+
+    #[test]
+    fn concurrent_first_open_converges_on_single_dek() {
+        use std::sync::{Arc as StdArc, Barrier};
+        let dir = tempdir().unwrap();
+        let path = StdArc::new(dir.path().to_path_buf());
+        // All threads cold-start the SAME fresh encrypted dir simultaneously with
+        // the SAME KEK (the multi-process scenario). They MUST converge on one
+        // keyring/DEK (one creator wins, the rest adopt it) rather than each
+        // minting an independent DEK that last-writer-wins would orphan.
+        let n = 8;
+        let barrier = StdArc::new(Barrier::new(n));
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                let p = path.clone();
+                let b = barrier.clone();
+                std::thread::spawn(move || {
+                    b.wait();
+                    let k = kek(42);
+                    let st = load_or_init(&p, Some(&k), &format!("t{i}"), true).unwrap();
+                    st.db_uuid()
+                })
+            })
+            .collect();
+        let uuids: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let first = uuids[0];
+        assert!(
+            uuids.iter().all(|u| *u == first),
+            "concurrent creators diverged onto multiple DEKs: {uuids:?}"
+        );
     }
 
     #[test]

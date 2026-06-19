@@ -182,6 +182,24 @@ fn encode_record_body(
     body
 }
 
+/// A Point-in-Time Recovery target (Task 3B PITR). See
+/// [`TxnWal::replay_to_target`] for the prefix semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryTarget {
+    /// Recover the first `lsn` WAL records (exact). Matches the value of
+    /// `DurableStorage::current_lsn()` captured at the desired point.
+    Lsn(u64),
+    /// Roll the WAL forward and STOP at the first transaction whose COMMIT
+    /// timestamp (microseconds since the epoch) exceeds this value — that
+    /// transaction and everything after it are excluded. This is an exact
+    /// WAL-order PREFIX, NOT a timestamp filter: if commit timestamps are
+    /// non-monotonic in WAL order (coarse ~1ms clock, NTP steps, cross-thread
+    /// group commit), a later-in-WAL transaction with `ts <= t` that follows an
+    /// excluded commit is ALSO excluded. Prefer `Lsn` for an exact, clock-
+    /// independent cut.
+    Timestamp(u64),
+}
+
 /// AAD layout version for the WAL record binding. Part of the on-disk contract.
 const WAL_AAD_VERSION: u8 = 1;
 /// AAD length: version(1) + db_uuid(16) + dek_epoch(4) + record_ordinal(8).
@@ -650,7 +668,13 @@ impl TxnWal {
     /// When `engine` is enabled, records are written and replayed as encrypted
     /// frames bound to `db_uuid` + `dek_epoch` (see framing notes). When it is
     /// disabled, this behaves exactly like [`Self::new`].
-    pub fn new_with_encryption<P: AsRef<Path>>(
+    ///
+    /// `pub(crate)` by design: the engine + `db_uuid` + `dek_epoch` MUST come
+    /// from [`crate::keyring::load_or_init`] so the fail-closed open contract
+    /// (MAC + canary) and the AAD binding are enforced. The only public door to
+    /// an encrypted WAL is
+    /// [`crate::durable_storage::DurableStorage::open_with_encryption`].
+    pub(crate) fn new_with_encryption<P: AsRef<Path>>(
         path: P,
         encryption: Arc<EncryptionEngine>,
         db_uuid: [u8; 16],
@@ -856,11 +880,12 @@ impl TxnWal {
     /// calling `flush()` + `sync()` after batching multiple commit records.
     pub fn append(&self, entry: &TxnWalEntry) -> Result<u64> {
         let mut writer = self.writer.lock();
-        let bytes = self.frame_under_lock(entry)?;
+        let bytes = self.frame_for_write(entry)?;
 
         writer.write_all(&bytes)?;
         // Don't flush here - BufWriter will batch writes automatically.
         // Call flush() explicitly before sync() or commit().
+        self.commit_record_ordinal();
 
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
         self.bytes_since_sync
@@ -869,16 +894,28 @@ impl TxnWal {
         Ok(seq)
     }
 
-    /// Serialize one entry into its on-disk frame, allocating the per-record
-    /// ordinal when encrypted. MUST be called with the `writer` lock held so the
-    /// ordinal matches the order bytes hit the file.
+    /// Serialize one entry into its on-disk frame using the CURRENT (not-yet-
+    /// advanced) AAD ordinal. MUST be called with the `writer` lock held, and the
+    /// caller MUST call [`Self::commit_record_ordinal`] only AFTER `write_all`
+    /// succeeds — so a failed or partial write never advances the in-memory
+    /// ordinal past what is actually on disk (which would desync every
+    /// subsequent record's AAD from the reader's reconstructed ordinal).
     #[inline]
-    fn frame_under_lock(&self, entry: &TxnWalEntry) -> Result<Vec<u8>> {
+    fn frame_for_write(&self, entry: &TxnWalEntry) -> Result<Vec<u8>> {
         if self.encryption.is_enabled() {
-            let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+            let ord = self.records_in_file.load(Ordering::SeqCst);
             self.encrypt_frame(&entry.body_bytes(), ord)
         } else {
             Ok(entry.to_bytes())
+        }
+    }
+
+    /// Advance the file-relative AAD ordinal by one record. Call ONLY after the
+    /// record's bytes have been handed to the writer (post-`write_all`).
+    #[inline]
+    fn commit_record_ordinal(&self) {
+        if self.encryption.is_enabled() {
+            self.records_in_file.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -888,10 +925,11 @@ impl TxnWal {
     #[inline]
     pub fn append_no_flush(&self, entry: &TxnWalEntry) -> Result<u64> {
         let mut writer = self.writer.lock();
-        let bytes = self.frame_under_lock(entry)?;
+        let bytes = self.frame_for_write(entry)?;
 
         writer.write_all(&bytes)?;
         // No flush - let BufWriter buffer the writes
+        self.commit_record_ordinal();
 
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
         self.bytes_since_sync
@@ -926,9 +964,12 @@ impl TxnWal {
         // path below keeps its zero-alloc streaming fast path untouched.
         if self.encryption.is_enabled() {
             let body = encode_record_body(WalRecordType::Data, txn_id, timestamp_us, key, value);
-            let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+            let ord = self.records_in_file.load(Ordering::SeqCst);
             let frame = self.encrypt_frame(&body, ord)?;
             writer.write_all(&frame)?;
+            // Advance the AAD ordinal only after the bytes are committed to the
+            // writer, so a failed write never desyncs writer/reader ordinals.
+            self.records_in_file.fetch_add(1, Ordering::SeqCst);
             let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
             self.bytes_since_sync
                 .fetch_add(frame.len() as u64, Ordering::Relaxed);
@@ -1054,9 +1095,13 @@ impl TxnWal {
                 }
                 let body = &buf[pos..pos + content_len];
                 pos += content_len;
-                let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+                let ord = self.records_in_file.load(Ordering::SeqCst);
                 let frame = self.encrypt_frame(body, ord)?;
                 writer.write_all(&frame)?;
+                // Advance per record only after its bytes are committed, so a
+                // mid-batch write failure leaves records_in_file == records
+                // actually written (no ordinal desync for the survivors).
+                self.records_in_file.fetch_add(1, Ordering::SeqCst);
                 total_written += frame.len() as u64;
             }
             let seq = self
@@ -1217,6 +1262,89 @@ impl TxnWal {
                     // silently drop committed data. (Wrong key is already excluded
                     // earlier by the keyring canary, so this is genuine corruption
                     // or tampering.) Plaintext keeps the legacy torn-tail tolerance.
+                    if self.encryption.is_enabled() {
+                        return Err(e);
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok((result, txn_count))
+    }
+
+    /// Replay the WAL up to a PITR target, returning the committed writes whose
+    /// transactions are included by the target (and the count of such txns).
+    ///
+    /// Prefix semantics — recovery "rolls forward" through the WAL and STOPS at
+    /// the target, so the result is always a state the database actually passed
+    /// through:
+    /// - [`RecoveryTarget::Lsn`]`(l)`: include the first `l` WAL records (exact;
+    ///   `l` matches [`Self::sequence`] / `DurableStorage::current_lsn` captured
+    ///   at that point). A transaction whose commit lands after record `l` is
+    ///   excluded (atomic — partial transactions are never applied).
+    /// - [`RecoveryTarget::Timestamp`]`(t)`: stop at the FIRST transaction whose
+    ///   commit timestamp exceeds `t`. Best-effort on the coarse, possibly
+    ///   non-monotonic commit clock; prefer `Lsn` for an exact cut.
+    ///
+    /// Crypto-aware and fail-loud, exactly like [`Self::replay_for_recovery`].
+    #[allow(clippy::type_complexity)]
+    pub fn replay_to_target(
+        &self,
+        target: RecoveryTarget,
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, usize)> {
+        let file = File::open(&self.path)?;
+        let mut reader = BufReader::new(file);
+
+        let mut pending_writes: std::collections::HashMap<u64, Vec<(Vec<u8>, Vec<u8>)>> =
+            std::collections::HashMap::new();
+        let mut result = Vec::new();
+        let mut txn_count = 0;
+        let mut ordinal: u64 = 0;
+
+        loop {
+            match self.read_record(&mut reader, &mut ordinal) {
+                Ok(entry) => {
+                    // LSN target: `ordinal` is now this record's 1-based LSN.
+                    // Stop once we pass the target (this record is excluded).
+                    if let RecoveryTarget::Lsn(l) = target {
+                        if ordinal > l {
+                            break;
+                        }
+                    }
+                    match entry.record_type {
+                        WalRecordType::TxnBegin => {
+                            pending_writes.insert(entry.txn_id, Vec::new());
+                        }
+                        WalRecordType::Data => {
+                            pending_writes
+                                .entry(entry.txn_id)
+                                .or_insert_with(Vec::new)
+                                .push((entry.key, entry.value));
+                        }
+                        WalRecordType::TxnCommit => {
+                            // Timestamp target: stop rolling forward at the first
+                            // transaction committed AFTER the target (exclude it).
+                            if let RecoveryTarget::Timestamp(t) = target {
+                                if entry.timestamp_us > t {
+                                    break;
+                                }
+                            }
+                            if let Some(writes) = pending_writes.remove(&entry.txn_id) {
+                                result.extend(writes);
+                                txn_count += 1;
+                            }
+                        }
+                        WalRecordType::TxnAbort => {
+                            pending_writes.remove(&entry.txn_id);
+                        }
+                        _ => {}
+                    }
+                }
+                Err(SochDBError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    break;
+                }
+                Err(e) => {
                     if self.encryption.is_enabled() {
                         return Err(e);
                     }

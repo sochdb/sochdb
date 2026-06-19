@@ -101,7 +101,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use smallvec::SmallVec;
@@ -2469,6 +2469,13 @@ pub struct DurableStorage {
     /// Whether at-rest encryption is active for this instance (drives the live
     /// per-instance durability matrix). Set from the resolved keyring at open.
     at_rest_encrypted: bool,
+    /// Whether Point-in-Time Recovery is enabled for this database (Task 3B PITR
+    /// phase 1). Derived from the presence of `wal.manifest` at open (the manifest
+    /// is the single source of truth), or set by `enable_point_in_time_recovery`.
+    /// When enabled, the destructive `truncate_wal()` is forbidden (segment
+    /// sealing is the PITR-safe replacement, landing in a later phase) so the WAL
+    /// record ordinal stays a stable, durable monotonic LSN across restarts.
+    pitr_enabled: AtomicBool,
 }
 
 /// Encryption configuration for opening a [`DurableStorage`].
@@ -2593,9 +2600,10 @@ impl DurableStorage {
         DurabilityCapabilities {
             crash_recovery: true,
             at_rest_encryption: self.at_rest_encrypted,
-            // PITR / ARIES / fencing remain unwired on the live path (landing
-            // incrementally in Task 3B).
-            point_in_time_recovery: false,
+            // Point-in-time recovery is live (recover_to) when PITR is enabled:
+            // the WAL is fully retained and can be replayed to an LSN/timestamp.
+            point_in_time_recovery: self.pitr_enabled.load(Ordering::SeqCst),
+            // ARIES / fencing remain unwired on the live path.
             aries_checkpoint: false,
             wal_fencing: false,
         }
@@ -2731,6 +2739,17 @@ impl DurableStorage {
             enc_state.key_epoch(),
         )?);
 
+        // PITR anchor: the presence of wal.manifest is the single source of truth
+        // that this DB is PITR-enabled. If present, seed last_checkpoint_lsn from
+        // it (it is otherwise in-memory and lost on restart).
+        let (pitr_enabled, initial_checkpoint_lsn) =
+            if crate::wal_manifest::WalManifest::exists(&path) {
+                let m = crate::wal_manifest::WalManifest::load(&path)?;
+                (true, m.last_checkpoint_lsn)
+            } else {
+                (false, 0)
+            };
+
         let storage = Self {
             path,
             wal: wal.clone(),
@@ -2739,7 +2758,7 @@ impl DurableStorage {
             txn_write_buffers: DashMap::new(),
             group_commit: None,
             needs_recovery: AtomicU64::new(0),
-            last_checkpoint_lsn: AtomicU64::new(0),
+            last_checkpoint_lsn: AtomicU64::new(initial_checkpoint_lsn),
             sync_mode: AtomicU64::new(1), // Default: NORMAL (like SQLite)
             commits_since_sync: AtomicU64::new(0),
             // Adaptive batch sizing (Little's Law)
@@ -2748,6 +2767,7 @@ impl DurableStorage {
             fsync_latency_us: AtomicU64::new(5000), // 5ms default
             db_lock,
             at_rest_encrypted,
+            pitr_enabled: AtomicBool::new(pitr_enabled),
         };
 
         // Check if recovery needed
@@ -2809,6 +2829,21 @@ impl DurableStorage {
         policy: crate::index_policy::IndexPolicy,
         group_commit: bool,
     ) -> Result<Self> {
+        Self::open_with_policy_encrypted(path, policy, group_commit, StorageEncryption::disabled())
+    }
+
+    /// Policy-based open with at-rest encryption configured.
+    ///
+    /// Identical to [`Self::open_with_policy`] but threads a [`StorageEncryption`]
+    /// down to the keyring/WAL so the embedded `Database` kernel can open (or
+    /// create) an encrypted database. `StorageEncryption::disabled()` is exactly
+    /// the plaintext behaviour.
+    pub fn open_with_policy_encrypted<P: AsRef<Path>>(
+        path: P,
+        policy: crate::index_policy::IndexPolicy,
+        group_commit: bool,
+        encryption: StorageEncryption,
+    ) -> Result<Self> {
         use crate::index_policy::IndexPolicy;
 
         // Derive configuration from policy
@@ -2829,7 +2864,7 @@ impl DurableStorage {
 
         if group_commit {
             let mut storage =
-                Self::open_with_full_config(path, enable_ordered_index, memtable_type)?;
+                Self::open_with_encryption(path, enable_ordered_index, memtable_type, encryption)?;
 
             let wal = storage.wal.clone();
             let gc = EventDrivenGroupCommit::new(move |txn_ids: &[u64]| {
@@ -2847,7 +2882,7 @@ impl DurableStorage {
             storage.group_commit = Some(Arc::new(gc));
             Ok(storage)
         } else {
-            Self::open_with_full_config(path, enable_ordered_index, memtable_type)
+            Self::open_with_encryption(path, enable_ordered_index, memtable_type, encryption)
         }
     }
 
@@ -2865,6 +2900,20 @@ impl DurableStorage {
         path: P,
         policy: crate::index_policy::IndexPolicy,
     ) -> Result<Self> {
+        Self::open_for_concurrent_encrypted(path, policy, StorageEncryption::disabled())
+    }
+
+    /// Concurrent-mode open with at-rest encryption configured.
+    ///
+    /// Identical to [`Self::open_for_concurrent`] but threads a
+    /// [`StorageEncryption`] through, so an encrypted database can also be opened
+    /// in concurrent (multi-reader) mode rather than failing closed for lack of a
+    /// key channel.
+    pub fn open_for_concurrent_encrypted<P: AsRef<Path>>(
+        path: P,
+        policy: crate::index_policy::IndexPolicy,
+        encryption: StorageEncryption,
+    ) -> Result<Self> {
         use crate::index_policy::IndexPolicy;
 
         let (enable_ordered_index, memtable_type) = match policy {
@@ -2879,7 +2928,7 @@ impl DurableStorage {
             enable_ordered_index,
             memtable_type,
             false,
-            StorageEncryption::disabled(),
+            encryption,
         )
     }
 
@@ -2917,6 +2966,69 @@ impl DurableStorage {
         let commit_ts = self.mvcc.alloc_commit_ts();
 
         // Collect keys being written for efficient commit
+        let mut write_set: HashSet<InlineKey> = HashSet::new();
+        for (key, value) in &writes {
+            write_set.insert(SmallVec::from_slice(key));
+            self.memtable
+                .write(key.clone(), Some(value.clone()), recovery_txn_id)?;
+        }
+        self.memtable.commit(recovery_txn_id, commit_ts, &write_set);
+
+        self.needs_recovery.store(0, Ordering::SeqCst);
+
+        Ok(RecoveryStats {
+            transactions_recovered: txn_count,
+            writes_recovered: writes.len(),
+            commit_ts,
+        })
+    }
+
+    /// Point-in-Time Recovery: rebuild the in-memory state as of `target`.
+    ///
+    /// This is the PITR analogue of [`Self::recover`] — call it on a FRESH open
+    /// INSTEAD of `recover()` (not in addition to it), to materialize the
+    /// database as it existed at a chosen LSN or commit timestamp. Because PITR
+    /// mode never truncates the WAL, the full history is retained and replayed up
+    /// to (and stopping at) the target, with transaction atomicity preserved
+    /// (a transaction is applied only if its commit is within the target).
+    ///
+    /// Requires PITR to be enabled (the WAL must be fully retained); returns an
+    /// error otherwise, since a truncated WAL cannot honor an arbitrary target.
+    pub fn recover_to(&self, target: crate::txn_wal::RecoveryTarget) -> Result<RecoveryStats> {
+        if !self.pitr_enabled.load(Ordering::SeqCst) {
+            return Err(SochDBError::InvalidArgument(
+                "recover_to requires Point-in-Time Recovery to be enabled \
+                 (the full WAL must be retained); call enable_point_in_time_recovery first"
+                    .to_string(),
+            ));
+        }
+
+        // Single-shot recovery on a fresh open: refuse if state was already
+        // rebuilt (by recover() or a prior recover_to()). Re-applying would layer
+        // a stale set over the point-in-time state under a newer commit_ts and
+        // silently corrupt it (recover()/recover_to() both clear needs_recovery).
+        if self.needs_recovery.load(Ordering::SeqCst) == 0 {
+            return Err(SochDBError::InvalidArgument(
+                "recover_to must be the sole recovery on a fresh open, but state \
+                 was already recovered; reopen the database and call recover_to first"
+                    .to_string(),
+            ));
+        }
+
+        // Make the on-disk WAL match current_lsn() before replaying. Under the
+        // default NORMAL sync mode the commit record(s) may still sit in the
+        // BufWriter, while current_lsn() counts the in-memory sequence — so
+        // without this flush+fsync a captured-LSN cut would silently drop
+        // committed-but-unflushed records (replay reads a fresh on-disk handle).
+        self.wal.flush()?;
+        self.wal.sync()?;
+
+        let (writes, txn_count) = self.wal.replay_to_target(target)?;
+
+        // Apply the bounded set of committed writes to the (fresh) memtable,
+        // mirroring recover().
+        let recovery_txn_id = self.wal.alloc_txn_id();
+        let commit_ts = self.mvcc.alloc_commit_ts();
         let mut write_set: HashSet<InlineKey> = HashSet::new();
         for (key, value) in &writes {
             write_set.insert(SmallVec::from_slice(key));
@@ -3358,7 +3470,63 @@ impl DurableStorage {
         let entry = TxnWalEntry::checkpoint(txn_id);
         let lsn = self.wal.append_sync(&entry)?;
         self.last_checkpoint_lsn.store(lsn, Ordering::SeqCst);
+        // PITR: persist the checkpoint LSN to the durable manifest so it survives
+        // restart. This piggybacks the fsync that append_sync already performed;
+        // the manifest write is itself crash-safe (temp + fsync + atomic rename).
+        // No-op (and no manifest write) when PITR is not enabled.
+        if self.pitr_enabled.load(Ordering::SeqCst) {
+            self.persist_pitr_manifest(lsn)?;
+        }
         Ok(lsn)
+    }
+
+    /// The current durable monotonic LSN (the WAL record ordinal). In PITR mode
+    /// the WAL is never truncated, so this is stable and monotonic across
+    /// restarts (`recover_state` rebuilds it by re-counting on reopen).
+    pub fn current_lsn(&self) -> u64 {
+        self.wal.sequence()
+    }
+
+    /// Whether Point-in-Time Recovery is enabled for this database.
+    pub fn is_pitr_enabled(&self) -> bool {
+        self.pitr_enabled.load(Ordering::SeqCst)
+    }
+
+    /// Enable Point-in-Time Recovery for this database (one-way, explicit opt-in).
+    ///
+    /// Writes the durable `wal.manifest` whose presence marks the DB PITR-enabled
+    /// on every future open. Once enabled, the destructive [`Self::truncate_wal`]
+    /// is forbidden so the WAL record ordinal stays a stable durable LSN (segment
+    /// sealing — the PITR-safe space-reclaim — lands in a later phase). Idempotent.
+    pub fn enable_point_in_time_recovery(&self) -> Result<()> {
+        if self.pitr_enabled.load(Ordering::SeqCst) {
+            return Ok(()); // already enabled
+        }
+        // Persist the durable manifest FIRST; only flip the in-memory flag after
+        // the durable write succeeds. Otherwise a failed manifest write would
+        // leave `durability_capabilities()` reporting PITR (and the truncate
+        // guard active) with no durable anchor on disk.
+        let lsn = self.last_checkpoint_lsn.load(Ordering::SeqCst);
+        if crate::wal_manifest::WalManifest::exists(&self.path) {
+            self.persist_pitr_manifest(lsn)?;
+        } else {
+            crate::wal_manifest::WalManifest::new(lsn).write_atomic(&self.path)?;
+        }
+        self.pitr_enabled.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Persist the PITR manifest with the given checkpoint LSN, preserving the
+    /// existing db identity if a manifest is already present.
+    fn persist_pitr_manifest(&self, lsn: u64) -> Result<()> {
+        let manifest = match crate::wal_manifest::WalManifest::load(&self.path) {
+            Ok(mut m) => {
+                m.last_checkpoint_lsn = lsn;
+                m
+            }
+            Err(_) => crate::wal_manifest::WalManifest::new(lsn),
+        };
+        manifest.write_atomic(&self.path)
     }
 
     /// Truncate the WAL file after checkpoint.
@@ -3370,7 +3538,18 @@ impl DurableStorage {
     ///
     /// Call after `checkpoint()` when WAL durability across restarts is
     /// not required (e.g. desktop telemetry viewers, caches).
+    ///
+    /// Refused when PITR is enabled: truncation resets the WAL record ordinal,
+    /// which would break the durable monotonic LSN that PITR anchors on. The
+    /// PITR-safe way to reclaim space is segment sealing (a later phase).
     pub fn truncate_wal(&self) -> Result<()> {
+        if self.pitr_enabled.load(Ordering::SeqCst) {
+            return Err(SochDBError::InvalidArgument(
+                "truncate_wal is disabled while Point-in-Time Recovery is enabled \
+                 (it would reset the durable LSN); use segment sealing to reclaim space"
+                    .to_string(),
+            ));
+        }
         self.wal.truncate()
     }
 
@@ -3806,6 +3985,309 @@ mod tests {
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// PITR phase 1 — durable monotonic LSN anchor.
+    ///
+    /// Enabling PITR writes the durable manifest; the WAL record ordinal (LSN)
+    /// and the last-checkpoint LSN then survive a reopen, and the destructive
+    /// truncate is refused so the anchor can never reset. A non-PITR DB is
+    /// completely unaffected (no manifest, truncate works).
+    #[test]
+    fn test_pitr_durable_lsn_and_truncate_guard() {
+        let dir = tempdir().unwrap();
+
+        // Default DB: not PITR, no manifest, truncate allowed.
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            assert!(!s.is_pitr_enabled());
+            assert!(!s.durability_capabilities().point_in_time_recovery);
+            assert!(s.truncate_wal().is_ok());
+        }
+        assert!(!dir.path().join("wal.manifest").exists());
+
+        // Enable PITR, write+checkpoint, capture the LSN.
+        let lsn_before;
+        let ckpt_lsn;
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            s.enable_point_in_time_recovery().unwrap();
+            assert!(s.is_pitr_enabled());
+
+            let t = s.begin_transaction().unwrap();
+            s.write(t, b"k1".to_vec(), b"v1".to_vec()).unwrap();
+            s.commit(t).unwrap();
+            ckpt_lsn = s.checkpoint().unwrap();
+            lsn_before = s.current_lsn();
+            assert!(lsn_before > 0);
+
+            // truncate is refused while PITR is on.
+            assert!(
+                s.truncate_wal().is_err(),
+                "truncate must be refused in PITR mode"
+            );
+        }
+        assert!(dir.path().join("wal.manifest").exists());
+
+        // Reopen: PITR auto-detected from the manifest; LSN did NOT reset.
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            assert!(
+                s.is_pitr_enabled(),
+                "PITR must be auto-detected from manifest"
+            );
+            s.recover().unwrap();
+            assert_eq!(
+                s.current_lsn(),
+                lsn_before,
+                "durable LSN must survive reopen (not reset to 0/record-recount drift)"
+            );
+            assert_eq!(
+                s.stats().last_checkpoint_lsn,
+                ckpt_lsn,
+                "last_checkpoint_lsn must be restored from the manifest"
+            );
+            // Committed data still readable.
+            let t = s.begin_transaction().unwrap();
+            assert_eq!(s.read(t, b"k1").unwrap(), Some(b"v1".to_vec()));
+            s.abort(t).unwrap();
+        }
+    }
+
+    /// PITR phase 2 — END-TO-END restore to a point in time.
+    ///
+    /// Enable PITR, commit two transactions, then on fresh reopens
+    /// `recover_to(target)` materializes the exact historical state: an LSN cut
+    /// between the two transactions sees only the first; the full LSN / a
+    /// far-future timestamp sees both; timestamp 0 sees nothing. Transaction
+    /// atomicity is preserved at the cut.
+    #[test]
+    fn test_pitr_recover_to_point_in_time() {
+        use crate::txn_wal::RecoveryTarget;
+
+        let dir = tempdir().unwrap();
+
+        // Build history: txn1 sets k1=v1; txn2 overwrites k1=v1b and adds k2=v2.
+        let (lsn_after_txn1, lsn_after_txn2);
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            s.enable_point_in_time_recovery().unwrap();
+
+            let t1 = s.begin_transaction().unwrap();
+            s.write(t1, b"k1".to_vec(), b"v1".to_vec()).unwrap();
+            s.commit(t1).unwrap();
+            lsn_after_txn1 = s.current_lsn();
+
+            let t2 = s.begin_transaction().unwrap();
+            s.write(t2, b"k1".to_vec(), b"v1b".to_vec()).unwrap();
+            s.write(t2, b"k2".to_vec(), b"v2".to_vec()).unwrap();
+            s.commit(t2).unwrap();
+            lsn_after_txn2 = s.current_lsn();
+
+            s.checkpoint().unwrap();
+        }
+        assert!(lsn_after_txn2 > lsn_after_txn1);
+
+        // Restore to the cut between txn1 and txn2: only txn1's effect is visible.
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            s.recover_to(RecoveryTarget::Lsn(lsn_after_txn1)).unwrap();
+            let t = s.begin_transaction().unwrap();
+            assert_eq!(
+                s.read(t, b"k1").unwrap(),
+                Some(b"v1".to_vec()),
+                "txn1 value"
+            );
+            assert_eq!(
+                s.read(t, b"k2").unwrap(),
+                None,
+                "txn2 must NOT be present at the cut"
+            );
+            s.abort(t).unwrap();
+        }
+
+        // Restore to the full LSN: both transactions visible (txn2 wins on k1).
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            s.recover_to(RecoveryTarget::Lsn(lsn_after_txn2)).unwrap();
+            let t = s.begin_transaction().unwrap();
+            assert_eq!(s.read(t, b"k1").unwrap(), Some(b"v1b".to_vec()));
+            assert_eq!(s.read(t, b"k2").unwrap(), Some(b"v2".to_vec()));
+            s.abort(t).unwrap();
+        }
+
+        // Timestamp bounds: MAX => everything; 0 => nothing.
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            s.recover_to(RecoveryTarget::Timestamp(u64::MAX)).unwrap();
+            let t = s.begin_transaction().unwrap();
+            assert_eq!(s.read(t, b"k1").unwrap(), Some(b"v1b".to_vec()));
+            assert_eq!(s.read(t, b"k2").unwrap(), Some(b"v2".to_vec()));
+            s.abort(t).unwrap();
+        }
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            s.recover_to(RecoveryTarget::Timestamp(0)).unwrap();
+            let t = s.begin_transaction().unwrap();
+            assert_eq!(s.read(t, b"k1").unwrap(), None, "no commit is <= ts 0");
+            s.abort(t).unwrap();
+        }
+
+        // The capability matrix now reports PITR live for this DB.
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            assert!(s.durability_capabilities().point_in_time_recovery);
+        }
+    }
+
+    /// recover_to is refused on a non-PITR database (the WAL may be truncated, so
+    /// an arbitrary target cannot be honored).
+    #[test]
+    fn test_recover_to_refused_without_pitr() {
+        use crate::txn_wal::RecoveryTarget;
+        let dir = tempdir().unwrap();
+        let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+        assert!(s.recover_to(RecoveryTarget::Lsn(1)).is_err());
+        assert!(!s.durability_capabilities().point_in_time_recovery);
+    }
+
+    /// Regression (review HIGH): under the DEFAULT NORMAL sync mode a commit
+    /// record may sit unflushed in the BufWriter while current_lsn() counts it.
+    /// recover_to MUST flush+fsync before replaying, or a same-process restore to
+    /// the captured LSN silently drops the committed-but-unflushed tail.
+    #[test]
+    fn test_recover_to_flushes_before_replay() {
+        use crate::txn_wal::RecoveryTarget;
+        let dir = tempdir().unwrap();
+        let s = DurableStorage::open_without_lock(dir.path()).unwrap(); // NORMAL sync
+        s.enable_point_in_time_recovery().unwrap();
+        let t = s.begin_transaction().unwrap();
+        s.write(t, b"k".to_vec(), b"v".to_vec()).unwrap();
+        s.commit(t).unwrap(); // commit record likely unflushed under NORMAL
+        let lsn = s.current_lsn();
+        // No checkpoint, SAME process: replay reads a fresh on-disk handle.
+        let stats = s.recover_to(RecoveryTarget::Lsn(lsn)).unwrap();
+        assert!(
+            stats.writes_recovered >= 1,
+            "committed-but-unflushed data must be recovered (flush before replay)"
+        );
+    }
+
+    /// Regression (review MEDIUM): recover_to must be the SOLE recovery on a
+    /// fresh open. After recover() (or a prior recover_to) it must refuse, rather
+    /// than silently layer a stale set over the point-in-time state.
+    #[test]
+    fn test_recover_to_refuses_after_recovery() {
+        use crate::txn_wal::RecoveryTarget;
+        let dir = tempdir().unwrap();
+        {
+            let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+            s.enable_point_in_time_recovery().unwrap();
+            let t = s.begin_transaction().unwrap();
+            s.write(t, b"k".to_vec(), b"v".to_vec()).unwrap();
+            s.commit(t).unwrap();
+            s.checkpoint().unwrap();
+        }
+        let s = DurableStorage::open_without_lock(dir.path()).unwrap();
+        s.recover().unwrap(); // full recovery first
+        assert!(
+            s.recover_to(RecoveryTarget::Lsn(1)).is_err(),
+            "recover_to after recover() must refuse (would double-apply)"
+        );
+        // And a second recover_to after a first also refuses.
+        let s2 = DurableStorage::open_without_lock(dir.path()).unwrap();
+        s2.recover_to(RecoveryTarget::Lsn(u64::MAX)).unwrap();
+        assert!(s2.recover_to(RecoveryTarget::Lsn(1)).is_err());
+    }
+
+    /// recover_to over an ENCRYPTED WAL: the bounded replay decrypts correctly
+    /// (review LOW: the encrypted bounded path was previously untested).
+    #[test]
+    fn test_pitr_recover_to_encrypted() {
+        use crate::encryption::EncryptionKey;
+        use crate::txn_wal::RecoveryTarget;
+
+        let dir = tempdir().unwrap();
+        let kek = [0x9Fu8; 32];
+        let mk = || StorageEncryption::with_kek(EncryptionKey::new(kek), "test");
+
+        let lsn_after_txn1;
+        {
+            let s = DurableStorage::open_with_encryption(
+                dir.path(),
+                true,
+                MemTableType::Standard,
+                mk(),
+            )
+            .unwrap();
+            s.enable_point_in_time_recovery().unwrap();
+            let t1 = s.begin_transaction().unwrap();
+            s.write(t1, b"k1".to_vec(), b"v1".to_vec()).unwrap();
+            s.commit(t1).unwrap();
+            lsn_after_txn1 = s.current_lsn();
+            let t2 = s.begin_transaction().unwrap();
+            s.write(t2, b"k2".to_vec(), b"v2".to_vec()).unwrap();
+            s.commit(t2).unwrap();
+            s.checkpoint().unwrap();
+            s.shutdown().ok();
+        }
+
+        // Reopen encrypted, restore to the cut between the two txns.
+        let s =
+            DurableStorage::open_with_encryption(dir.path(), true, MemTableType::Standard, mk())
+                .unwrap();
+        s.recover_to(RecoveryTarget::Lsn(lsn_after_txn1)).unwrap();
+        let t = s.begin_transaction().unwrap();
+        assert_eq!(
+            s.read(t, b"k1").unwrap(),
+            Some(b"v1".to_vec()),
+            "encrypted bounded replay must decrypt the in-window record"
+        );
+        assert_eq!(s.read(t, b"k2").unwrap(), None, "txn2 is past the cut");
+        s.abort(t).unwrap();
+    }
+
+    /// PITR composes with at-rest encryption (the manifest anchor is independent
+    /// of the keyring; an encrypted PITR DB round-trips and stays fail-closed).
+    #[test]
+    fn test_pitr_with_encryption() {
+        use crate::encryption::EncryptionKey;
+
+        let dir = tempdir().unwrap();
+        let kek = [0x2Bu8; 32];
+
+        {
+            let s = DurableStorage::open_with_encryption(
+                dir.path(),
+                true,
+                MemTableType::Standard,
+                StorageEncryption::with_kek(EncryptionKey::new(kek), "test"),
+            )
+            .unwrap();
+            s.enable_point_in_time_recovery().unwrap();
+            let t = s.begin_transaction().unwrap();
+            s.write(t, b"ek".to_vec(), b"ev".to_vec()).unwrap();
+            s.commit(t).unwrap();
+            s.checkpoint().unwrap();
+            s.shutdown().ok();
+        }
+        assert!(dir.path().join("keyring.json").exists());
+        assert!(dir.path().join("wal.manifest").exists());
+
+        // Reopen encrypted + PITR.
+        let s = DurableStorage::open_with_encryption(
+            dir.path(),
+            true,
+            MemTableType::Standard,
+            StorageEncryption::with_kek(EncryptionKey::new(kek), "test"),
+        )
+        .unwrap();
+        assert!(s.is_pitr_enabled());
+        assert!(s.is_encrypted());
+        s.recover().unwrap();
+        let t = s.begin_transaction().unwrap();
+        assert_eq!(s.read(t, b"ek").unwrap(), Some(b"ev".to_vec()));
+        s.abort(t).unwrap();
     }
 
     /// Crash-atomicity invariant (Task 4 — completes the Task 1 single-writer
