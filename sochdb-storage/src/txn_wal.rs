@@ -189,9 +189,14 @@ pub enum RecoveryTarget {
     /// Recover the first `lsn` WAL records (exact). Matches the value of
     /// `DurableStorage::current_lsn()` captured at the desired point.
     Lsn(u64),
-    /// Recover every transaction whose COMMIT timestamp (microseconds since the
-    /// epoch) is `<=` this value; stop at the first commit after it. Best-effort
-    /// on the coarse, possibly non-monotonic commit clock — prefer `Lsn`.
+    /// Roll the WAL forward and STOP at the first transaction whose COMMIT
+    /// timestamp (microseconds since the epoch) exceeds this value — that
+    /// transaction and everything after it are excluded. This is an exact
+    /// WAL-order PREFIX, NOT a timestamp filter: if commit timestamps are
+    /// non-monotonic in WAL order (coarse ~1ms clock, NTP steps, cross-thread
+    /// group commit), a later-in-WAL transaction with `ts <= t` that follows an
+    /// excluded commit is ALSO excluded. Prefer `Lsn` for an exact, clock-
+    /// independent cut.
     Timestamp(u64),
 }
 
