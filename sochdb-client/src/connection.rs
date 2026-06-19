@@ -2949,7 +2949,9 @@ impl EmbeddedConnection {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
+    /// // `EmbeddedConnection` is part of the `embedded` feature surface; this
+    /// // example is illustrative (not compiled under default features).
     /// let conn = EmbeddedConnection::open("my.db").unwrap();
     /// conn.execute_sql("CREATE TABLE users (id INT, name TEXT)").unwrap();
     /// conn.execute_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap();

@@ -1288,24 +1288,39 @@ impl SecretsProvider {
     }
 
     /// Get the data-at-rest encryption key (base64-decoded to 32 bytes).
+    ///
+    /// The transient base64 string and decoded buffer (both copies of the key
+    /// material) are zeroized before return, and the caller is expected to wipe
+    /// the returned array after handing it to the crypto layer. NOTE: the secrets
+    /// cache (`Vec<u8>`) still holds the raw secret un-zeroized — a fuller fix is
+    /// a zeroizing cache; until then, run the server with core dumps disabled and
+    /// the key pages mlock'd.
     pub fn encryption_key(&self) -> Option<[u8; 32]> {
-        self.get_string("encryption-key").and_then(|b64| {
-            use base64::Engine;
-            let decoded = base64::engine::general_purpose::STANDARD
-                .decode(b64.trim())
-                .ok()?;
-            if decoded.len() == 32 {
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&decoded);
-                Some(key)
-            } else {
-                tracing::error!(
-                    "Encryption key must be exactly 32 bytes, got {}",
-                    decoded.len()
-                );
-                None
+        use base64::Engine;
+        use zeroize::Zeroize;
+
+        let mut b64 = self.get_string("encryption-key")?;
+        let mut decoded = match base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
+            Ok(d) => d,
+            Err(_) => {
+                b64.zeroize();
+                return None;
             }
-        })
+        };
+        b64.zeroize();
+
+        if decoded.len() != 32 {
+            tracing::error!(
+                "Encryption key must be exactly 32 bytes, got {}",
+                decoded.len()
+            );
+            decoded.zeroize();
+            return None;
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&decoded);
+        decoded.zeroize();
+        Some(key)
     }
 
     /// Apply loaded secrets to a SecurityService (JWT key, API keys, etc.).
