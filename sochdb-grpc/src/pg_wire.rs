@@ -40,6 +40,12 @@ use sochdb_query::sql::{BridgeExecutionResult, SqlBridge};
 // ============================================================================
 
 /// Protocol version 3.0 (major=3, minor=0 → 196608)
+/// Upper bound on a PG-wire message length (incl. the 4-byte length field).
+/// Rejects an attacker-controlled length from triggering an unbounded / sign-
+/// extended `vec![0u8; n]` allocation (CWE-770/789). 16 MiB is generous for SQL
+/// text while preventing the ~2 GB-per-connection memory-exhaustion DoS.
+const MAX_PG_MSG_LEN: i32 = 16 * 1024 * 1024;
+
 const PROTOCOL_VERSION_3: i32 = 196608;
 
 /// SSL request magic number
@@ -51,6 +57,8 @@ const CANCEL_REQUEST: i32 = 80877102;
 // Message type identifiers (frontend → backend)
 const MSG_QUERY: u8 = b'Q';
 const MSG_TERMINATE: u8 = b'X';
+/// Client PasswordMessage ('p') sent in response to an auth request.
+const MSG_PASSWORD: u8 = b'p';
 
 // Message type identifiers (backend → frontend)
 const MSG_AUTH: u8 = b'R';
@@ -336,6 +344,11 @@ fn pg_command_tag(sql: &str, affected: usize) -> String {
 pub struct PgWireConfig {
     pub addr: SocketAddr,
     pub server_version: String,
+    /// Optional password. When `Some`, the server requires cleartext-password
+    /// authentication (CWE-306 fix); when `None` it uses trust auth (the legacy
+    /// behavior — only safe on loopback). Cleartext goes over the wire, so pair
+    /// with TLS and/or a loopback bind.
+    pub password: Option<String>,
 }
 
 /// Start the PG wire protocol server.
@@ -357,6 +370,7 @@ pub fn start<E: PgSqlExecutor + Clone>(
         };
 
         let server_version = Arc::new(config.server_version);
+        let password = Arc::new(config.password);
         let mut conn_id: u32 = 0;
 
         loop {
@@ -366,9 +380,12 @@ pub fn start<E: PgSqlExecutor + Clone>(
                     tracing::debug!("PG wire connection from {} (id={})", peer, conn_id);
                     let exec = executor.clone();
                     let ver = server_version.clone();
+                    let pw = password.clone();
                     let cid = conn_id;
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, exec, &ver, cid).await {
+                        if let Err(e) =
+                            handle_connection(stream, exec, &ver, pw.as_deref(), cid).await
+                        {
                             tracing::debug!("PG wire connection {} error: {}", cid, e);
                         }
                     });
@@ -386,13 +403,30 @@ async fn handle_connection<E: PgSqlExecutor>(
     mut stream: TcpStream,
     executor: Arc<E>,
     server_version: &str,
+    password: Option<&str>,
     conn_id: u32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Phase 1: Startup
     let _startup = read_startup(&mut stream).await?;
 
-    // Send AuthenticationOk
-    send_auth_ok(&mut stream).await?;
+    // Phase 1b: Authentication. With a configured password, require cleartext-
+    // password auth before exposing the SQL surface (CWE-306). Without one, fall
+    // back to trust auth (legacy; only safe on loopback).
+    match password {
+        Some(expected) => {
+            send_auth_cleartext_password(&mut stream).await?;
+            let supplied = read_password_message(&mut stream).await?;
+            if !constant_time_eq(supplied.as_bytes(), expected.as_bytes()) {
+                tracing::warn!("PG wire: password authentication failed (conn={})", conn_id);
+                send_error_response(&mut stream, "28P01", "password authentication failed")
+                    .await
+                    .ok();
+                return Ok(()); // close the connection
+            }
+            send_auth_ok(&mut stream).await?;
+        }
+        None => send_auth_ok(&mut stream).await?,
+    }
 
     // Send parameter status messages (psql expects these)
     send_parameter_status(&mut stream, "server_version", server_version).await?;
@@ -417,11 +451,15 @@ async fn handle_connection<E: PgSqlExecutor>(
             Ok(t) => t,
             Err(_) => break, // Client disconnected
         };
-        let msg_len = stream.read_i32().await? as usize;
-        if msg_len < 4 {
+        // Validate the length as a signed i32 BEFORE the usize cast: a negative
+        // value would sign-extend to a huge usize and bypass a `< 4` check, and a
+        // large positive value would trigger a multi-GB allocation below. Reject
+        // out-of-range lengths (drop the connection) — mirrors the startup cap.
+        let msg_len = stream.read_i32().await?;
+        if msg_len < 4 || msg_len > MAX_PG_MSG_LEN {
             break;
         }
-        let payload_len = msg_len - 4;
+        let payload_len = (msg_len - 4) as usize;
 
         match msg_type {
             MSG_QUERY => {
@@ -610,6 +648,71 @@ async fn send_auth_ok(
     write_i32(stream, 0).await?; // auth type: 0 = ok
     stream.flush().await?;
     Ok(())
+}
+
+/// Request cleartext-password authentication (AuthenticationCleartextPassword).
+async fn send_auth_cleartext_password(
+    stream: &mut TcpStream,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    stream.write_u8(MSG_AUTH).await?;
+    write_i32(stream, 8).await?; // length: 4 (len) + 4 (auth type)
+    write_i32(stream, 3).await?; // auth type: 3 = cleartext password
+    stream.flush().await?;
+    Ok(())
+}
+
+/// Read a client PasswordMessage ('p') and return the (null-stripped) password.
+/// The length is bounded to reject an oversized allocation from a hostile client.
+async fn read_password_message(
+    stream: &mut TcpStream,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let msg_type = stream.read_u8().await?;
+    if msg_type != MSG_PASSWORD {
+        return Err("expected PasswordMessage".into());
+    }
+    let msg_len = stream.read_i32().await?;
+    if msg_len < 4 || msg_len > MAX_PG_MSG_LEN {
+        return Err("invalid PasswordMessage length".into());
+    }
+    let mut buf = vec![0u8; (msg_len - 4) as usize];
+    stream.read_exact(&mut buf).await?;
+    if buf.last() == Some(&0) {
+        buf.pop();
+    }
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+/// Send an ErrorResponse ('E') with SQLSTATE `code` and `message`.
+async fn send_error_response(
+    stream: &mut TcpStream,
+    code: &str,
+    message: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Body: field-type byte + null-terminated value, repeated, then a final null.
+    let mut body = Vec::new();
+    for (tag, val) in [(b'S', "FATAL"), (b'C', code), (b'M', message)] {
+        body.push(tag);
+        body.extend_from_slice(val.as_bytes());
+        body.push(0);
+    }
+    body.push(0); // terminator
+    stream.write_u8(MSG_ERROR_RESPONSE).await?;
+    write_i32(stream, (body.len() + 4) as i32).await?;
+    stream.write_all(&body).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+/// Constant-time byte-slice equality for password comparison.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Send a ParameterStatus message.
@@ -986,6 +1089,7 @@ mod tests {
         let config = PgWireConfig {
             addr,
             server_version: "SochDB 0.5.0-test".into(),
+            password: None,
         };
 
         let _handle = start(config, EchoPgExecutor);
@@ -1036,6 +1140,7 @@ mod tests {
         let config = PgWireConfig {
             addr,
             server_version: "SochDB-test".into(),
+            password: None,
         };
 
         let _handle = start(config, EchoPgExecutor);

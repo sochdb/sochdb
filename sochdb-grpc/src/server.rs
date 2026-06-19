@@ -156,9 +156,13 @@ impl VectorIndexService for VectorIndexServer {
         let req = request.into_inner();
         require_capability(&principal, &Capability::ManageCollections)?;
         let name = req.name.clone();
+        // SECURITY: scope the index key to the caller's tenant so two tenants
+        // cannot read/overwrite/destroy each other's indexes by reusing a name.
+        // The key is derived from the AUTHENTICATED principal, never from input.
+        let key = Self::index_key(&principal.tenant_id, &name);
 
         // Check if index already exists
-        if self.indexes.contains_key(&name) {
+        if self.indexes.contains_key(&key) {
             return Ok(Response::new(CreateIndexResponse {
                 success: false,
                 error: format!("Index '{}' already exists", name),
@@ -217,7 +221,7 @@ impl VectorIndexService for VectorIndexServer {
             created_at,
         };
 
-        self.indexes.insert(name.clone(), entry);
+        self.indexes.insert(key, entry);
 
         tracing::info!("Created index '{}' with dimension {}", name, dimension);
 
@@ -241,8 +245,9 @@ impl VectorIndexService for VectorIndexServer {
         let principal = extract_principal(&request);
         require_capability(&principal, &Capability::ManageCollections)?;
         let name = request.into_inner().name;
+        let key = Self::index_key(&principal.tenant_id, &name);
 
-        match self.indexes.remove(&name) {
+        match self.indexes.remove(&key) {
             Some(_) => {
                 tracing::info!("Dropped index '{}'", name);
                 Ok(Response::new(DropIndexResponse {
@@ -266,7 +271,8 @@ impl VectorIndexService for VectorIndexServer {
         let req = request.into_inner();
         require_capability(&principal, &Capability::Write)?;
 
-        let (index, dimension) = self.get_index_with_dim(&req.index_name)?;
+        let key = Self::index_key(&principal.tenant_id, &req.index_name);
+        let (index, dimension) = self.get_index_with_dim(&key)?;
 
         // Validate input
         if req.vectors.len() != req.ids.len() * dimension {
@@ -345,7 +351,8 @@ impl VectorIndexService for VectorIndexServer {
                             continue;
                         }
                         index_name = Some(req.index_name.clone());
-                        match self.get_index_with_dim(&req.index_name) {
+                        let key = Self::index_key(&principal.tenant_id, &req.index_name);
+                        match self.get_index_with_dim(&key) {
                             Ok((idx, dim)) => {
                                 dimension = dim;
                                 batch_vectors.reserve(MICRO_BATCH_SIZE * dim);
@@ -420,7 +427,8 @@ impl VectorIndexService for VectorIndexServer {
         let req = request.into_inner();
         require_capability(&principal, &Capability::Read)?;
 
-        let (index, dimension, metric_enum) = self.get_index_with_meta(&req.index_name)?;
+        let key = Self::index_key(&principal.tenant_id, &req.index_name);
+        let (index, dimension, metric_enum) = self.get_index_with_meta(&key)?;
         let metric = Self::metric_label(metric_enum);
 
         // Validate dimension
@@ -482,7 +490,8 @@ impl VectorIndexService for VectorIndexServer {
         let req = request.into_inner();
         require_capability(&principal, &Capability::Read)?;
 
-        let (index, dimension, metric_enum) = self.get_index_with_meta(&req.index_name)?;
+        let key = Self::index_key(&principal.tenant_id, &req.index_name);
+        let (index, dimension, metric_enum) = self.get_index_with_meta(&key)?;
         let metric = Self::metric_label(metric_enum);
         let num_queries = req.num_queries as usize;
         let k = req.k.max(1) as usize;
@@ -539,8 +548,9 @@ impl VectorIndexService for VectorIndexServer {
         let principal = extract_principal(&request);
         require_capability(&principal, &Capability::Read)?;
         let name = request.into_inner().index_name;
+        let key = Self::index_key(&principal.tenant_id, &name);
 
-        match self.indexes.get(&name) {
+        match self.indexes.get(&key) {
             Some(entry) => {
                 let stats = entry.index.stats();
                 Ok(Response::new(GetStatsResponse {
@@ -565,12 +575,15 @@ impl VectorIndexService for VectorIndexServer {
         &self,
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
-        let indexes: Vec<String> = self.indexes.iter().map(|e| e.name.clone()).collect();
-
+        // SECURITY (CWE-200): a health probe is typically unauthenticated and is
+        // not tenant-scoped, so it must NOT enumerate index names — doing so
+        // leaked every tenant's index inventory across the tenant boundary. Use
+        // the authenticated, tenant-scoped GetStats RPC to inspect a specific
+        // index instead. The probe reports only liveness + version.
         Ok(Response::new(HealthCheckResponse {
             status: proto::health_check_response::Status::Serving.into(),
             version: VERSION.to_string(),
-            indexes,
+            indexes: Vec::new(),
         }))
     }
 }
@@ -700,5 +713,87 @@ mod tests {
             }
         }
         assert!(saw_result, "expected at least one batch result");
+    }
+
+    /// SECURITY (CWE-639): vector indexes are scoped to the authenticated tenant.
+    /// Two tenants using the SAME index name get isolated indexes; neither can
+    /// read, overwrite, or drop the other's.
+    #[tokio::test]
+    async fn vector_indexes_are_tenant_isolated() {
+        use crate::security::{AuthMethod, Principal};
+        use std::collections::HashSet;
+
+        fn authed<T>(msg: T, tenant: &str) -> Request<T> {
+            let mut r = Request::new(msg);
+            r.extensions_mut().insert(Principal {
+                id: "u".to_string(),
+                tenant_id: tenant.to_string(),
+                capabilities: HashSet::from([
+                    Capability::Read,
+                    Capability::Write,
+                    Capability::ManageCollections,
+                ]),
+                expires_at: None,
+                auth_method: AuthMethod::Anonymous,
+            });
+            r
+        }
+
+        let server = VectorIndexServer::new();
+
+        // tenant-a creates "shared" and inserts a vector.
+        server
+            .create_index(authed(
+                CreateIndexRequest {
+                    name: "shared".to_string(),
+                    dimension: 4,
+                    config: None,
+                    metric: proto::DistanceMetric::Cosine as i32,
+                },
+                "tenant-a",
+            ))
+            .await
+            .unwrap();
+        server
+            .insert_batch(authed(
+                InsertBatchRequest {
+                    index_name: "shared".to_string(),
+                    ids: vec![1],
+                    vectors: vec![1.0, 0.0, 0.0, 0.0],
+                },
+                "tenant-a",
+            ))
+            .await
+            .unwrap();
+
+        // tenant-b searching "shared" must NOT find tenant-a's index.
+        let resp_b = server
+            .search(authed(
+                SearchRequest {
+                    index_name: "shared".to_string(),
+                    query: vec![1.0, 0.0, 0.0, 0.0],
+                    k: 1,
+                    ef: 0,
+                },
+                "tenant-b",
+            ))
+            .await;
+        assert!(resp_b.is_err(), "tenant-b must not access tenant-a's index");
+
+        // tenant-a sees its own index fine.
+        let resp_a = server
+            .search(authed(
+                SearchRequest {
+                    index_name: "shared".to_string(),
+                    query: vec![1.0, 0.0, 0.0, 0.0],
+                    k: 1,
+                    ef: 0,
+                },
+                "tenant-a",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(resp_a.error.is_empty() && !resp_a.results.is_empty());
     }
 }

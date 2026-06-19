@@ -167,7 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start Prometheus metrics HTTP server (Task 8)
     let _metrics_handle = if args.metrics_port > 0 {
-        Some(sochdb_grpc::metrics_server::start(args.metrics_port))
+        Some(sochdb_grpc::metrics_server::start(
+            args.host.clone(),
+            args.metrics_port,
+        ))
     } else {
         tracing::info!("Prometheus metrics endpoint disabled");
         None
@@ -178,11 +181,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ws_addr = format!("{}:{}", args.host, args.ws_port).parse()?;
         let kv_store: sochdb_grpc::ws_server::KvStore =
             std::sync::Arc::new(dashmap::DashMap::new());
+        // Optional WS bearer token. Without one the gateway is unauthenticated;
+        // warn so the operator knows (it operates on an isolated KV store).
+        let ws_token = std::env::var("SOCHDB_WS_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty());
+        if ws_token.is_none() {
+            tracing::warn!(
+                "WebSocket gateway is UNAUTHENTICATED (set SOCHDB_WS_TOKEN to require a bearer token)"
+            );
+        }
         Some(sochdb_grpc::ws_server::start(
             sochdb_grpc::ws_server::WsConfig {
                 addr: ws_addr,
                 kv_store,
                 cdc_log: None,
+                auth_token: ws_token,
             },
         ))
     } else {
@@ -193,9 +207,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start PG wire protocol server (Task 5)
     let _pg_handle = if args.pg_port > 0 {
         let pg_addr = format!("{}:{}", args.host, args.pg_port).parse()?;
+        // Optional PG-wire password (cleartext over the wire — pair with TLS or a
+        // loopback bind). When unset, the server uses trust auth (legacy).
+        let pg_password = std::env::var("SOCHDB_PG_PASSWORD")
+            .ok()
+            .filter(|p| !p.is_empty());
+        if pg_password.is_some() {
+            tracing::info!("PG wire: cleartext-password authentication ENABLED");
+        }
         let config = sochdb_grpc::pg_wire::PgWireConfig {
             addr: pg_addr,
             server_version: format!("SochDB {}", env!("CARGO_PKG_VERSION")),
+            password: pg_password,
         };
         match args.pg_data_dir.as_deref() {
             // Real SQL engine over a persistent database.
@@ -414,11 +437,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     builder
         .add_service(health_service)
-        .add_service(
+        // SECURITY: the vector service MUST be wrapped with the auth interceptor
+        // like every other service — otherwise the interceptor never runs for
+        // vector RPCs, extract_principal falls back to an (over-privileged)
+        // anonymous principal, and the entire vector data plane is readable /
+        // writable / destroyable with no credentials EVEN WHEN --auth is on.
+        // Configure the message-size limits on the inner server first, then wrap
+        // it in the interceptor (max_*_message_size is not available post-wrap).
+        .add_service(tonic::codegen::InterceptedService::new(
             VectorIndexServiceServer::new(vector_server)
                 .max_decoding_message_size(64 * 1024 * 1024)
                 .max_encoding_message_size(64 * 1024 * 1024),
-        )
+            auth.clone(),
+        ))
         .add_service(GraphServiceServer::with_interceptor(
             graph_server,
             auth.clone(),
