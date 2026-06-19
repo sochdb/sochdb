@@ -131,6 +131,22 @@ pub struct WsConfig {
     pub addr: SocketAddr,
     pub kv_store: KvStore,
     pub cdc_log: Option<Arc<sochdb_storage::cdc::CdcLog>>,
+    /// Optional bearer token. When `Some`, the WebSocket upgrade requires an
+    /// `Authorization: Bearer <token>` header (CWE-306 fix); when `None` the
+    /// gateway is open (legacy — note it operates on an isolated KV store).
+    pub auth_token: Option<String>,
+}
+
+/// Constant-time byte-slice equality for the WS bearer-token comparison.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Start the WebSocket server on a background tokio task.
@@ -151,6 +167,7 @@ pub fn start(config: WsConfig) -> tokio::task::JoinHandle<()> {
 
         let kv_store = config.kv_store;
         let cdc_log = config.cdc_log;
+        let auth_token = config.auth_token;
 
         loop {
             match listener.accept().await {
@@ -158,8 +175,9 @@ pub fn start(config: WsConfig) -> tokio::task::JoinHandle<()> {
                     tracing::debug!("WebSocket connection from {}", peer);
                     let kv = kv_store.clone();
                     let cdc = cdc_log.clone();
+                    let token = auth_token.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, kv, cdc).await {
+                        if let Err(e) = handle_connection(stream, kv, cdc, token).await {
                             tracing::debug!("WebSocket connection error: {}", e);
                         }
                     });
@@ -177,8 +195,43 @@ async fn handle_connection(
     stream: TcpStream,
     kv_store: KvStore,
     cdc_log: Option<Arc<sochdb_storage::cdc::CdcLog>>,
+    auth_token: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let ws_stream = tokio_tungstenite::accept_async(stream).await?;
+    // Gate the WebSocket upgrade on a bearer token when configured. Rejecting at
+    // the handshake means an unauthenticated client never reaches the kv/sql
+    // dispatch loop.
+    let ws_stream = match auth_token {
+        Some(expected) => {
+            use tokio_tungstenite::tungstenite::handshake::server::{
+                ErrorResponse, Request, Response,
+            };
+            tokio_tungstenite::accept_hdr_async(
+                stream,
+                |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                    let ok = req
+                        .headers()
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|h| {
+                            let supplied = h.strip_prefix("Bearer ").unwrap_or(h);
+                            constant_time_eq(supplied.as_bytes(), expected.as_bytes())
+                        })
+                        .unwrap_or(false);
+                    if ok {
+                        Ok(resp)
+                    } else {
+                        let err = ErrorResponse::new(Some("Unauthorized".to_string()));
+                        let (mut parts, body) = err.into_parts();
+                        parts.status =
+                            tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+                        Err(ErrorResponse::from_parts(parts, body))
+                    }
+                },
+            )
+            .await?
+        }
+        None => tokio_tungstenite::accept_async(stream).await?,
+    };
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
     // Channel for subscription events (pushed asynchronously)
