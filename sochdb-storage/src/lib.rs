@@ -124,6 +124,7 @@ pub mod upgrade_contract; // Upgrade compatibility contract (Task 12)
 #[cfg(feature = "experimental")]
 pub mod wal_fencing; // Epoch-based WAL fencing for split-brain detection [quarantined: unwired]
 pub mod wal_integration;
+pub mod wal_manifest; // Durable PITR anchor (last-checkpoint LSN + DB identity), crash-safe (Task 3B PITR)
 pub mod zero_copy_safety; // Zero-Copy Validation Layer (Task 5) // FFI bindings for Python SDK
 
 // Performance optimization modules
