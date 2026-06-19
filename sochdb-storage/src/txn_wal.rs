@@ -182,6 +182,19 @@ fn encode_record_body(
     body
 }
 
+/// A Point-in-Time Recovery target (Task 3B PITR). See
+/// [`TxnWal::replay_to_target`] for the prefix semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryTarget {
+    /// Recover the first `lsn` WAL records (exact). Matches the value of
+    /// `DurableStorage::current_lsn()` captured at the desired point.
+    Lsn(u64),
+    /// Recover every transaction whose COMMIT timestamp (microseconds since the
+    /// epoch) is `<=` this value; stop at the first commit after it. Best-effort
+    /// on the coarse, possibly non-monotonic commit clock — prefer `Lsn`.
+    Timestamp(u64),
+}
+
 /// AAD layout version for the WAL record binding. Part of the on-disk contract.
 const WAL_AAD_VERSION: u8 = 1;
 /// AAD length: version(1) + db_uuid(16) + dek_epoch(4) + record_ordinal(8).
@@ -1244,6 +1257,89 @@ impl TxnWal {
                     // silently drop committed data. (Wrong key is already excluded
                     // earlier by the keyring canary, so this is genuine corruption
                     // or tampering.) Plaintext keeps the legacy torn-tail tolerance.
+                    if self.encryption.is_enabled() {
+                        return Err(e);
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok((result, txn_count))
+    }
+
+    /// Replay the WAL up to a PITR target, returning the committed writes whose
+    /// transactions are included by the target (and the count of such txns).
+    ///
+    /// Prefix semantics — recovery "rolls forward" through the WAL and STOPS at
+    /// the target, so the result is always a state the database actually passed
+    /// through:
+    /// - [`RecoveryTarget::Lsn`]`(l)`: include the first `l` WAL records (exact;
+    ///   `l` matches [`Self::sequence`] / `DurableStorage::current_lsn` captured
+    ///   at that point). A transaction whose commit lands after record `l` is
+    ///   excluded (atomic — partial transactions are never applied).
+    /// - [`RecoveryTarget::Timestamp`]`(t)`: stop at the FIRST transaction whose
+    ///   commit timestamp exceeds `t`. Best-effort on the coarse, possibly
+    ///   non-monotonic commit clock; prefer `Lsn` for an exact cut.
+    ///
+    /// Crypto-aware and fail-loud, exactly like [`Self::replay_for_recovery`].
+    #[allow(clippy::type_complexity)]
+    pub fn replay_to_target(
+        &self,
+        target: RecoveryTarget,
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, usize)> {
+        let file = File::open(&self.path)?;
+        let mut reader = BufReader::new(file);
+
+        let mut pending_writes: std::collections::HashMap<u64, Vec<(Vec<u8>, Vec<u8>)>> =
+            std::collections::HashMap::new();
+        let mut result = Vec::new();
+        let mut txn_count = 0;
+        let mut ordinal: u64 = 0;
+
+        loop {
+            match self.read_record(&mut reader, &mut ordinal) {
+                Ok(entry) => {
+                    // LSN target: `ordinal` is now this record's 1-based LSN.
+                    // Stop once we pass the target (this record is excluded).
+                    if let RecoveryTarget::Lsn(l) = target {
+                        if ordinal > l {
+                            break;
+                        }
+                    }
+                    match entry.record_type {
+                        WalRecordType::TxnBegin => {
+                            pending_writes.insert(entry.txn_id, Vec::new());
+                        }
+                        WalRecordType::Data => {
+                            pending_writes
+                                .entry(entry.txn_id)
+                                .or_insert_with(Vec::new)
+                                .push((entry.key, entry.value));
+                        }
+                        WalRecordType::TxnCommit => {
+                            // Timestamp target: stop rolling forward at the first
+                            // transaction committed AFTER the target (exclude it).
+                            if let RecoveryTarget::Timestamp(t) = target {
+                                if entry.timestamp_us > t {
+                                    break;
+                                }
+                            }
+                            if let Some(writes) = pending_writes.remove(&entry.txn_id) {
+                                result.extend(writes);
+                                txn_count += 1;
+                            }
+                        }
+                        WalRecordType::TxnAbort => {
+                            pending_writes.remove(&entry.txn_id);
+                        }
+                        _ => {}
+                    }
+                }
+                Err(SochDBError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    break;
+                }
+                Err(e) => {
                     if self.encryption.is_enabled() {
                         return Err(e);
                     }

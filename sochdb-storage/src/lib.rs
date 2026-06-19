@@ -235,11 +235,14 @@ pub use transaction::{
     DurabilityLevel, IsolationLevel, RecoveryStats as TxnRecoveryStats, TransactionCoordinator,
     TransactionHandle,
 };
-pub use txn_wal::{CrashRecoveryStats, TxnWal, TxnWalBuffer, TxnWalEntry, TxnWalStats};
+pub use txn_wal::{
+    CrashRecoveryStats, RecoveryTarget, TxnWal, TxnWalBuffer, TxnWalEntry, TxnWalStats,
+};
 pub use wal_integration::{
     GroupCommitBuffer, MvccTransactionManager, RecoveryStats, Transaction, TxnState,
     WalStorageManager,
 };
+pub use wal_manifest::WalManifest;
 
 // Re-exports for performance optimization modules
 #[allow(deprecated)]
