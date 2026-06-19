@@ -575,12 +575,15 @@ impl VectorIndexService for VectorIndexServer {
         &self,
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
-        let indexes: Vec<String> = self.indexes.iter().map(|e| e.name.clone()).collect();
-
+        // SECURITY (CWE-200): a health probe is typically unauthenticated and is
+        // not tenant-scoped, so it must NOT enumerate index names — doing so
+        // leaked every tenant's index inventory across the tenant boundary. Use
+        // the authenticated, tenant-scoped GetStats RPC to inspect a specific
+        // index instead. The probe reports only liveness + version.
         Ok(Response::new(HealthCheckResponse {
             status: proto::health_check_response::Status::Serving.into(),
             version: VERSION.to_string(),
-            indexes,
+            indexes: Vec::new(),
         }))
     }
 }
