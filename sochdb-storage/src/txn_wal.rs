@@ -650,7 +650,13 @@ impl TxnWal {
     /// When `engine` is enabled, records are written and replayed as encrypted
     /// frames bound to `db_uuid` + `dek_epoch` (see framing notes). When it is
     /// disabled, this behaves exactly like [`Self::new`].
-    pub fn new_with_encryption<P: AsRef<Path>>(
+    ///
+    /// `pub(crate)` by design: the engine + `db_uuid` + `dek_epoch` MUST come
+    /// from [`crate::keyring::load_or_init`] so the fail-closed open contract
+    /// (MAC + canary) and the AAD binding are enforced. The only public door to
+    /// an encrypted WAL is
+    /// [`crate::durable_storage::DurableStorage::open_with_encryption`].
+    pub(crate) fn new_with_encryption<P: AsRef<Path>>(
         path: P,
         encryption: Arc<EncryptionEngine>,
         db_uuid: [u8; 16],
@@ -856,11 +862,12 @@ impl TxnWal {
     /// calling `flush()` + `sync()` after batching multiple commit records.
     pub fn append(&self, entry: &TxnWalEntry) -> Result<u64> {
         let mut writer = self.writer.lock();
-        let bytes = self.frame_under_lock(entry)?;
+        let bytes = self.frame_for_write(entry)?;
 
         writer.write_all(&bytes)?;
         // Don't flush here - BufWriter will batch writes automatically.
         // Call flush() explicitly before sync() or commit().
+        self.commit_record_ordinal();
 
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
         self.bytes_since_sync
@@ -869,16 +876,28 @@ impl TxnWal {
         Ok(seq)
     }
 
-    /// Serialize one entry into its on-disk frame, allocating the per-record
-    /// ordinal when encrypted. MUST be called with the `writer` lock held so the
-    /// ordinal matches the order bytes hit the file.
+    /// Serialize one entry into its on-disk frame using the CURRENT (not-yet-
+    /// advanced) AAD ordinal. MUST be called with the `writer` lock held, and the
+    /// caller MUST call [`Self::commit_record_ordinal`] only AFTER `write_all`
+    /// succeeds — so a failed or partial write never advances the in-memory
+    /// ordinal past what is actually on disk (which would desync every
+    /// subsequent record's AAD from the reader's reconstructed ordinal).
     #[inline]
-    fn frame_under_lock(&self, entry: &TxnWalEntry) -> Result<Vec<u8>> {
+    fn frame_for_write(&self, entry: &TxnWalEntry) -> Result<Vec<u8>> {
         if self.encryption.is_enabled() {
-            let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+            let ord = self.records_in_file.load(Ordering::SeqCst);
             self.encrypt_frame(&entry.body_bytes(), ord)
         } else {
             Ok(entry.to_bytes())
+        }
+    }
+
+    /// Advance the file-relative AAD ordinal by one record. Call ONLY after the
+    /// record's bytes have been handed to the writer (post-`write_all`).
+    #[inline]
+    fn commit_record_ordinal(&self) {
+        if self.encryption.is_enabled() {
+            self.records_in_file.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -888,10 +907,11 @@ impl TxnWal {
     #[inline]
     pub fn append_no_flush(&self, entry: &TxnWalEntry) -> Result<u64> {
         let mut writer = self.writer.lock();
-        let bytes = self.frame_under_lock(entry)?;
+        let bytes = self.frame_for_write(entry)?;
 
         writer.write_all(&bytes)?;
         // No flush - let BufWriter buffer the writes
+        self.commit_record_ordinal();
 
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
         self.bytes_since_sync
@@ -926,9 +946,12 @@ impl TxnWal {
         // path below keeps its zero-alloc streaming fast path untouched.
         if self.encryption.is_enabled() {
             let body = encode_record_body(WalRecordType::Data, txn_id, timestamp_us, key, value);
-            let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+            let ord = self.records_in_file.load(Ordering::SeqCst);
             let frame = self.encrypt_frame(&body, ord)?;
             writer.write_all(&frame)?;
+            // Advance the AAD ordinal only after the bytes are committed to the
+            // writer, so a failed write never desyncs writer/reader ordinals.
+            self.records_in_file.fetch_add(1, Ordering::SeqCst);
             let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
             self.bytes_since_sync
                 .fetch_add(frame.len() as u64, Ordering::Relaxed);
@@ -1054,9 +1077,13 @@ impl TxnWal {
                 }
                 let body = &buf[pos..pos + content_len];
                 pos += content_len;
-                let ord = self.records_in_file.fetch_add(1, Ordering::SeqCst);
+                let ord = self.records_in_file.load(Ordering::SeqCst);
                 let frame = self.encrypt_frame(body, ord)?;
                 writer.write_all(&frame)?;
+                // Advance per record only after its bytes are committed, so a
+                // mid-batch write failure leaves records_in_file == records
+                // actually written (no ordinal desync for the survivors).
+                self.records_in_file.fetch_add(1, Ordering::SeqCst);
                 total_written += frame.len() as u64;
             }
             let seq = self

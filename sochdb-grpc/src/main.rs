@@ -239,16 +239,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // or a mounted `encryption-key`), open the SQL database encrypted.
                 // Absent a key it opens plaintext (back-compatible); the keyring
                 // still fails closed if this dir was previously encrypted.
+                //
+                // A key that is *present but invalid* (bad base64 / not 32 bytes)
+                // must NOT silently degrade to plaintext — that would create an
+                // unencrypted DB despite clear operator intent. encryption_key()
+                // returns None for BOTH absent and invalid, so disambiguate via
+                // the raw secret and fail fast on present-but-invalid.
+                let key_configured = secrets
+                    .as_ref()
+                    .map(|s| s.get_string("encryption-key").is_some())
+                    .unwrap_or(false);
                 let encryption = match secrets.as_ref().and_then(|s| s.encryption_key()) {
                     Some(mut kek) => {
                         use zeroize::Zeroize;
+                        // Provenance label reflects the actual key source.
+                        let source_id = match args.secrets_path.as_deref() {
+                            Some(p) => format!("mount:{p}"),
+                            None => "env:SOCHDB_ENCRYPTION_KEY".to_string(),
+                        };
                         let enc = sochdb_storage::StorageEncryption::with_kek(
                             sochdb_storage::EncryptionKey::new(kek),
-                            "env:SOCHDB_ENCRYPTION_KEY",
+                            source_id,
                         );
                         kek.zeroize(); // wipe the transient stack copy of the KEK
                         tracing::info!("PG SQL database: at-rest encryption ENABLED");
                         enc
+                    }
+                    None if key_configured => {
+                        return Err(format!(
+                            "encryption key is configured but invalid (must be base64 of \
+                             exactly 32 bytes); refusing to start the PG SQL database at '{}'",
+                            dir
+                        )
+                        .into());
                     }
                     None => sochdb_storage::StorageEncryption::disabled(),
                 };
