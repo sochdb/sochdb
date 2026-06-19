@@ -25,6 +25,40 @@ use half::{bf16, f16};
 use ndarray::Array1;
 use serde::{Deserialize, Serialize};
 
+use std::cell::RefCell;
+
+// Step 4 (Phase A): thread-local f32 scratch buffers reused across f16/bf16
+// distance calls so the widen-to-f32 path never heap-allocates per distance.
+// Used for bf16 (no f16c hardware path) and any mixed-precision pair.
+thread_local! {
+    static CONV_A: RefCell<Vec<f32>> = RefCell::new(Vec::with_capacity(1536));
+    static CONV_B: RefCell<Vec<f32>> = RefCell::new(Vec::with_capacity(1536));
+}
+
+#[inline]
+fn fill_f32(buf: &mut Vec<f32>, v: &QuantizedVector) {
+    buf.clear();
+    match v {
+        QuantizedVector::F32(arr) => buf.extend_from_slice(arr.as_slice().unwrap()),
+        QuantizedVector::F16(vec) => buf.extend(vec.iter().map(|x| x.to_f32())),
+        QuantizedVector::BF16(vec) => buf.extend(vec.iter().map(|x| x.to_f32())),
+    }
+}
+
+/// Run `f` over both operands widened into thread-local f32 scratch (no heap alloc).
+#[inline]
+fn with_widened<R>(a: &QuantizedVector, b: &QuantizedVector, f: impl FnOnce(&[f32], &[f32]) -> R) -> R {
+    CONV_A.with(|ca| {
+        CONV_B.with(|cb| {
+            let mut ba = ca.borrow_mut();
+            let mut bb = cb.borrow_mut();
+            fill_f32(&mut ba, a);
+            fill_f32(&mut bb, b);
+            f(&ba, &bb)
+        })
+    })
+}
+
 /// Quantization precision level
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Precision {
@@ -179,11 +213,13 @@ pub fn dot_product_quantized(a: &QuantizedVector, b: &QuantizedVector) -> f32 {
         (QuantizedVector::F32(a_arr), QuantizedVector::F32(b_arr)) => {
             simd_distance::dot_product_fast(a_arr.as_slice().unwrap(), b_arr.as_slice().unwrap())
         }
+        // Step 4: native f16 SIMD (f16c) — no heap alloc, IEEE-equivalent to to_f32 path.
+        (QuantizedVector::F16(a16), QuantizedVector::F16(b16)) => {
+            simd_distance::dot_product_f16(a16, b16)
+        }
         _ => {
-            // Convert to f32 and compute
-            let a_f32 = a.to_f32();
-            let b_f32 = b.to_f32();
-            simd_distance::dot_product_fast(a_f32.as_slice().unwrap(), b_f32.as_slice().unwrap())
+            // bf16 / mixed: widen into reusable thread-local scratch (no per-call alloc).
+            with_widened(a, b, |af, bf| simd_distance::dot_product_fast(af, bf))
         }
     }
 }
@@ -199,13 +235,11 @@ pub fn cosine_distance_quantized(a: &QuantizedVector, b: &QuantizedVector) -> f3
                 b_arr.as_slice().unwrap(),
             )
         }
+        (QuantizedVector::F16(a16), QuantizedVector::F16(b16)) => {
+            simd_distance::cosine_distance_f16(a16, b16)
+        }
         _ => {
-            let a_f32 = a.to_f32();
-            let b_f32 = b.to_f32();
-            simd_distance::cosine_distance_fast(
-                a_f32.as_slice().unwrap(),
-                b_f32.as_slice().unwrap(),
-            )
+            with_widened(a, b, |af, bf| simd_distance::cosine_distance_fast(af, bf))
         }
     }
 }
@@ -218,10 +252,11 @@ pub fn euclidean_distance_quantized(a: &QuantizedVector, b: &QuantizedVector) ->
         (QuantizedVector::F32(a_arr), QuantizedVector::F32(b_arr)) => {
             simd_distance::l2_distance_fast(a_arr.as_slice().unwrap(), b_arr.as_slice().unwrap())
         }
+        (QuantizedVector::F16(a16), QuantizedVector::F16(b16)) => {
+            simd_distance::l2_distance_f16(a16, b16)
+        }
         _ => {
-            let a_f32 = a.to_f32();
-            let b_f32 = b.to_f32();
-            simd_distance::l2_distance_fast(a_f32.as_slice().unwrap(), b_f32.as_slice().unwrap())
+            with_widened(a, b, |af, bf| simd_distance::l2_distance_fast(af, bf))
         }
     }
 }

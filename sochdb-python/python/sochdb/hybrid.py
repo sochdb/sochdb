@@ -25,20 +25,40 @@ class HybridSearchIndex:
         self,
         dimension: int,
         *,
-        m: int = 16,
-        ef_construction: int = 100,
+        m: int | None = None,
+        ef_construction: int | None = None,
         metric: str = "cosine",
         bm25_weight: float = 0.4,
         vector_weight: float = 0.6,
         rrf_k: float = 60.0,
         adaptive_rrf_k: bool = True,
+        seed: int | None = None,
+        deterministic_build: bool = False,
     ) -> None:
         if dimension <= 0:
             raise ValueError("dimension must be positive")
 
-        from sochdb import BM25Index, HnswIndex, RRFFusion, _check_native
+        from sochdb import (
+            BM25Index,
+            HnswIndex,
+            RRFFusion,
+            _check_native,
+            recommended_hnsw_params,
+        )
 
         _check_native()
+
+        # Auto-tune HNSW build params to the embedding dimension unless the
+        # caller pinned them explicitly. A hardcoded m=16 caps recall ~0.86 on
+        # 768D+ embeddings; the native HnswIndex already defaults to m=32, so a
+        # None default here keeps high-dim hybrid indexes at parity instead of
+        # silently halving graph degree. (m=16 stays correct for dim<=128.)
+        params = recommended_hnsw_params(dimension)
+        m = params["m"] if m is None else m
+        ef_construction = (
+            params["ef_construction"] if ef_construction is None else ef_construction
+        )
+
         self.dimension = dimension
         self.bm25 = BM25Index()
         self._rrf_k = rrf_k
@@ -47,12 +67,19 @@ class HybridSearchIndex:
         self._adaptive_rrf_k = adaptive_rrf_k
         self._RRFFusion = RRFFusion
         self.rrf = RRFFusion(k=rrf_k, vector_weight=vector_weight, lexical_weight=bm25_weight)
-        self._index = HnswIndex(
+        # Only forward reproducibility kwargs when actually requested, so the
+        # M-default fix above remains rebuild-free against an older native .so
+        # (seed/deterministic_build require the rebuilt extension).
+        hnsw_kwargs = dict(
             dimension=dimension,
             m=m,
             ef_construction=ef_construction,
             metric=metric,
         )
+        if seed is not None or deterministic_build:
+            hnsw_kwargs["seed"] = seed
+            hnsw_kwargs["deterministic_build"] = deterministic_build
+        self._index = HnswIndex(**hnsw_kwargs)
         self._numeric_to_doc_id: dict[int, str] = {}
         self._doc_id_to_numeric: dict[str, int] = {}
 

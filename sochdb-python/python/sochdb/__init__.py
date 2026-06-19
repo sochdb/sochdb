@@ -139,8 +139,8 @@ def build_index_from_file(
     output_path: str,
     *,
     dimension: int | None = None,
-    m: int = 16,
-    ef_construction: int = 100,
+    m: int | None = None,
+    ef_construction: int | None = None,
     batch_size: int = 1000,
     quiet: bool = False,
 ) -> dict:
@@ -168,6 +168,14 @@ def build_index_from_file(
     """
     # Import the subprocess-based implementation
     from sochdb._bulk import bulk_build_from_file
+    # Auto-tune to dimension when it is known up front; otherwise let the bulk
+    # path fall back to its safe constants after the CLI auto-detects the dim.
+    if dimension is not None and (m is None or ef_construction is None):
+        params = recommended_hnsw_params(dimension)
+        m = params["m"] if m is None else m
+        ef_construction = (
+            params["ef_construction"] if ef_construction is None else ef_construction
+        )
     return bulk_build_from_file(
         input_path=input_path,
         output_path=output_path,
@@ -508,8 +516,8 @@ def bulk_build_index(
     output: str,
     *,
     ids=None,
-    m: int = 16,
-    ef_construction: int = 100,
+    m: int | None = None,
+    ef_construction: int | None = None,
     **kwargs,
 ) -> dict:
     """
@@ -537,7 +545,14 @@ def bulk_build_index(
     # Ensure correct dtype
     if embeddings.dtype != np.float32:
         embeddings = embeddings.astype(np.float32)
-    
+
+    # Resolve dimension-aware defaults to match build_index_from_numpy.
+    if m is None or ef_construction is None:
+        dim = embeddings.shape[1] if embeddings.ndim > 1 else None
+        params = recommended_hnsw_params(dim) if dim else {"m": 16, "ef_construction": 200}
+        m = params["m"] if m is None else m
+        ef_construction = params["ef_construction"] if ef_construction is None else ef_construction
+
     start = time.perf_counter()
     
     # Build using native extension
@@ -579,8 +594,9 @@ else:
     class HnswIndex:
         """HNSW Vector Index (stub - native extension not loaded)."""
         
-        def __init__(self, dimension: int, m: int = 16, ef_construction: int = 100, 
-                     metric: str = "cosine", precision: str = "f32"):
+        def __init__(self, dimension: int, m: int = 32, ef_construction: int = 200,
+                     metric: str = "cosine", precision: str = "f32",
+                     seed: int | None = None, deterministic_build: bool = False):
             _check_native()
         
         def insert_batch(self, vectors) -> int:

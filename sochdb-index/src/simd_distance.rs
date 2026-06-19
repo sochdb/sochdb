@@ -897,6 +897,292 @@ unsafe fn l2_squared_threshold_avx2(a: &[f32], b: &[f32], threshold_squared: f32
 // Tests
 // ============================================================================
 
+
+// ============================================================================
+// Step 4: Native f16 SIMD distance kernels (avx2 + f16c + fma)
+// ============================================================================
+//
+// f16 distance previously widened both operands to a freshly heap-allocated
+// Vec<f32> per call (vector_quantized::to_f32) before running the f32 kernel.
+// These kernels widen 8 half lanes at a time directly into AVX2 registers via
+// _mm256_cvtph_ps (round-to-nearest, bit-identical to half::f16::to_f32) and
+// accumulate in registers, never materializing a Vec. The 4-wide accumulator
+// reduction mirrors dot_product_avx2 / l2_squared_avx2, so native_f16_dist ==
+// to_f32_then_avx2_dist within float-reassociation tolerance (< 1e-4, tested).
+//
+// Runtime-gated via f16_simd_available() (no compile-time f16c baseline in
+// .cargo/config.toml); scalar fallback below when f16c is absent.
+
+use half::f16;
+
+/// True iff the running CPU supports the f16 SIMD fast path (f16c+avx2+fma).
+#[inline]
+pub fn f16_simd_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        is_x86_feature_detected!("f16c")
+            && is_x86_feature_detected!("avx2")
+            && is_x86_feature_detected!("fma")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma", enable = "f16c")]
+#[inline]
+unsafe fn dot_product_f16_avx2(a: &[f16], b: &[f16]) -> f32 {
+    use std::arch::x86_64::*;
+    let n = a.len();
+    let mut sum0 = _mm256_setzero_ps();
+    let mut sum1 = _mm256_setzero_ps();
+    let mut sum2 = _mm256_setzero_ps();
+    let mut sum3 = _mm256_setzero_ps();
+
+    let chunks = n / 8;
+    let chunks4 = chunks / 4;
+    // half::f16 is repr(transparent) over u16, bit-compatible with the hw half lane.
+    let a_ptr = a.as_ptr() as *const i16;
+    let b_ptr = b.as_ptr() as *const i16;
+
+    for i in 0..chunks4 {
+        let base = i * 32;
+        let va0 = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(base) as *const __m128i));
+        let vb0 = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(base) as *const __m128i));
+        sum0 = _mm256_fmadd_ps(va0, vb0, sum0);
+        let va1 = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(base + 8) as *const __m128i));
+        let vb1 = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(base + 8) as *const __m128i));
+        sum1 = _mm256_fmadd_ps(va1, vb1, sum1);
+        let va2 = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(base + 16) as *const __m128i));
+        let vb2 = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(base + 16) as *const __m128i));
+        sum2 = _mm256_fmadd_ps(va2, vb2, sum2);
+        let va3 = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(base + 24) as *const __m128i));
+        let vb3 = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(base + 24) as *const __m128i));
+        sum3 = _mm256_fmadd_ps(va3, vb3, sum3);
+    }
+    for i in (chunks4 * 4)..chunks {
+        let offset = i * 8;
+        let va = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(offset) as *const __m128i));
+        let vb = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(offset) as *const __m128i));
+        sum0 = _mm256_fmadd_ps(va, vb, sum0);
+    }
+
+    let sum01 = _mm256_add_ps(sum0, sum1);
+    let sum23 = _mm256_add_ps(sum2, sum3);
+    let sum = _mm256_add_ps(sum01, sum23);
+    let sum_high = _mm256_extractf128_ps(sum, 1);
+    let sum_low = _mm256_castps256_ps128(sum);
+    let sum128 = _mm_add_ps(sum_low, sum_high);
+    let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+    let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
+    let mut result = _mm_cvtss_f32(sum32);
+    for i in (chunks * 8)..n {
+        result += a.get_unchecked(i).to_f32() * b.get_unchecked(i).to_f32();
+    }
+    result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma", enable = "f16c")]
+#[inline]
+unsafe fn l2_squared_f16_avx2(a: &[f16], b: &[f16]) -> f32 {
+    use std::arch::x86_64::*;
+    let n = a.len();
+    let mut sum0 = _mm256_setzero_ps();
+    let mut sum1 = _mm256_setzero_ps();
+    let mut sum2 = _mm256_setzero_ps();
+    let mut sum3 = _mm256_setzero_ps();
+
+    let chunks = n / 8;
+    let chunks4 = chunks / 4;
+    let a_ptr = a.as_ptr() as *const i16;
+    let b_ptr = b.as_ptr() as *const i16;
+
+    for i in 0..chunks4 {
+        let base = i * 32;
+        let va0 = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(base) as *const __m128i));
+        let vb0 = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(base) as *const __m128i));
+        let d0 = _mm256_sub_ps(va0, vb0);
+        sum0 = _mm256_fmadd_ps(d0, d0, sum0);
+        let va1 = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(base + 8) as *const __m128i));
+        let vb1 = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(base + 8) as *const __m128i));
+        let d1 = _mm256_sub_ps(va1, vb1);
+        sum1 = _mm256_fmadd_ps(d1, d1, sum1);
+        let va2 = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(base + 16) as *const __m128i));
+        let vb2 = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(base + 16) as *const __m128i));
+        let d2 = _mm256_sub_ps(va2, vb2);
+        sum2 = _mm256_fmadd_ps(d2, d2, sum2);
+        let va3 = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(base + 24) as *const __m128i));
+        let vb3 = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(base + 24) as *const __m128i));
+        let d3 = _mm256_sub_ps(va3, vb3);
+        sum3 = _mm256_fmadd_ps(d3, d3, sum3);
+    }
+    for i in (chunks4 * 4)..chunks {
+        let offset = i * 8;
+        let va = _mm256_cvtph_ps(_mm_loadu_si128(a_ptr.add(offset) as *const __m128i));
+        let vb = _mm256_cvtph_ps(_mm_loadu_si128(b_ptr.add(offset) as *const __m128i));
+        let d = _mm256_sub_ps(va, vb);
+        sum0 = _mm256_fmadd_ps(d, d, sum0);
+    }
+
+    let sum01 = _mm256_add_ps(sum0, sum1);
+    let sum23 = _mm256_add_ps(sum2, sum3);
+    let sum = _mm256_add_ps(sum01, sum23);
+    let sum_high = _mm256_extractf128_ps(sum, 1);
+    let sum_low = _mm256_castps256_ps128(sum);
+    let sum128 = _mm_add_ps(sum_low, sum_high);
+    let sum64 = _mm_add_ps(sum128, _mm_movehl_ps(sum128, sum128));
+    let sum32 = _mm_add_ss(sum64, _mm_shuffle_ps(sum64, sum64, 1));
+    let mut result = _mm_cvtss_f32(sum32);
+    for i in (chunks * 8)..n {
+        let d = a.get_unchecked(i).to_f32() - b.get_unchecked(i).to_f32();
+        result += d * d;
+    }
+    result
+}
+
+/// Scalar f16 dot product fallback (no f16c).
+#[inline]
+pub fn dot_product_f16_scalar(a: &[f16], b: &[f16]) -> f32 {
+    let mut sum = 0.0f32;
+    for (x, y) in a.iter().zip(b.iter()) {
+        sum += x.to_f32() * y.to_f32();
+    }
+    sum
+}
+
+#[inline]
+pub fn l2_squared_f16_scalar(a: &[f16], b: &[f16]) -> f32 {
+    let mut sum = 0.0f32;
+    for (x, y) in a.iter().zip(b.iter()) {
+        let d = x.to_f32() - y.to_f32();
+        sum += d * d;
+    }
+    sum
+}
+
+/// Native f16 dot product with runtime f16c dispatch + scalar fallback.
+#[inline]
+pub fn dot_product_f16(a: &[f16], b: &[f16]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if f16_simd_available() {
+            return unsafe { dot_product_f16_avx2(a, b) };
+        }
+    }
+    dot_product_f16_scalar(a, b)
+}
+
+/// Native f16 L2-squared distance with runtime f16c dispatch + scalar fallback.
+#[inline]
+pub fn l2_squared_f16(a: &[f16], b: &[f16]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    #[cfg(target_arch = "x86_64")]
+    {
+        if f16_simd_available() {
+            return unsafe { l2_squared_f16_avx2(a, b) };
+        }
+    }
+    l2_squared_f16_scalar(a, b)
+}
+
+/// Native f16 L2 distance (sqrt of squared) — matches l2_distance_fast shape.
+#[inline]
+pub fn l2_distance_f16(a: &[f16], b: &[f16]) -> f32 {
+    l2_squared_f16(a, b).sqrt()
+}
+
+/// Native f16 cosine distance: 1 - dot/(|a||b|), mirroring DistanceKernel::cosine_distance.
+#[inline]
+pub fn cosine_distance_f16(a: &[f16], b: &[f16]) -> f32 {
+    let dot = dot_product_f16(a, b);
+    let norm_a = dot_product_f16(a, a).sqrt();
+    let norm_b = dot_product_f16(b, b).sqrt();
+    if norm_a < 1e-10 || norm_b < 1e-10 {
+        return 1.0;
+    }
+    1.0 - (dot / (norm_a * norm_b))
+}
+
+#[cfg(test)]
+mod step4_f16_tests {
+    use super::*;
+    use half::f16;
+
+    fn to_f16_vec(v: &[f32]) -> Vec<f16> {
+        v.iter().map(|&x| f16::from_f32(x)).collect()
+    }
+
+    fn rand_vecs(dim: usize, seed: u64) -> (Vec<f32>, Vec<f32>) {
+        let mut s = seed;
+        let mut next = || {
+            s ^= s >> 12;
+            s ^= s << 25;
+            s ^= s >> 27;
+            let v = s.wrapping_mul(0x2545_F491_4F6C_DD1D);
+            ((v >> 11) as f32 / (1u64 << 53) as f32) * 2.0 - 1.0
+        };
+        let a: Vec<f32> = (0..dim).map(|_| next()).collect();
+        let b: Vec<f32> = (0..dim).map(|_| next()).collect();
+        (a, b)
+    }
+
+    #[test]
+    fn test_f16_native_matches_to_f32_path() {
+        // native f16 kernel vs widen-to-f32-then-f32-kernel, the path it replaces.
+        for &dim in &[8usize, 64, 127, 768, 1536] {
+            let (a, b) = rand_vecs(dim, 0xDEAD_BEEF_0000_0001 ^ dim as u64);
+            let af16 = to_f16_vec(&a);
+            let bf16 = to_f16_vec(&b);
+            // Reference: widen each f16 to f32 (exactly what to_f32() did) then f32 kernel.
+            let aw: Vec<f32> = af16.iter().map(|x| x.to_f32()).collect();
+            let bw: Vec<f32> = bf16.iter().map(|x| x.to_f32()).collect();
+
+            let dot_ref = dot_product_fast(&aw, &bw);
+            let dot_native = dot_product_f16(&af16, &bf16);
+            assert!(
+                (dot_ref - dot_native).abs() < 1e-4,
+                "dot dim={} ref={} native={}",
+                dim, dot_ref, dot_native
+            );
+
+            let l2_ref = l2_distance_fast(&aw, &bw);
+            let l2_native = l2_distance_f16(&af16, &bf16);
+            assert!(
+                (l2_ref - l2_native).abs() < 1e-4,
+                "l2 dim={} ref={} native={}",
+                dim, l2_ref, l2_native
+            );
+
+            let cos_ref = cosine_distance_fast(&aw, &bw);
+            let cos_native = cosine_distance_f16(&af16, &bf16);
+            assert!(
+                (cos_ref - cos_native).abs() < 1e-4,
+                "cosine dim={} ref={} native={}",
+                dim, cos_ref, cos_native
+            );
+        }
+    }
+
+    #[test]
+    fn test_f16_native_matches_scalar_fallback() {
+        for &dim in &[8usize, 64, 768] {
+            let (a, b) = rand_vecs(dim, 0x1234 ^ dim as u64);
+            let af16 = to_f16_vec(&a);
+            let bf16 = to_f16_vec(&b);
+            let dot_s = dot_product_f16_scalar(&af16, &bf16);
+            let dot_d = dot_product_f16(&af16, &bf16);
+            assert!((dot_s - dot_d).abs() < 1e-3, "dot scalar={} dispatch={}", dot_s, dot_d);
+            let l2_s = l2_squared_f16_scalar(&af16, &bf16);
+            let l2_d = l2_squared_f16(&af16, &bf16);
+            assert!((l2_s - l2_d).abs() < 1e-3, "l2 scalar={} dispatch={}", l2_s, l2_d);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

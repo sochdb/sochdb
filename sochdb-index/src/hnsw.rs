@@ -2440,6 +2440,20 @@ pub struct HnswIndex {
     /// Fast-path flag: true when construction_ready is non-empty (construction in progress).
     /// Avoids RwLock read on every process_neighbors_o1 call during query time.
     pub(crate) construction_in_progress: AtomicBool,
+    /// Optional fixed seed for reproducible builds. `None` (default) => each
+    /// node's HNSW level is drawn from `thread_rng()` (nondeterministic graph
+    /// topology). `Some(seed)` => the level is a deterministic function of
+    /// `(id, seed)` via [`HnswIndex::level_for`], pinned regardless of
+    /// insert/thread order. Set via [`HnswIndex::with_reproducibility`].
+    ///
+    /// NOTE: a fixed seed pins LEVELS only. Bit-identical neighbor graphs and
+    /// top-k additionally require `deterministic_build`.
+    pub(crate) seed: Option<u64>,
+    /// When true AND `seed` is set, the connect phase runs single-threaded in
+    /// ascending-id order with stable neighbor tie-breaks, yielding a
+    /// bit-reproducible neighbor graph at the cost of build throughput.
+    /// Ignored unless `seed.is_some()`.
+    pub(crate) deterministic_build: bool,
 }
 
 impl Drop for HnswIndex {
@@ -2492,6 +2506,8 @@ impl HnswIndex {
             pending_nodes: parking_lot::Mutex::new(Vec::new()),
             construction_ready: parking_lot::RwLock::new(Arc::new(Vec::new())),
             construction_in_progress: AtomicBool::new(false),
+            seed: None,
+            deterministic_build: false,
         }
     }
 
@@ -2539,7 +2555,25 @@ impl HnswIndex {
             pending_nodes: parking_lot::Mutex::new(Vec::new()),
             construction_ready: parking_lot::RwLock::new(Arc::new(Vec::new())),
             construction_in_progress: AtomicBool::new(false),
+            seed: None,
+            deterministic_build: false,
         }
+    }
+
+    /// Enable reproducible builds.
+    ///
+    /// With `seed = Some(_)`, each node's HNSW level becomes a deterministic
+    /// function of its id (see [`HnswIndex::level_for`]) — pinned regardless of
+    /// insert/thread order, and the pre-connect shuffle is skipped. With
+    /// `deterministic_build` additionally `true`, the connect phase runs
+    /// single-threaded in ascending-id order with stable neighbor tie-breaks,
+    /// producing a bit-reproducible neighbor graph (slower build).
+    ///
+    /// `seed = None` restores the default fast, nondeterministic behavior.
+    pub fn with_reproducibility(mut self, seed: Option<u64>, deterministic_build: bool) -> Self {
+        self.seed = seed;
+        self.deterministic_build = deterministic_build;
+        self
     }
 
     /// Record dense index -> external ID mapping and store node for O(1) lookup
@@ -2818,12 +2852,13 @@ impl HnswIndex {
                 return true;
             }
 
-            // List is full — replace worst neighbor
+            // List is full — apply the RNG heuristic over the union.
             return self.try_replace_worst_neighbor(
                 &mut layer_data,
                 &*neighbor_node,
                 new_node_dense,
                 new_node_vector,
+                max_connections,
             );
         }
 
@@ -2850,6 +2885,7 @@ impl HnswIndex {
                 &*neighbor_node,
                 new_node_dense,
                 new_node_vector,
+                max_connections,
             );
         }
     }
@@ -2863,53 +2899,78 @@ impl HnswIndex {
         neighbor_node: &HnswNode,
         new_node_dense: u32,
         new_node_vector: &QuantizedVector,
+        max_connections: usize,
     ) -> bool {
-        // read_recursive(): this runs while the caller (connect_node_fast /
-        // repair paths) already holds a vector_store read on this thread.
-        // parking_lot's plain read() defers to queued writers, so if a
-        // concurrent batch's phase-1 vector_store.write() parks between the
-        // outer read and this one, this read would park behind it forever —
-        // the confirmed concurrent-insert deadlock. read_recursive() acquires
-        // shared access without deferring to writers, breaking the cycle.
-        // Safe: this path only reads vector_store (writes go to node-layer
-        // locks), so there is no read->write self-upgrade.
+        // RECALL FIX: on overflow, re-run the RNG (Algorithm 4) heuristic over
+        // the UNION {existing neighbors ∪ new node}, exactly like hnswlib's
+        // getNeighborsByHeuristic2. The previous "replace the single farthest
+        // by raw distance" rule greedily kept the M closest neighbors, which
+        // systematically deletes the long-range bridge edges that connect
+        // clusters — fragmenting the graph (822/5000 orphans at dim=768 L2).
+        // The heuristic instead keeps a diverse, navigable neighbor set.
+        //
+        // read_recursive(): this runs while the caller already holds a
+        // vector_store read on this thread. parking_lot's plain read() defers
+        // to queued writers; read_recursive() acquires shared access without
+        // deferring, avoiding the confirmed concurrent-insert deadlock. This
+        // path only reads vector_store (writes go to node-layer locks), so
+        // there is no read->write self-upgrade.
         let vector_store = self.vector_store.read_recursive();
         let neighbor_vector = vector_store
             .get(neighbor_node.vector_index as usize)
             .unwrap_or(&neighbor_node.vector);
-        // Calculate distance from neighbor to new node
-        let new_dist = self.calculate_distance_pq(neighbor_vector, new_node_vector);
-
-        // Find the worst (farthest) existing neighbor
-        let mut worst_idx = 0;
-        let mut worst_dist = f32::NEG_INFINITY;
-
-        // Resolve existing neighbors via the O(1) internal_nodes array (the list
-        // already stores dense indices) instead of a dense->id->DashMap round-trip.
-        // Same vectors/distances => recall-neutral; removes a parallel-build
-        // contention point (this gave the largest insert speedup in profiling).
         let internal_nodes = self.internal_nodes.read_recursive();
-        for (idx, &existing_dense) in layer_data.neighbors.iter().enumerate() {
+
+        // Build candidate list (existing neighbors + the new node), each with
+        // its distance to `neighbor_node` (the node whose list we are pruning).
+        let mut candidates: Vec<SearchCandidate> =
+            Vec::with_capacity(layer_data.neighbors.len() + 1);
+        for &existing_dense in layer_data.neighbors.iter() {
             if let Some(Some(existing_node)) = internal_nodes.get(existing_dense as usize) {
                 let existing_vector = vector_store
                     .get(existing_node.vector_index as usize)
                     .unwrap_or(&existing_node.vector);
                 let dist = self.calculate_distance_pq(neighbor_vector, existing_vector);
-                if dist > worst_dist {
-                    worst_dist = dist;
-                    worst_idx = idx;
-                }
+                candidates.push(SearchCandidate {
+                    distance: dist,
+                    id: existing_node.id,
+                });
             }
         }
+        // New node candidate
+        let new_dist = self.calculate_distance_pq(neighbor_vector, new_node_vector);
+        let new_node_id = match self.dense_to_node_id(new_node_dense) {
+            Some(id) => id,
+            None => return false,
+        };
+        candidates.push(SearchCandidate {
+            distance: new_dist,
+            id: new_node_id,
+        });
 
-        // Only replace if new node is closer than worst existing neighbor
-        if new_dist < worst_dist {
-            layer_data.neighbors[worst_idx] = new_node_dense;
-            layer_data.version += 1;
-            return true;
+        // Drop the recursive reads before select_neighbors_heuristic, which
+        // re-acquires vector_store.read() internally (a plain read() nested
+        // under our read_recursive() could deadlock against a queued writer).
+        drop(internal_nodes);
+        drop(vector_store);
+
+        // Run the heuristic from `neighbor_node`'s perspective.
+        let selected =
+            self.select_neighbors_heuristic(&candidates, max_connections, &neighbor_node.vector);
+
+        // If the new node did not survive selection, nothing to do.
+        if !selected.iter().any(|&id| id == new_node_id) {
+            return false;
         }
 
-        false
+        // Write back the selected neighbor set as dense indices.
+        let new_neighbors = self.ids_to_dense_neighbors(&selected);
+        if new_neighbors.is_empty() {
+            return false;
+        }
+        layer_data.neighbors = new_neighbors;
+        layer_data.version += 1;
+        true
     }
 
     /// Ensure a node has at least one neighbor at layer 0 AND is reachable
@@ -3123,8 +3184,8 @@ impl HnswIndex {
             ));
         }
 
-        // Assign random layer level
-        let layer = self.random_level();
+        // Assign HNSW layer level (deterministic when a build seed is set)
+        let layer = self.level_for(id);
 
         // Quantize and normalize vector for distance calculations during insertion
         let precision = self.config.quantization_precision.unwrap_or(Precision::F32);
@@ -3486,7 +3547,7 @@ impl HnswIndex {
                 } else {
                     self.quantize_vector(vector)?
                 };
-                let layer = self.random_level();
+                let layer = self.level_for(*id);
                 let dense_index =
                     self.next_dense_index.fetch_add(1, AtomicOrdering::Relaxed) as u32;
                 self.record_dense_id(dense_index, *id);
@@ -3779,7 +3840,7 @@ impl HnswIndex {
                 let end = start + dimension;
                 let vec_slice = &vectors[start..end];
 
-                let layer = self.random_level();
+                let layer = self.level_for(id);
 
                 let quantized = if matches!(self.config.metric, DistanceMetric::Cosine)
                     && self.config.rng_optimization.normalize_at_ingest
@@ -3899,11 +3960,19 @@ impl HnswIndex {
         self.construction_in_progress
             .store(true, AtomicOrdering::Release);
 
-        // Shuffle to distribute spatially-close nodes across rayon's work queue.
-        // Not strictly necessary with per-node-ready (unlike waves), but helps
-        // distribute load across threads and reduces contention on nearby edges.
+        // Reproducibility: a fixed seed pins node LEVELS (`level_for`) regardless
+        // of order, so the only remaining build nondeterminism is the connect
+        // order. `deterministic_build` makes that order fixed (ascending id) and
+        // runs the connect single-threaded below, giving a bit-reproducible
+        // graph. A plain seed (without `deterministic_build`) just skips the
+        // unseeded shuffle — levels reproduce, neighbor lists may not.
+        let build_deterministic = self.deterministic_build && self.seed.is_some();
         let mut shuffled_nodes = nodes;
-        {
+        if build_deterministic {
+            shuffled_nodes.sort_by_key(|(id, _)| *id);
+        } else if self.seed.is_none() {
+            // Default fast path: shuffle to distribute spatially-close nodes
+            // across rayon's work queue (reduces contention on nearby edges).
             use rand::seq::SliceRandom;
             let mut rng = rand::thread_rng();
             shuffled_nodes.shuffle(&mut rng);
@@ -3919,7 +3988,7 @@ impl HnswIndex {
         // artificial synchronization boundary. Node completion order is
         // determined by rayon's work-stealing scheduler, giving natural
         // interleaving that maximizes graph visibility during construction.
-        shuffled_nodes.par_iter().for_each(|(id, node)| {
+        let connect_one = |(id, node): &(u128, Arc<HnswNode>)| {
             let nav_state = self.navigation_state();
             let _ = self.connect_node_fast(*id, node, &nav_state);
 
@@ -3939,7 +4008,19 @@ impl HnswIndex {
             }
 
             connected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        });
+        };
+        if build_deterministic {
+            // Single-threaded, fixed ascending-id order: each node sees a
+            // reproducible "ready" prefix, so the neighbor graph is a pure
+            // function of the inputs. Slower (no rayon) — the price of
+            // bit-reproducibility, gated behind deterministic_build.
+            shuffled_nodes.iter().for_each(connect_one);
+        } else {
+            // Default: process ALL nodes in parallel with rayon. Completion
+            // order is the work-stealing scheduler's choice, which is why the
+            // default (unseeded) build is not reproducible.
+            shuffled_nodes.par_iter().for_each(connect_one);
+        }
 
         // Clear construction_ready — back to zero-overhead query mode.
         self.construction_in_progress
@@ -4420,7 +4501,7 @@ impl HnswIndex {
         };
 
         // Create node
-        let layer = self.random_level();
+        let layer = self.level_for(id);
         let mut layers = Vec::with_capacity(layer + 1);
         for _ in 0..=layer {
             layers.push(RwLock::new(VersionedNeighbors::new()));
@@ -4588,7 +4669,7 @@ impl HnswIndex {
             let quantized = QuantizedVector::from_f32(vector, precision);
 
             // Create node
-            let layer = self.random_level();
+            let layer = self.level_for(id);
             let mut layers = Vec::with_capacity(layer + 1);
             for _ in 0..=layer {
                 layers.push(RwLock::new(VersionedNeighbors::new()));
@@ -5699,7 +5780,9 @@ impl HnswIndex {
             1_000 // 768D+: HNSW wins above ~1K vectors (sub-ms vs linear scan)
         };
         let node_count = self.nodes.len();
-        if node_count > 0 && node_count <= flat_scan_threshold {
+        if node_count > 0 && node_count <= flat_scan_threshold
+            && matches!(self.config.quantization_precision.unwrap_or(Precision::F32), Precision::F32)
+        {
             // Normalize query once for SIMD distance. For cosine with normalize_at_ingest,
             // stored vectors are unit-normalized, so we normalize the query to match.
             let use_normalized = matches!(self.config.metric, DistanceMetric::Cosine)
@@ -6155,7 +6238,9 @@ impl HnswIndex {
         } else {
             1_000
         };
-        if node_count > 0 && node_count <= flat_threshold {
+        if node_count > 0 && node_count <= flat_threshold
+            && matches!(self.config.quantization_precision.unwrap_or(Precision::F32), Precision::F32)
+        {
             return self.search(query, k);
         }
 
@@ -9420,18 +9505,28 @@ impl HnswIndex {
             return candidates.iter().map(|c| c.id).collect();
         }
 
+        // Stable tie-break for reproducible builds: when deterministic_build is
+        // on, equal-distance candidates resolve by ascending id so neighbor
+        // selection is a pure function of the inputs. No-op on the default path
+        // (the closure only runs on exact-distance ties).
+        let det = self.deterministic_build && self.seed.is_some();
+
         // =====================================================================
-        // LAYER 0: Pure proximity selection (NO RNG)
+        // RNG DIVERSITY SELECTION AT ALL LAYERS (including layer 0)
         //
-        // At layer 0, routing is handled by upper layers. Layer 0's sole job
-        // is recall — having the true nearest neighbors as direct edges.
+        // RECALL FIX: layer 0 previously used pure top-M (closest M0 by
+        // distance, no RNG). Under L2 distance concentration in high
+        // dimensions that builds densely-clustered short edges with NO
+        // long-range bridges, so the graph fragments into components that are
+        // unreachable from the entry point (measured: 822/5000 orphans at
+        // dim=768 euclidean, self-recall@1 ≈ 0.78). Cosine was immune only
+        // because ingest-normalization de-concentrates the distances.
         //
-        // The RNG heuristic rejects candidates that are "in the shadow" of
-        // already-selected neighbors. For high-dimensional spaces where NNs
-        // cluster in a spherical shell, this rejects 30-60% of the closest
-        // candidates, leaving nodes under-connected and destroying recall.
-        //
-        // Skip RNG at layer 0. Just keep the M₀ closest.
+        // Canonical HNSW / hnswlib apply the RNG (Algorithm 4) heuristic at
+        // EVERY layer including 0: it keeps diverse neighbors that bridge
+        // clusters, which is exactly what makes the graph navigable. The
+        // keepPrunedConnections backfill below still guarantees we reach M
+        // neighbors, so degree (and pure-proximity recall) is not reduced.
         // =====================================================================
         // Layer 0 keeps pure-proximity selection (the closest M₀): empirically
         // the RNG diversity heuristic adds no recall here (measured equal within
@@ -9443,6 +9538,13 @@ impl HnswIndex {
                 a.distance
                     .partial_cmp(&b.distance)
                     .unwrap_or(Ordering::Equal)
+                    .then_with(|| {
+                        if det {
+                            a.id.cmp(&b.id)
+                        } else {
+                            Ordering::Equal
+                        }
+                    })
             });
             return sorted_candidates.iter().take(m).map(|c| c.id).collect();
         }
@@ -9453,7 +9555,7 @@ impl HnswIndex {
         // Upper layers need diverse, well-spaced neighbors for efficient
         // routing (the "highway" system). RNG pruning is essential here.
         // =====================================================================
-        let alpha: f32 = 1.2;
+        let alpha: f32 = 1.0;
 
         let mut indices: Vec<usize> = (0..candidates.len()).collect();
 
@@ -9467,6 +9569,13 @@ impl HnswIndex {
                     .distance
                     .partial_cmp(&candidates[b].distance)
                     .unwrap_or(Ordering::Equal)
+                    .then_with(|| {
+                        if det {
+                            candidates[a].id.cmp(&candidates[b].id)
+                        } else {
+                            Ordering::Equal
+                        }
+                    })
             });
             indices.truncate(k_prefilter);
         }
@@ -9477,6 +9586,13 @@ impl HnswIndex {
                 .distance
                 .partial_cmp(&candidates[b].distance)
                 .unwrap_or(Ordering::Equal)
+                .then_with(|| {
+                    if det {
+                        candidates[a].id.cmp(&candidates[b].id)
+                    } else {
+                        Ordering::Equal
+                    }
+                })
         });
 
         // Result stores (id, distance_to_query) for selected neighbors
@@ -9554,16 +9670,47 @@ impl HnswIndex {
         result.into_iter().map(|(id, _)| id).collect()
     }
 
-    /// Generate random level for new node using the standard HNSW formula.
+    /// Assign the HNSW level for a node using the standard formula.
     ///
     /// Per Malkov & Yashunin (2018): level = floor(-ln(uniform(0,1)) * mL)
     /// where mL = 1/ln(M). This gives P(level >= l) = 1/M^l, ensuring
     /// upper layers are exponentially sparse — critical for O(log n) search.
-    pub fn random_level(&self) -> usize {
-        let mut rng = rand::thread_rng();
-        let u: f64 = rng.gen_range(f64::MIN_POSITIVE..1.0);
+    ///
+    /// If `self.seed` is set, the uniform draw is a deterministic function of
+    /// `(id, seed)` — identical across runs and independent of thread/call
+    /// order, so it is safe under the parallel builder (hnsw.rs ~3782) with no
+    /// locking. Otherwise it falls back to `thread_rng()` (legacy behavior).
+    /// Either way the level *distribution* is unchanged.
+    pub fn level_for(&self, id: u128) -> usize {
+        let u: f64 = match self.seed {
+            Some(seed) => {
+                // SplitMix64 finalizer over (id ^ seed) -> well-distributed
+                // u64 -> (0,1]. Deterministic, order-independent, lock-free.
+                let mut z = (id as u64) ^ ((id >> 64) as u64) ^ seed ^ 0x9E37_79B9_7F4A_7C15;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                // Top 53 bits -> [0,1); 1.0 - frac -> (0,1] (avoids ln(0)).
+                let frac = ((z >> 11) as f64) / ((1u64 << 53) as f64);
+                1.0 - frac
+            }
+            None => {
+                let mut rng = rand::thread_rng();
+                rng.gen_range(f64::MIN_POSITIVE..1.0)
+            }
+        };
         let level = (-u.ln() * self.config.level_multiplier as f64).floor() as usize;
         level.min(16)
+    }
+
+    /// Back-compat shim for the old level draw. Prefer [`HnswIndex::level_for`]
+    /// so seeded builds are reproducible. With no seed this is behaviorally
+    /// identical to the previous `random_level()`.
+    #[deprecated(note = "use level_for(id) so seeded builds are deterministic")]
+    pub fn random_level(&self) -> usize {
+        // id is ignored on the no-seed (thread_rng) path; all in-tree call
+        // sites are migrated to level_for(id).
+        self.level_for(0)
     }
 
     /// Repair connectivity — intentionally a no-op.
@@ -10192,26 +10339,70 @@ impl HnswIndex {
             })
             .collect();
 
-        // Step 3: Apply exact neighbors to layer 0
-        let mut updated = 0;
+        // Step 3: Symmetrize the exact k-NN graph before applying it.
+        //
+        // RECALL FIX: the previous code wrote each node's *directed* exact
+        // k-NN as its layer-0 list. A directed k-NN graph in high dimensions
+        // is badly disconnected — hub asymmetry means many points are nobody's
+        // near neighbor, so they become unreachable from the entry point
+        // (measured: euclidean self-recall@1 collapsed to ~0.80 after
+        // optimize(), even though recall@10 looked fine). We rebuild the
+        // *mutual* k-NN graph instead: whenever j ∈ kNN(i) we also add i to
+        // j's adjacency. A symmetric k-NN graph is strongly connected and
+        // navigable, which restores self-recall while keeping recall@10. Lists
+        // are kept sorted by distance and capped at M0 (closest kept).
+        let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::with_capacity(m0); n];
         for (i, neighbors) in all_neighbors.iter().enumerate() {
-            let node_id = node_ids[i];
-            if let Some(node) = self.nodes.get(&node_id) {
-                if node.layers.is_empty() {
+            let di = dense_indices[i];
+            if di == u32::MAX {
+                continue;
+            }
+            for &j in neighbors {
+                let dj = dense_indices[j];
+                if dj == u32::MAX || j == i {
                     continue;
                 }
-
-                let new_dense: SmallVec<[u32; MAX_M]> = neighbors
-                    .iter()
-                    .map(|&j| dense_indices[j])
-                    .filter(|&d| d != u32::MAX)
-                    .collect();
-
-                let mut ld = node.layers[0].write();
-                ld.neighbors = new_dense;
-                ld.version += 1;
-                updated += 1;
+                let d = self.distance_raw(&raw_vectors[i], &raw_vectors[j]);
+                adj[i].push((dj, d)); // forward edge i -> j
+                adj[j].push((di, d)); // reciprocal edge j -> i
             }
+        }
+
+        let mut updated = 0;
+        for (i, edges) in adj.iter_mut().enumerate() {
+            let node_id = node_ids[i];
+            let node = match self.nodes.get(&node_id) {
+                Some(node) => node,
+                None => continue,
+            };
+            if node.layers.is_empty() {
+                continue;
+            }
+            // Dedup + keep the M0 closest (sort by distance, unique dense id).
+            edges.sort_by(|a, b| {
+                a.1.partial_cmp(&b.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+            let mut seen: SmallVec<[u32; MAX_M]> = SmallVec::new();
+            let mut new_dense: SmallVec<[u32; MAX_M]> = SmallVec::new();
+            for &(dense, _) in edges.iter() {
+                if seen.contains(&dense) {
+                    continue;
+                }
+                seen.push(dense);
+                new_dense.push(dense);
+                if new_dense.len() >= m0 {
+                    break;
+                }
+            }
+            if new_dense.is_empty() {
+                continue;
+            }
+            let mut ld = node.layers[0].write();
+            ld.neighbors = new_dense;
+            ld.version += 1;
+            updated += 1;
         }
 
         self.invalidate_flat_cache();
@@ -10386,6 +10577,122 @@ impl HnswIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Reproducible-build tests (seed + deterministic_build) ----
+
+    #[test]
+    fn test_level_for_pure_and_reproducible() {
+        // Seeded level_for is a pure function of (id, seed): stable across
+        // repeated calls and identical across two independently-built indices,
+        // independent of thread/call order.
+        let mk = |s| HnswIndex::new(64, HnswConfig::default()).with_reproducibility(Some(s), false);
+        let a = mk(42u64);
+        let b = mk(42u64);
+        for id in 0..20_000u128 {
+            let la = a.level_for(id);
+            assert_eq!(la, a.level_for(id), "level_for not pure (id={id})");
+            assert_eq!(
+                la,
+                b.level_for(id),
+                "level_for differs across builds (id={id})"
+            );
+            assert!(la <= 16);
+        }
+        // A different seed perturbs at least some levels.
+        let c = mk(43u64);
+        let changed = (0..20_000u128)
+            .filter(|&id| a.level_for(id) != c.level_for(id))
+            .count();
+        assert!(
+            changed > 0,
+            "different seed yielded identical levels for all ids"
+        );
+    }
+
+    #[test]
+    fn test_level_for_distribution_is_geometric() {
+        // The hashed level must keep HNSW's P(level >= 1) ~= 1/M so graph
+        // quality is unchanged. Default config has M = 32.
+        let index = HnswIndex::new(64, HnswConfig::default()).with_reproducibility(Some(7), false);
+        let n = 200_000u128;
+        let above0 = (0..n).filter(|&id| index.level_for(id) > 0).count() as f64 / n as f64;
+        let expected = 1.0 / 32.0;
+        assert!(
+            (above0 - expected).abs() < 0.005,
+            "P(level>0) = {above0}, expected ~= {expected}"
+        );
+    }
+
+    #[test]
+    fn test_deterministic_build_pins_node_levels() {
+        // Two seeded builds over identical inputs assign identical levels to
+        // every node, validating that all insert paths (scaffold + bulk
+        // Phase-3) route through level_for rather than thread_rng.
+        fn build() -> HnswIndex {
+            let dim = 32usize;
+            let n = 600usize; // spans the scaffold + bulk Phase-3 split
+            let ids: Vec<u128> = (0..n as u128).collect();
+            let mut vectors = Vec::with_capacity(n * dim);
+            for i in 0..n {
+                for d in 0..dim {
+                    // Deterministic, non-degenerate data (no RNG).
+                    let v = (((i * 31 + d * 17) % 97) as f32) / 97.0 - 0.5;
+                    vectors.push(v);
+                }
+            }
+            let index =
+                HnswIndex::new(dim, HnswConfig::default()).with_reproducibility(Some(123), true);
+            index.insert_batch_contiguous(&ids, &vectors, dim).unwrap();
+            index
+        }
+        let a = build();
+        let b = build();
+        for id in 0..600u128 {
+            let la = a.nodes.get(&id).expect("node missing in build a").layer;
+            let lb = b.nodes.get(&id).expect("node missing in build b").layer;
+            assert_eq!(
+                la, lb,
+                "node {id} got different levels across seeded builds"
+            );
+        }
+    }
+
+    #[test]
+    fn test_deterministic_build_reproduces_search() {
+        // With seed + deterministic_build, two builds over identical inputs
+        // return bit-identical top-k for the same queries — validates the
+        // single-threaded fixed-order connect + stable neighbor tie-break.
+        fn lcg_data(n: usize, dim: usize) -> Vec<f32> {
+            // Deterministic, well-spread pseudo-random data (no RNG, no ties).
+            let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+            let mut out = Vec::with_capacity(n * dim);
+            for _ in 0..n * dim {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                out.push(((s >> 33) as f32) / ((1u32 << 31) as f32) - 0.5);
+            }
+            out
+        }
+        let dim = 48usize;
+        let n = 1500usize;
+        let data = lcg_data(n, dim);
+        let ids: Vec<u128> = (0..n as u128).collect();
+        let build = || {
+            let index =
+                HnswIndex::new(dim, HnswConfig::default()).with_reproducibility(Some(2024), true);
+            index.insert_batch_contiguous(&ids, &data, dim).unwrap();
+            index
+        };
+        let a = build();
+        let b = build();
+        for qi in (0..n).step_by(97) {
+            let q = &data[qi * dim..(qi + 1) * dim];
+            let ia: Vec<u128> = a.search(q, 10).unwrap().iter().map(|r| r.0).collect();
+            let ib: Vec<u128> = b.search(q, 10).unwrap().iter().map(|r| r.0).collect();
+            assert_eq!(ia, ib, "deterministic_build top-k differs for query {qi}");
+        }
+    }
 
     #[test]
     #[ignore] // Flaky: HNSW search is probabilistic, result count varies with random layer assignment

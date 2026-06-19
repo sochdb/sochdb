@@ -221,17 +221,25 @@ impl PyHnswIndex {
     ///     ef_construction: Construction search depth (default: 200). Higher = better quality, slower build.
     ///     metric: Distance metric ("cosine", "euclidean", "dot"). Default: "cosine".
     ///     precision: Quantization precision ("f32", "f16", "bf16"). Default: "f32".
+    ///     seed: Optional int. If set, per-node HNSW levels are deterministic
+    ///         (reproducible across builds, independent of insert order). Pins
+    ///         LEVELS only — see deterministic_build for identical graphs.
+    ///     deterministic_build: If True (requires seed), build single-threaded
+    ///         in fixed id order for a bit-reproducible neighbor graph (slower).
     ///
     /// Example:
     ///     >>> index = HnswIndex(768, m=32, ef_construction=200)
+    ///     >>> repro = HnswIndex(768, seed=42, deterministic_build=True)
     #[new]
-    #[pyo3(signature = (dimension, m=32, ef_construction=200, metric="cosine", precision="f32"))]
+    #[pyo3(signature = (dimension, m=32, ef_construction=200, metric="cosine", precision="f32", seed=None, deterministic_build=false))]
     fn new(
         dimension: usize,
         m: usize,
         ef_construction: usize,
         metric: &str,
         precision: &str,
+        seed: Option<u64>,
+        deterministic_build: bool,
     ) -> PyResult<Self> {
         if dimension == 0 {
             return Err(PyValueError::new_err("dimension must be > 0"));
@@ -271,7 +279,8 @@ impl PyHnswIndex {
             ..Default::default()
         };
 
-        let index = HnswIndex::new(dimension, config);
+        let index =
+            HnswIndex::new(dimension, config).with_reproducibility(seed, deterministic_build);
 
         Ok(Self {
             inner: Arc::new(index),
@@ -889,7 +898,7 @@ impl PyHnswIndex {
 ///     >>> index = build_index(embeddings, m=32, ef_construction=200)
 ///     >>> index.save("my_index.hnsw")
 #[pyfunction]
-#[pyo3(signature = (embeddings, m=32, ef_construction=200, metric="cosine", ids=None))]
+#[pyo3(signature = (embeddings, m=32, ef_construction=200, metric="cosine", ids=None, seed=None, deterministic_build=false))]
 fn build_index<'py>(
     py: Python<'py>,
     embeddings: PyReadonlyArray2<'py, f32>,
@@ -897,11 +906,13 @@ fn build_index<'py>(
     ef_construction: usize,
     metric: &str,
     ids: Option<PyReadonlyArray1<'py, u64>>,
+    seed: Option<u64>,
+    deterministic_build: bool,
 ) -> PyResult<PyHnswIndex> {
     let shape = embeddings.shape();
     let d = shape[1];
 
-    let index = PyHnswIndex::new(d, m, ef_construction, metric, "f32")?;
+    let index = PyHnswIndex::new(d, m, ef_construction, metric, "f32", seed, deterministic_build)?;
 
     if let Some(id_array) = ids {
         index.insert_batch_with_ids(py, id_array, embeddings)?;

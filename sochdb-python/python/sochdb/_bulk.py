@@ -42,8 +42,8 @@ def bulk_build_from_file(
     output_path: str,
     *,
     dimension: int | None = None,
-    m: int = 16,
-    ef_construction: int = 100,
+    m: int | None = None,
+    ef_construction: int | None = None,
     batch_size: int = 1000,
     threads: int = 0,
     quiet: bool = False,
@@ -72,7 +72,16 @@ def bulk_build_from_file(
         subprocess.CalledProcessError: If build fails.
     """
     import time
-    
+
+    # The CLI requires concrete ints. build_index_from_file resolves
+    # dimension-aware values when the dimension is known up front; otherwise
+    # fall back to safe constants (m=16 stays correct for low-dim data; the
+    # ef_construction floor is bumped 100 -> 200 to match recommended params).
+    if m is None:
+        m = 16
+    if ef_construction is None:
+        ef_construction = 200
+
     bulk_path = _find_bulk_binary()
     if bulk_path is None:
         raise RuntimeError(
