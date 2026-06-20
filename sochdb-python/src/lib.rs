@@ -42,7 +42,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
 
-use ::sochdb::connection::{ConnectionConfig, DurableConnection};
+use sochdb::connection::{ConnectionConfig, DurableConnection};
 use sochdb_core::SochValue;
 use sochdb_index::hnsw::{DistanceMetric, HnswConfig, HnswIndex};
 use sochdb_index::vector_quantized::Precision;
@@ -502,7 +502,17 @@ impl PyHnswIndex {
             .map_err(|e| PyRuntimeError::new_err(e))?;
 
         // Convert to numpy arrays using ndarray
-        let ids: Vec<u64> = results.iter().map(|(id, _)| *id as u64).collect();
+        let ids: Vec<u64> = results
+            .iter()
+            .map(|(id, _)| {
+                u64::try_from(*id).map_err(|_| {
+                    PyRuntimeError::new_err(format!(
+                        "Vector ID {} exceeds u64 range and cannot be returned",
+                        id
+                    ))
+                })
+            })
+            .collect::<PyResult<Vec<u64>>>()?;
         let distances: Vec<f32> = results.iter().map(|(_, d)| *d as f32).collect();
 
         let ids_array = Array1::from_vec(ids).into_pyarray(py);
@@ -574,7 +584,13 @@ impl PyHnswIndex {
 
         for results in all_results {
             for (id, dist) in results.iter().take(k) {
-                ids_flat.push(*id as u64);
+                let id_u64 = u64::try_from(*id).map_err(|_| {
+                    PyRuntimeError::new_err(format!(
+                        "Vector ID {} exceeds u64 range and cannot be returned",
+                        id
+                    ))
+                })?;
+                ids_flat.push(id_u64);
                 dists_flat.push(*dist as f32);
             }
             // Pad if fewer than k results
@@ -703,7 +719,17 @@ impl PyHnswIndex {
             .allow_threads(move || inner.search_filtered(&query_vec, k, ef, &filter_pairs))
             .map_err(|e| PyRuntimeError::new_err(e))?;
 
-        let ids: Vec<u64> = results.iter().map(|(id, _)| *id as u64).collect();
+        let ids: Vec<u64> = results
+            .iter()
+            .map(|(id, _)| {
+                u64::try_from(*id).map_err(|_| {
+                    PyRuntimeError::new_err(format!(
+                        "Vector ID {} exceeds u64 range and cannot be returned",
+                        id
+                    ))
+                })
+            })
+            .collect::<PyResult<Vec<u64>>>()?;
         let distances: Vec<f32> = results.iter().map(|(_, d)| *d as f32).collect();
 
         let ids_array = Array1::from_vec(ids).into_pyarray(py);
@@ -912,7 +938,15 @@ fn build_index<'py>(
     let shape = embeddings.shape();
     let d = shape[1];
 
-    let index = PyHnswIndex::new(d, m, ef_construction, metric, "f32", seed, deterministic_build)?;
+    let index = PyHnswIndex::new(
+        d,
+        m,
+        ef_construction,
+        metric,
+        "f32",
+        seed,
+        deterministic_build,
+    )?;
 
     if let Some(id_array) = ids {
         index.insert_batch_with_ids(py, id_array, embeddings)?;

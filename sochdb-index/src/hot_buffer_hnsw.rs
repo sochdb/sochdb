@@ -517,7 +517,7 @@ impl HotBufferHnsw {
                 crate::vector_quantized::cosine_distance_quantized(a, b)
             }
             crate::hnsw::DistanceMetric::DotProduct => {
-                crate::vector_quantized::dot_product_quantized(a, b)
+                -crate::vector_quantized::dot_product_quantized(a, b)
             }
         }
     }
@@ -695,5 +695,63 @@ mod tests {
         index.flush_sync().unwrap();
 
         assert_eq!(index.total_len(), 100);
+    }
+
+    /// Regression: hot-buffer `calculate_distance` for `DotProduct` must
+    /// return the *negated* dot product (lower-is-better), matching the
+    /// base HNSW contract (`hnsw.rs::calculate_distance`).  Before the fix,
+    /// the hot buffer returned the raw (positive) dot product, so when
+    /// buffer and HNSW results were merged and sorted ascending, the
+    /// highest-similarity buffer candidates were ranked *last*.
+    #[test]
+    fn test_hot_buffer_dot_product_distance_is_negated() {
+        let config = HotBufferConfig {
+            hnsw_config: HnswConfig {
+                max_connections: 16,
+                max_connections_layer0: 32,
+                ef_construction: 100,
+                ef_search: 50,
+                metric: DistanceMetric::DotProduct,
+                quantization_precision: Some(Precision::F32),
+                ..Default::default()
+            },
+            buffer_capacity: 100,
+            flush_threads: 0,
+            auto_flush: false,
+            ..Default::default()
+        };
+
+        let index = HotBufferHnsw::new(4, config);
+
+        // Two vectors with distinguishable dot products against the query.
+        // query · a = 3.0,  query · b = 1.0   → a is more similar.
+        let query = vec![1.0, 1.0, 1.0, 0.0];
+        let a = vec![1.0, 1.0, 1.0, 0.0]; // dot = 3
+        let b = vec![1.0, 0.0, 0.0, 0.0]; // dot = 1
+
+        index.insert(1, a.clone()).unwrap();
+        index.insert(2, b.clone()).unwrap();
+
+        // Manually call calculate_distance via the public search path.
+        // After fix, distances should be -3.0 and -1.0 respectively,
+        // and the sort (ascending) must place a (id=1) before b (id=2).
+        let results = index.search(&query, 2).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].0, 1,
+            "most similar (highest dot) must rank first"
+        );
+        assert!(
+            results[0].1 < results[1].1,
+            "distance must be lower-is-better: got {} then {}",
+            results[0].1,
+            results[1].1
+        );
+        // The actual distance for a should be -dot = -3.0
+        assert!(
+            (results[0].1 - (-3.0)).abs() < 0.01,
+            "expected -3.0, got {}",
+            results[0].1
+        );
     }
 }
