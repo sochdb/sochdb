@@ -9531,26 +9531,23 @@ impl HnswIndex {
         let det = self.deterministic_build && self.seed.is_some();
 
         // =====================================================================
-        // RNG DIVERSITY SELECTION AT ALL LAYERS (including layer 0)
+        // NEIGHBOR SELECTION
         //
-        // RECALL FIX: layer 0 previously used pure top-M (closest M0 by
-        // distance, no RNG). Under L2 distance concentration in high
-        // dimensions that builds densely-clustered short edges with NO
-        // long-range bridges, so the graph fragments into components that are
-        // unreachable from the entry point (measured: 822/5000 orphans at
-        // dim=768 euclidean, self-recall@1 ≈ 0.78). Cosine was immune only
-        // because ingest-normalization de-concentrates the distances.
+        // LAYER 0 uses PURE top-M (the closest M0 by distance), NOT the RNG
+        // diversity heuristic — measured equal-within-noise recall vs RNG at
+        // layer 0 for this build, while pure top-M is cheaper and keeps the
+        // build deterministic. Trade-off: under L2 distance concentration in
+        // high dimensions the mutual-kNN graph can fragment into components
+        // unreachable from the entry point (orphans). That connectivity is
+        // recovered by optimize()/rebuild_layer0_exact's repair pass — NOT by
+        // layer-0 RNG. (Canonical hnswlib applies the heuristic at every layer
+        // including 0; we deliberately diverge at layer 0 and lean on
+        // optimize() + repair_connectivity instead.)
         //
-        // Canonical HNSW / hnswlib apply the RNG (Algorithm 4) heuristic at
-        // EVERY layer including 0: it keeps diverse neighbors that bridge
-        // clusters, which is exactly what makes the graph navigable. The
-        // keepPrunedConnections backfill below still guarantees we reach M
-        // neighbors, so degree (and pure-proximity recall) is not reduced.
+        // UPPER LAYERS use the RNG (Algorithm 4) diversity heuristic below to
+        // keep diverse, well-spaced neighbors for the routing "highways", with
+        // keepPrunedConnections backfill guaranteeing degree M.
         // =====================================================================
-        // Layer 0 keeps pure-proximity selection (the closest M₀): empirically
-        // the RNG diversity heuristic adds no recall here (measured equal within
-        // noise) while costing extra distance computations during construction.
-        // Diversity/backfill below applies to the routing (upper) layers.
         if m >= self.config.max_connections_layer0 {
             let mut sorted_candidates: Vec<&SearchCandidate> = candidates.iter().collect();
             sorted_candidates.sort_by(|a, b| {
@@ -10263,6 +10260,13 @@ impl HnswIndex {
     /// Complexity: O(N² × D).
     /// For N=10K, D=128: ~0.1-0.5 seconds with SIMD + rayon.
     pub fn rebuild_layer0_exact(&self) -> usize {
+        // Serialize against concurrent insert(): this exact rebuild and its
+        // connectivity-repair loop do wholesale layer-0 edge rewrites that must
+        // not interleave with a concurrent rayon insert (single-writer discipline,
+        // see insert_lock). Deadlock-safe: rebuild_layer0_exact is invoked only
+        // externally (Python optimize()) and from tests — never from an insert
+        // path that already holds insert_lock — so there is no re-entrancy.
+        let _insert_guard = self.insert_lock.lock();
         let n = self.nodes.len();
         if n < 2 {
             return 0;
@@ -10450,17 +10454,16 @@ impl HnswIndex {
         // to a fixed point (bounded) until no orphans remain or no progress is
         // made. This restores reachability without discarding the
         // heuristic-selected mutual-kNN edges that give the recall boost.
+        // repair_connectivity() itself diagnoses (BFS), reconnects every orphan,
+        // and returns how many it reconnected; `repaired == 0` means it found no
+        // orphans, i.e. the graph is fully reachable. Because the reverse-edge is
+        // append-only (allow_evict=false) repair can only REDUCE the orphan set,
+        // never create a net-new orphan, so the count is monotonically decreasing
+        // and `repaired == 0` is a sound terminator — no separate guard-diagnose
+        // is needed (halves the BFS work per pass). MAX_REPAIR_PASSES bounds it.
         const MAX_REPAIR_PASSES: usize = 8;
-        let mut prev_orphans = usize::MAX;
         for _pass in 0..MAX_REPAIR_PASSES {
-            let (reachable, total, _orphans) = self.diagnose_connectivity();
-            let orphan_count = total - reachable;
-            if orphan_count == 0 || orphan_count >= prev_orphans {
-                break;
-            }
-            prev_orphans = orphan_count;
-            let repaired = self.repair_connectivity();
-            if repaired == 0 {
+            if self.repair_connectivity() == 0 {
                 break;
             }
         }
