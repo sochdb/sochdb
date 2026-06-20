@@ -75,6 +75,7 @@ pub mod edge_delta_buffer; // Batched edge delta application (Task 7)
 pub mod embedding;
 pub mod hnsw;
 pub mod hnsw_pq;
+pub mod nn_descent; // Sub-quadratic approximate k-NN (NN-descent) for optimize()/rebuild_layer0_exact
 pub mod hnsw_staged; // Staged parallel HNSW construction with waves + deferred backedges
 pub mod hot_buffer_hnsw; // Hot buffer + background flush for ultra-fast inserts
 pub mod internal_id; // Dense u32 ID mapping for cache-friendly traversal (P0 optimization)

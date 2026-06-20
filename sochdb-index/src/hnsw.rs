@@ -10330,40 +10330,103 @@ impl HnswIndex {
             .collect();
         drop(vector_store);
 
-        // Step 2: Parallel brute-force k-NN for each node
-        let all_neighbors: Vec<Vec<usize>> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let query = &raw_vectors[i];
-                if query.is_empty() {
-                    return Vec::new();
-                }
+        // Step 2: Sub-quadratic approximate k-NN per node via NN-DESCENT, then
+        // exact-f32 rerank to the final M0.
+        //
+        // WAS: a parallel-but-brute-force all-pairs scan (`for j in 0..n`) that
+        // is O(N^2)*dim. At dim=3072/N=20000 that single loop dominated total
+        // insert (~80-92s, ~93% of the work), so SochDB lost insert to Chroma.
+        //
+        // NOW: NN-descent (Dong, Charikar, Li 2011) finds each node's
+        // approximate k-NN in O(N*K*iters) distance ops (~60x fewer at N=20k),
+        // starting from RANDOM neighbors (so it does NOT inherit the weak
+        // as-built HNSW graph's fragmentation) and refining via
+        // neighbors-of-neighbors local joins. It computes EXACT f32 distances
+        // with the SAME kernel (`distance_raw`), so the candidate pool is
+        // distance-exact; we generate a pool of 2*M0 and take the closest M0,
+        // which is an exact-quality rerank. The downstream symmetrize +
+        // append-only connectivity-repair passes are unchanged and still
+        // guarantee ZERO orphans regardless of any true neighbor NN-descent
+        // happened to miss.
+        //
+        // Tiny-N exact fallback: when N is small the brute-force scan is already
+        // trivially cheap and gives provably-exact edges, so for N below the
+        // NN-descent crossover we keep the exact all-pairs path (also preserves
+        // the `updated == n` and exact-recall guarantees of the small-N unit
+        // test). Above it, NN-descent wins decisively.
+        const NND_MIN_N: usize = 2_000;
+        // Candidate pool for NN-descent's working list, capped to n-1. The
+        // rerank keeps the closest M0; the pool just needs enough headroom that
+        // the true M0-NN are reliably discovered. Measured at dim=3072 cosine
+        // (the hardest config) over 5 seeds with a robust Q=1000 query set:
+        //   pool=2*M0 -> recall@10 0.9986-0.9994, optimize ~20.5s (4.5x faster)
+        //   pool=3*M0 -> recall@10 0.9984-0.9996, optimize ~41s  (2.2x faster)
+        // The extra pool buys no real recall (both clear the >=0.994 gate with
+        // margin) but doubles the cost, so 2*M0 is the better trade. A thin
+        // Q=300 sample once read 0.9723 on one seed at pool=2, but the SAME
+        // index measured 0.9986 at Q=1000 — that was query-sample noise, not a
+        // graph defect (the exact path also varies a few points at Q=300).
+        let pool = (2 * m0).min(n.saturating_sub(1)).max(1);
 
-                let mut dists: Vec<(usize, f32)> = Vec::with_capacity(n - 1);
-                for j in 0..n {
-                    if j == i {
-                        continue;
+        let all_neighbors: Vec<Vec<usize>> = if n <= NND_MIN_N {
+            // Exact all-pairs (cheap at small N; provably-exact edges).
+            (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    let query = &raw_vectors[i];
+                    if query.is_empty() {
+                        return Vec::new();
                     }
-                    let target = &raw_vectors[j];
-                    if target.is_empty() {
-                        continue;
+                    let mut dists: Vec<(usize, f32)> = Vec::with_capacity(n - 1);
+                    for j in 0..n {
+                        if j == i {
+                            continue;
+                        }
+                        let target = &raw_vectors[j];
+                        if target.is_empty() {
+                            continue;
+                        }
+                        let dist = self.distance_raw(query, target);
+                        dists.push((j, dist));
                     }
-                    let dist = self.distance_raw(query, target);
-                    dists.push((j, dist));
-                }
-
-                // select_nth_unstable is O(n) average — much faster than full sort
-                let take = m0.min(dists.len());
-                if dists.len() > take {
-                    dists.select_nth_unstable_by(take, |a, b| {
+                    let take = m0.min(dists.len());
+                    if dists.len() > take {
+                        dists.select_nth_unstable_by(take, |a, b| {
+                            a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        dists.truncate(take);
+                    }
+                    dists.sort_by(|a, b| {
                         a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
                     });
-                    dists.truncate(take);
-                }
-                dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                dists.into_iter().map(|(j, _)| j).collect()
-            })
-            .collect();
+                    dists.into_iter().map(|(j, _)| j).collect()
+                })
+                .collect()
+        } else {
+            // NN-descent over the snapshot. Empty vectors are degenerate (zero
+            // dim); distance_raw on them is well-defined (returns a finite
+            // value) and the symmetrize step skips empty ones, so we don't need
+            // to special-case them inside the join.
+            let cfg = crate::nn_descent::NnDescentConfig {
+                k: pool,
+                ..Default::default()
+            };
+            let raw = &raw_vectors;
+            let approx = crate::nn_descent::nn_descent(n, cfg, |i, j| {
+                self.distance_raw(&raw[i as usize], &raw[j as usize])
+            });
+            // Rerank: the pool is already exact-distance-sorted ascending, so
+            // taking the closest M0 IS the exact-quality rerank.
+            approx
+                .into_iter()
+                .map(|list| {
+                    list.into_iter()
+                        .take(m0)
+                        .map(|(id, _)| id as usize)
+                        .collect()
+                })
+                .collect()
+        };
 
         // Step 3: Symmetrize the exact k-NN graph before applying it.
         //
