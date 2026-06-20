@@ -3031,7 +3031,7 @@ impl HnswIndex {
                 }
 
                 // Force-add reverse edge (even if at capacity, replace worst)
-                self.force_add_reverse_edge(node_id, best.id, node_vector, 0);
+                self.force_add_reverse_edge(node_id, best.id, node_vector, 0, true);
                 return;
             } else if self.nodes.len() > 1 {
                 // Connect to entry point as fallback
@@ -3046,7 +3046,7 @@ impl HnswIndex {
                                 layer_data.version += 1;
                             }
                         }
-                        self.force_add_reverse_edge(node_id, ep_id, node_vector, 0);
+                        self.force_add_reverse_edge(node_id, ep_id, node_vector, 0, true);
                         return;
                     }
                 }
@@ -3071,19 +3071,28 @@ impl HnswIndex {
         if !has_incoming_edge && !layer0_neighbors.is_empty() {
             // Node has outgoing edges but no incoming edges - force-add reverse edge to first neighbor
             let first_neighbor = layer0_neighbors[0];
-            self.force_add_reverse_edge(node_id, first_neighbor, node_vector, 0);
+            self.force_add_reverse_edge(node_id, first_neighbor, node_vector, 0, true);
         }
     }
 
     /// Force-add a reverse edge from target to source, even if target is at capacity
     ///
     /// This is used for connectivity repair where we must ensure the edge exists.
+    /// Add a `source -> target` reverse edge into `target`'s neighbor list.
+    ///
+    /// `allow_evict`: when the target is at capacity, `true` (build/connect paths)
+    /// may replace the worst neighbor to preserve degree quality. The repair path
+    /// MUST pass `false` (append-only): evicting an existing neighbor can remove
+    /// some third node's *sole inbound edge* and create a net-new orphan, which the
+    /// bounded connectivity-repair loop would not undo. The transient over-capacity
+    /// is bounded and reconciled by the next `rebuild_layer0_exact`.
     fn force_add_reverse_edge(
         &self,
         source_id: u128,
         target_id: u128,
         source_vector: &QuantizedVector,
         layer: usize,
+        allow_evict: bool,
     ) {
         let target_node = match self.nodes.get(&target_id) {
             Some(n) => n,
@@ -3114,6 +3123,16 @@ impl HnswIndex {
 
         // Space available - just add
         if layer_data.neighbors.len() < m {
+            layer_data.neighbors.push(source_dense);
+            layer_data.version += 1;
+            return;
+        }
+
+        // Repair path (allow_evict == false): append-only. Never evict an existing
+        // neighbor here — doing so can delete some third node's sole inbound edge and
+        // create a net-new orphan that the bounded repair loop will not undo. Skip the
+        // worst-neighbor scan entirely; the over-capacity is reconciled by optimize().
+        if !allow_evict {
             layer_data.neighbors.push(source_dense);
             layer_data.version += 1;
             return;
@@ -3335,7 +3354,7 @@ impl HnswIndex {
                 // If no reverse edge was added at layer 0, force-add one
                 // This is critical for search reachability
                 if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
-                    self.force_add_reverse_edge(id, neighbors[0], &node.vector, 0);
+                    self.force_add_reverse_edge(id, neighbors[0], &node.vector, 0, true);
                 }
 
                 curr_nearest = candidates;
@@ -4168,7 +4187,7 @@ impl HnswIndex {
                         }
                     }
                     if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
-                        self.force_add_reverse_edge(*id, neighbors[0], node_vector, 0);
+                        self.force_add_reverse_edge(*id, neighbors[0], node_vector, 0, true);
                     }
 
                     curr_nearest = candidates;
@@ -4283,7 +4302,7 @@ impl HnswIndex {
                 }
             }
             if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
-                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0);
+                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0, true);
             }
             connection_ns += t.elapsed().as_nanos() as u64;
 
@@ -4391,7 +4410,7 @@ impl HnswIndex {
 
             // Force-add at least one reverse edge if all failed (connectivity invariant)
             if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
-                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0);
+                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0, true);
             }
 
             curr_nearest = candidates;
@@ -9713,12 +9732,15 @@ impl HnswIndex {
         self.level_for(0)
     }
 
-    /// Repair connectivity — intentionally a no-op.
-    ///
-    /// The over-degree hubs created by unchecked backward edge insertion
-    /// during batch construction are essential bridge nodes between the
-    /// scaffold and batch partitions. Graph quality is handled by
-    /// `refine_graph()` (GNR) which properly re-searches the complete graph.
+    /// Repair layer-0 connectivity: reconnect every node unreachable from the
+    /// entry point. LOAD-BEARING — called in a bounded fixed-point loop at the
+    /// end of `rebuild_layer0_exact` (and at build time) to guarantee no orphans,
+    /// since the mutual-kNN graph can fragment under high-dim distance
+    /// concentration. For each orphan it finds the nearest reachable node via
+    /// graph search and adds forward + reverse edges; the reverse edge is added
+    /// APPEND-ONLY (`allow_evict = false`) so repair can only ADD reachability,
+    /// never evict some third node's sole inbound edge. Returns the number of
+    /// nodes reconnected (0 when the graph is already fully reachable).
     pub fn repair_connectivity(&self) -> usize {
         let (_reachable, _total, orphans) = self.diagnose_connectivity();
         if orphans.is_empty() {
@@ -9817,7 +9839,7 @@ impl HnswIndex {
 
             // Add reverse edges
             for &neighbor_id in &neighbors {
-                self.force_add_reverse_edge(orphan_id, neighbor_id, orphan_vector, 0);
+                self.force_add_reverse_edge(orphan_id, neighbor_id, orphan_vector, 0, false);
             }
             repaired += 1;
         }
@@ -10729,6 +10751,61 @@ mod tests {
             let ib: Vec<u128> = b.search(q, 10).unwrap().iter().map(|r| r.0).collect();
             assert_eq!(ia, ib, "deterministic_build top-k differs for query {qi}");
         }
+    }
+
+    #[test]
+    fn test_optimize_repairs_high_dim_orphans() {
+        // Regression guard: high-dim euclidean construction fragments the
+        // mutual-kNN graph under L2 distance concentration (~822/5000 orphans at
+        // dim=768, ~1000/20000 at dim=3072), which silently tanked recall.
+        // optimize()/rebuild_layer0_exact must drive orphans to ZERO via its
+        // bounded repair loop, and the repair's reverse-edge is append-only
+        // (allow_evict=false) so it can never create a net-new orphan.
+        let dim = 768usize;
+        let n = 3000usize;
+        // Deterministic clustered data (no RNG): tight clusters around spread-out
+        // centers create the distance concentration that fragments the graph.
+        let mut s: u64 = 0x1234_5678_9abc_def0;
+        let mut rnd = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) as f32) / ((1u32 << 31) as f32) - 0.5
+        };
+        let nclusters = 30usize;
+        let centers: Vec<Vec<f32>> = (0..nclusters)
+            .map(|_| (0..dim).map(|_| rnd() * 8.0).collect())
+            .collect();
+        let mut vectors = Vec::with_capacity(n * dim);
+        for i in 0..n {
+            let c = &centers[i % nclusters];
+            for d in 0..dim {
+                vectors.push(c[d] + rnd());
+            }
+        }
+        let ids: Vec<u128> = (0..n as u128).collect();
+        let config = HnswConfig {
+            metric: DistanceMetric::Euclidean,
+            ..HnswConfig::default()
+        };
+        let index = HnswIndex::new(dim, config);
+        index.insert_batch_contiguous(&ids, &vectors, dim).unwrap();
+
+        // optimize(): exact layer-0 rebuild + bounded connectivity repair.
+        index.rebuild_layer0_exact();
+
+        let (reachable, total, orphans) = index.diagnose_connectivity();
+        assert_eq!(
+            orphans.len(),
+            0,
+            "optimize() must repair all layer-0 orphans at high dim (got {} of {})",
+            orphans.len(),
+            total
+        );
+        assert_eq!(
+            reachable, total,
+            "every node must be reachable from the entry point after optimize()"
+        );
     }
 
     #[test]
