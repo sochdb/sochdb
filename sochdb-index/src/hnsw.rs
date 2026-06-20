@@ -10406,6 +10406,43 @@ impl HnswIndex {
         }
 
         self.invalidate_flat_cache();
+
+        // Step 4: CONNECTIVITY REPAIR (orphan fix).
+        //
+        // BUG FIX: the mutual k-NN graph built above is symmetric but NOT
+        // guaranteed to be a single connected component. In high dimensions
+        // distance concentration causes the k-NN relation to fragment into
+        // multiple clusters, so a node whose nearest neighbors all live in a
+        // component that does not contain the entry point becomes unreachable
+        // from the entry point during search (measured: ~1000/20000 orphans at
+        // dim=3072, recall@10 swinging 0.05+ run-to-run, occasionally 0.83).
+        // Layer-0 connectivity is a hard requirement: an orphan can never be
+        // returned by search regardless of how close it is to the query.
+        //
+        // We therefore run the existing BFS-based `repair_connectivity()` pass
+        // after the rebuild: it finds every node unreachable from the entry
+        // point and reconnects it (forward + reverse edges) to its nearest
+        // already-reachable neighbors via graph search. A single pass makes
+        // each orphan reachable, but an orphan only reachable *through* another
+        // orphan may need a second pass once that one is fixed, so we iterate
+        // to a fixed point (bounded) until no orphans remain or no progress is
+        // made. This restores reachability without discarding the
+        // heuristic-selected mutual-kNN edges that give the recall boost.
+        const MAX_REPAIR_PASSES: usize = 8;
+        let mut prev_orphans = usize::MAX;
+        for _pass in 0..MAX_REPAIR_PASSES {
+            let (reachable, total, _orphans) = self.diagnose_connectivity();
+            let orphan_count = total - reachable;
+            if orphan_count == 0 || orphan_count >= prev_orphans {
+                break;
+            }
+            prev_orphans = orphan_count;
+            let repaired = self.repair_connectivity();
+            if repaired == 0 {
+                break;
+            }
+        }
+        self.invalidate_flat_cache();
         updated
     }
 
