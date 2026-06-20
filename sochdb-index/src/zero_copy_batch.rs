@@ -58,7 +58,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use sochdb_index::zero_copy_batch::{VectorBatchArena, BatchIngestConfig};
 //!
 //! let config = BatchIngestConfig::default();

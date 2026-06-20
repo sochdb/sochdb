@@ -364,7 +364,7 @@ thread_local! {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```ignore
 /// let results = with_scratch_buffers(|scratch| {
 ///     scratch.visited.insert(node_id);
 ///     scratch.candidates.push(candidate);

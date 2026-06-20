@@ -522,7 +522,7 @@ impl VersionedNeighbors {
 /// - Cache-line aligned for optimal NUMA performance
 ///
 /// Memory layout (cache-aligned to 64 bytes):
-/// ```
+/// ```text
 /// AtomicNeighborList:
 /// ┌─────────────────────────────────────────────┐
 /// │ neighbors: [AtomicUsize; MAX_M]             │  256 bytes

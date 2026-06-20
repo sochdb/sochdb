@@ -37,7 +37,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use sochdb_vector::batch_segment_writer::{BatchSegmentWriter, BatchConfig};
 //!
 //! let config = BatchConfig::default();

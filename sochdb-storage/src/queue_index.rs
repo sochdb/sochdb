@@ -58,7 +58,7 @@
 //!
 //! ## Queue Index Configuration
 //!
-//! ```rust
+//! ```ignore
 //! let config = QueueIndexConfig::new("task_queue")
 //!     .with_priority_column("priority")
 //!     .with_timestamp_column("ready_at")

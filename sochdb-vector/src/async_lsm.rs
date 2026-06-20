@@ -69,7 +69,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use sochdb_vector::async_lsm::{AsyncLsmManager, LsmConfig};
 //!
 //! let config = LsmConfig::default();

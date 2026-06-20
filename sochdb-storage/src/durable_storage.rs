@@ -4290,6 +4290,74 @@ mod tests {
         s.abort(t).unwrap();
     }
 
+    /// Crash-atomicity on an ENCRYPTED database: a simulated crash (forget) on an
+    /// encrypted WAL must, on reopen with the correct key, replay committed data
+    /// (decrypted via the crypto-aware recovery path) while NOT resurrecting
+    /// aborted/in-flight writes — and a wrong key after the crash fails closed.
+    /// Combines the at-rest-encryption + crash-atomicity guarantees.
+    #[test]
+    fn test_encrypted_crash_recovery_atomicity() {
+        use crate::encryption::EncryptionKey;
+        let dir = tempdir().unwrap();
+        let kek = || StorageEncryption::with_kek(EncryptionKey::new([0xC1u8; 32]), "test");
+        // open encrypted WITHOUT the file lock so a forget()+reopen works in-test.
+        let open = |enc: StorageEncryption| {
+            DurableStorage::open_with_full_config_internal(
+                dir.path(),
+                true,
+                MemTableType::Standard,
+                false,
+                enc,
+            )
+        };
+
+        {
+            let storage = open(kek()).unwrap();
+            assert!(storage.is_encrypted());
+            storage.set_sync_mode(2); // FULL: fsync each commit before the "crash"
+            let t1 = storage.begin_transaction().unwrap();
+            storage
+                .write(t1, b"committed".to_vec(), b"durable".to_vec())
+                .unwrap();
+            storage.commit(t1).unwrap();
+            let t2 = storage.begin_transaction().unwrap();
+            storage
+                .write(t2, b"aborted".to_vec(), b"x".to_vec())
+                .unwrap();
+            storage.abort(t2).unwrap();
+            let t3 = storage.begin_transaction().unwrap();
+            storage
+                .write(t3, b"inflight".to_vec(), b"y".to_vec())
+                .unwrap();
+            std::mem::forget(storage); // crash: skip clean shutdown
+        }
+
+        // Reopen with the CORRECT key: committed survives, others do not.
+        {
+            let storage = open(kek()).unwrap();
+            storage.recover().unwrap();
+            let t = storage.begin_transaction().unwrap();
+            assert_eq!(
+                storage.read(t, b"committed").unwrap(),
+                Some(b"durable".to_vec()),
+                "committed encrypted write must survive the crash"
+            );
+            assert_eq!(storage.read(t, b"aborted").unwrap(), None);
+            assert_eq!(storage.read(t, b"inflight").unwrap(), None);
+            storage.abort(t).unwrap();
+        }
+
+        // Wrong key after the crash must fail closed (keyring canary).
+        assert!(
+            open(StorageEncryption::with_kek(
+                EncryptionKey::new([0u8; 32]),
+                "test"
+            ))
+            .is_err(),
+            "wrong key after crash must fail closed"
+        );
+    }
+
     /// Crash-atomicity invariant (Task 4 — completes the Task 1 single-writer
     /// contract). `test_crash_recovery` proves committed data survives a crash;
     /// this proves the other half: recovery must NOT resurrect aborted or
