@@ -5780,8 +5780,12 @@ impl HnswIndex {
             1_000 // 768D+: HNSW wins above ~1K vectors (sub-ms vs linear scan)
         };
         let node_count = self.nodes.len();
-        if node_count > 0 && node_count <= flat_scan_threshold
-            && matches!(self.config.quantization_precision.unwrap_or(Precision::F32), Precision::F32)
+        if node_count > 0
+            && node_count <= flat_scan_threshold
+            && matches!(
+                self.config.quantization_precision.unwrap_or(Precision::F32),
+                Precision::F32
+            )
         {
             // Normalize query once for SIMD distance. For cosine with normalize_at_ingest,
             // stored vectors are unit-normalized, so we normalize the query to match.
@@ -6238,8 +6242,12 @@ impl HnswIndex {
         } else {
             1_000
         };
-        if node_count > 0 && node_count <= flat_threshold
-            && matches!(self.config.quantization_precision.unwrap_or(Precision::F32), Precision::F32)
+        if node_count > 0
+            && node_count <= flat_threshold
+            && matches!(
+                self.config.quantization_precision.unwrap_or(Precision::F32),
+                Precision::F32
+            )
         {
             return self.search(query, k);
         }

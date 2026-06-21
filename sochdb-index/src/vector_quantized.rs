@@ -47,7 +47,11 @@ fn fill_f32(buf: &mut Vec<f32>, v: &QuantizedVector) {
 
 /// Run `f` over both operands widened into thread-local f32 scratch (no heap alloc).
 #[inline]
-fn with_widened<R>(a: &QuantizedVector, b: &QuantizedVector, f: impl FnOnce(&[f32], &[f32]) -> R) -> R {
+fn with_widened<R>(
+    a: &QuantizedVector,
+    b: &QuantizedVector,
+    f: impl FnOnce(&[f32], &[f32]) -> R,
+) -> R {
     CONV_A.with(|ca| {
         CONV_B.with(|cb| {
             let mut ba = ca.borrow_mut();
@@ -238,9 +242,7 @@ pub fn cosine_distance_quantized(a: &QuantizedVector, b: &QuantizedVector) -> f3
         (QuantizedVector::F16(a16), QuantizedVector::F16(b16)) => {
             simd_distance::cosine_distance_f16(a16, b16)
         }
-        _ => {
-            with_widened(a, b, |af, bf| simd_distance::cosine_distance_fast(af, bf))
-        }
+        _ => with_widened(a, b, |af, bf| simd_distance::cosine_distance_fast(af, bf)),
     }
 }
 
@@ -255,9 +257,7 @@ pub fn euclidean_distance_quantized(a: &QuantizedVector, b: &QuantizedVector) ->
         (QuantizedVector::F16(a16), QuantizedVector::F16(b16)) => {
             simd_distance::l2_distance_f16(a16, b16)
         }
-        _ => {
-            with_widened(a, b, |af, bf| simd_distance::l2_distance_fast(af, bf))
-        }
+        _ => with_widened(a, b, |af, bf| simd_distance::l2_distance_fast(af, bf)),
     }
 }
 

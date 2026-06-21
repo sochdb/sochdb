@@ -6,7 +6,10 @@ use sochdb_index::hnsw::{DistanceMetric, HnswConfig, HnswIndex};
 use std::time::Instant;
 
 fn env_usize(k: &str, d: usize) -> usize {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
 }
 
 fn main() {
@@ -32,7 +35,9 @@ fn main() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     let ids: Vec<u128> = (0..n as u128).collect();
     let mut flat: Vec<f32> = Vec::with_capacity(n * dim);
-    for _ in 0..n * dim { flat.push(rng.r#gen::<f32>()); }
+    for _ in 0..n * dim {
+        flat.push(rng.r#gen::<f32>());
+    }
     let queries: Vec<Vec<f32>> = (0..nq)
         .map(|_| (0..dim).map(|_| rng.r#gen::<f32>()).collect())
         .collect();
@@ -51,7 +56,11 @@ fn main() {
         let t = Instant::now();
         let _ = index.insert_batch_contiguous(&ids, &flat, dim);
         let el = t.elapsed();
-        eprintln!("INSERT N={n} dim={dim} took {:?} ({:.1} vec/s)", el, n as f64 / el.as_secs_f64());
+        eprintln!(
+            "INSERT N={n} dim={dim} took {:?} ({:.1} vec/s)",
+            el,
+            n as f64 / el.as_secs_f64()
+        );
     } else {
         // need a populated index for search-only
         let _ = index.insert_batch_contiguous(&ids, &flat, dim);
@@ -70,7 +79,11 @@ fn main() {
         }
         let el = t.elapsed();
         let total = nq * iters;
-        eprintln!("SEARCH nq={total} dim={dim} efs={efs} took {:?} ({:.1} q/s) sink={sink}", el, total as f64 / el.as_secs_f64());
+        eprintln!(
+            "SEARCH nq={total} dim={dim} efs={efs} took {:?} ({:.1} q/s) sink={sink}",
+            el,
+            total as f64 / el.as_secs_f64()
+        );
     }
     eprintln!("len={}", index.len());
 }
