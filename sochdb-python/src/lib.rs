@@ -204,6 +204,34 @@ impl PyRRFFusion {
 ///     >>> # Search
 ///     >>> query = np.random.randn(768).astype(np.float32)
 ///     >>> ids, distances = index.search(query, k=10)
+/// A single search result with optional metadata.
+#[pyclass(name = "SearchResult")]
+#[derive(Clone, Debug)]
+pub struct PySearchResult {
+    /// Vector ID
+    #[pyo3(get)]
+    pub id: u64,
+    /// Distance to query
+    #[pyo3(get)]
+    pub distance: f32,
+    /// Optional parent/source ID
+    #[pyo3(get)]
+    pub parent_id: Option<u64>,
+    /// Optional view type
+    #[pyo3(get)]
+    pub view_type: Option<String>,
+}
+
+#[pymethods]
+impl PySearchResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "SearchResult(id={}, distance={:.4}, parent_id={:?}, view_type={:?})",
+            self.id, self.distance, self.parent_id, self.view_type
+        )
+    }
+}
+
 #[pyclass(name = "HnswIndex")]
 pub struct PyHnswIndex {
     inner: Arc<HnswIndex>,
@@ -519,6 +547,74 @@ impl PyHnswIndex {
         let dists_array = Array1::from_vec(distances).into_pyarray(py);
 
         Ok((ids_array.into(), dists_array.into()))
+    }
+
+    /// Search for k nearest neighbors and return metadata for each result.
+    ///
+    /// Args:
+    ///     query: 1D float32 array of dimension D.
+    ///     k: Number of neighbors to return.
+    ///     ef_search: Search depth (default: k * 2). Higher = better recall, slower.
+    ///
+    /// Returns:
+    ///     List of SearchResult objects with id, distance, parent_id, view_type.
+    #[pyo3(signature = (query, k, ef_search=None))]
+    fn search_with_metadata<'py>(
+        &self,
+        py: Python<'py>,
+        query: PyReadonlyArray1<'py, f32>,
+        k: usize,
+        ef_search: Option<usize>,
+    ) -> PyResult<Vec<PySearchResult>> {
+        let query_slice = query
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(format!("Query must be contiguous: {}", e)))?;
+
+        if query_slice.len() != self.dimension {
+            return Err(PyValueError::new_err(format!(
+                "Query dimension {} != index dimension {}",
+                query_slice.len(),
+                self.dimension
+            )));
+        }
+
+        let inner = Arc::clone(&self.inner);
+        let inner_for_meta = Arc::clone(&self.inner);
+        let query_vec: Vec<f32> = query_slice.to_vec();
+
+        let results = py
+            .allow_threads(move || match ef_search {
+                Some(ef) => inner.search_with_ef(&query_vec, k, ef),
+                None => inner.search(&query_vec, k),
+            })
+            .map_err(|e| PyRuntimeError::new_err(e))?;
+
+        let mut out = Vec::with_capacity(results.len());
+        for (id, distance) in results {
+            let metadata = inner_for_meta.get_metadata(id);
+            let mut parent_id = None;
+            let mut view_type = None;
+            if let Some(meta) = metadata {
+                for (key, value) in meta {
+                    if key == "parent_id" {
+                        parent_id = value.parse::<u64>().ok();
+                    } else if key == "view_type" {
+                        view_type = Some(value);
+                    }
+                }
+            }
+            let id_u64 = u64::try_from(id).map_err(|_| {
+                PyRuntimeError::new_err(format!("Vector ID {} exceeds u64 range", id))
+            })?;
+            out.push(PySearchResult {
+                id: id_u64,
+                distance,
+                parent_id,
+                view_type,
+            });
+        }
+
+        Ok(out)
     }
 
     /// Batch search for multiple queries.
@@ -1972,6 +2068,7 @@ mod tests {
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Vector index
     m.add_class::<PyHnswIndex>()?;
+    m.add_class::<PySearchResult>()?;
     m.add_function(wrap_pyfunction!(build_index, m)?)?;
 
     // Hybrid retrieval primitives from sochdb-vector

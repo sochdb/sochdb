@@ -55,6 +55,124 @@ for id, distance in results:
     print(f"ID: {id}, Distance: {distance:.4f}")
 ```
 
+### gRPC Distance Metric Semantics
+
+gRPC search responses include the index metric at response level so clients can
+interpret `result.distance` without separately fetching index configuration.
+
+```python
+response = client.search(
+    index_name="vectors",
+    query=query,
+    k=10,
+    ef=100,
+)
+
+print(response.metric)
+
+for result in response.results:
+    print(result.id, result.distance)
+```
+
+Distances are ordered ascending. For cosine, distance is `1 - cosine_similarity`.
+For Euclidean L2 in the current HNSW path, lower values are closer. For dot
+product indexes, the raw dot product is negated before return, so lower values
+are more similar and the raw dot product is `-result.distance`.
+
+### Vector Metadata
+
+Vector inserts can include optional typed metadata for general multi-vector
+retrieval. `parent_id` identifies a logical source shared by several vectors,
+and `view_type` describes the representation stored in that point. Both fields
+are optional; a missing `parent_id` is not replaced with the vector ID in raw
+search results.
+
+```python
+request = sochdb_pb2.InsertBatchRequest(
+    index_name="memories",
+    ids=[712001, 712002],
+    vectors=[*turn_vector, *event_vector],
+    metadata=[
+        sochdb_pb2.VectorMetadata(
+            parent_id=712,
+            view_type="turn",
+        ),
+        sochdb_pb2.VectorMetadata(
+            parent_id=712,
+            view_type="event",
+        ),
+    ],
+)
+
+client.InsertBatch(request)
+```
+
+Search results return stored metadata when present:
+
+```python
+for result in response.results:
+    print(result.id, result.distance, result.parent_id, result.view_type)
+```
+
+### Parent-Aware Grouped Search
+
+Grouped search is still ANN search over indexed points. The server first asks
+the point-level index for `candidate_k` neighbors, then groups that fixed
+candidate pool by `parent_id`. `k` is the final grouped result budget, so a
+grouped query can return fewer than `k` results when the candidate pool contains
+fewer than `k` distinct parents.
+
+For vectors without `parent_id`, grouped search treats the vector ID as its own
+group key. `result.distance` remains the winning point distance and must be
+interpreted using `response.metric`.
+
+```python
+request = sochdb_pb2.SearchRequest(
+    index_name="memories",
+    query=query_vector,
+    k=20,
+    ef=200,
+    grouping=sochdb_pb2.GroupingOptions(
+        group_by=sochdb_pb2.GROUP_BY_PARENT_ID,
+        candidate_k=100,
+        max_per_group=1,
+    ),
+)
+
+response = client.Search(request)
+
+print(response.metric)
+print(response.grouping.raw_candidate_count)
+print(response.grouping.unique_group_count)
+
+for result in response.results:
+    print(result.id, result.parent_id, result.view_type, result.distance)
+```
+
+With `max_per_group = 1`, only the best-ranked point for each parent is
+returned. With `max_per_group > 1`, the server preserves the top points from
+each group without exceeding that per-parent limit. Grouping is a general
+multi-vector document feature and does not apply score aggregation, reranking,
+or benchmark-specific rules.
+
+### Synthetic Grouping Check
+
+The grouped-search tests include a deterministic fixture where parent `1` has
+three highly ranked views and parents `2`, `3`, and `4` have one view each:
+
+```text
+raw top-3 parents:
+1, 1, 1
+
+grouped top-3 parents:
+1, 2, 3
+```
+
+The fixture reports the raw candidate count, unique parent count, grouped result
+count, and the microsecond cost of the server-side grouping pass over the fixed
+candidate pool. It is a functional check only; it does not claim semantic recall
+improvement.
+
 ### 3. Integrated with Database (Rust)
 
 ```rust
@@ -265,4 +383,3 @@ With F16 quantization: ~1.15 GB
 - [Vector Search Tutorial](/guides/vector-search) — Semantic search guide
 - [Performance Optimization](/concepts/performance) — Tuning tips
 - [MCP Integration](/cookbook/mcp-integration) — Claude integration
-

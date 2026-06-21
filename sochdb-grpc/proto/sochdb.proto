@@ -117,6 +117,9 @@ message InsertBatchRequest {
   
   // Flat vector data (row-major, length = len(ids) * dimension)
   repeated float vectors = 3;
+
+  // Optional per-vector metadata. If present, length must match ids.
+  repeated VectorMetadata metadata = 4;
 }
 
 message InsertBatchResponse {
@@ -137,6 +140,17 @@ message InsertStreamRequest {
   // Single vector to insert
   uint64 id = 2;
   repeated float vector = 3;
+
+  // Optional metadata for this vector.
+  VectorMetadata metadata = 4;
+}
+
+message VectorMetadata {
+  // Logical parent/source identifier. ID 0 is valid when explicitly present.
+  optional uint64 parent_id = 1;
+
+  // Representation/view type for this vector.
+  optional string view_type = 2;
 }
 
 message InsertStreamResponse {
@@ -201,6 +215,12 @@ message SearchResult {
   // "cosine" | "euclidean" | "dot_product" | "unspecified".
   // The canonical typed metric is `SearchResponse.metric` / `SearchBatchResponse.metric`.
   string metric = 3;
+
+  // Logical parent/source identifier, when stored for this vector.
+  optional uint64 parent_id = 4;
+
+  // Representation/view type, when stored for this vector.
+  optional string view_type = 5;
 }
 
 message SearchBatchRequest {

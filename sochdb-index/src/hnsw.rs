@@ -6428,6 +6428,14 @@ impl HnswIndex {
         }
     }
 
+    /// Get metadata for a node by its node ID.
+    /// Returns `None` if the node has no metadata stored.
+    pub fn get_metadata(&self, node_id: u128) -> Option<Vec<(String, String)>> {
+        let dense = self.node_id_to_dense(node_id)? as usize;
+        let store = self.metadata_store.read();
+        store.get(dense).cloned().flatten()
+    }
+
     /// Filtered ANN search — traverse the HNSW graph but only include
     /// nodes whose metadata matches ALL filter key-value pairs in the
     /// result set.  Graph traversal still visits non-matching nodes to
@@ -10404,9 +10412,8 @@ impl HnswIndex {
                         });
                         dists.truncate(take);
                     }
-                    dists.sort_by(|a, b| {
-                        a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
-                    });
+                    dists
+                        .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                     dists.into_iter().map(|(j, _)| j).collect()
                 })
                 .collect()
