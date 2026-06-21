@@ -110,3 +110,5 @@ benchmarks/longmemeval/data/
 sochdb-bench/bench-results-*/
 **/embedding_cache/
 *.npy
+# Local benchmark outputs / experiment artifacts
+benchmarks/
