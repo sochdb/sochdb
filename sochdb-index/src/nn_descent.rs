@@ -175,7 +175,8 @@ where
     // Seed each node independently/deterministically from cfg.seed so the whole
     // build is reproducible regardless of thread scheduling.
     (0..n).into_par_iter().for_each(|i| {
-        let mut rng = StdRng::seed_from_u64(cfg.seed ^ (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let mut rng =
+            StdRng::seed_from_u64(cfg.seed ^ (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
         let mut list = lists[i].lock();
         // Sample k distinct random ids != i. For small n just take a shuffled
         // range; for large n rejection-sample (k << n so collisions are rare).
@@ -388,17 +389,12 @@ mod tests {
             .collect()
     }
 
-    fn recall_vs_bruteforce(
-        approx: &[Vec<(u32, f32)>],
-        exact: &[Vec<u32>],
-        k: usize,
-    ) -> f64 {
+    fn recall_vs_bruteforce(approx: &[Vec<(u32, f32)>], exact: &[Vec<u32>], k: usize) -> f64 {
         let n = approx.len();
         let mut hit = 0usize;
         let mut tot = 0usize;
         for i in 0..n {
-            let truth: std::collections::HashSet<u32> =
-                exact[i].iter().take(k).copied().collect();
+            let truth: std::collections::HashSet<u32> = exact[i].iter().take(k).copied().collect();
             let got: std::collections::HashSet<u32> =
                 approx[i].iter().take(k).map(|(id, _)| *id).collect();
             hit += truth.intersection(&got).count();
@@ -439,7 +435,11 @@ mod tests {
             for w in l.windows(2) {
                 assert!(w[0].1 <= w[1].1, "node {} list not sorted", i);
             }
-            assert!(l.iter().all(|(id, _)| *id != i as u32), "self-loop at {}", i);
+            assert!(
+                l.iter().all(|(id, _)| *id != i as u32),
+                "self-loop at {}",
+                i
+            );
         }
     }
 
