@@ -13,8 +13,8 @@
 # === Image Publishing ===
 # Push to AWS Marketplace ECR:
 #   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <marketplace-ecr>
-#   docker tag sochdb/sochdb-grpc:latest <marketplace-ecr>/sochdb-grpc:2.0.9
-#   docker push <marketplace-ecr>/sochdb-grpc:2.0.9
+#   docker tag sochdb/sochdb-grpc:latest <marketplace-ecr>/sochdb-grpc:2.0.10
+#   docker push <marketplace-ecr>/sochdb-grpc:2.0.10
 
 # === Metering Integration ===
 # For paid plans, the SochDB server integrates with AWS Marketplace Metering API:
@@ -53,7 +53,7 @@ delivery:
   container_images:
     - name: sochdb-grpc
       repository: "<marketplace-ecr>/sochdb-grpc"
-      tag: "2.0.9"
+      tag: "2.0.10"
 
 pricing_models:
   - type: free

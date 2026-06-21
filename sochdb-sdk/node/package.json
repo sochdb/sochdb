@@ -1,6 +1,6 @@
 {
   "name": "@sochdb/sdk",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "description": "SochDB Node.js SDK — Thin gRPC client for the LLM-optimized database",
   "main": "dist/client.js",
   "types": "dist/client.d.ts",
