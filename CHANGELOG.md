@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.11] - 2026-06-21
+
+### Added
+
+- **`hnsw_optimize` C FFI export** (`sochdb-index`) — exposes
+  `HnswIndex::rebuild_layer0_exact` (exact layer-0 rebuild via NN-descent +
+  connectivity repair) through the C ABI so language bindings (Python, etc.) can
+  finalize an index for maximum recall after a bulk load. Returns the number of
+  nodes rebuilt, or -1 on a null handle. Mirrors the existing `hnsw_*` FFI
+  surface; serialized against concurrent inserts internally; no-op above the
+  exact-rebuild scale cap.
+
 ## [2.0.10] - 2026-06-20
 
 ### Fixed
