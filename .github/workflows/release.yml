@@ -244,10 +244,14 @@ jobs:
             if [ "$DRY_RUN" = "true" ]; then
               cargo publish --dry-run --allow-dirty
             else
-              # Attempt publish; tolerate "already uploaded" (exit 0) but fail on real errors
+              # Attempt publish; tolerate an already-published version (exit 0) but
+              # fail on real errors. cargo emits two different messages depending on
+              # timing: "already uploaded" (just-pushed, mid-index) and
+              # "already exists on crates.io index" (fully indexed/live) — a
+              # re-run after a partial publish hits the latter, so match both.
               OUTPUT=$(cargo publish --allow-dirty 2>&1) && RC=0 || RC=$?
               if [ $RC -ne 0 ]; then
-                if echo "$OUTPUT" | grep -q "already uploaded"; then
+                if echo "$OUTPUT" | grep -qE "already uploaded|already exists on crates\.io"; then
                   echo "⚠️ $pkg_name is already published, skipping"
                 else
                   echo "❌ Failed to publish $pkg_name (exit code $RC):"
