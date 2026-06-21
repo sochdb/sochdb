@@ -567,6 +567,30 @@ pub unsafe extern "C" fn hnsw_build_flat_cache(ptr: *mut HnswIndexPtr) -> c_int 
     })
 }
 
+/// Optimize the index: exact layer-0 rebuild (NN-descent + exact-f32 rerank)
+/// followed by bounded connectivity repair.
+///
+/// Recomputes high-quality layer-0 neighbors for every node — lifting recall
+/// toward exact-kNN quality, especially at high dimension — and repairs any
+/// graph fragmentation so every node stays reachable from the entry point.
+/// Serialized against concurrent inserts internally; intended to be called
+/// once after a bulk load. No-op above the internal exact-rebuild scale cap.
+///
+/// Returns the number of nodes whose layer-0 edges were rebuilt, or -1 if
+/// `ptr` is null.
+///
+/// # Safety
+/// `ptr` must be a valid pointer from `hnsw_new`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hnsw_optimize(ptr: *mut HnswIndexPtr) -> c_int {
+    ffi_guard!({
+        if ptr.is_null() {
+            return -1;
+        }
+        unsafe { (*ptr).0.rebuild_layer0_exact() as c_int }
+    })
+}
+
 /// Get the number of vectors in the index.
 ///
 /// # Safety

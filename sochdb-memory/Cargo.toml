@@ -8,10 +8,10 @@ repository.workspace = true
 description = "Bi-temporal agent memory layer with write-time lexical recall"
 
 [dependencies]
-sochdb-core = { version = "2.0.10", path = "../sochdb-core" }
-sochdb-storage = { version = "2.0.10", path = "../sochdb-storage", features = ["embedded-sync"] }
-sochdb-query = { version = "2.0.10", path = "../sochdb-query" }
-sochdb-vector = { version = "2.0.10", path = "../sochdb-vector" }
+sochdb-core = { version = "2.0.11", path = "../sochdb-core" }
+sochdb-storage = { version = "2.0.11", path = "../sochdb-storage", features = ["embedded-sync"] }
+sochdb-query = { version = "2.0.11", path = "../sochdb-query" }
+sochdb-vector = { version = "2.0.11", path = "../sochdb-vector" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
