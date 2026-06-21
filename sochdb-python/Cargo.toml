@@ -1,6 +1,6 @@
 [package]
 name = "sochdb-python"
-version = "2.0.9"
+version = "2.0.10"
 edition = "2024"
 authors = ["Sushanth <sushanth@sochdb.dev>"]
 license = "AGPL-3.0-or-later"

@@ -21,14 +21,14 @@ default = []
 async = []
 
 [dependencies]
-sochdb-index = { version = "2.0.9", path = "../sochdb-index" }
-sochdb-core = { version = "2.0.9", path = "../sochdb-core", features = ["analytics"] }
-sochdb-kernel = { version = "2.0.9", path = "../sochdb-kernel" }
-sochdb-storage = { version = "2.0.9", path = "../sochdb-storage" }
+sochdb-index = { version = "2.0.10", path = "../sochdb-index" }
+sochdb-core = { version = "2.0.10", path = "../sochdb-core", features = ["analytics"] }
+sochdb-kernel = { version = "2.0.10", path = "../sochdb-kernel" }
+sochdb-storage = { version = "2.0.10", path = "../sochdb-storage" }
 # Real SQL engine for the PostgreSQL wire protocol (DatabasePgExecutor).
-sochdb-query = { version = "2.0.9", path = "../sochdb-query" }
-sochdb-memory = { version = "2.0.9", path = "../sochdb-memory" }
-sochdb-vector = { version = "2.0.9", path = "../sochdb-vector" }
+sochdb-query = { version = "2.0.10", path = "../sochdb-query" }
+sochdb-memory = { version = "2.0.10", path = "../sochdb-memory" }
+sochdb-vector = { version = "2.0.10", path = "../sochdb-vector" }
 # Wipe the transient at-rest encryption KEK stack copy after handing it to storage.
 zeroize = "1.8"
 

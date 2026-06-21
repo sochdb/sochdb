@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.10] - 2026-06-20
+
+### Fixed
+
+- **High-dimensional recall collapse from HNSW graph fragmentation**
+  (`sochdb-index`) — under L2 distance concentration in high dimensions the
+  layer-0 mutual-kNN graph fragments into components unreachable from the entry
+  point (~1000/20000 orphans at dim 3072), making recall a build-seed coin flip.
+  `optimize()` now runs a bounded connectivity-repair pass that reconnects every
+  orphan, driving orphans to zero and stabilizing recall@10 to 0.994–1.0 across
+  seeds. The repair is **append-only**, so it can never evict another node's sole
+  inbound edge (no net-new orphans).
+- **Vector search distance & ID semantics** (`sochdb-index`, `sochdb-grpc`) —
+  results now return correct lower-is-better distances for every metric: cosine
+  `1 - similarity`, euclidean true `sqrt(Σ diff²)` (previously squared), and
+  dot-product `-dot`. Fixes a cosine result-ordering bug and squared-L2 values in
+  the unified / hot-buffer search paths. Vector IDs are converted `u128 → u64`
+  with a checked conversion that errors on overflow instead of silently
+  truncating.
+
+### Added
+
+- **Typed `DistanceMetric` on search responses** (proto) — `SearchResponse` /
+  `SearchBatchResponse` now carry a typed `DistanceMetric`; the per-result string
+  label is retained for backward compatibility (additive, wire-compatible).
+- HNSW connectivity diagnostics and distance-contract regression tests.
+
+### Performance
+
+- **Sub-quadratic `optimize()` via NN-descent** (`sochdb-index`) — the exact
+  layer-0 rebuild replaced its O(N²) all-pairs k-NN with NN-descent + exact-f32
+  rerank. `optimize()` is **2.4–7.1× faster** at high dimension (dim 3072
+  euclidean 80.6s → 11.3s, cosine 92s → 20.4s) with recall preserved (18-seed
+  sweep: orphans 0, recall@10 0.9984–0.9996).
+- `optimize()` now serializes against concurrent insert (single-writer lock), and
+  its connectivity-repair loop halves redundant graph traversal per pass.
+
 ## [2.0.6] - 2026-06-14
 
 ### Fixed
