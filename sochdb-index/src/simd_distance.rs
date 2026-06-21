@@ -897,7 +897,6 @@ unsafe fn l2_squared_threshold_avx2(a: &[f32], b: &[f32], threshold_squared: f32
 // Tests
 // ============================================================================
 
-
 // ============================================================================
 // Step 4: Native f16 SIMD distance kernels (avx2 + f16c + fma)
 // ============================================================================
@@ -1146,7 +1145,9 @@ mod step4_f16_tests {
             assert!(
                 (dot_ref - dot_native).abs() < 1e-4,
                 "dot dim={} ref={} native={}",
-                dim, dot_ref, dot_native
+                dim,
+                dot_ref,
+                dot_native
             );
 
             let l2_ref = l2_distance_fast(&aw, &bw);
@@ -1154,7 +1155,9 @@ mod step4_f16_tests {
             assert!(
                 (l2_ref - l2_native).abs() < 1e-4,
                 "l2 dim={} ref={} native={}",
-                dim, l2_ref, l2_native
+                dim,
+                l2_ref,
+                l2_native
             );
 
             let cos_ref = cosine_distance_fast(&aw, &bw);
@@ -1162,7 +1165,9 @@ mod step4_f16_tests {
             assert!(
                 (cos_ref - cos_native).abs() < 1e-4,
                 "cosine dim={} ref={} native={}",
-                dim, cos_ref, cos_native
+                dim,
+                cos_ref,
+                cos_native
             );
         }
     }
@@ -1175,10 +1180,20 @@ mod step4_f16_tests {
             let bf16 = to_f16_vec(&b);
             let dot_s = dot_product_f16_scalar(&af16, &bf16);
             let dot_d = dot_product_f16(&af16, &bf16);
-            assert!((dot_s - dot_d).abs() < 1e-3, "dot scalar={} dispatch={}", dot_s, dot_d);
+            assert!(
+                (dot_s - dot_d).abs() < 1e-3,
+                "dot scalar={} dispatch={}",
+                dot_s,
+                dot_d
+            );
             let l2_s = l2_squared_f16_scalar(&af16, &bf16);
             let l2_d = l2_squared_f16(&af16, &bf16);
-            assert!((l2_s - l2_d).abs() < 1e-3, "l2 scalar={} dispatch={}", l2_s, l2_d);
+            assert!(
+                (l2_s - l2_d).abs() < 1e-3,
+                "l2 scalar={} dispatch={}",
+                l2_s,
+                l2_d
+            );
         }
     }
 }

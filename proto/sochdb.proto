@@ -171,29 +171,35 @@ message SearchRequest {
 message SearchResponse {
   // Search results ordered by distance (ascending)
   repeated SearchResult results = 1;
-  
+
   // Duration in microseconds
   uint64 duration_us = 2;
-  
+
   // Error message if any
   string error = 3;
+
+  // Typed distance metric used for this search. Canonical at the response
+  // level; per-result `SearchResult.metric` (field 3) carries the same
+  // value as a human-readable label for convenience.
+  DistanceMetric metric = 4;
 }
 
 message SearchResult {
   // Vector ID
   uint64 id = 1;
-  
-  // Distance to query vector.
+
+  // Distance to query vector — always lower-is-better (ascending sort).
   //
-  // The interpretation of this value depends on `metric` (see below). For
-  // L2/Cosine, lower means more similar. For DotProduct, the raw inner product
-  // is negated before return, so lower (more negative) also means more similar;
-  // recover the raw dot product as `-distance`.
+  // The interpretation depends on `metric`:
+  //   cosine     → 1 - cosine_similarity      (0 = identical, 2 = opposite)
+  //   euclidean   → sqrt(sum(diff²))           (0 = identical)
+  //   dot_product → -dot_product               (more negative = more similar;
+  //                         recover raw dot as -distance)
   float distance = 2;
-  
-  // Distance metric the index was configured with, so callers can interpret
-  // `distance` without external knowledge. One of:
+
+  // Human-readable distance metric label. One of:
   // "cosine" | "euclidean" | "dot_product" | "unspecified".
+  // The canonical typed metric is `SearchResponse.metric` / `SearchBatchResponse.metric`.
   string metric = 3;
 }
 
@@ -217,9 +223,12 @@ message SearchBatchRequest {
 message SearchBatchResponse {
   // Results for each query
   repeated QueryResults results = 1;
-  
+
   // Total duration in microseconds
   uint64 duration_us = 2;
+
+  // Typed distance metric used for this batch search.
+  DistanceMetric metric = 3;
 }
 
 message QueryResults {

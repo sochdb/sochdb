@@ -460,23 +460,32 @@ impl VectorIndexService for VectorIndexServer {
         match results {
             Ok(r) => {
                 let duration_us = start.elapsed().as_micros() as u64;
+                let mut search_results = Vec::with_capacity(r.len());
+                for (id, distance) in r {
+                    let id_u64 = u64::try_from(id).map_err(|_| {
+                        Status::internal(format!(
+                            "Vector ID {} exceeds u64 range and cannot be returned in SearchResult",
+                            id
+                        ))
+                    })?;
+                    search_results.push(SearchResult {
+                        id: id_u64,
+                        distance,
+                        metric: metric.to_string(),
+                    });
+                }
                 Ok(Response::new(SearchResponse {
-                    results: r
-                        .into_iter()
-                        .map(|(id, distance)| SearchResult {
-                            id: id as u64,
-                            distance,
-                            metric: metric.to_string(),
-                        })
-                        .collect(),
+                    results: search_results,
                     duration_us,
                     error: String::new(),
+                    metric: metric_enum.into(),
                 }))
             }
             Err(e) => Ok(Response::new(SearchResponse {
                 results: vec![],
                 duration_us: start.elapsed().as_micros() as u64,
                 error: e,
+                metric: metric_enum.into(),
             })),
         }
     }
@@ -511,33 +520,39 @@ impl VectorIndexService for VectorIndexServer {
             use rayon::prelude::*;
             (0..num_queries)
                 .into_par_iter()
-                .map(|i| {
+                .map(|i| -> Result<QueryResults, String> {
                     let query = &queries[i * dimension..(i + 1) * dimension];
-                    let results = match index.search(query, k) {
-                        Ok(r) => r,
-                        Err(_) => vec![],
-                    };
-                    QueryResults {
-                        results: results
-                            .into_iter()
-                            .map(|(id, distance)| SearchResult {
-                                id: id as u64,
-                                distance,
-                                metric: metric.to_string(),
-                            })
-                            .collect(),
+                    let results = index.search(query, k).unwrap_or_default();
+                    let mut search_results = Vec::with_capacity(results.len());
+                    for (id, distance) in results {
+                        let id_u64 = u64::try_from(id).map_err(|_| {
+                            format!(
+                                "Vector ID {} exceeds u64 range and cannot be returned in SearchResult",
+                                id
+                            )
+                        })?;
+                        search_results.push(SearchResult {
+                            id: id_u64,
+                            distance,
+                            metric: metric.to_string(),
+                        });
                     }
+                    Ok(QueryResults {
+                        results: search_results,
+                    })
                 })
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>, _>>()
         })
         .await
-        .map_err(|e| Status::internal(format!("Task join error: {}", e)))?;
+        .map_err(|e| Status::internal(format!("Task join error: {}", e)))?
+        .map_err(Status::internal)?;
 
         let duration_us = start.elapsed().as_micros() as u64;
 
         Ok(Response::new(SearchBatchResponse {
             results: all_results,
             duration_us,
+            metric: metric_enum.into(),
         }))
     }
 
@@ -795,5 +810,113 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(resp_a.error.is_empty() && !resp_a.results.is_empty());
+    }
+
+    /// Regression: `u64::try_from(u128)` must reject IDs above `u64::MAX`
+    /// rather than silently truncating with `as u64`.
+    #[tokio::test]
+    async fn search_checked_id_conversion_rejects_overflow() {
+        // Direct proof that `as u64` truncates but `try_from` errors.
+        let big: u128 = u64::MAX as u128 + 1;
+        let truncated = big as u64;
+        assert_eq!(
+            truncated, 0,
+            "as-cast silently truncates u128 > u64::MAX to 0"
+        );
+        assert!(u64::try_from(big).is_err(), "try_from must fail");
+    }
+
+    /// Response-level `SearchResponse.metric` must be populated and agree
+    /// with the per-result `SearchResult.metric` string.
+    #[tokio::test]
+    async fn search_response_carries_typed_metric() {
+        for (proto_metric, expected_label) in [
+            (proto::DistanceMetric::Cosine, "cosine"),
+            (proto::DistanceMetric::L2, "euclidean"),
+            (proto::DistanceMetric::DotProduct, "dot_product"),
+        ] {
+            let results = create_insert_search(proto_metric).await;
+            for r in &results {
+                assert_eq!(r.metric, expected_label, "result metric label mismatch");
+            }
+        }
+
+        // Verify response-level metric on a fresh search
+        let server = VectorIndexServer::new();
+        let index_name = "response_metric_test";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: index_name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: index_name.to_string(),
+                ids: vec![1],
+                vectors: vec![1.0, 0.0, 0.0, 0.0],
+            }))
+            .await
+            .unwrap();
+        let resp = server
+            .search(Request::new(SearchRequest {
+                index_name: index_name.to_string(),
+                query: vec![1.0, 0.0, 0.0, 0.0],
+                k: 1,
+                ef: 0,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            resp.metric,
+            proto::DistanceMetric::Cosine as i32,
+            "response-level metric must be typed DistanceMetric"
+        );
+        assert!(!resp.results.is_empty());
+        assert_eq!(resp.results[0].metric, "cosine");
+    }
+
+    /// Response-level `SearchBatchResponse.metric` must be populated.
+    #[tokio::test]
+    async fn search_batch_response_carries_typed_metric() {
+        let server = VectorIndexServer::new();
+        let index_name = "batch_response_metric_test";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: index_name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::L2 as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: index_name.to_string(),
+                ids: vec![1, 2],
+                vectors: vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            }))
+            .await
+            .unwrap();
+        let resp = server
+            .search_batch(Request::new(SearchBatchRequest {
+                index_name: index_name.to_string(),
+                queries: vec![1.0, 0.0, 0.0, 0.0],
+                num_queries: 1,
+                k: 2,
+                ef: 0,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            resp.metric,
+            proto::DistanceMetric::L2 as i32,
+            "batch response-level metric must be typed DistanceMetric"
+        );
     }
 }
