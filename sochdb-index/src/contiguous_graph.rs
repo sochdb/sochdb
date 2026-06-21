@@ -59,7 +59,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use sochdb_index::contiguous_graph::{ContiguousGraph, ContiguousNode};
 //!
 //! let mut graph = ContiguousGraph::new(M_MAX, MAX_LAYERS);

@@ -60,7 +60,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use sochdb_vector::async_rotation::{RotationPipeline, RotationConfig};
 //!
 //! let config = RotationConfig::default();

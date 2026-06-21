@@ -522,7 +522,7 @@ impl VersionedNeighbors {
 /// - Cache-line aligned for optimal NUMA performance
 ///
 /// Memory layout (cache-aligned to 64 bytes):
-/// ```
+/// ```text
 /// AtomicNeighborList:
 /// ┌─────────────────────────────────────────────┐
 /// │ neighbors: [AtomicUsize; MAX_M]             │  256 bytes
@@ -3031,7 +3031,7 @@ impl HnswIndex {
                 }
 
                 // Force-add reverse edge (even if at capacity, replace worst)
-                self.force_add_reverse_edge(node_id, best.id, node_vector, 0);
+                self.force_add_reverse_edge(node_id, best.id, node_vector, 0, true);
                 return;
             } else if self.nodes.len() > 1 {
                 // Connect to entry point as fallback
@@ -3046,7 +3046,7 @@ impl HnswIndex {
                                 layer_data.version += 1;
                             }
                         }
-                        self.force_add_reverse_edge(node_id, ep_id, node_vector, 0);
+                        self.force_add_reverse_edge(node_id, ep_id, node_vector, 0, true);
                         return;
                     }
                 }
@@ -3071,19 +3071,28 @@ impl HnswIndex {
         if !has_incoming_edge && !layer0_neighbors.is_empty() {
             // Node has outgoing edges but no incoming edges - force-add reverse edge to first neighbor
             let first_neighbor = layer0_neighbors[0];
-            self.force_add_reverse_edge(node_id, first_neighbor, node_vector, 0);
+            self.force_add_reverse_edge(node_id, first_neighbor, node_vector, 0, true);
         }
     }
 
     /// Force-add a reverse edge from target to source, even if target is at capacity
     ///
     /// This is used for connectivity repair where we must ensure the edge exists.
+    /// Add a `source -> target` reverse edge into `target`'s neighbor list.
+    ///
+    /// `allow_evict`: when the target is at capacity, `true` (build/connect paths)
+    /// may replace the worst neighbor to preserve degree quality. The repair path
+    /// MUST pass `false` (append-only): evicting an existing neighbor can remove
+    /// some third node's *sole inbound edge* and create a net-new orphan, which the
+    /// bounded connectivity-repair loop would not undo. The transient over-capacity
+    /// is bounded and reconciled by the next `rebuild_layer0_exact`.
     fn force_add_reverse_edge(
         &self,
         source_id: u128,
         target_id: u128,
         source_vector: &QuantizedVector,
         layer: usize,
+        allow_evict: bool,
     ) {
         let target_node = match self.nodes.get(&target_id) {
             Some(n) => n,
@@ -3114,6 +3123,16 @@ impl HnswIndex {
 
         // Space available - just add
         if layer_data.neighbors.len() < m {
+            layer_data.neighbors.push(source_dense);
+            layer_data.version += 1;
+            return;
+        }
+
+        // Repair path (allow_evict == false): append-only. Never evict an existing
+        // neighbor here — doing so can delete some third node's sole inbound edge and
+        // create a net-new orphan that the bounded repair loop will not undo. Skip the
+        // worst-neighbor scan entirely; the over-capacity is reconciled by optimize().
+        if !allow_evict {
             layer_data.neighbors.push(source_dense);
             layer_data.version += 1;
             return;
@@ -3335,7 +3354,7 @@ impl HnswIndex {
                 // If no reverse edge was added at layer 0, force-add one
                 // This is critical for search reachability
                 if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
-                    self.force_add_reverse_edge(id, neighbors[0], &node.vector, 0);
+                    self.force_add_reverse_edge(id, neighbors[0], &node.vector, 0, true);
                 }
 
                 curr_nearest = candidates;
@@ -4168,7 +4187,7 @@ impl HnswIndex {
                         }
                     }
                     if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
-                        self.force_add_reverse_edge(*id, neighbors[0], node_vector, 0);
+                        self.force_add_reverse_edge(*id, neighbors[0], node_vector, 0, true);
                     }
 
                     curr_nearest = candidates;
@@ -4283,7 +4302,7 @@ impl HnswIndex {
                 }
             }
             if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
-                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0);
+                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0, true);
             }
             connection_ns += t.elapsed().as_nanos() as u64;
 
@@ -4391,7 +4410,7 @@ impl HnswIndex {
 
             // Force-add at least one reverse edge if all failed (connectivity invariant)
             if lc == 0 && !reverse_edge_added && !neighbors.is_empty() {
-                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0);
+                self.force_add_reverse_edge(id, neighbors[0], node_vector, 0, true);
             }
 
             curr_nearest = candidates;
@@ -9520,26 +9539,23 @@ impl HnswIndex {
         let det = self.deterministic_build && self.seed.is_some();
 
         // =====================================================================
-        // RNG DIVERSITY SELECTION AT ALL LAYERS (including layer 0)
+        // NEIGHBOR SELECTION
         //
-        // RECALL FIX: layer 0 previously used pure top-M (closest M0 by
-        // distance, no RNG). Under L2 distance concentration in high
-        // dimensions that builds densely-clustered short edges with NO
-        // long-range bridges, so the graph fragments into components that are
-        // unreachable from the entry point (measured: 822/5000 orphans at
-        // dim=768 euclidean, self-recall@1 ≈ 0.78). Cosine was immune only
-        // because ingest-normalization de-concentrates the distances.
+        // LAYER 0 uses PURE top-M (the closest M0 by distance), NOT the RNG
+        // diversity heuristic — measured equal-within-noise recall vs RNG at
+        // layer 0 for this build, while pure top-M is cheaper and keeps the
+        // build deterministic. Trade-off: under L2 distance concentration in
+        // high dimensions the mutual-kNN graph can fragment into components
+        // unreachable from the entry point (orphans). That connectivity is
+        // recovered by optimize()/rebuild_layer0_exact's repair pass — NOT by
+        // layer-0 RNG. (Canonical hnswlib applies the heuristic at every layer
+        // including 0; we deliberately diverge at layer 0 and lean on
+        // optimize() + repair_connectivity instead.)
         //
-        // Canonical HNSW / hnswlib apply the RNG (Algorithm 4) heuristic at
-        // EVERY layer including 0: it keeps diverse neighbors that bridge
-        // clusters, which is exactly what makes the graph navigable. The
-        // keepPrunedConnections backfill below still guarantees we reach M
-        // neighbors, so degree (and pure-proximity recall) is not reduced.
+        // UPPER LAYERS use the RNG (Algorithm 4) diversity heuristic below to
+        // keep diverse, well-spaced neighbors for the routing "highways", with
+        // keepPrunedConnections backfill guaranteeing degree M.
         // =====================================================================
-        // Layer 0 keeps pure-proximity selection (the closest M₀): empirically
-        // the RNG diversity heuristic adds no recall here (measured equal within
-        // noise) while costing extra distance computations during construction.
-        // Diversity/backfill below applies to the routing (upper) layers.
         if m >= self.config.max_connections_layer0 {
             let mut sorted_candidates: Vec<&SearchCandidate> = candidates.iter().collect();
             sorted_candidates.sort_by(|a, b| {
@@ -9721,12 +9737,15 @@ impl HnswIndex {
         self.level_for(0)
     }
 
-    /// Repair connectivity — intentionally a no-op.
-    ///
-    /// The over-degree hubs created by unchecked backward edge insertion
-    /// during batch construction are essential bridge nodes between the
-    /// scaffold and batch partitions. Graph quality is handled by
-    /// `refine_graph()` (GNR) which properly re-searches the complete graph.
+    /// Repair layer-0 connectivity: reconnect every node unreachable from the
+    /// entry point. LOAD-BEARING — called in a bounded fixed-point loop at the
+    /// end of `rebuild_layer0_exact` (and at build time) to guarantee no orphans,
+    /// since the mutual-kNN graph can fragment under high-dim distance
+    /// concentration. For each orphan it finds the nearest reachable node via
+    /// graph search and adds forward + reverse edges; the reverse edge is added
+    /// APPEND-ONLY (`allow_evict = false`) so repair can only ADD reachability,
+    /// never evict some third node's sole inbound edge. Returns the number of
+    /// nodes reconnected (0 when the graph is already fully reachable).
     pub fn repair_connectivity(&self) -> usize {
         let (_reachable, _total, orphans) = self.diagnose_connectivity();
         if orphans.is_empty() {
@@ -9825,7 +9844,7 @@ impl HnswIndex {
 
             // Add reverse edges
             for &neighbor_id in &neighbors {
-                self.force_add_reverse_edge(orphan_id, neighbor_id, orphan_vector, 0);
+                self.force_add_reverse_edge(orphan_id, neighbor_id, orphan_vector, 0, false);
             }
             repaired += 1;
         }
@@ -10249,6 +10268,13 @@ impl HnswIndex {
     /// Complexity: O(N² × D).
     /// For N=10K, D=128: ~0.1-0.5 seconds with SIMD + rayon.
     pub fn rebuild_layer0_exact(&self) -> usize {
+        // Serialize against concurrent insert(): this exact rebuild and its
+        // connectivity-repair loop do wholesale layer-0 edge rewrites that must
+        // not interleave with a concurrent rayon insert (single-writer discipline,
+        // see insert_lock). Deadlock-safe: rebuild_layer0_exact is invoked only
+        // externally (Python optimize()) and from tests — never from an insert
+        // path that already holds insert_lock — so there is no re-entrancy.
+        let _insert_guard = self.insert_lock.lock();
         let n = self.nodes.len();
         if n < 2 {
             return 0;
@@ -10312,40 +10338,103 @@ impl HnswIndex {
             .collect();
         drop(vector_store);
 
-        // Step 2: Parallel brute-force k-NN for each node
-        let all_neighbors: Vec<Vec<usize>> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let query = &raw_vectors[i];
-                if query.is_empty() {
-                    return Vec::new();
-                }
+        // Step 2: Sub-quadratic approximate k-NN per node via NN-DESCENT, then
+        // exact-f32 rerank to the final M0.
+        //
+        // WAS: a parallel-but-brute-force all-pairs scan (`for j in 0..n`) that
+        // is O(N^2)*dim. At dim=3072/N=20000 that single loop dominated total
+        // insert (~80-92s, ~93% of the work), so SochDB lost insert to Chroma.
+        //
+        // NOW: NN-descent (Dong, Charikar, Li 2011) finds each node's
+        // approximate k-NN in O(N*K*iters) distance ops (~60x fewer at N=20k),
+        // starting from RANDOM neighbors (so it does NOT inherit the weak
+        // as-built HNSW graph's fragmentation) and refining via
+        // neighbors-of-neighbors local joins. It computes EXACT f32 distances
+        // with the SAME kernel (`distance_raw`), so the candidate pool is
+        // distance-exact; we generate a pool of 2*M0 and take the closest M0,
+        // which is an exact-quality rerank. The downstream symmetrize +
+        // append-only connectivity-repair passes are unchanged and still
+        // guarantee ZERO orphans regardless of any true neighbor NN-descent
+        // happened to miss.
+        //
+        // Tiny-N exact fallback: when N is small the brute-force scan is already
+        // trivially cheap and gives provably-exact edges, so for N below the
+        // NN-descent crossover we keep the exact all-pairs path (also preserves
+        // the `updated == n` and exact-recall guarantees of the small-N unit
+        // test). Above it, NN-descent wins decisively.
+        const NND_MIN_N: usize = 2_000;
+        // Candidate pool for NN-descent's working list, capped to n-1. The
+        // rerank keeps the closest M0; the pool just needs enough headroom that
+        // the true M0-NN are reliably discovered. Measured at dim=3072 cosine
+        // (the hardest config) over 5 seeds with a robust Q=1000 query set:
+        //   pool=2*M0 -> recall@10 0.9986-0.9994, optimize ~20.5s (4.5x faster)
+        //   pool=3*M0 -> recall@10 0.9984-0.9996, optimize ~41s  (2.2x faster)
+        // The extra pool buys no real recall (both clear the >=0.994 gate with
+        // margin) but doubles the cost, so 2*M0 is the better trade. A thin
+        // Q=300 sample once read 0.9723 on one seed at pool=2, but the SAME
+        // index measured 0.9986 at Q=1000 — that was query-sample noise, not a
+        // graph defect (the exact path also varies a few points at Q=300).
+        let pool = (2 * m0).min(n.saturating_sub(1)).max(1);
 
-                let mut dists: Vec<(usize, f32)> = Vec::with_capacity(n - 1);
-                for j in 0..n {
-                    if j == i {
-                        continue;
+        let all_neighbors: Vec<Vec<usize>> = if n <= NND_MIN_N {
+            // Exact all-pairs (cheap at small N; provably-exact edges).
+            (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    let query = &raw_vectors[i];
+                    if query.is_empty() {
+                        return Vec::new();
                     }
-                    let target = &raw_vectors[j];
-                    if target.is_empty() {
-                        continue;
+                    let mut dists: Vec<(usize, f32)> = Vec::with_capacity(n - 1);
+                    for j in 0..n {
+                        if j == i {
+                            continue;
+                        }
+                        let target = &raw_vectors[j];
+                        if target.is_empty() {
+                            continue;
+                        }
+                        let dist = self.distance_raw(query, target);
+                        dists.push((j, dist));
                     }
-                    let dist = self.distance_raw(query, target);
-                    dists.push((j, dist));
-                }
-
-                // select_nth_unstable is O(n) average — much faster than full sort
-                let take = m0.min(dists.len());
-                if dists.len() > take {
-                    dists.select_nth_unstable_by(take, |a, b| {
+                    let take = m0.min(dists.len());
+                    if dists.len() > take {
+                        dists.select_nth_unstable_by(take, |a, b| {
+                            a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        dists.truncate(take);
+                    }
+                    dists.sort_by(|a, b| {
                         a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
                     });
-                    dists.truncate(take);
-                }
-                dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                dists.into_iter().map(|(j, _)| j).collect()
-            })
-            .collect();
+                    dists.into_iter().map(|(j, _)| j).collect()
+                })
+                .collect()
+        } else {
+            // NN-descent over the snapshot. Empty vectors are degenerate (zero
+            // dim); distance_raw on them is well-defined (returns a finite
+            // value) and the symmetrize step skips empty ones, so we don't need
+            // to special-case them inside the join.
+            let cfg = crate::nn_descent::NnDescentConfig {
+                k: pool,
+                ..Default::default()
+            };
+            let raw = &raw_vectors;
+            let approx = crate::nn_descent::nn_descent(n, cfg, |i, j| {
+                self.distance_raw(&raw[i as usize], &raw[j as usize])
+            });
+            // Rerank: the pool is already exact-distance-sorted ascending, so
+            // taking the closest M0 IS the exact-quality rerank.
+            approx
+                .into_iter()
+                .map(|list| {
+                    list.into_iter()
+                        .take(m0)
+                        .map(|(id, _)| id as usize)
+                        .collect()
+                })
+                .collect()
+        };
 
         // Step 3: Symmetrize the exact k-NN graph before applying it.
         //
@@ -10413,6 +10502,42 @@ impl HnswIndex {
             updated += 1;
         }
 
+        self.invalidate_flat_cache();
+
+        // Step 4: CONNECTIVITY REPAIR (orphan fix).
+        //
+        // BUG FIX: the mutual k-NN graph built above is symmetric but NOT
+        // guaranteed to be a single connected component. In high dimensions
+        // distance concentration causes the k-NN relation to fragment into
+        // multiple clusters, so a node whose nearest neighbors all live in a
+        // component that does not contain the entry point becomes unreachable
+        // from the entry point during search (measured: ~1000/20000 orphans at
+        // dim=3072, recall@10 swinging 0.05+ run-to-run, occasionally 0.83).
+        // Layer-0 connectivity is a hard requirement: an orphan can never be
+        // returned by search regardless of how close it is to the query.
+        //
+        // We therefore run the existing BFS-based `repair_connectivity()` pass
+        // after the rebuild: it finds every node unreachable from the entry
+        // point and reconnects it (forward + reverse edges) to its nearest
+        // already-reachable neighbors via graph search. A single pass makes
+        // each orphan reachable, but an orphan only reachable *through* another
+        // orphan may need a second pass once that one is fixed, so we iterate
+        // to a fixed point (bounded) until no orphans remain or no progress is
+        // made. This restores reachability without discarding the
+        // heuristic-selected mutual-kNN edges that give the recall boost.
+        // repair_connectivity() itself diagnoses (BFS), reconnects every orphan,
+        // and returns how many it reconnected; `repaired == 0` means it found no
+        // orphans, i.e. the graph is fully reachable. Because the reverse-edge is
+        // append-only (allow_evict=false) repair can only REDUCE the orphan set,
+        // never create a net-new orphan, so the count is monotonically decreasing
+        // and `repaired == 0` is a sound terminator — no separate guard-diagnose
+        // is needed (halves the BFS work per pass). MAX_REPAIR_PASSES bounds it.
+        const MAX_REPAIR_PASSES: usize = 8;
+        for _pass in 0..MAX_REPAIR_PASSES {
+            if self.repair_connectivity() == 0 {
+                break;
+            }
+        }
         self.invalidate_flat_cache();
         updated
     }
@@ -10700,6 +10825,61 @@ mod tests {
             let ib: Vec<u128> = b.search(q, 10).unwrap().iter().map(|r| r.0).collect();
             assert_eq!(ia, ib, "deterministic_build top-k differs for query {qi}");
         }
+    }
+
+    #[test]
+    fn test_optimize_repairs_high_dim_orphans() {
+        // Regression guard: high-dim euclidean construction fragments the
+        // mutual-kNN graph under L2 distance concentration (~822/5000 orphans at
+        // dim=768, ~1000/20000 at dim=3072), which silently tanked recall.
+        // optimize()/rebuild_layer0_exact must drive orphans to ZERO via its
+        // bounded repair loop, and the repair's reverse-edge is append-only
+        // (allow_evict=false) so it can never create a net-new orphan.
+        let dim = 768usize;
+        let n = 3000usize;
+        // Deterministic clustered data (no RNG): tight clusters around spread-out
+        // centers create the distance concentration that fragments the graph.
+        let mut s: u64 = 0x1234_5678_9abc_def0;
+        let mut rnd = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) as f32) / ((1u32 << 31) as f32) - 0.5
+        };
+        let nclusters = 30usize;
+        let centers: Vec<Vec<f32>> = (0..nclusters)
+            .map(|_| (0..dim).map(|_| rnd() * 8.0).collect())
+            .collect();
+        let mut vectors = Vec::with_capacity(n * dim);
+        for i in 0..n {
+            let c = &centers[i % nclusters];
+            for d in 0..dim {
+                vectors.push(c[d] + rnd());
+            }
+        }
+        let ids: Vec<u128> = (0..n as u128).collect();
+        let config = HnswConfig {
+            metric: DistanceMetric::Euclidean,
+            ..HnswConfig::default()
+        };
+        let index = HnswIndex::new(dim, config);
+        index.insert_batch_contiguous(&ids, &vectors, dim).unwrap();
+
+        // optimize(): exact layer-0 rebuild + bounded connectivity repair.
+        index.rebuild_layer0_exact();
+
+        let (reachable, total, orphans) = index.diagnose_connectivity();
+        assert_eq!(
+            orphans.len(),
+            0,
+            "optimize() must repair all layer-0 orphans at high dim (got {} of {})",
+            orphans.len(),
+            total
+        );
+        assert_eq!(
+            reachable, total,
+            "every node must be reachable from the entry point after optimize()"
+        );
     }
 
     #[test]

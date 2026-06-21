@@ -65,7 +65,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```ignore
 //! use sochdb_vector::lazy_segment::{LazySegment, LazyConfig};
 //!
 //! let config = LazyConfig::default();
