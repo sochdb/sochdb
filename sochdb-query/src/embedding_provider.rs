@@ -564,13 +564,16 @@ impl FastEmbedProvider {
                 (EmbeddingModel::BGELargeENV15, 1024)
             }
             other => {
-                return Err(EmbeddingError::ModelNotAvailable(format!("fastembed:{other}")));
+                return Err(EmbeddingError::ModelNotAvailable(format!(
+                    "fastembed:{other}"
+                )));
             }
         };
-        let model = TextEmbedding::try_new(
-            InitOptions::new(model).with_show_download_progress(false),
-        )
-        .map_err(|e| EmbeddingError::ProviderError(format!("fastembed init failed: {e}")))?;
+        let model =
+            TextEmbedding::try_new(InitOptions::new(model).with_show_download_progress(false))
+                .map_err(|e| {
+                    EmbeddingError::ProviderError(format!("fastembed init failed: {e}"))
+                })?;
         Ok(Self {
             model: std::sync::Mutex::new(model),
             model_name: format!("fastembed:{model_alias}"),
@@ -902,7 +905,10 @@ mod tests {
         let feline = p.embed("a feline rested on the rug").unwrap();
         let finance = p.embed("quarterly financial earnings report").unwrap();
         assert_eq!(cat.len(), 384);
-        assert!(cat.iter().any(|&x| x.abs() > 1e-6), "embedding must be non-zero");
+        assert!(
+            cat.iter().any(|&x| x.abs() > 1e-6),
+            "embedding must be non-zero"
+        );
         let cos = |x: &[f32], y: &[f32]| {
             let d: f32 = x.iter().zip(y).map(|(a, b)| a * b).sum();
             let nx: f32 = x.iter().map(|a| a * a).sum::<f32>().sqrt();

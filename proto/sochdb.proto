@@ -180,6 +180,11 @@ message SearchRequest {
   
   // Expansion factor during search (optional, default: ef_search from config)
   uint32 ef = 4;
+
+  // Optional parent-aware grouped search. When set, results are grouped
+  // by parent_id so that multiple vector views of the same logical source
+  // do not consume multiple top-K slots.
+  GroupingOptions grouping = 5;
 }
 
 message SearchResponse {
@@ -196,6 +201,9 @@ message SearchResponse {
   // level; per-result `SearchResult.metric` (field 3) carries the same
   // value as a human-readable label for convenience.
   DistanceMetric metric = 4;
+
+  // Grouping diagnostics, present only when SearchRequest.grouping is set.
+  GroupingInfo grouping = 5;
 }
 
 message SearchResult {
@@ -238,6 +246,9 @@ message SearchBatchRequest {
   
   // Expansion factor
   uint32 ef = 5;
+
+  // Optional parent-aware grouped search, applies to all queries.
+  GroupingOptions grouping = 6;
 }
 
 message SearchBatchResponse {
@@ -253,6 +264,9 @@ message SearchBatchResponse {
 
 message QueryResults {
   repeated SearchResult results = 1;
+
+  // Grouping diagnostics for this query, present only when grouping was active.
+  GroupingInfo grouping = 2;
 }
 
 // =============================================================================
@@ -305,6 +319,44 @@ message HealthCheckResponse {
   
   // Available indexes
   repeated string indexes = 3;
+}
+
+// =============================================================================
+// GROUPING TYPES
+// =============================================================================
+
+enum GroupBy {
+  GROUP_BY_UNSPECIFIED = 0;
+  GROUP_BY_PARENT_ID = 1;
+}
+
+message GroupingOptions {
+  // Grouping criterion.
+  GroupBy group_by = 1;
+
+  // Maximum results to return per group (0 treated as 1).
+  uint32 max_per_group = 2;
+
+  // Number of raw ANN candidates to over-fetch before grouping.
+  // Must be >= k when grouping is active.
+  uint32 candidate_k = 3;
+}
+
+message GroupingInfo {
+  // Grouping criterion used.
+  GroupBy group_by = 1;
+
+  // The k value originally requested.
+  uint32 requested_k = 2;
+
+  // The effective candidate_k used (may differ from request if defaulted).
+  uint32 candidate_k = 3;
+
+  // Total raw ANN candidates examined before grouping.
+  uint32 raw_candidate_count = 4;
+
+  // Number of unique groups in the final result set.
+  uint32 returned_group_count = 5;
 }
 
 // =============================================================================

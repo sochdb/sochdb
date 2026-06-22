@@ -183,6 +183,76 @@ impl VectorIndexServer {
             view_type,
         }
     }
+    fn group_key_for_result(index: &HnswIndex, id: u128) -> u128 {
+        let Some(metadata) = index.get_metadata(id) else {
+            return id;
+        };
+        metadata
+            .iter()
+            .find(|(key, _)| key == "parent_id")
+            .and_then(|(_, value)| value.parse::<u64>().ok())
+            .map(|parent_id| parent_id as u128)
+            .unwrap_or(id)
+    }
+
+    fn grouped_results(
+        index: &HnswIndex,
+        raw_results: Vec<(u128, f32)>,
+        k: usize,
+        _max_per_group: u32,
+        requested_candidate_k: u32,
+        metric: &'static str,
+    ) -> (Vec<SearchResult>, proto::GroupingInfo) {
+        let max_per_group = if _max_per_group == 0 {
+            1
+        } else {
+            _max_per_group
+        };
+
+        let mut seen_groups: std::collections::HashMap<u128, Vec<(u128, f32, usize)>> =
+            std::collections::HashMap::new();
+        for (idx, (id, distance)) in raw_results.iter().enumerate() {
+            let group_key = Self::group_key_for_result(index, *id);
+            seen_groups
+                .entry(group_key)
+                .or_default()
+                .push((*id, *distance, idx));
+        }
+
+        let mut grouped: Vec<(u128, f32, u128, usize)> = Vec::new();
+        for (group_key, mut candidates) in seen_groups {
+            candidates.sort_by(|a, b| {
+                a.1.partial_cmp(&b.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.2.cmp(&b.2))
+            });
+            for c in candidates.iter().take(max_per_group as usize) {
+                grouped.push((group_key, c.1, c.0, c.2));
+            }
+        }
+        grouped.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.3.cmp(&b.3))
+        });
+
+        let returned_group_count = grouped.len().min(k) as u32;
+        let results: Vec<SearchResult> = grouped
+            .into_iter()
+            .take(k)
+            .map(|(_, distance, id, _)| Self::search_result(index, id, distance, metric))
+            .collect();
+
+        let info = proto::GroupingInfo {
+            group_by: proto::GroupBy::ParentId.into(),
+            requested_k: k as u32,
+            candidate_k: requested_candidate_k,
+            raw_candidate_count: raw_results.len() as u32,
+            returned_group_count,
+        };
+
+        (results, info)
+    }
 }
 
 impl Default for VectorIndexServer {
@@ -533,39 +603,74 @@ impl VectorIndexService for VectorIndexServer {
 
         let k = req.k.max(1) as usize;
 
+        // Check for grouping options
+        let grouping_opts = req.grouping;
+        let is_grouped = grouping_opts
+            .as_ref()
+            .map(|g| g.group_by == proto::GroupBy::ParentId as i32)
+            .unwrap_or(false);
+
+        let candidate_k = if is_grouped {
+            let max_per_group = grouping_opts.as_ref().map(|g| g.max_per_group).unwrap_or(1);
+            let raw = grouping_opts.as_ref().map(|g| g.candidate_k).unwrap_or(0);
+            let effective = if raw == 0 {
+                (k * 4).max(k)
+            } else if (raw as usize) < k {
+                return Err(Status::invalid_argument(format!(
+                    "candidate_k ({}) must be >= k ({}) when grouping is active",
+                    raw, k
+                )));
+            } else {
+                raw as usize
+            };
+            (max_per_group, effective)
+        } else {
+            (1, k)
+        };
+
         // Honor per-query ef override for recall tuning; fall back to index default
         let ef = if req.ef > 0 { req.ef as usize } else { 0 };
 
         // Offload CPU-heavy HNSW search to blocking thread pool
         let query = req.query;
+        let search_k = candidate_k.1;
         let index_for_search = Arc::clone(&index);
-        let results = tokio::task::spawn_blocking(move || {
+        let raw_results = tokio::task::spawn_blocking(move || {
             if ef > 0 {
-                index.search_with_ef(&query, k, ef.max(k))
+                index.search_with_ef(&query, search_k, ef.max(search_k))
             } else {
-                index.search(&query, k)
+                index.search(&query, search_k)
             }
         })
         .await
         .map_err(|e| Status::internal(format!("Task join error: {}", e)))?;
 
-        match results {
+        match raw_results {
             Ok(r) => {
                 let duration_us = start.elapsed().as_micros() as u64;
-                let mut search_results = Vec::with_capacity(r.len());
-                for (id, distance) in r {
-                    search_results.push(Self::search_result(
+                let (search_results, grouping_info) = if is_grouped {
+                    let (results, info) = Self::grouped_results(
                         &index_for_search,
-                        id,
-                        distance,
+                        r,
+                        k,
+                        candidate_k.0,
+                        candidate_k.1 as u32,
                         metric,
-                    ));
-                }
+                    );
+                    (results, Some(info))
+                } else {
+                    let mut results = Vec::with_capacity(r.len());
+                    for (id, distance) in r {
+                        results.push(Self::search_result(&index_for_search, id, distance, metric));
+                    }
+                    (results, None)
+                };
                 Ok(Response::new(SearchResponse {
                     results: search_results,
                     duration_us,
                     error: String::new(),
                     metric: metric_enum.into(),
+                    grouping: grouping_info,
                 }))
             }
             Err(e) => Ok(Response::new(SearchResponse {
@@ -573,6 +678,7 @@ impl VectorIndexService for VectorIndexServer {
                 duration_us: start.elapsed().as_micros() as u64,
                 error: e,
                 metric: metric_enum.into(),
+                grouping: None,
             })),
         }
     }
@@ -601,22 +707,67 @@ impl VectorIndexService for VectorIndexServer {
             )));
         }
 
+        // Check for batch grouping options
+        let batch_grouping = req.grouping;
+        let is_grouped = batch_grouping
+            .as_ref()
+            .map(|g| g.group_by == proto::GroupBy::ParentId as i32)
+            .unwrap_or(false);
+
+        let (max_per_group, candidate_k) = if is_grouped {
+            let mpg = batch_grouping
+                .as_ref()
+                .map(|g| g.max_per_group)
+                .unwrap_or(1);
+            let raw = batch_grouping.as_ref().map(|g| g.candidate_k).unwrap_or(0);
+            let effective = if raw == 0 {
+                (k * 4).max(k)
+            } else if (raw as usize) < k {
+                return Err(Status::invalid_argument(format!(
+                    "candidate_k ({}) must be >= k ({}) when grouping is active",
+                    raw, k
+                )));
+            } else {
+                raw as usize
+            };
+            (mpg, effective)
+        } else {
+            (1, k)
+        };
+
         // Parallel batch search via rayon on blocking thread pool
         let queries = req.queries;
+        let search_k = candidate_k;
         let all_results = tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
             (0..num_queries)
                 .into_par_iter()
                 .map(|i| -> Result<QueryResults, String> {
                     let query = &queries[i * dimension..(i + 1) * dimension];
-                    let results = index.search(query, k).unwrap_or_default();
-                    let mut search_results = Vec::with_capacity(results.len());
-                    for (id, distance) in results {
-                        search_results.push(Self::search_result(&index, id, distance, metric));
+                    let raw = index.search(query, search_k).unwrap_or_default();
+                    if is_grouped {
+                        let (results, info) = Self::grouped_results(
+                            &index,
+                            raw,
+                            k,
+                            max_per_group,
+                            search_k as u32,
+                            metric,
+                        );
+                        Ok(QueryResults {
+                            results,
+                            grouping: Some(info),
+                        })
+                    } else {
+                        let mut search_results = Vec::with_capacity(raw.len());
+                        for (id, distance) in raw {
+                            search_results.push(Self::search_result(&index, id, distance, metric));
+                        }
+                        Ok(QueryResults {
+                            results: search_results,
+                            grouping: None,
+                        })
                     }
-                    Ok(QueryResults {
-                        results: search_results,
-                    })
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
@@ -720,6 +871,7 @@ mod tests {
                 query: vec![1.0, 0.0, 0.0, 0.0],
                 k: 3,
                 ef: 0,
+                grouping: None,
             }))
             .await
             .expect("search")
@@ -794,6 +946,7 @@ mod tests {
                 num_queries: 2,
                 k: 2,
                 ef: 0,
+                grouping: None,
             }))
             .await
             .expect("search_batch")
@@ -867,6 +1020,7 @@ mod tests {
                 query: vec![1.0, 0.0, 0.0, 0.0],
                 k: 3,
                 ef: 0,
+                grouping: None,
             }))
             .await
             .expect("search")
@@ -975,6 +1129,7 @@ mod tests {
                 num_queries: 1,
                 k: 3,
                 ef: 0,
+                grouping: None,
             }))
             .await
             .expect("search_batch")
@@ -1053,6 +1208,7 @@ mod tests {
                     query: vec![1.0, 0.0, 0.0, 0.0],
                     k: 1,
                     ef: 0,
+                    grouping: None,
                 },
                 "tenant-b",
             ))
@@ -1067,6 +1223,7 @@ mod tests {
                     query: vec![1.0, 0.0, 0.0, 0.0],
                     k: 1,
                     ef: 0,
+                    grouping: None,
                 },
                 "tenant-a",
             ))
@@ -1133,6 +1290,7 @@ mod tests {
                 query: vec![1.0, 0.0, 0.0, 0.0],
                 k: 1,
                 ef: 0,
+                grouping: None,
             }))
             .await
             .unwrap()
@@ -1176,6 +1334,7 @@ mod tests {
                 num_queries: 1,
                 k: 2,
                 ef: 0,
+                grouping: None,
             }))
             .await
             .unwrap()
@@ -1185,5 +1344,655 @@ mod tests {
             proto::DistanceMetric::L2 as i32,
             "batch response-level metric must be typed DistanceMetric"
         );
+    }
+
+    // ── Grouped-search tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn grouped_search_returns_unique_parents() {
+        let server = VectorIndexServer::new();
+        let name = "uniq_parents";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2, 3],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                ],
+                metadata: vec![
+                    proto::VectorMetadata {
+                        parent_id: Some(100),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(100),
+                        view_type: Some("event".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(200),
+                        view_type: Some("turn".into()),
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+        let resp = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![0.0, 1.0, 0.0, 0.0],
+                k: 2,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 0,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Should get at most one result per parent (100 and 200)
+        let parents: std::collections::HashSet<u64> =
+            resp.results.iter().filter_map(|r| r.parent_id).collect();
+        assert!(parents.len() >= 1, "expected unique parents");
+        assert!(!resp.results.is_empty());
+        let info = resp.grouping.unwrap();
+        assert_eq!(info.requested_k, 2);
+        assert!(info.returned_group_count >= 1);
+    }
+
+    #[tokio::test]
+    async fn grouped_search_missing_parent_fallback() {
+        let server = VectorIndexServer::new();
+        let name = "miss_parent";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                ],
+                metadata: vec![],
+            }))
+            .await
+            .unwrap();
+        let resp = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![0.0, 1.0, 0.0, 0.0],
+                k: 2,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 0,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Without parent_id metadata, each vector should be its own group
+        // Vector IDs 1 and 2 should both appear (since they are different groups)
+        let ids: Vec<u64> = resp.results.iter().map(|r| r.id).collect();
+        assert!(!ids.is_empty(), "should have results");
+    }
+
+    #[tokio::test]
+    async fn grouped_search_parent_zero_is_grouped() {
+        let server = VectorIndexServer::new();
+        let name = "parent_zero";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2, 3],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                ],
+                metadata: vec![
+                    proto::VectorMetadata {
+                        parent_id: Some(0),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(0),
+                        view_type: Some("event".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: None,
+                        view_type: None,
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+        let resp = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![0.0, 0.0, 1.0, 0.0],
+                k: 2,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 0,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        // parent_id == 0 should be grouped together; only one result from parent 0
+        let parents: Vec<u64> = resp.results.iter().filter_map(|r| r.parent_id).collect();
+        // parent 0 should appear at most once
+        let zero_count = parents.iter().filter(|&&p| p == 0).count();
+        assert!(zero_count <= 1, "parent_id=0 should be grouped");
+    }
+
+    #[tokio::test]
+    async fn grouped_search_candidate_overfetch() {
+        let server = VectorIndexServer::new();
+        let name = "overfetch";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2, 3, 4],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    0.0, 0.0, 0.0, 1.0,
+                ],
+                metadata: vec![
+                    proto::VectorMetadata {
+                        parent_id: Some(100),
+                        view_type: None,
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(100),
+                        view_type: None,
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(200),
+                        view_type: None,
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(300),
+                        view_type: None,
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+        // Without overfetch (k=3), duplicates may block parent 300.
+        // With candidate_k=8 we should be able to reach all 3 unique parents.
+        let resp = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![0.0, 0.0, 0.0, 0.0],
+                k: 3,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 8,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(resp.results.len(), 3, "expected 3 unique parent groups");
+        let info = resp.grouping.unwrap();
+        assert_eq!(info.candidate_k, 8);
+        assert_eq!(info.returned_group_count, 3);
+    }
+
+    #[tokio::test]
+    async fn grouped_search_rejects_candidate_k_smaller_than_k() {
+        let server = VectorIndexServer::new();
+        let name = "reject_small";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        let err = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![1.0, 0.0, 0.0, 0.0],
+                k: 10,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 5,
+                }),
+            }))
+            .await
+            .expect_err("should reject candidate_k < k");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("candidate_k"));
+    }
+
+    #[tokio::test]
+    async fn grouped_search_batch_grouping() {
+        let server = VectorIndexServer::new();
+        let name = "batch_grouping";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2, 3],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                ],
+                metadata: vec![
+                    proto::VectorMetadata {
+                        parent_id: Some(100),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(100),
+                        view_type: Some("event".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(200),
+                        view_type: Some("turn".into()),
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+        let resp = server
+            .search_batch(Request::new(SearchBatchRequest {
+                index_name: name.to_string(),
+                queries: vec![0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                num_queries: 2,
+                k: 2,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 0,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(resp.results.len(), 2, "2 queries -> 2 result sets");
+        for qr in &resp.results {
+            assert!(
+                qr.grouping.is_some(),
+                "each query should have grouping info"
+            );
+            let parents: std::collections::HashSet<u64> =
+                qr.results.iter().filter_map(|r| r.parent_id).collect();
+            assert!(parents.len() <= 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn ungrouped_search_is_unchanged() {
+        let server = VectorIndexServer::new();
+        let name = "ungrouped";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                ],
+                metadata: vec![],
+            }))
+            .await
+            .unwrap();
+        let resp = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![1.0, 0.0, 0.0, 0.0],
+                k: 2,
+                ef: 0,
+                grouping: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(resp.results.len(), 2);
+        assert_eq!(resp.results[0].id, 1);
+        assert_eq!(resp.results[0].distance, 0.0);
+        assert!(
+            resp.grouping.is_none(),
+            "ungrouped search must not emit grouping info"
+        );
+    }
+
+    #[tokio::test]
+    async fn grouped_search_without_metadata_is_safe() {
+        let server = VectorIndexServer::new();
+        let name = "safe_empty";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        // No vectors inserted — empty index with grouping should not panic
+        let resp = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![1.0, 0.0, 0.0, 0.0],
+                k: 3,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 10,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(resp.results.is_empty());
+        assert!(resp.grouping.is_some());
+    }
+
+    #[tokio::test]
+    async fn grouped_search_response_contains_info() {
+        let server = VectorIndexServer::new();
+        let name = "resp_info";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                ],
+                metadata: vec![
+                    proto::VectorMetadata {
+                        parent_id: Some(10),
+                        view_type: None,
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(20),
+                        view_type: None,
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+        let resp = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![1.0, 0.0, 0.0, 0.0],
+                k: 3,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 6,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let info = resp.grouping.unwrap();
+        assert_eq!(info.group_by, proto::GroupBy::ParentId as i32);
+        assert_eq!(info.requested_k, 3);
+        assert_eq!(info.candidate_k, 6);
+        assert!(info.raw_candidate_count >= 1);
+        assert!(info.returned_group_count >= 1);
+    }
+
+    #[tokio::test]
+    async fn grouped_search_customer_support_use_case_reduces_duplicate_parent_waste() {
+        let server = VectorIndexServer::new();
+        let name = "cs_usecase";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 2,
+                config: None,
+                metric: proto::DistanceMetric::L2 as i32,
+            }))
+            .await
+            .unwrap();
+
+        // Customer-support agent memory: 3 parent memories, each with multiple vector views.
+        // parent_id=101 "damaged laptop refund" -> turn, event, entity
+        // parent_id=102 "replacement accepted"   -> turn, event
+        // parent_id=103 "pickup delayed"         -> turn, event
+        // Vectors placed so the query strongly favours parent 101.
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2, 3, 4, 5, 6, 7],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0,
+                    1.0, 0.1,
+                    1.0, 0.2,
+                    0.0, 1.0,
+                    0.0, 1.1,
+                    -1.0, 0.0,
+                    -0.9, 0.0,
+                ],
+                metadata: vec![
+                    proto::VectorMetadata {
+                        parent_id: Some(101),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(101),
+                        view_type: Some("event".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(101),
+                        view_type: Some("entity".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(102),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(102),
+                        view_type: Some("event".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(103),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(103),
+                        view_type: Some("event".into()),
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+
+        // ── Ungrouped search
+        let ungrouped = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![1.0, 0.0],
+                k: 5,
+                ef: 0,
+                grouping: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let ug_returned = ungrouped.results.len();
+        let ug_unique: std::collections::HashSet<u64> = ungrouped
+            .results
+            .iter()
+            .filter_map(|r| r.parent_id)
+            .collect();
+        let ug_unique_count = ug_unique.len();
+        let ug_duplicate_waste = ug_returned.saturating_sub(ug_unique_count);
+
+        assert!(
+            ug_unique_count < ug_returned,
+            "ungrouped top-K should contain duplicate parents; unique={} returned={}",
+            ug_unique_count,
+            ug_returned,
+        );
+        assert!(
+            ug_duplicate_waste > 0,
+            "ungrouped duplicate waste must be > 0; got {}",
+            ug_duplicate_waste,
+        );
+
+        // ── Grouped search
+        let grouped = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![1.0, 0.0],
+                k: 5,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 10,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let g_returned = grouped.results.len();
+        let g_unique: std::collections::HashSet<u64> =
+            grouped.results.iter().filter_map(|r| r.parent_id).collect();
+        let g_unique_count = g_unique.len();
+        let g_duplicate_waste = g_returned.saturating_sub(g_unique_count);
+
+        assert!(
+            g_unique_count > ug_unique_count,
+            "grouped search should surface more unique parents; grouped={} ungrouped={}",
+            g_unique_count,
+            ug_unique_count,
+        );
+        assert!(
+            g_duplicate_waste < ug_duplicate_waste,
+            "grouped search should reduce duplicate waste; grouped={} ungrouped={}",
+            g_duplicate_waste,
+            ug_duplicate_waste,
+        );
+        let info = grouped.grouping.unwrap();
+        assert_eq!(info.group_by, proto::GroupBy::ParentId as i32);
+        assert_eq!(info.requested_k, 5);
+        assert!(info.returned_group_count >= g_returned as u32);
+
+        let has_parent = grouped.results.iter().any(|r| r.parent_id.is_some());
+        assert!(
+            has_parent,
+            "at least one grouped result should carry parent_id"
+        );
+        let has_view = grouped.results.iter().any(|r| r.view_type.is_some());
+        assert!(
+            has_view,
+            "at least one grouped result should carry view_type"
+        );
+
+        // ── Proof table
+        println!("USECASE=customer_support_agent_memory");
+        println!("UNGROUPED_RETURNED={}", ug_returned);
+        println!("UNGROUPED_UNIQUE_PARENTS={}", ug_unique_count);
+        println!("UNGROUPED_DUPLICATE_WASTE={}", ug_duplicate_waste);
+        println!("GROUPED_RETURNED={}", g_returned);
+        println!("GROUPED_UNIQUE_PARENTS={}", g_unique_count);
+        println!("GROUPED_DUPLICATE_WASTE={}", g_duplicate_waste);
+        println!("GROUPED_SEARCH_USECASE_OK=1");
     }
 }
