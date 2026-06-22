@@ -519,6 +519,144 @@ impl EmbeddingProvider for LocalOnnxProvider {
 }
 
 // ============================================================================
+// FastEmbed (ONNX) semantic provider  —  feature = "fastembed"
+// ============================================================================
+
+/// Real semantic embedding provider backed by fastembed-rs (ONNX runtime).
+///
+/// Only compiled with the `fastembed` feature (the `ort` native dep is heavy).
+/// The model is downloaded + cached on first construction. `TextEmbedding::embed`
+/// takes `&mut self`, so the model is held behind a `Mutex` to satisfy the
+/// `&self` trait contract (embedding is the bottleneck anyway, so the lock is
+/// not the limiting factor).
+#[cfg(feature = "fastembed")]
+pub struct FastEmbedProvider {
+    model: std::sync::Mutex<fastembed::TextEmbedding>,
+    model_name: String,
+    dimension: usize,
+    max_length: usize,
+}
+
+#[cfg(feature = "fastembed")]
+impl std::fmt::Debug for FastEmbedProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FastEmbedProvider")
+            .field("model_name", &self.model_name)
+            .field("dimension", &self.dimension)
+            .finish()
+    }
+}
+
+#[cfg(feature = "fastembed")]
+impl FastEmbedProvider {
+    /// Construct from a short model alias, e.g. `bge-small-en`, `all-minilm`,
+    /// `bge-base-en`, `bge-large-en`. Downloads + caches the ONNX model on first
+    /// use (set `FASTEMBED_CACHE_DIR` to control the cache location).
+    pub fn new(model_alias: &str) -> EmbeddingResult<Self> {
+        use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+        let (model, dimension) = match model_alias.to_ascii_lowercase().as_str() {
+            "bge-small-en" | "bge-small-en-v1.5" | "bge-small" => {
+                (EmbeddingModel::BGESmallENV15, 384)
+            }
+            "all-minilm" | "all-minilm-l6-v2" | "minilm" => (EmbeddingModel::AllMiniLML6V2, 384),
+            "bge-base-en" | "bge-base-en-v1.5" | "bge-base" => (EmbeddingModel::BGEBaseENV15, 768),
+            "bge-large-en" | "bge-large-en-v1.5" | "bge-large" => {
+                (EmbeddingModel::BGELargeENV15, 1024)
+            }
+            other => {
+                return Err(EmbeddingError::ModelNotAvailable(format!("fastembed:{other}")));
+            }
+        };
+        let model = TextEmbedding::try_new(
+            InitOptions::new(model).with_show_download_progress(false),
+        )
+        .map_err(|e| EmbeddingError::ProviderError(format!("fastembed init failed: {e}")))?;
+        Ok(Self {
+            model: std::sync::Mutex::new(model),
+            model_name: format!("fastembed:{model_alias}"),
+            dimension,
+            max_length: 512,
+        })
+    }
+}
+
+#[cfg(feature = "fastembed")]
+impl EmbeddingProvider for FastEmbedProvider {
+    fn model_name(&self) -> &str {
+        &self.model_name
+    }
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+    fn max_length(&self) -> usize {
+        self.max_length
+    }
+    fn embed(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
+        let mut m = self
+            .model
+            .lock()
+            .map_err(|_| EmbeddingError::ProviderError("embedder mutex poisoned".into()))?;
+        let mut out = m
+            .embed(vec![text], None)
+            .map_err(|e| EmbeddingError::ProviderError(format!("fastembed embed failed: {e}")))?;
+        out.pop()
+            .ok_or_else(|| EmbeddingError::ProviderError("fastembed returned no embedding".into()))
+    }
+    fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
+        let mut m = self
+            .model
+            .lock()
+            .map_err(|_| EmbeddingError::ProviderError("embedder mutex poisoned".into()))?;
+        m.embed(texts.to_vec(), None)
+            .map_err(|e| EmbeddingError::ProviderError(format!("fastembed batch failed: {e}")))
+    }
+}
+
+/// Build an embedding provider from the `SOCHDB_EMBEDDER` environment variable.
+///
+/// Accepted values:
+/// * `fastembed:<model>` — real semantic embeddings (requires the `fastembed`
+///   feature; e.g. `fastembed:bge-small-en`).
+/// * `mock` / `hash` / unset — deterministic [`MockEmbeddingProvider`] (384-d).
+///
+/// Falls back to the mock provider (with a warning) when `fastembed` is requested
+/// but the binary was built without the feature, or the model fails to load — so
+/// the server always boots rather than hard-failing on the embedder.
+pub fn embedder_from_env() -> std::sync::Arc<dyn EmbeddingProvider> {
+    let spec = std::env::var("SOCHDB_EMBEDDER").unwrap_or_default();
+    embedder_from_spec(&spec)
+}
+
+/// Like [`embedder_from_env`] but from an explicit spec string.
+pub fn embedder_from_spec(spec: &str) -> std::sync::Arc<dyn EmbeddingProvider> {
+    let spec = spec.trim();
+    if let Some(model) = spec.strip_prefix("fastembed:") {
+        #[cfg(feature = "fastembed")]
+        {
+            match FastEmbedProvider::new(model) {
+                Ok(p) => {
+                    tracing::info!("memory embedder: fastembed:{model} (dim={})", p.dimension());
+                    return std::sync::Arc::new(p);
+                }
+                Err(e) => {
+                    tracing::warn!("fastembed:{model} unavailable ({e}); using mock embedder");
+                }
+            }
+        }
+        #[cfg(not(feature = "fastembed"))]
+        {
+            tracing::warn!(
+                "SOCHDB_EMBEDDER=fastembed:{model} but this binary was built without the \
+                 `fastembed` feature; using mock embedder"
+            );
+        }
+    } else {
+        tracing::info!("memory embedder: mock (384-d) [SOCHDB_EMBEDDER={spec:?}]");
+    }
+    std::sync::Arc::new(MockEmbeddingProvider::new(384))
+}
+
+// ============================================================================
 // Embedding-Enabled Vector Index
 // ============================================================================
 
@@ -750,5 +888,36 @@ mod tests {
 
         let result = provider.embed("this is a very long text that exceeds the limit");
         assert!(matches!(result, Err(EmbeddingError::TextTooLong { .. })));
+    }
+
+    #[cfg(feature = "fastembed")]
+    #[test]
+    fn fastembed_provider_real_semantic_embeddings() {
+        // Downloads + caches bge-small-en on first run. Validates: correct dim,
+        // non-trivial (non-zero) vectors, and real semantics (synonyms rank more
+        // similar than unrelated text) — i.e. NOT the mock fallback.
+        let p = FastEmbedProvider::new("bge-small-en").expect("load bge-small-en");
+        assert_eq!(p.dimension(), 384);
+        let cat = p.embed("a cat sat on the mat").unwrap();
+        let feline = p.embed("a feline rested on the rug").unwrap();
+        let finance = p.embed("quarterly financial earnings report").unwrap();
+        assert_eq!(cat.len(), 384);
+        assert!(cat.iter().any(|&x| x.abs() > 1e-6), "embedding must be non-zero");
+        let cos = |x: &[f32], y: &[f32]| {
+            let d: f32 = x.iter().zip(y).map(|(a, b)| a * b).sum();
+            let nx: f32 = x.iter().map(|a| a * a).sum::<f32>().sqrt();
+            let ny: f32 = y.iter().map(|a| a * a).sum::<f32>().sqrt();
+            d / (nx * ny + 1e-9)
+        };
+        assert!(
+            cos(&cat, &feline) > cos(&cat, &finance),
+            "synonyms ({}) should outrank unrelated text ({})",
+            cos(&cat, &feline),
+            cos(&cat, &finance)
+        );
+
+        // factory path must yield a real provider (not mock) under the feature
+        let from_spec = embedder_from_spec("fastembed:bge-small-en");
+        assert!(from_spec.model_name().starts_with("fastembed:"));
     }
 }
