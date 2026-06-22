@@ -1832,4 +1832,167 @@ mod tests {
         assert!(info.raw_candidate_count >= 1);
         assert!(info.returned_group_count >= 1);
     }
+
+    #[tokio::test]
+    async fn grouped_search_customer_support_use_case_reduces_duplicate_parent_waste() {
+        let server = VectorIndexServer::new();
+        let name = "cs_usecase";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.to_string(),
+                dimension: 2,
+                config: None,
+                metric: proto::DistanceMetric::L2 as i32,
+            }))
+            .await
+            .unwrap();
+
+        // Customer-support agent memory: 3 parent memories, each with multiple vector views.
+        // parent_id=101 "damaged laptop refund" -> turn, event, entity
+        // parent_id=102 "replacement accepted"   -> turn, event
+        // parent_id=103 "pickup delayed"         -> turn, event
+        // Vectors placed so the query strongly favours parent 101.
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.to_string(),
+                ids: vec![1, 2, 3, 4, 5, 6, 7],
+                #[rustfmt::skip]
+                vectors: vec![
+                    1.0, 0.0,
+                    1.0, 0.1,
+                    1.0, 0.2,
+                    0.0, 1.0,
+                    0.0, 1.1,
+                    -1.0, 0.0,
+                    -0.9, 0.0,
+                ],
+                metadata: vec![
+                    proto::VectorMetadata {
+                        parent_id: Some(101),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(101),
+                        view_type: Some("event".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(101),
+                        view_type: Some("entity".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(102),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(102),
+                        view_type: Some("event".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(103),
+                        view_type: Some("turn".into()),
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(103),
+                        view_type: Some("event".into()),
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+
+        // ── Ungrouped search
+        let ungrouped = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![1.0, 0.0],
+                k: 5,
+                ef: 0,
+                grouping: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let ug_returned = ungrouped.results.len();
+        let ug_unique: std::collections::HashSet<u64> = ungrouped
+            .results
+            .iter()
+            .filter_map(|r| r.parent_id)
+            .collect();
+        let ug_unique_count = ug_unique.len();
+        let ug_duplicate_waste = ug_returned.saturating_sub(ug_unique_count);
+
+        assert!(
+            ug_unique_count < ug_returned,
+            "ungrouped top-K should contain duplicate parents; unique={} returned={}",
+            ug_unique_count,
+            ug_returned,
+        );
+        assert!(
+            ug_duplicate_waste > 0,
+            "ungrouped duplicate waste must be > 0; got {}",
+            ug_duplicate_waste,
+        );
+
+        // ── Grouped search
+        let grouped = server
+            .search(Request::new(SearchRequest {
+                index_name: name.to_string(),
+                query: vec![1.0, 0.0],
+                k: 5,
+                ef: 0,
+                grouping: Some(proto::GroupingOptions {
+                    group_by: proto::GroupBy::ParentId as i32,
+                    max_per_group: 1,
+                    candidate_k: 10,
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let g_returned = grouped.results.len();
+        let g_unique: std::collections::HashSet<u64> =
+            grouped.results.iter().filter_map(|r| r.parent_id).collect();
+        let g_unique_count = g_unique.len();
+        let g_duplicate_waste = g_returned.saturating_sub(g_unique_count);
+
+        assert!(
+            g_unique_count > ug_unique_count,
+            "grouped search should surface more unique parents; grouped={} ungrouped={}",
+            g_unique_count,
+            ug_unique_count,
+        );
+        assert!(
+            g_duplicate_waste < ug_duplicate_waste,
+            "grouped search should reduce duplicate waste; grouped={} ungrouped={}",
+            g_duplicate_waste,
+            ug_duplicate_waste,
+        );
+        let info = grouped.grouping.unwrap();
+        assert_eq!(info.group_by, proto::GroupBy::ParentId as i32);
+        assert_eq!(info.requested_k, 5);
+        assert!(info.returned_group_count >= g_returned as u32);
+
+        let has_parent = grouped.results.iter().any(|r| r.parent_id.is_some());
+        assert!(
+            has_parent,
+            "at least one grouped result should carry parent_id"
+        );
+        let has_view = grouped.results.iter().any(|r| r.view_type.is_some());
+        assert!(
+            has_view,
+            "at least one grouped result should carry view_type"
+        );
+
+        // ── Proof table
+        println!("USECASE=customer_support_agent_memory");
+        println!("UNGROUPED_RETURNED={}", ug_returned);
+        println!("UNGROUPED_UNIQUE_PARENTS={}", ug_unique_count);
+        println!("UNGROUPED_DUPLICATE_WASTE={}", ug_duplicate_waste);
+        println!("GROUPED_RETURNED={}", g_returned);
+        println!("GROUPED_UNIQUE_PARENTS={}", g_unique_count);
+        println!("GROUPED_DUPLICATE_WASTE={}", g_duplicate_waste);
+        println!("GROUPED_SEARCH_USECASE_OK=1");
+    }
 }
