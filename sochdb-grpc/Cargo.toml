@@ -19,6 +19,9 @@ readme = "README.md"
 # future-returning wrappers so the cfg is recognized rather than a phantom gate.
 default = []
 async = []
+# Real semantic embeddings for the memory layer (forwards to sochdb-memory/fastembed).
+# Build the server with `--features fastembed` to enable SOCHDB_EMBEDDER=fastembed:<model>.
+fastembed = ["sochdb-memory/fastembed"]
 
 [dependencies]
 sochdb-index = { version = "2.0.11", path = "../sochdb-index" }

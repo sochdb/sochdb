@@ -147,8 +147,24 @@ struct Args {
     pg_data_dir: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Explicit runtime so we can raise the blocking-thread ceiling. Each live
+    // CDC subscription holds one blocking-pool thread for its lifetime (CDC
+    // delivery parks on a std Condvar), and pg-wire SQL + vector ops also use
+    // spawn_blocking. The default cap (512) would let a few hundred
+    // subscriptions starve all other blocking work (CWE-400). Give ample
+    // headroom; subscription counts are independently capped (global + per
+    // tenant) in the subscription service.
+    // NOTE: the ideal fix is async CDC delivery (tokio::sync::Notify) so
+    // subscriptions need no dedicated thread — tracked as a follow-up.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .max_blocking_threads(2048)
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Initialize tracing
@@ -339,7 +355,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy_server = Arc::new(PolicyServer::new());
     let kv_server = KvServer::with_namespace_server(namespace_server.clone())
         .with_policy_server(policy_server.clone());
-    let memory_store = Arc::new(MemoryStore::with_defaults());
+    // Embedder selected by SOCHDB_EMBEDDER (e.g. fastembed:bge-small-en with the
+    // `fastembed` feature; mock/unset otherwise).
+    let memory_store = Arc::new(MemoryStore::from_env());
     let context_server = ContextServer::with_memory_store(Arc::clone(&memory_store));
     let semantic_cache_server = SemanticCacheServer::new();
     let trace_server = TraceServer::new();

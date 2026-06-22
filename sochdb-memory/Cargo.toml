@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Bi-temporal agent memory layer with write-time lexical recall"
 
+[features]
+default = []
+# Real semantic embeddings via fastembed (forwards to sochdb-query/fastembed).
+fastembed = ["sochdb-query/fastembed"]
+
 [dependencies]
 sochdb-core = { version = "2.0.11", path = "../sochdb-core" }
 sochdb-storage = { version = "2.0.11", path = "../sochdb-storage", features = ["embedded-sync"] }

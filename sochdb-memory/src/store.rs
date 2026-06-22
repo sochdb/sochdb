@@ -109,6 +109,17 @@ impl MemoryStore {
         Self::new(None, MemoryStoreConfig::default())
     }
 
+    /// Build with the embedder selected by the `SOCHDB_EMBEDDER` environment
+    /// variable (e.g. `fastembed:bge-small-en`, or `mock`/unset for the default
+    /// mock embedder). See [`sochdb_query::embedding_provider::embedder_from_env`].
+    pub fn from_env() -> Self {
+        Self::with_embedder(
+            None,
+            MemoryStoreConfig::default(),
+            sochdb_query::embedding_provider::embedder_from_env(),
+        )
+    }
+
     pub fn enrichment_queue(&self) -> &EnrichmentQueue {
         &self.enrichment
     }
