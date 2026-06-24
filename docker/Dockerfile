@@ -40,6 +40,7 @@ COPY sochdb-query ./sochdb-query
 COPY sochdb-memory ./sochdb-memory
 COPY sochdb-simulation ./sochdb-simulation
 COPY sochdb-bench ./sochdb-bench
+COPY examples/rust ./examples/rust
 COPY sochdb-fusion ./sochdb-fusion
 COPY sochdb-client ./sochdb-client
 COPY sochdb-grpc ./sochdb-grpc
