@@ -37,6 +37,7 @@ COPY sochdb-kernel ./sochdb-kernel
 COPY sochdb-storage ./sochdb-storage
 COPY sochdb-index ./sochdb-index
 COPY sochdb-query ./sochdb-query
+COPY sochdb-memory ./sochdb-memory
 COPY sochdb-fusion ./sochdb-fusion
 COPY sochdb-client ./sochdb-client
 COPY sochdb-grpc ./sochdb-grpc
@@ -46,7 +47,6 @@ COPY sochdb-wasm ./sochdb-wasm
 COPY sochdb-tools ./sochdb-tools
 COPY sochdb-plugin-logging ./sochdb-plugin-logging
 COPY proto ./proto
-COPY sochdb-fusion ./sochdb-fusion
 
 # Build release binary (limit jobs to avoid compiler SIGSEGV on memory-constrained hosts)
 RUN CARGO_BUILD_JOBS=4 cargo build --release --package sochdb-grpc --bin sochdb-grpc-server
