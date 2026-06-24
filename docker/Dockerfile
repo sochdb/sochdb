@@ -38,6 +38,8 @@ COPY sochdb-storage ./sochdb-storage
 COPY sochdb-index ./sochdb-index
 COPY sochdb-query ./sochdb-query
 COPY sochdb-memory ./sochdb-memory
+COPY sochdb-simulation ./sochdb-simulation
+COPY sochdb-bench ./sochdb-bench
 COPY sochdb-fusion ./sochdb-fusion
 COPY sochdb-client ./sochdb-client
 COPY sochdb-grpc ./sochdb-grpc
