@@ -15,10 +15,10 @@ readme = "README.md"
 
 [dependencies]
 # Internal crates
-sochdb-core = { version = "2.0.11", path = "../sochdb-core", features = ["analytics"] }
-sochdb-storage = { version = "2.0.11", path = "../sochdb-storage" }
-sochdb-index = { version = "2.0.11", path = "../sochdb-index" }
-sochdb-query = { version = "2.0.11", path = "../sochdb-query" }
+sochdb-core = { version = "2.0.12", path = "../sochdb-core", features = ["analytics"] }
+sochdb-storage = { version = "2.0.12", path = "../sochdb-storage" }
+sochdb-index = { version = "2.0.12", path = "../sochdb-index" }
+sochdb-query = { version = "2.0.12", path = "../sochdb-query" }
 
 # Synchronization
 parking_lot = "0.12"

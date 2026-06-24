@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.0.12] - 2026-06-23
+
+### Added
+
+- **Parent/view metadata** (`sochdb-index`, gRPC, proto) — per-vector
+  `parent_id`/`view_type` stored on the index, persisted via a file trailer, and
+  returned in search results (#96).
+- **Real fastembed semantic embedder** (`sochdb-query`/memory/grpc, opt-in
+  `fastembed` feature) — `SOCHDB_EMBEDDER=fastembed:<model>` (bge-small-en,
+  all-minilm, bge-base, bge-large), replacing the mock stub, with graceful mock
+  fallback (#99).
+- **Parent-aware grouped search** (gRPC, proto) — `GroupingOptions` groups vector
+  results by `parent_id` so multiple views of one source don't consume multiple
+  top-K slots; `GroupingInfo` diagnostics (#100).
+
 ## [2.0.11] - 2026-06-21
 
 ### Added
