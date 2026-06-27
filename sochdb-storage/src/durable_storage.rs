@@ -725,6 +725,15 @@ pub struct MvccManager {
     ts_counter: AtomicU64,
     /// Minimum active snapshot timestamp (for GC)
     min_active_ts: AtomicU64,
+    /// Refcounted multiset of active snapshot timestamps, ordered.
+    ///
+    /// Maintained incrementally on txn begin/end so the GC watermark
+    /// (`min_active_ts`) is O(log N) per begin/commit instead of an O(active_txns)
+    /// full `active_txns` DashMap scan (which locked every shard on every
+    /// begin AND commit — the dominant on-CPU cost under concurrent writes).
+    /// A multiset (count per ts) is required because `begin` reads ts_counter
+    /// without incrementing, so concurrent txns can share a snapshot_ts.
+    active_snapshots: parking_lot::Mutex<std::collections::BTreeMap<u64, u32>>,
     /// Recently committed transactions for SSI validation
     /// Maps txn_id -> (commit_ts, read_bloom, write_bloom, read_set, write_set)
     /// Bloom filters enable fast O(m/64) pre-filtering before O(n) exact checks
@@ -754,6 +763,7 @@ impl MvccManager {
             active_txns: DashMap::new(),
             ts_counter: AtomicU64::new(1),
             min_active_ts: AtomicU64::new(0),
+            active_snapshots: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
             recent_commits: DashMap::new(),
             max_recent_commits: 1000, // Track last 1000 commits for SSI
         }
@@ -801,7 +811,7 @@ impl MvccManager {
         let txn = MvccTransaction::with_mode(txn_id, snapshot_ts, mode);
 
         self.active_txns.insert(txn_id, txn.clone());
-        self.update_min_active_ts();
+        self.track_active_begin(snapshot_ts);
 
         txn
     }
@@ -879,8 +889,9 @@ impl MvccManager {
             // For ReadWrite: check SSI validation result
             if txn.mode == TransactionMode::ReadWrite && !self.validate_ssi(&txn) {
                 // Abort on SSI violation
-                self.active_txns.remove(&txn_id);
-                self.update_min_active_ts();
+                if self.active_txns.remove(&txn_id).is_some() {
+                    self.track_active_end(txn.snapshot_ts);
+                }
                 return None;
             }
         }
@@ -889,6 +900,9 @@ impl MvccManager {
 
         // Extract write_set and remove transaction - takes ownership
         let (_, removed_txn) = self.active_txns.remove(&txn_id)?;
+        // Capture before `removed_txn` is partially moved below; snapshot_ts is
+        // the multiset key for the matching begin.
+        let snap = removed_txn.snapshot_ts;
 
         // OPTIMIZATION: Only track ReadWrite transactions for SSI
         // ReadOnly/WriteOnly can't form complete rw-antidependency cycles
@@ -909,11 +923,11 @@ impl MvccManager {
                 removed_txn.write_set,
             );
 
-            self.update_min_active_ts();
+            self.track_active_end(snap);
             Some((commit_ts, write_set_for_return))
         } else {
             // Fast path: no SSI tracking needed, avoid clone entirely
-            self.update_min_active_ts();
+            self.track_active_end(snap);
             Some((commit_ts, removed_txn.write_set))
         }
     }
@@ -1164,8 +1178,9 @@ impl MvccManager {
 
     /// Abort transaction
     pub fn abort(&self, txn_id: u64) {
-        self.active_txns.remove(&txn_id);
-        self.update_min_active_ts();
+        if let Some((_, t)) = self.active_txns.remove(&txn_id) {
+            self.track_active_end(t.snapshot_ts);
+        }
     }
 
     /// Get minimum active snapshot timestamp
@@ -1178,12 +1193,76 @@ impl MvccManager {
         self.active_txns.len()
     }
 
+    /// Record a transaction entering the active set (its snapshot_ts) and
+    /// refresh `min_active_ts`. O(log N) — replaces the old O(active_txns) scan.
+    fn track_active_begin(&self, snapshot_ts: u64) {
+        let mut snaps = self.active_snapshots.lock();
+        *snaps.entry(snapshot_ts).or_insert(0) += 1;
+        // The set is non-empty (we just inserted); the smallest key is the min.
+        let min = *snaps.keys().next().expect("non-empty after insert");
+        self.min_active_ts.store(min, Ordering::SeqCst);
+    }
+
+    /// Record a transaction leaving the active set and refresh `min_active_ts`.
+    /// O(log N). `snapshot_ts` MUST be the value used at the matching begin.
+    fn track_active_end(&self, snapshot_ts: u64) {
+        let mut snaps = self.active_snapshots.lock();
+        if let Some(c) = snaps.get_mut(&snapshot_ts) {
+            *c -= 1;
+            if *c == 0 {
+                snaps.remove(&snapshot_ts);
+            }
+        }
+        // When no txn is active the watermark is the current ts_counter, exactly
+        // as the old full-scan did via `unwrap_or_else`.
+        let min = snaps
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or_else(|| self.ts_counter.load(Ordering::SeqCst));
+        self.min_active_ts.store(min, Ordering::SeqCst);
+    }
+
+    /// Test-only SOUND consistency check: with no concurrent mutation in flight,
+    /// the active-snapshot multiset must exactly mirror `active_txns` and yield
+    /// the same watermark as a full scan. Must be called from a quiescent (e.g.
+    /// single-threaded) point — it reads both structures and is not atomic.
+    #[cfg(test)]
+    pub(crate) fn assert_active_snapshots_consistent(&self) {
+        use std::collections::BTreeMap;
+        let mut from_txns: BTreeMap<u64, u32> = BTreeMap::new();
+        for e in self.active_txns.iter() {
+            *from_txns.entry(e.value().snapshot_ts).or_insert(0) += 1;
+        }
+        let snaps = self.active_snapshots.lock();
+        assert_eq!(
+            *snaps, from_txns,
+            "active_snapshots multiset drifted from active_txns"
+        );
+        let watermark = self.min_active_ts.load(Ordering::SeqCst);
+        match from_txns.keys().next().copied() {
+            // Non-empty: watermark must equal the oldest active snapshot.
+            Some(min) => assert_eq!(watermark, min, "min_active_ts watermark wrong"),
+            // Empty: any watermark <= ts_counter is SAFE (GC just stays
+            // conservative); the initial state is 0, post-drain it is ts_counter.
+            None => assert!(
+                watermark <= self.ts_counter.load(Ordering::SeqCst),
+                "empty-state watermark {} exceeds ts_counter",
+                watermark
+            ),
+        }
+    }
+
+    /// Recompute `min_active_ts` from the active-snapshot multiset (O(log N)).
+    /// Retained for any caller that needs a watermark refresh without a
+    /// corresponding begin/end (e.g. recovery).
+    #[allow(dead_code)]
     fn update_min_active_ts(&self) {
-        let min = self
-            .active_txns
-            .iter()
-            .map(|entry| entry.value().snapshot_ts)
-            .min()
+        let snaps = self.active_snapshots.lock();
+        let min = snaps
+            .keys()
+            .next()
+            .copied()
             .unwrap_or_else(|| self.ts_counter.load(Ordering::SeqCst));
         self.min_active_ts.store(min, Ordering::SeqCst);
     }
@@ -3673,6 +3752,78 @@ pub struct StorageStats {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// Incremental min-active-ts (multiset) must exactly track the old full-scan
+    /// semantics across begin / commit / abort, including shared snapshot_ts
+    /// (refcounting) and the empty -> ts_counter watermark fallback.
+    #[test]
+    fn test_incremental_min_active_ts() {
+        let m = MvccManager::new();
+        m.assert_active_snapshots_consistent(); // empty
+
+        // Two txns share the SAME snapshot_ts (begin reads ts_counter w/o bump).
+        let a = m.begin(1);
+        let b = m.begin(2);
+        assert_eq!(a.snapshot_ts, b.snapshot_ts, "shared snapshot expected");
+        assert_eq!(m.min_active_snapshot(), a.snapshot_ts);
+        m.assert_active_snapshots_consistent();
+
+        // Advance ts via a commit, then a third txn has a HIGHER snapshot.
+        m.commit(1); // removes a; b still holds the low snapshot
+        assert_eq!(m.min_active_snapshot(), b.snapshot_ts);
+        m.assert_active_snapshots_consistent();
+
+        let c = m.begin(3);
+        assert!(c.snapshot_ts >= b.snapshot_ts);
+        // min is still b's (the oldest still-active), NOT c's.
+        assert_eq!(m.min_active_snapshot(), b.snapshot_ts);
+        m.assert_active_snapshots_consistent();
+
+        // Abort the oldest -> watermark advances to c's snapshot.
+        m.abort(2);
+        assert_eq!(m.min_active_snapshot(), c.snapshot_ts);
+        m.assert_active_snapshots_consistent();
+
+        // Drain the last one -> empty -> watermark falls back to ts_counter.
+        m.commit(3);
+        assert_eq!(m.min_active_snapshot(), m.ts_counter.load(Ordering::SeqCst));
+        m.assert_active_snapshots_consistent();
+
+        // Double-abort / abort of unknown id must be a no-op (no underflow).
+        m.abort(999);
+        m.abort(3);
+        m.assert_active_snapshots_consistent();
+    }
+
+    /// Concurrent stress: many threads begin/commit/abort; after they all join
+    /// (quiescent), the multiset must exactly mirror active_txns. This catches
+    /// any refcount leak/underflow under real contention.
+    #[test]
+    fn test_incremental_min_active_ts_concurrent() {
+        use std::sync::Arc;
+        let m = Arc::new(MvccManager::new());
+        let mut handles = vec![];
+        for t in 0..8u64 {
+            let m = Arc::clone(&m);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..500u64 {
+                    let id = t * 100_000 + i;
+                    let _txn = m.begin(id);
+                    if i % 3 == 0 {
+                        m.abort(id);
+                    } else {
+                        m.commit(id);
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        // All transactions retired -> multiset empty, mirrors active_txns.
+        m.assert_active_snapshots_consistent();
+        assert_eq!(m.active_transaction_count(), 0);
+    }
 
     #[test]
     fn test_basic_transaction() {
