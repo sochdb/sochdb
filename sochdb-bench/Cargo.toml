@@ -82,3 +82,7 @@ path = "src/bin/wal_shard_scaling.rs"
 [[bin]]
 name = "semantic-recall-proof"
 path = "src/bin/semantic_recall_proof.rs"
+
+[[bin]]
+name = "locomo-memory-recall"
+path = "src/bin/locomo_memory_recall.rs"
