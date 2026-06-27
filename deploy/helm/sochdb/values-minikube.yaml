@@ -3,7 +3,7 @@
 
 image:
   repository: sochdb/sochdb-grpc
-  tag: "2.0.12"
+  tag: "2.1.0"
   pullPolicy: Never  # Use locally built image in minikube
 
 replicaCount: 1
