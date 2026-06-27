@@ -116,8 +116,16 @@ pub trait EmbeddingProvider: Send + Sync {
         true
     }
 
-    /// Generate embedding for a single text
+    /// Generate embedding for a single text (document side).
     fn embed(&self, text: &str) -> EmbeddingResult<Vec<f32>>;
+
+    /// Embed a QUERY for asymmetric retrieval. Defaults to `embed` (symmetric).
+    /// Providers for instruction-tuned models (e.g. BGE) override this to apply
+    /// the query-side instruction so query and document embeddings align — a
+    /// large recall lever for those models.
+    fn embed_query(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
+        self.embed(text)
+    }
 
     /// Generate embeddings for multiple texts (batch)
     fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
@@ -621,6 +629,20 @@ impl EmbeddingProvider for FastEmbedProvider {
             .map_err(|e| EmbeddingError::ProviderError(format!("fastembed embed failed: {e}")))?;
         out.pop()
             .ok_or_else(|| EmbeddingError::ProviderError("fastembed returned no embedding".into()))
+    }
+    fn embed_query(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
+        // BGE v1.5 models are asymmetric: queries are embedded WITH the retrieval
+        // instruction prefix, documents without it. Embedding queries as plain
+        // documents (no prefix) misaligns them with the indexed docs and depresses
+        // recall — more so for the more instruction-tuned bge-base. MiniLM and
+        // other symmetric models need no prefix and fall through to `embed`.
+        if self.model_name.contains("bge") {
+            self.embed(&format!(
+                "Represent this sentence for searching relevant passages: {text}"
+            ))
+        } else {
+            self.embed(text)
+        }
     }
     fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
         let mut m = self
