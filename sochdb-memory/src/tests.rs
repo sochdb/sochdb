@@ -58,13 +58,18 @@ mod tests {
             })
             .collect();
 
-        let results = store.write_turns("conv", &turns, 3, None).unwrap();
-        assert_eq!(results.len(), 2, "6 turns @ window=3 should be 2 episodes");
+        // Disjoint windows: 6 turns @ window=3 stride=3 -> 2 episodes.
+        let results = store.write_turns("conv", &turns, 3, 3, None).unwrap();
+        assert_eq!(results.len(), 2, "6 turns @ window=3 stride=3 should be 2 episodes");
 
         let ep0 = store.episode_text("conv", results[0].episode_id.0).unwrap();
         assert!(ep0.contains("Alice: message number 0"), "speaker prefix + turn 0");
         assert!(ep0.contains("Bob: message number 1"), "turn 1 grouped in");
         assert!(ep0.contains("message number 2"), "turn 2 grouped in");
+
+        // Overlapping windows: window=3 stride=2 -> starts at 0,2,4 -> 3 episodes.
+        let overlapped = store.write_turns("conv2", &turns, 3, 2, None).unwrap();
+        assert_eq!(overlapped.len(), 3, "window=3 stride=2 over 6 turns should be 3 episodes");
 
         let r = store.query(&MemoryQuery {
             namespace: "conv".into(),
