@@ -33,7 +33,10 @@ use std::time::Instant;
 use sochdb_storage::txn_wal::{TxnWal, TxnWalEntry};
 
 fn env_usize(k: &str, d: usize) -> usize {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
 }
 
 fn run_point(shards: usize, threads: usize, ops_per_thread: usize) -> f64 {

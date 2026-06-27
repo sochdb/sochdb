@@ -32,7 +32,10 @@ use std::time::Instant;
 use sochdb_storage::{Database, DatabaseConfig, SyncMode};
 
 fn env_usize(k: &str, d: usize) -> usize {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
 }
 
 #[derive(Clone, Copy)]
@@ -146,7 +149,10 @@ fn main() {
         "durable_concurrent (hardened): ops/thread={} repeats={} (1st=warmup) valsize={}B",
         ops_per_thread, repeats, valsize
     );
-    println!("configs (interleaved A/B): {:?}", configs.iter().map(|c| c.label()).collect::<Vec<_>>());
+    println!(
+        "configs (interleaved A/B): {:?}",
+        configs.iter().map(|c| c.label()).collect::<Vec<_>>()
+    );
     println!(
         "\n{:>8} {:>10} {:>12} {:>12} {:>12} {:>10}",
         "threads", "config", "median o/s", "min", "max", "vs[0]"
@@ -172,7 +178,11 @@ fn main() {
             let ratio = if med0 > 0.0 { med / med0 } else { 0.0 };
             println!(
                 "{:>8} {:>10} {:>12.0} {:>12.0} {:>12.0} {:>9.2}x",
-                if ci == 0 { nthreads.to_string() } else { String::new() },
+                if ci == 0 {
+                    nthreads.to_string()
+                } else {
+                    String::new()
+                },
                 cfg.label(),
                 med,
                 mn,

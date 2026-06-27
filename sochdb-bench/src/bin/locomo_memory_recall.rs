@@ -55,10 +55,7 @@ impl sochdb_query::EmbeddingProvider for CachedEmbedder {
     fn is_semantic(&self) -> bool {
         true
     }
-    fn embed(
-        &self,
-        text: &str,
-    ) -> sochdb_query::embedding_provider::EmbeddingResult<Vec<f32>> {
+    fn embed(&self, text: &str) -> sochdb_query::embedding_provider::EmbeddingResult<Vec<f32>> {
         self.map.get(text).cloned().ok_or_else(|| {
             sochdb_query::embedding_provider::EmbeddingError::ProviderError(format!(
                 "no cached embedding for: {:.50}",
@@ -138,7 +135,9 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                 if !(key.starts_with("session_") && !key.contains("date")) {
                     continue;
                 }
-                let Some(turns) = val.as_array() else { continue };
+                let Some(turns) = val.as_array() else {
+                    continue;
+                };
                 // (dia_id, "speaker: text") for each non-empty turn.
                 let items: Vec<(String, String)> = turns
                     .iter()
@@ -155,7 +154,11 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                         Some((dia.to_string(), line))
                     })
                     .collect();
-                let w = if window == 0 { items.len().max(1) } else { window };
+                let w = if window == 0 {
+                    items.len().max(1)
+                } else {
+                    window
+                };
                 let s = stride.min(w).max(1);
                 let mut start = 0;
                 while start < items.len() {
@@ -177,7 +180,10 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                             .expect("write_episode");
                         // Each turn in this window can also belong to other windows.
                         for (dia, _) in group {
-                            dia2docs.entry(dia.clone()).or_default().push(wr.episode_id.0);
+                            dia2docs
+                                .entry(dia.clone())
+                                .or_default()
+                                .push(wr.episode_id.0);
                         }
                     }
                     if end == items.len() {
@@ -188,7 +194,9 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
             }
         }
 
-        let Some(qas) = conv["qa"].as_array() else { continue };
+        let Some(qas) = conv["qa"].as_array() else {
+            continue;
+        };
         for qa in qas {
             let Some(question) = qa["question"].as_str() else {
                 continue;
