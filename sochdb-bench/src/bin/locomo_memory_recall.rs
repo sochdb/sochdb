@@ -190,8 +190,11 @@ fn main() {
     #[cfg(feature = "fastembed")]
     {
         // One embedder shared across all conversations (avoids reloading the model).
-        let emb = sochdb_query::embedding_provider::embedder_from_spec("fastembed:bge-small-en");
-        run("fastembed bge-small (hybrid)", emb, &data, k);
+        // Model selectable via EMBED_MODEL (e.g. bge-small-en, bge-base-en, bge-large-en).
+        let model = std::env::var("EMBED_MODEL").unwrap_or_else(|_| "bge-small-en".into());
+        let emb =
+            sochdb_query::embedding_provider::embedder_from_spec(&format!("fastembed:{model}"));
+        run(&format!("fastembed {model} (hybrid)"), emb, &data, k);
     }
     #[cfg(not(feature = "fastembed"))]
     println!("\n(rebuild with --features fastembed to measure the semantic path)");
