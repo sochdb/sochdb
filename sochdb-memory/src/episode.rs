@@ -21,6 +21,14 @@ pub struct EpisodeWrite {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// A single conversation turn for windowed ingestion via
+/// [`crate::MemoryStore::write_turns`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationTurn {
+    pub speaker: String,
+    pub text: String,
+}
+
 /// Stored episode record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Episode {

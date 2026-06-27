@@ -55,7 +55,9 @@ impl MemoryStore {
 
     /// Vector lane search over enriched episodes (brute-force; tuned for agent-memory scale).
     pub fn search_vector(&self, namespace: &str, query: &str, k: usize) -> Vec<(u64, f32)> {
-        let mut query_emb = match self.embedder.embed(query) {
+        // Asymmetric: embed the QUERY with the model's query instruction (BGE),
+        // not as a document — aligns it with the indexed doc embeddings.
+        let mut query_emb = match self.embedder.embed_query(query) {
             Ok(v) => v,
             Err(_) => return Vec::new(),
         };

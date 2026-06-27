@@ -78,24 +78,52 @@ impl MemoryStore {
         let mut scores: HashMap<u64, f32> = HashMap::new();
         let mut lanes_used = Vec::new();
 
+        // Reciprocal Rank Fusion (RRF): fuse lanes by RANK, not raw score.
+        // The raw per-lane scores are incomparable — BM25 is unbounded, cosine
+        // is [-1,1], and the trigram lane emits a flat constant — so a weighted
+        // SUM of raw scores let BM25 magnitude dominate and made the nominal lane
+        // weights meaningless. RRF (weight / (RRF_K + rank)) is scale-invariant:
+        // each lane contributes purely by where a doc ranks within that lane, so
+        // the lane weights are honored and no lane can drown out another. Lanes
+        // return results already sorted best-first, so the enumeration index is
+        // the rank. RRF_K=60 is the standard damping constant.
+        const RRF_K: f32 = 60.0;
+        let rrf = |rank: usize| 1.0 / (RRF_K + rank as f32 + 1.0);
+
         if q.lanes.bm25 {
             lanes_used.push(Lane::Bm25);
-            for (doc_id, score) in self.search_bm25(&q.namespace, &q.query, k * 2) {
-                *scores.entry(doc_id).or_default() += score * q.lanes.bm25_weight;
+            for (rank, (doc_id, _)) in self
+                .search_bm25(&q.namespace, &q.query, k * 2)
+                .into_iter()
+                .enumerate()
+            {
+                *scores.entry(doc_id).or_default() += q.lanes.bm25_weight * rrf(rank);
             }
         }
 
         if q.lanes.trigram {
             lanes_used.push(Lane::Trigram);
-            for (doc_id, score) in self.search_trigram_literal(&q.namespace, &q.query, k * 2) {
-                *scores.entry(doc_id).or_default() += score * q.lanes.trigram_weight;
+            for (rank, (doc_id, _)) in self
+                .search_trigram_literal(&q.namespace, &q.query, k * 2)
+                .into_iter()
+                .enumerate()
+            {
+                *scores.entry(doc_id).or_default() += q.lanes.trigram_weight * rrf(rank);
             }
         }
 
-        if q.lanes.vector {
+        // Vector lane contributes ONLY when the embedder is semantic. Fusing the
+        // cosine of a hash/mock embedder would inject noise and silently degrade
+        // recall, so a non-semantic embedder makes three_lane gracefully behave
+        // as lexical instead — which is what makes defaulting to three_lane safe.
+        if q.lanes.vector && self.embedder.is_semantic() {
             lanes_used.push(Lane::Vector);
-            for (doc_id, score) in self.search_vector(&q.namespace, &q.query, k * 2) {
-                *scores.entry(doc_id).or_default() += score * q.lanes.vector_weight;
+            for (rank, (doc_id, _)) in self
+                .search_vector(&q.namespace, &q.query, k * 2)
+                .into_iter()
+                .enumerate()
+            {
+                *scores.entry(doc_id).or_default() += q.lanes.vector_weight * rrf(rank);
             }
         }
 

@@ -14,8 +14,8 @@
 # === Image Publishing ===
 # Push to ACR (linked to Partner Center):
 #   az acr login --name sochdbregistry
-#   docker tag sochdb/sochdb-grpc:latest sochdbregistry.azurecr.io/sochdb-grpc:2.0.12
-#   docker push sochdbregistry.azurecr.io/sochdb-grpc:2.0.12
+#   docker tag sochdb/sochdb-grpc:latest sochdbregistry.azurecr.io/sochdb-grpc:2.1.0
+#   docker push sochdbregistry.azurecr.io/sochdb-grpc:2.1.0
 
 # === CNAB Bundle Structure ===
 # The Helm chart at deploy/helm/sochdb/ is packaged as a CNAB bundle:
@@ -46,7 +46,7 @@ description: |
   - Non-root container, read-only rootfs, mTLS support
 
   Deploy on any AKS cluster with:
-    helm install sochdb oci://sochdbregistry.azurecr.io/helm/sochdb --version 2.0.12
+    helm install sochdb oci://sochdbregistry.azurecr.io/helm/sochdb --version 2.1.0
 
 plans:
   - plan_id: free

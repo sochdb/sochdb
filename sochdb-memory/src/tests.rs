@@ -2,6 +2,96 @@
 mod tests {
     use crate::{EpisodeWrite, MemoryQuery, MemoryStore, MemoryStoreConfig, QueryLanes};
 
+    /// RRF fusion: the doc that matches across lanes (bm25 + trigram) must rank
+    /// first, and fused scores are the small rank-based RRF values (not raw
+    /// per-lane magnitudes). Locks the fix that replaced the un-normalized
+    /// weighted-sum (where unbounded BM25 scores dominated).
+    #[test]
+    fn rrf_fusion_ranks_best_match_first() {
+        let store = MemoryStore::with_defaults();
+        for text in [
+            "Caroline joined the LGBTQ support group in May",
+            "the weather was sunny on the beach yesterday",
+            "quarterly revenue report shows strong growth",
+        ] {
+            store
+                .write_episode(EpisodeWrite {
+                    namespace: "t".into(),
+                    text: text.into(),
+                    t_valid_from: None,
+                    metadata: None,
+                })
+                .unwrap();
+        }
+        let r = store.query(&MemoryQuery {
+            namespace: "t".into(),
+            query: "LGBTQ support group".into(),
+            as_of: None,
+            lanes: QueryLanes::lexical_only(),
+            k: 3,
+        });
+        assert!(!r.hits.is_empty(), "RRF fusion returned no hits");
+        assert!(
+            r.hits[0].snippet.contains("LGBTQ"),
+            "best multi-lane match must rank first under RRF, got: {}",
+            r.hits[0].snippet
+        );
+        // RRF contributions are weight / (60 + rank): strictly positive, well below 1.
+        assert!(
+            r.hits[0].score > 0.0 && r.hits[0].score < 1.0,
+            "RRF score outside expected range: {}",
+            r.hits[0].score
+        );
+    }
+
+    /// write_turns groups N turns per episode and prefixes each with its speaker
+    /// — the ingestion shape proven to maximize recall (vs one bare turn per
+    /// episode). 6 turns @ window=3 => 2 episodes; each carries speaker-prefixed
+    /// lines for its turns and is retrievable.
+    #[test]
+    fn write_turns_windows_and_prefixes() {
+        let store = MemoryStore::with_defaults();
+        let turns: Vec<crate::episode::ConversationTurn> = (0..6)
+            .map(|i| crate::episode::ConversationTurn {
+                speaker: if i % 2 == 0 { "Alice" } else { "Bob" }.into(),
+                text: format!("message number {i}"),
+            })
+            .collect();
+
+        // Disjoint windows: 6 turns @ window=3 stride=3 -> 2 episodes.
+        let results = store.write_turns("conv", &turns, 3, 3, None).unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "6 turns @ window=3 stride=3 should be 2 episodes"
+        );
+
+        let ep0 = store.episode_text("conv", results[0].episode_id.0).unwrap();
+        assert!(
+            ep0.contains("Alice: message number 0"),
+            "speaker prefix + turn 0"
+        );
+        assert!(ep0.contains("Bob: message number 1"), "turn 1 grouped in");
+        assert!(ep0.contains("message number 2"), "turn 2 grouped in");
+
+        // Overlapping windows: window=3 stride=2 -> starts at 0,2,4 -> 3 episodes.
+        let overlapped = store.write_turns("conv2", &turns, 3, 2, None).unwrap();
+        assert_eq!(
+            overlapped.len(),
+            3,
+            "window=3 stride=2 over 6 turns should be 3 episodes"
+        );
+
+        let r = store.query(&MemoryQuery {
+            namespace: "conv".into(),
+            query: "message number 4".into(),
+            as_of: None,
+            lanes: QueryLanes::lexical_only(),
+            k: 5,
+        });
+        assert!(!r.hits.is_empty(), "windowed episode must be retrievable");
+    }
+
     #[test]
     fn write_time_lexical_recall() {
         let store = MemoryStore::with_defaults();
@@ -26,6 +116,29 @@ mod tests {
         assert!(!result.hits.is_empty());
     }
 
+    /// Deterministic test embedder that reports `is_semantic() == true` so the
+    /// vector lane runs — lets us exercise the semantic-gated hybrid path without
+    /// the heavy fastembed ONNX model. (Embed quality is irrelevant here; the
+    /// lexical lanes supply the hits, this just makes the vector lane active.)
+    struct SemanticTestEmbedder(sochdb_query::MockEmbeddingProvider);
+    impl sochdb_query::EmbeddingProvider for SemanticTestEmbedder {
+        fn model_name(&self) -> &str {
+            "test-semantic"
+        }
+        fn dimension(&self) -> usize {
+            self.0.dimension()
+        }
+        fn max_length(&self) -> usize {
+            self.0.max_length()
+        }
+        fn is_semantic(&self) -> bool {
+            true
+        }
+        fn embed(&self, text: &str) -> sochdb_query::embedding_provider::EmbeddingResult<Vec<f32>> {
+            self.0.embed(text)
+        }
+    }
+
     #[test]
     fn enrichment_enables_vector_lane() {
         let store = MemoryStore::with_embedder(
@@ -34,7 +147,9 @@ mod tests {
                 enrich_on_write: true,
                 ..MemoryStoreConfig::default()
             },
-            std::sync::Arc::new(sochdb_query::MockEmbeddingProvider::new(384)),
+            std::sync::Arc::new(SemanticTestEmbedder(
+                sochdb_query::MockEmbeddingProvider::new(384),
+            )),
         );
 
         store
@@ -56,7 +171,41 @@ mod tests {
             k: 5,
         });
 
+        // Semantic embedder + enrichment -> vector lane is active.
         assert!(result.lanes_used.contains(&crate::Lane::Vector));
+        assert!(!result.hits.is_empty());
+    }
+
+    /// The gate: with a NON-semantic (mock) embedder, three_lane must auto-skip
+    /// the vector lane so mock-cosine noise never enters fusion — this is what
+    /// makes defaulting to three_lane safe.
+    #[test]
+    fn mock_embedder_skips_vector_lane() {
+        let store = MemoryStore::with_embedder(
+            None,
+            MemoryStoreConfig {
+                enrich_on_write: true,
+                ..MemoryStoreConfig::default()
+            },
+            std::sync::Arc::new(sochdb_query::MockEmbeddingProvider::new(384)),
+        );
+        store
+            .write_episode(EpisodeWrite {
+                namespace: "m".into(),
+                text: "cardiac surgery in Boston".into(),
+                t_valid_from: None,
+                metadata: None,
+            })
+            .unwrap();
+        let result = store.query(&MemoryQuery {
+            namespace: "m".into(),
+            query: "cardiac surgery".into(),
+            as_of: None,
+            lanes: QueryLanes::three_lane(),
+            k: 5,
+        });
+        // Vector lane suppressed; lexical lanes still return the hit.
+        assert!(!result.lanes_used.contains(&crate::Lane::Vector));
         assert!(!result.hits.is_empty());
     }
 

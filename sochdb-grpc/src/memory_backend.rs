@@ -172,7 +172,12 @@ impl MemoryBackend {
                 trigram_weight: 1.0,
                 vector_weight: 0.0,
             },
-            _ => QueryLanes::lexical_only(),
+            // Default: full hybrid. The vector lane auto-degrades (skips) when
+            // no semantic embedder is configured, so an unspecified caller gets
+            // semantic+lexical fusion when it's available and clean lexical
+            // results when it isn't — never mock-vector noise. Callers can still
+            // opt down to lanes=bm25/trigram for latency.
+            _ => QueryLanes::three_lane(),
         }
     }
 }

@@ -106,8 +106,26 @@ pub trait EmbeddingProvider: Send + Sync {
     /// Maximum text length (in characters or tokens)
     fn max_length(&self) -> usize;
 
-    /// Generate embedding for a single text
+    /// Whether this provider produces SEMANTICALLY meaningful embeddings.
+    ///
+    /// Real model-backed providers return `true` (the default). The hash-based
+    /// `MockEmbeddingProvider` returns `false` — callers use this to avoid fusing
+    /// a meaningless cosine lane into hybrid results (which would corrupt recall
+    /// silently). Defaulted so real providers need not implement it.
+    fn is_semantic(&self) -> bool {
+        true
+    }
+
+    /// Generate embedding for a single text (document side).
     fn embed(&self, text: &str) -> EmbeddingResult<Vec<f32>>;
+
+    /// Embed a QUERY for asymmetric retrieval. Defaults to `embed` (symmetric).
+    /// Providers for instruction-tuned models (e.g. BGE) override this to apply
+    /// the query-side instruction so query and document embeddings align — a
+    /// large recall lever for those models.
+    fn embed_query(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
+        self.embed(text)
+    }
 
     /// Generate embeddings for multiple texts (batch)
     fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
@@ -276,6 +294,13 @@ impl EmbeddingProvider for MockEmbeddingProvider {
 
     fn max_length(&self) -> usize {
         self.config.max_length
+    }
+
+    /// Hash-based embeddings have no semantic meaning — cosine over them is
+    /// noise, so hybrid retrieval must NOT fuse the vector lane when this
+    /// provider is in use.
+    fn is_semantic(&self) -> bool {
+        false
     }
 
     fn embed(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
@@ -605,6 +630,20 @@ impl EmbeddingProvider for FastEmbedProvider {
         out.pop()
             .ok_or_else(|| EmbeddingError::ProviderError("fastembed returned no embedding".into()))
     }
+    fn embed_query(&self, text: &str) -> EmbeddingResult<Vec<f32>> {
+        // BGE v1.5 models are asymmetric: queries are embedded WITH the retrieval
+        // instruction prefix, documents without it. Embedding queries as plain
+        // documents (no prefix) misaligns them with the indexed docs and depresses
+        // recall — more so for the more instruction-tuned bge-base. MiniLM and
+        // other symmetric models need no prefix and fall through to `embed`.
+        if self.model_name.contains("bge") {
+            self.embed(&format!(
+                "Represent this sentence for searching relevant passages: {text}"
+            ))
+        } else {
+            self.embed(text)
+        }
+    }
     fn embed_batch(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
         let mut m = self
             .model
@@ -622,9 +661,11 @@ impl EmbeddingProvider for FastEmbedProvider {
 ///   feature; e.g. `fastembed:bge-small-en`).
 /// * `mock` / `hash` / unset — deterministic [`MockEmbeddingProvider`] (384-d).
 ///
-/// Falls back to the mock provider (with a warning) when `fastembed` is requested
-/// but the binary was built without the feature, or the model fails to load — so
-/// the server always boots rather than hard-failing on the embedder.
+/// When `SOCHDB_EMBEDDER=fastembed:...` is set but cannot be honored (binary
+/// built without the feature, or the model fails to load), this PANICS at
+/// startup rather than silently falling back to the non-semantic mock embedder
+/// — a silent fallback corrupts retrieval quality without any error. An unset
+/// or `mock`/`hash` spec uses the mock provider normally.
 pub fn embedder_from_env() -> std::sync::Arc<dyn EmbeddingProvider> {
     let spec = std::env::var("SOCHDB_EMBEDDER").unwrap_or_default();
     embedder_from_spec(&spec)
@@ -641,16 +682,21 @@ pub fn embedder_from_spec(spec: &str) -> std::sync::Arc<dyn EmbeddingProvider> {
                     tracing::info!("memory embedder: fastembed:{model} (dim={})", p.dimension());
                     return std::sync::Arc::new(p);
                 }
-                Err(e) => {
-                    tracing::warn!("fastembed:{model} unavailable ({e}); using mock embedder");
-                }
+                Err(e) => panic!(
+                    "SOCHDB_EMBEDDER=fastembed:{model} was requested but the model failed to \
+                     load: {e}. Refusing to start with a non-semantic mock embedder, which would \
+                     silently corrupt retrieval. Fix the model/cache (FASTEMBED_CACHE_DIR) or \
+                     unset SOCHDB_EMBEDDER to use the mock explicitly."
+                ),
             }
         }
         #[cfg(not(feature = "fastembed"))]
         {
-            tracing::warn!(
-                "SOCHDB_EMBEDDER=fastembed:{model} but this binary was built without the \
-                 `fastembed` feature; using mock embedder"
+            panic!(
+                "SOCHDB_EMBEDDER=fastembed:{model} was requested but this binary was built \
+                 WITHOUT the `fastembed` feature. Rebuild with `--features fastembed`, or unset \
+                 SOCHDB_EMBEDDER to use the mock embedder explicitly. Refusing to silently fall \
+                 back to a non-semantic mock."
             );
         }
     } else {
