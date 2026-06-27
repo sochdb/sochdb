@@ -54,6 +54,9 @@ tokio        = { version = "1", features = ["rt-multi-thread"], optional = true 
 [features]
 default      = []
 lancedb-bench = ["lancedb", "arrow-array", "arrow-schema", "tokio"]
+# Real semantic embeddings for the semantic-recall-proof bin (forwards to the
+# memory layer's fastembed/ONNX provider).
+fastembed = ["sochdb-memory/fastembed"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -75,3 +78,7 @@ path = "src/bin/durable_concurrent.rs"
 [[bin]]
 name = "wal-shard-scaling"
 path = "src/bin/wal_shard_scaling.rs"
+
+[[bin]]
+name = "semantic-recall-proof"
+path = "src/bin/semantic_recall_proof.rs"

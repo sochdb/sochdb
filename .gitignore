@@ -109,4 +109,4 @@ benchmarks/locomo_plus/results/
 benchmarks/longmemeval/data/
 sochdb-bench/bench-results-*/
 **/embedding_cache/
-*.npy
+*.npy.fastembed_cache
