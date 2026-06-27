@@ -101,30 +101,58 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
         let mut dia2doc: HashMap<String, u64> = HashMap::new();
 
         if let Some(obj) = conv["conversation"].as_object() {
+            // WINDOW=N groups N consecutive turns per session into one episode
+            // (0 = the whole session as one episode). Larger windows give each
+            // episode more conversational context, so a question can match the
+            // block that CONTAINS its evidence turn even when the turn itself is
+            // short/context-stripped — the retrieval-structure lever.
+            let window: usize = std::env::var("WINDOW")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1);
             for (key, val) in obj {
-                // session_N arrays of turns (skip session_N_date_time scalars).
                 if !(key.starts_with("session_") && !key.contains("date")) {
                     continue;
                 }
                 let Some(turns) = val.as_array() else { continue };
-                for turn in turns {
-                    let (Some(dia), Some(text)) =
-                        (turn["dia_id"].as_str(), turn["text"].as_str())
-                    else {
-                        continue;
-                    };
+                // (dia_id, "speaker: text") for each non-empty turn.
+                let items: Vec<(String, String)> = turns
+                    .iter()
+                    .filter_map(|t| {
+                        let dia = t["dia_id"].as_str()?;
+                        let text = t["text"].as_str()?;
+                        if text.trim().is_empty() {
+                            return None;
+                        }
+                        let line = match t["speaker"].as_str() {
+                            Some(sp) if !sp.is_empty() => format!("{sp}: {text}"),
+                            _ => text.to_string(),
+                        };
+                        Some((dia.to_string(), line))
+                    })
+                    .collect();
+                let chunk_size = if window == 0 { items.len().max(1) } else { window };
+                for chunk in items.chunks(chunk_size) {
+                    let text = chunk
+                        .iter()
+                        .map(|(_, l)| l.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     if text.trim().is_empty() {
                         continue;
                     }
                     let wr = store
                         .write_episode(EpisodeWrite {
                             namespace: ns.into(),
-                            text: text.into(),
+                            text,
                             t_valid_from: None,
                             metadata: None,
                         })
                         .expect("write_episode");
-                    dia2doc.insert(dia.to_string(), wr.episode_id.0);
+                    // Every turn in the chunk maps to this episode's doc_id.
+                    for (dia, _) in chunk {
+                        dia2doc.insert(dia.clone(), wr.episode_id.0);
+                    }
                 }
             }
         }
@@ -139,8 +167,8 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                 .map(|s| s.to_string())
                 .or_else(|| qa["category"].as_i64().map(|n| n.to_string()))
                 .unwrap_or_else(|| "?".into());
-            // gold evidence dia_ids -> doc_ids
-            let gold: Vec<u64> = qa["evidence"]
+            // gold evidence dia_ids -> distinct episode (chunk) doc_ids
+            let gold: HashSet<u64> = qa["evidence"]
                 .as_array()
                 .map(|ev| {
                     ev.iter()
