@@ -67,3 +67,11 @@ harness = false
 opt-level    = 3
 lto          = "thin"
 codegen-units = 1
+
+[[bin]]
+name = "durable-concurrent"
+path = "src/bin/durable_concurrent.rs"
+
+[[bin]]
+name = "wal-shard-scaling"
+path = "src/bin/wal_shard_scaling.rs"
