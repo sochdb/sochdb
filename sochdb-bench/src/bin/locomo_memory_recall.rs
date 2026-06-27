@@ -68,6 +68,22 @@ impl sochdb_query::EmbeddingProvider for CachedEmbedder {
     }
 }
 
+/// three_lane defaults, with optional env overrides for the RRF lane weights
+/// (BM25_W / TRIGRAM_W / VECTOR_W) so we can tune fusion at a fixed chunking.
+fn lanes_from_env() -> QueryLanes {
+    let mut l = QueryLanes::three_lane();
+    if let Some(w) = std::env::var("BM25_W").ok().and_then(|v| v.parse().ok()) {
+        l.bm25_weight = w;
+    }
+    if let Some(w) = std::env::var("TRIGRAM_W").ok().and_then(|v| v.parse().ok()) {
+        l.trigram_weight = w;
+    }
+    if let Some(w) = std::env::var("VECTOR_W").ok().and_then(|v| v.parse().ok()) {
+        l.vector_weight = w;
+    }
+    l
+}
+
 #[derive(Default)]
 struct Agg {
     hit: f64,
@@ -98,7 +114,8 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
             Arc::clone(&embedder),
         );
         let ns = "loco";
-        let mut dia2doc: HashMap<String, u64> = HashMap::new();
+        // A turn can land in several overlapping windows -> list of episode docs.
+        let mut dia2docs: HashMap<String, Vec<u64>> = HashMap::new();
 
         if let Some(obj) = conv["conversation"].as_object() {
             // WINDOW=N groups N consecutive turns per session into one episode
@@ -110,6 +127,13 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1);
+            // STRIDE < WINDOW => overlapping (sliding) episodes. Defaults to
+            // WINDOW (disjoint chunks). Overlap keeps every turn fully-contexted
+            // in some episode while keeping the candidate pool large.
+            let stride: usize = std::env::var("STRIDE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(window.max(1));
             for (key, val) in obj {
                 if !(key.starts_with("session_") && !key.contains("date")) {
                     continue;
@@ -131,28 +155,35 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                         Some((dia.to_string(), line))
                     })
                     .collect();
-                let chunk_size = if window == 0 { items.len().max(1) } else { window };
-                for chunk in items.chunks(chunk_size) {
-                    let text = chunk
+                let w = if window == 0 { items.len().max(1) } else { window };
+                let s = stride.min(w).max(1);
+                let mut start = 0;
+                while start < items.len() {
+                    let end = (start + w).min(items.len());
+                    let group = &items[start..end];
+                    let text = group
                         .iter()
                         .map(|(_, l)| l.as_str())
                         .collect::<Vec<_>>()
                         .join("\n");
-                    if text.trim().is_empty() {
-                        continue;
+                    if !text.trim().is_empty() {
+                        let wr = store
+                            .write_episode(EpisodeWrite {
+                                namespace: ns.into(),
+                                text,
+                                t_valid_from: None,
+                                metadata: None,
+                            })
+                            .expect("write_episode");
+                        // Each turn in this window can also belong to other windows.
+                        for (dia, _) in group {
+                            dia2docs.entry(dia.clone()).or_default().push(wr.episode_id.0);
+                        }
                     }
-                    let wr = store
-                        .write_episode(EpisodeWrite {
-                            namespace: ns.into(),
-                            text,
-                            t_valid_from: None,
-                            metadata: None,
-                        })
-                        .expect("write_episode");
-                    // Every turn in the chunk maps to this episode's doc_id.
-                    for (dia, _) in chunk {
-                        dia2doc.insert(dia.clone(), wr.episode_id.0);
+                    if end == items.len() {
+                        break;
                     }
+                    start += s;
                 }
             }
         }
@@ -167,17 +198,17 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                 .map(|s| s.to_string())
                 .or_else(|| qa["category"].as_i64().map(|n| n.to_string()))
                 .unwrap_or_else(|| "?".into());
-            // gold evidence dia_ids -> distinct episode (chunk) doc_ids
-            let gold: HashSet<u64> = qa["evidence"]
+            // Each resolvable gold turn -> the set of episodes it appears in.
+            let gold_turns: Vec<&Vec<u64>> = qa["evidence"]
                 .as_array()
                 .map(|ev| {
                     ev.iter()
                         .filter_map(|e| e.as_str())
-                        .filter_map(|d| dia2doc.get(d).copied())
+                        .filter_map(|d| dia2docs.get(d))
                         .collect()
                 })
                 .unwrap_or_default();
-            if gold.is_empty() {
+            if gold_turns.is_empty() {
                 continue; // unanswerable / no resolvable evidence
             }
 
@@ -186,16 +217,20 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                 namespace: ns.into(),
                 query: question.into(),
                 as_of: None,
-                lanes: QueryLanes::three_lane(),
+                lanes: lanes_from_env(),
                 k,
             });
             latency_us += t.elapsed().as_micros();
             vector_any |= r.lanes_used.contains(&Lane::Vector);
 
             let topk: HashSet<u64> = r.hits.iter().map(|h| h.doc_id).collect();
-            let found = gold.iter().filter(|g| topk.contains(g)).count();
-            let hit = if found > 0 { 1.0 } else { 0.0 };
-            let recall = found as f64 / gold.len() as f64;
+            // A gold turn is covered if ANY episode containing it is in top-k.
+            let covered = gold_turns
+                .iter()
+                .filter(|docs| docs.iter().any(|d| topk.contains(d)))
+                .count();
+            let hit = if covered > 0 { 1.0 } else { 0.0 };
+            let recall = covered as f64 / gold_turns.len() as f64;
             overall.add(hit, recall);
             by_cat.entry(cat).or_default().add(hit, recall);
         }
