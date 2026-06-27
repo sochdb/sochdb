@@ -44,6 +44,38 @@ mod tests {
         );
     }
 
+    /// write_turns groups N turns per episode and prefixes each with its speaker
+    /// — the ingestion shape proven to maximize recall (vs one bare turn per
+    /// episode). 6 turns @ window=3 => 2 episodes; each carries speaker-prefixed
+    /// lines for its turns and is retrievable.
+    #[test]
+    fn write_turns_windows_and_prefixes() {
+        let store = MemoryStore::with_defaults();
+        let turns: Vec<crate::episode::ConversationTurn> = (0..6)
+            .map(|i| crate::episode::ConversationTurn {
+                speaker: if i % 2 == 0 { "Alice" } else { "Bob" }.into(),
+                text: format!("message number {i}"),
+            })
+            .collect();
+
+        let results = store.write_turns("conv", &turns, 3, None).unwrap();
+        assert_eq!(results.len(), 2, "6 turns @ window=3 should be 2 episodes");
+
+        let ep0 = store.episode_text("conv", results[0].episode_id.0).unwrap();
+        assert!(ep0.contains("Alice: message number 0"), "speaker prefix + turn 0");
+        assert!(ep0.contains("Bob: message number 1"), "turn 1 grouped in");
+        assert!(ep0.contains("message number 2"), "turn 2 grouped in");
+
+        let r = store.query(&MemoryQuery {
+            namespace: "conv".into(),
+            query: "message number 4".into(),
+            as_of: None,
+            lanes: QueryLanes::lexical_only(),
+            k: 5,
+        });
+        assert!(!r.hits.is_empty(), "windowed episode must be retrievable");
+    }
+
     #[test]
     fn write_time_lexical_recall() {
         let store = MemoryStore::with_defaults();

@@ -13,7 +13,7 @@ pub mod query;
 pub mod store;
 
 pub use enrichment::{EnrichmentJob, EnrichmentQueue, EnrichmentQueueConfig};
-pub use episode::{Episode, EpisodeId, EpisodeWrite};
+pub use episode::{ConversationTurn, Episode, EpisodeId, EpisodeWrite};
 pub use fact::{FactEdge, FactId, FactKind};
 pub use lifecycle::{LifecycleConfig, MemoryLifecycleDaemon};
 pub use provenance::{ProvenanceBundle, TrustScore, TrustScoreConfig};

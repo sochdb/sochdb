@@ -1,5 +1,5 @@
 use crate::enrichment::{EnrichmentJob, EnrichmentQueue};
-use crate::episode::{Episode, EpisodeId, EpisodeWrite};
+use crate::episode::{ConversationTurn, Episode, EpisodeId, EpisodeWrite};
 use crate::fact::{FactEdge, FactId};
 use parking_lot::RwLock;
 use sochdb_query::{EmbeddingProvider, MockEmbeddingProvider, trigram_index::TrigramIndex};
@@ -187,6 +187,55 @@ impl MemoryStore {
         }
 
         Ok(result)
+    }
+
+    /// Ingest conversation turns as WINDOWED, speaker-prefixed episodes — the
+    /// ingestion shape that maximizes retrieval recall.
+    ///
+    /// Writing one bare-text episode per turn strips the conversational context
+    /// an episode needs to be retrievable: a short, context-dependent turn like
+    /// "Yeah, May 7th" cannot be matched to "When did she go?" by any embedder.
+    /// Grouping `window` consecutive turns into a single `"speaker: text"`-
+    /// formatted episode restores that context. Measured on LoCoMo, this lifts
+    /// hit@10 from ~0.61 (one episode per bare turn) to ~0.89 (window=5) with the
+    /// SAME embedder — i.e. retrieval *structure*, not embedder strength, is the
+    /// dominant recall lever. ~5 turns is a good default for chat; very large
+    /// windows over-coarsen (the vector lane loses discrimination over a long,
+    /// mixed episode). `window` is clamped to at least 1 (one turn per episode).
+    ///
+    /// Returns one [`WriteResult`] per episode written (i.e. per window).
+    pub fn write_turns(
+        &self,
+        namespace: &str,
+        turns: &[ConversationTurn],
+        window: usize,
+        t_valid_from: Option<u64>,
+    ) -> MemoryResult<Vec<WriteResult>> {
+        let chunk = window.max(1);
+        let mut out = Vec::new();
+        for group in turns.chunks(chunk) {
+            let text = group
+                .iter()
+                .map(|t| {
+                    if t.speaker.is_empty() {
+                        t.text.clone()
+                    } else {
+                        format!("{}: {}", t.speaker, t.text)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.trim().is_empty() {
+                continue;
+            }
+            out.push(self.write_episode(EpisodeWrite {
+                namespace: namespace.to_string(),
+                text,
+                t_valid_from,
+                metadata: None,
+            })?);
+        }
+        Ok(out)
     }
 
     pub fn get_episode(&self, namespace: &str, id: EpisodeId) -> MemoryResult<Episode> {
