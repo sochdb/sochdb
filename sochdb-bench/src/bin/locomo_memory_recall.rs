@@ -34,6 +34,40 @@ fn cat_name(c: &str) -> &'static str {
     }
 }
 
+/// Embedding provider backed by a precomputed text->vector cache (JSON map).
+/// Lets us evaluate a strong HTTP embedder (e.g. OpenAI text-embedding-3-small)
+/// without per-turn network calls: embed all LoCoMo texts once (batched, in
+/// Python), then look them up by exact text here.
+struct CachedEmbedder {
+    map: std::collections::HashMap<String, Vec<f32>>,
+    dim: usize,
+}
+impl sochdb_query::EmbeddingProvider for CachedEmbedder {
+    fn model_name(&self) -> &str {
+        "cached"
+    }
+    fn dimension(&self) -> usize {
+        self.dim
+    }
+    fn max_length(&self) -> usize {
+        8192
+    }
+    fn is_semantic(&self) -> bool {
+        true
+    }
+    fn embed(
+        &self,
+        text: &str,
+    ) -> sochdb_query::embedding_provider::EmbeddingResult<Vec<f32>> {
+        self.map.get(text).cloned().ok_or_else(|| {
+            sochdb_query::embedding_provider::EmbeddingError::ProviderError(format!(
+                "no cached embedding for: {:.50}",
+                text
+            ))
+        })
+    }
+}
+
 #[derive(Default)]
 struct Agg {
     hit: f64,
@@ -186,6 +220,23 @@ fn main() {
         &data,
         k,
     );
+
+    // Strong HTTP embedder via precomputed cache (no per-turn network / ONNX).
+    if let Ok(cache_path) = std::env::var("EMBED_CACHE") {
+        let map: HashMap<String, Vec<f32>> = serde_json::from_reader(std::io::BufReader::new(
+            std::fs::File::open(&cache_path).expect("open EMBED_CACHE"),
+        ))
+        .expect("parse EMBED_CACHE");
+        let dim = map.values().next().map(|v| v.len()).unwrap_or(0);
+        let label = std::env::var("EMBED_LABEL").unwrap_or_else(|_| "cached embedder".into());
+        run(
+            &format!("{label} (hybrid, dim={dim})"),
+            Arc::new(CachedEmbedder { map, dim }),
+            &data,
+            k,
+        );
+        return;
+    }
 
     #[cfg(feature = "fastembed")]
     {
