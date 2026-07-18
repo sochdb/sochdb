@@ -185,6 +185,9 @@ message SearchRequest {
   // by parent_id so that multiple vector views of the same logical source
   // do not consume multiple top-K slots.
   GroupingOptions grouping = 5;
+
+  // Return opt-in search provenance without changing the default response.
+  bool include_diagnostics = 7;
 }
 
 message SearchResponse {
@@ -204,6 +207,9 @@ message SearchResponse {
 
   // Grouping diagnostics, present only when SearchRequest.grouping is set.
   GroupingInfo grouping = 5;
+
+  // Present only when SearchRequest.include_diagnostics is true.
+  SearchDiagnostics diagnostics = 6;
 }
 
 message SearchResult {
@@ -229,6 +235,10 @@ message SearchResult {
 
   // Representation/view type, when stored for this vector.
   optional string view_type = 5;
+
+  // One-based position in the final ordered result set. Present only when
+  // diagnostics were requested.
+  uint32 result_rank = 6;
 }
 
 message SearchBatchRequest {
@@ -249,6 +259,9 @@ message SearchBatchRequest {
 
   // Optional parent-aware grouped search, applies to all queries.
   GroupingOptions grouping = 6;
+
+  // Return opt-in search provenance for every query.
+  bool include_diagnostics = 7;
 }
 
 message SearchBatchResponse {
@@ -267,6 +280,29 @@ message QueryResults {
 
   // Grouping diagnostics for this query, present only when grouping was active.
   GroupingInfo grouping = 2;
+
+  // Present only when SearchBatchRequest.include_diagnostics is true.
+  SearchDiagnostics diagnostics = 3;
+}
+
+// Request-time search provenance. This is intentionally summary-only: it does
+// not expose vectors, internal graph state, or a potentially large candidate
+// trace.
+message SearchDiagnostics {
+  uint32 requested_k = 1;
+  uint32 candidate_k = 2;
+  uint32 candidates_considered = 3;
+  uint32 candidates_after_filtering = 4;
+  uint32 groups_considered = 5;
+  uint32 groups_returned = 6;
+  uint32 results_returned = 7;
+  bool truncation_applied = 8;
+  bool grouping_applied = 9;
+  uint32 max_per_group = 10;
+  uint32 max_groups = 11;
+  string deterministic_tie_breaker = 12;
+  DistanceMetric distance_metric = 13;
+  uint32 excluded_by_group_limit = 14;
 }
 
 // =============================================================================
