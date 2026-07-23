@@ -181,7 +181,7 @@ impl VectorIndexServer {
             metric: metric.to_string(),
             parent_id,
             view_type,
-            result_rank: 0,
+            result_rank: None,
         }
     }
 
@@ -191,7 +191,7 @@ impl VectorIndexServer {
 
     fn add_result_ranks(results: &mut [SearchResult]) {
         for (rank, result) in results.iter_mut().enumerate() {
-            result.result_rank = (rank + 1) as u32;
+            result.result_rank = Some((rank + 1) as u32);
         }
     }
 
@@ -266,8 +266,8 @@ impl VectorIndexServer {
         let groups_considered = seen_groups.len();
         for (group_key, mut candidates) in seen_groups {
             candidates.sort_by(|a, b| {
-                a.1.partial_cmp(&b.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                a.1.total_cmp(&b.1)
+                    .then_with(|| a.0.cmp(&b.0))
                     .then_with(|| a.2.cmp(&b.2))
             });
             excluded_by_group_limit += candidates.len().saturating_sub(max_per_group as usize);
@@ -276,8 +276,8 @@ impl VectorIndexServer {
             }
         }
         grouped.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            a.1.total_cmp(&b.1)
+                .then_with(|| a.2.cmp(&b.2))
                 .then_with(|| a.3.cmp(&b.3))
         });
 
@@ -736,7 +736,7 @@ impl VectorIndexService for VectorIndexServer {
                         is_grouped,
                         candidate_k.0,
                         excluded_by_group_limit,
-                        index_for_search.stats().num_vectors,
+                        index_for_search.len(),
                     )
                 });
                 Ok(Response::new(SearchResponse {
@@ -815,7 +815,7 @@ impl VectorIndexService for VectorIndexServer {
         // Parallel batch search via rayon on blocking thread pool
         let queries = req.queries;
         let search_k = candidate_k;
-        let available_candidates = index.stats().num_vectors;
+        let available_candidates = index.len();
         let all_results = tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
             (0..num_queries)
@@ -971,7 +971,7 @@ mod tests {
                 metric: "cosine".into(),
                 parent_id: None,
                 view_type: None,
-                result_rank: 1,
+                result_rank: Some(1),
             }],
             duration_us: 3,
             error: String::new(),
@@ -995,7 +995,7 @@ mod tests {
             }),
         };
         let decoded = proto::SearchResponse::decode(response.encode_to_vec().as_slice()).unwrap();
-        assert_eq!(decoded.results[0].result_rank, 1);
+        assert_eq!(decoded.results[0].result_rank, Some(1));
         assert_eq!(decoded.diagnostics.unwrap().candidate_k, 4);
     }
 
@@ -1039,7 +1039,7 @@ mod tests {
             disabled
                 .results
                 .iter()
-                .all(|result| result.result_rank == 0)
+                .all(|result| result.result_rank.is_none())
         );
 
         let enabled = server
@@ -1060,8 +1060,8 @@ mod tests {
         assert_eq!(diagnostics.results_returned, 2);
         assert!(!diagnostics.grouping_applied);
         assert_eq!(diagnostics.deterministic_tie_breaker, "distance_then_id");
-        assert_eq!(enabled.results[0].result_rank, 1);
-        assert_eq!(enabled.results[1].result_rank, 2);
+        assert_eq!(enabled.results[0].result_rank, Some(1));
+        assert_eq!(enabled.results[1].result_rank, Some(2));
         assert_eq!(enabled.results[0].id, 1);
         assert_eq!(enabled.results[1].id, 2);
     }
@@ -1194,13 +1194,13 @@ mod tests {
         }
         assert!(saw_result, "expected at least one batch result");
         assert!(resp.results.iter().all(|query| query.diagnostics.is_some()));
-        assert!(
-            resp.results
+        assert!(resp.results.iter().all(|query| {
+            query
+                .results
                 .iter()
-                .flat_map(|query| query.results.iter())
                 .enumerate()
-                .all(|(_, result)| result.result_rank > 0)
-        );
+                .all(|(index, result)| result.result_rank == Some((index + 1) as u32))
+        }));
     }
 
     #[tokio::test]
@@ -1591,6 +1591,12 @@ mod tests {
             proto::DistanceMetric::L2 as i32,
             "batch response-level metric must be typed DistanceMetric"
         );
+        assert!(resp.results.iter().all(|query| {
+            query
+                .results
+                .iter()
+                .all(|result| result.result_rank.is_none())
+        }));
     }
 
     // ── Grouped-search tests ────────────────────────────────────────────
@@ -2096,7 +2102,94 @@ mod tests {
             resp.results
                 .iter()
                 .enumerate()
-                .all(|(index, result)| { result.result_rank == (index + 1) as u32 })
+                .all(|(index, result)| { result.result_rank == Some((index + 1) as u32) })
+        );
+    }
+
+    #[tokio::test]
+    async fn grouped_search_and_batch_order_equal_distances_by_vector_id() {
+        let server = VectorIndexServer::new();
+        let name = "grouped_stable_ties";
+        server
+            .create_index(Request::new(CreateIndexRequest {
+                name: name.into(),
+                dimension: 2,
+                config: None,
+                metric: proto::DistanceMetric::L2 as i32,
+            }))
+            .await
+            .unwrap();
+        server
+            .insert_batch(Request::new(InsertBatchRequest {
+                index_name: name.into(),
+                ids: vec![30, 10, 20],
+                vectors: vec![1.0, 0.0, -1.0, 0.0, 0.0, 1.0],
+                metadata: vec![
+                    proto::VectorMetadata {
+                        parent_id: Some(300),
+                        view_type: None,
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(100),
+                        view_type: None,
+                    },
+                    proto::VectorMetadata {
+                        parent_id: Some(200),
+                        view_type: None,
+                    },
+                ],
+            }))
+            .await
+            .unwrap();
+
+        let grouping = proto::GroupingOptions {
+            group_by: proto::GroupBy::ParentId as i32,
+            max_per_group: 1,
+            candidate_k: 3,
+        };
+        let single = server
+            .search(Request::new(SearchRequest {
+                index_name: name.into(),
+                query: vec![0.0, 0.0],
+                k: 3,
+                ef: 0,
+                include_diagnostics: true,
+                grouping: Some(grouping.clone()),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let batch = server
+            .search_batch(Request::new(SearchBatchRequest {
+                index_name: name.into(),
+                queries: vec![0.0, 0.0],
+                num_queries: 1,
+                k: 3,
+                ef: 0,
+                include_diagnostics: true,
+                grouping: Some(grouping),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let single_ids: Vec<_> = single.results.iter().map(|result| result.id).collect();
+        let batch_results = &batch.results[0].results;
+        let batch_ids: Vec<_> = batch_results.iter().map(|result| result.id).collect();
+        assert_eq!(single_ids, vec![10, 20, 30]);
+        assert_eq!(batch_ids, single_ids);
+        assert!(
+            single
+                .results
+                .iter()
+                .enumerate()
+                .all(|(index, result)| result.result_rank == Some((index + 1) as u32))
+        );
+        assert!(
+            batch_results
+                .iter()
+                .enumerate()
+                .all(|(index, result)| result.result_rank == Some((index + 1) as u32))
         );
     }
 

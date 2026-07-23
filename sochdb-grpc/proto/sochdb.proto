@@ -236,9 +236,9 @@ message SearchResult {
   // Representation/view type, when stored for this vector.
   optional string view_type = 5;
 
-  // One-based position in the final ordered result set. Present only when
-  // diagnostics were requested.
-  uint32 result_rank = 6;
+  // One-based position in the final ordered result set. Populated only when
+  // diagnostics are requested.
+  optional uint32 result_rank = 6;
 }
 
 message SearchBatchRequest {
