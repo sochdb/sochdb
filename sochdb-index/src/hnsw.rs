@@ -5882,13 +5882,11 @@ impl HnswIndex {
             // Partial sort: only need top k, O(n) average via select_nth_unstable
             if dists.len() > k {
                 dists.select_nth_unstable_by(k, |a, b| {
-                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1))
                 });
                 dists.truncate(k);
             }
-            dists.sort_unstable_by(|a, b| {
-                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            dists.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
             let results: Vec<(u128, f32)> = dists.iter().map(|(d, id)| (*id, *d)).collect();
 
             metrics::SEARCH_RESULT_COUNT.observe(results.len() as f64);
@@ -6219,8 +6217,8 @@ impl HnswIndex {
             let mut query_results: Vec<SearchCandidate> = heap.into_iter().map(|r| r.0).collect();
             query_results.sort_by(|a, b| {
                 a.distance
-                    .partial_cmp(&b.distance)
-                    .unwrap_or(Ordering::Equal)
+                    .total_cmp(&b.distance)
+                    .then_with(|| a.id.cmp(&b.id))
             });
             results.push(
                 query_results
@@ -6373,7 +6371,7 @@ impl HnswIndex {
         }
 
         // Final search at layer 0 with caller-specified ef
-        let candidates = self.search_layer_ref(
+        let mut candidates = self.search_layer_ref(
             &query_quantized,
             &curr_nearest,
             ef.max(k),
@@ -6382,6 +6380,11 @@ impl HnswIndex {
             &internal_nodes,
         );
 
+        candidates.sort_by(|a, b| {
+            a.distance
+                .total_cmp(&b.distance)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         let results: Vec<(u128, f32)> = candidates
             .into_iter()
             .take(k)

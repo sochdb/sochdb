@@ -76,6 +76,11 @@ test_k8s_deployment.py
 
 # Local scratch / experiments moved out of the project root
 /scratch/
+
+# Local README-audit outputs
+/docs/readme-audit.md
+/docs/readme-facts.json
+
 # H2O benchmark large data files (generate with h2o_datagen.py)
 sochdb-bench/h2o-bench/data/*_1e7_*
 sochdb-bench/h2o-bench/data/
