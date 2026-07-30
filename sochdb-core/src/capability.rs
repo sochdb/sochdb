@@ -391,6 +391,7 @@ pub mod names {
     pub const HYBRID_PROFILE: &str = "retrieval.hybrid.profile";
     pub const CACHE_SCOPE: &str = "cache.semantic.scoped";
     pub const GLOBAL_TOPK: &str = "retrieval.distributed.topk";
+    pub const QUALIFICATION: &str = "governance.capability.qualification";
     pub const HNSW_SEARCH: &str = "vector.hnsw.search";
     pub const VECTOR_INGEST_BATCH: &str = "vector.ingest.batch";
     pub const METADATA_PREFILTERED_SEARCH: &str = "vector.search.metadata_prefilter";
@@ -415,6 +416,23 @@ pub const RETRIEVAL_CONTRACT: ContractVersion = ContractVersion::new(1, 0);
 /// work, not on review.
 pub fn manifest() -> CapabilityManifest {
     let capabilities = vec![
+        Capability::new(
+            names::QUALIFICATION,
+            ContractVersion::new(1, 0),
+            Maturity::LibraryOnly,
+            Durability::Stateless,
+        )
+        .guarantee("a gate that was not run is refused exactly as a gate that failed")
+        .guarantee("evidence about another commit or an unpinned build is refused")
+        .guarantee("every reason for refusal is reported, not just the first")
+        .guarantee("each metric carries a definition precise enough to reimplement")
+        .guarantee("the digest covers all gates, so deleting a failing one does not clean it up")
+        .limit(
+            "no evidence bundle exists in this repository, so every Preview claim \
+             in this manifest is currently unmeasured; the test names all nine",
+        )
+        .limit("nothing produces bundles yet; CI is not wired to emit or verify one")
+        .limit("bundles are unsigned, so this trusts whoever hands it the evidence"),
         Capability::new(
             names::GLOBAL_TOPK,
             RETRIEVAL_CONTRACT,

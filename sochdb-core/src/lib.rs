@@ -104,6 +104,7 @@ pub mod lockfree_interner; // Lock-free string interner (mm.md Task 6)
 pub mod memory_schema; // Canonical Episode/Entity/Event schema
 pub mod path_trie;
 pub mod predefined_views;
+pub mod qualification; // Task 15: evidence-based, fail-closed capability promotion
 pub mod reclamation;
 pub mod record_id; // RecordId: universal table:id identifier with binary key encoding (Phase 1b)
 pub mod schema_bridge;
