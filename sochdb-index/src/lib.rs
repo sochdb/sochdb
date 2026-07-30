@@ -73,6 +73,7 @@ pub mod csr_graph; // CSR packed adjacency for cache-efficient traversal (P0 opt
 pub mod distance_cache; // LRU distance computation cache (Task 11)
 pub mod edge_delta_buffer; // Batched edge delta application (Task 7)
 pub mod embedding;
+pub mod generation; // Durable, immutable index generations published by atomic manifest commit
 pub mod hnsw;
 pub mod hnsw_pq;
 pub mod hnsw_staged; // Staged parallel HNSW construction with waves + deferred backedges
