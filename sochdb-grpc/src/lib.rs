@@ -80,6 +80,7 @@ pub mod policy_server;
 pub mod semantic_cache_server;
 pub mod subscription_server;
 pub mod trace_server;
+pub mod vector_persistence; // Durable generation stores for the served vector indexes
 pub mod ws_server; // WebSocket gateway (Task 4) // PostgreSQL wire protocol (Task 5)
 
 pub use blocking_pool::{BlockingPool, BlockingPoolConfig, BlockingPoolManager, PoolType};

@@ -84,6 +84,7 @@ use sochdb_grpc::{
     semantic_cache_server::SemanticCacheServer,
     subscription_server::SubscriptionServer,
     trace_server::TraceServer,
+    vector_persistence::VectorPersistence,
 };
 use sochdb_memory::MemoryStore;
 
@@ -147,6 +148,23 @@ struct Args {
     /// This store is independent of the in-memory gRPC services.
     #[arg(long = "pg-data-dir", env = "SOCHDB_PG_DATA_DIR")]
     pg_data_dir: Option<String>,
+
+    /// Directory holding durable vector indexes. When set, indexes created
+    /// through the vector service survive a restart; when unset they exist
+    /// only for the lifetime of the process and are lost on any stop.
+    #[arg(long = "vector-data-dir", env = "SOCHDB_VECTOR_DATA_DIR")]
+    vector_data_dir: Option<String>,
+
+    /// Vectors to accept between published generations. Recovery is to the
+    /// last published generation, so this is the size of the window whose
+    /// inserts are lost in an unclean stop. Lower is safer and slower:
+    /// publishing rewrites the whole index.
+    #[arg(
+        long = "vector-checkpoint-every",
+        env = "SOCHDB_VECTOR_CHECKPOINT_EVERY",
+        default_value_t = 10_000
+    )]
+    vector_checkpoint_every: u64,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -352,6 +370,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // quota enforcement — the inner DashMap is Arc-wrapped so all clones share state.
     let namespace_server = NamespaceServer::new();
     let vector_server = VectorIndexServer::with_namespace_server(namespace_server.clone());
+    let vector_server = match args.vector_data_dir.as_deref() {
+        Some(dir) => {
+            let persistence =
+                VectorPersistence::open(dir, args.vector_checkpoint_every).map_err(|e| {
+                    // Falling back to memory here would be the worst outcome:
+                    // the operator asked for durability, the server would
+                    // appear healthy, and the loss would only surface at the
+                    // next restart.
+                    format!("Cannot open vector data directory '{}': {}", dir, e)
+                })?;
+            tracing::info!(
+                "Vector indexes are durable in '{}' (checkpoint every {} vectors)",
+                dir,
+                args.vector_checkpoint_every
+            );
+            vector_server.with_persistence(std::sync::Arc::new(persistence))
+        }
+        None => {
+            tracing::warn!(
+                "Vector indexes are in-memory only; a restart discards every index. \
+                 Set --vector-data-dir to make them durable."
+            );
+            vector_server
+        }
+    };
     let graph_server = GraphServer::with_namespace_server(namespace_server.clone());
     let collection_server = CollectionServer::with_namespace_server(namespace_server.clone());
     let policy_server = Arc::new(PolicyServer::new());

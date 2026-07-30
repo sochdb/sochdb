@@ -417,7 +417,14 @@ pub fn manifest() -> CapabilityManifest {
         )
         .guarantee("approximate k-nearest-neighbour search with a caller-supplied ef")
         .guarantee("results ordered by ascending distance, ties broken by vector id")
-        .limit("the index is held in process memory and does not survive restart")
+        .limit(
+            "durability is opt-in: without a configured vector data directory \
+             the index is held in process memory and does not survive restart",
+        )
+        .limit(
+            "with a data directory configured, a restart restores the index as \
+             of the last published generation, not as of the last insert",
+        )
         .limit("recall depends on ef and is not asserted by a conformance gate"),
         Capability::new(
             names::VECTOR_INGEST_BATCH,
@@ -426,7 +433,15 @@ pub fn manifest() -> CapabilityManifest {
             Durability::Ephemeral,
         )
         .guarantee("batched insert of vectors with optional metadata")
-        .limit("writes are not durable; an acknowledged insert is lost on restart")
+        .limit(
+            "the recovery point is the last published generation, so inserts \
+             acknowledged after it are lost in an unclean stop; the window is \
+             bounded by the configured checkpoint interval, not by zero",
+        )
+        .limit(
+            "without a configured vector data directory no insert is durable \
+             at all and every acknowledged write is lost on restart",
+        )
         .limit("replaying a batch inserts it again, so ingestion is not idempotent")
         .limit("vector ids are uint64 on the wire"),
         Capability::new(

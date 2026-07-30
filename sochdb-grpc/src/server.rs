@@ -29,9 +29,11 @@ use crate::proto::{
     vector_index_service_server::{VectorIndexService, VectorIndexServiceServer},
 };
 use crate::security::Capability;
+use crate::vector_persistence::{IndexDescriptor as VectorIndexDescriptor, VectorPersistence};
 use dashmap::DashMap;
 use sochdb_index::hnsw::{DistanceMetric, HnswConfig, HnswIndex};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
@@ -48,6 +50,9 @@ struct IndexEntry {
     metric: proto::DistanceMetric,
     config: ProtoHnswConfig,
     created_at: u64,
+    /// Vectors inserted since the last published generation. Drives
+    /// checkpointing; meaningless when persistence is not configured.
+    since_checkpoint: Arc<AtomicU64>,
 }
 
 /// Vector Index gRPC Server
@@ -56,6 +61,9 @@ pub struct VectorIndexServer {
     indexes: DashMap<String, IndexEntry>,
     /// Shared namespace server for quota enforcement
     ns_server: Option<NamespaceServer>,
+    /// Durable homes for the indexes. When absent, indexes exist only for the
+    /// lifetime of the process and a restart discards them.
+    persistence: Option<Arc<VectorPersistence>>,
 }
 
 impl VectorIndexServer {
@@ -64,6 +72,7 @@ impl VectorIndexServer {
         Self {
             indexes: DashMap::new(),
             ns_server: None,
+            persistence: None,
         }
     }
 
@@ -72,6 +81,123 @@ impl VectorIndexServer {
         Self {
             indexes: DashMap::new(),
             ns_server: Some(ns),
+            persistence: None,
+        }
+    }
+
+    /// Attach durable storage and restore whatever was published before.
+    ///
+    /// A store that fails verification is logged at error rather than dropped
+    /// quietly: an index missing after a restart looks exactly like an index
+    /// that was never created, so nothing would prompt anyone to investigate.
+    /// The server still starts, because refusing to serve the healthy indexes
+    /// would turn one damaged index into a total outage.
+    pub fn with_persistence(mut self, persistence: Arc<VectorPersistence>) -> Self {
+        match persistence.restore_all() {
+            Ok((restored, failed)) => {
+                for r in restored {
+                    tracing::info!(
+                        "Restored index '{}' from generation {} ({} vectors)",
+                        r.key,
+                        r.generation,
+                        r.index.len()
+                    );
+                    // The manifest is the authority on dimension: it was
+                    // checked against the index when the generation was
+                    // published, and it is what a reader can inspect.
+                    let dimension = r.dimension as usize;
+                    self.indexes.insert(
+                        r.key.clone(),
+                        IndexEntry {
+                            index: Arc::new(r.index),
+                            name: r.key,
+                            dimension,
+                            metric: proto::DistanceMetric::try_from(r.metric)
+                                .unwrap_or(proto::DistanceMetric::Unspecified),
+                            config: r.config,
+                            created_at: r.created_at,
+                            since_checkpoint: Arc::new(AtomicU64::new(0)),
+                        },
+                    );
+                }
+                for (key, reason) in failed {
+                    tracing::error!(
+                        "Index '{}' could not be restored and will not be served: {}",
+                        key,
+                        reason
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("Could not read the vector data directory: {}", e);
+            }
+        }
+        self.persistence = Some(persistence);
+        self
+    }
+
+    /// Publish a new generation when enough has changed since the last one.
+    ///
+    /// Failures are logged rather than returned. The vectors are already in the
+    /// index and the insert genuinely succeeded; turning a checkpoint problem
+    /// into a write error would make the caller retry a write that was applied.
+    /// The cost is that the recovery point silently stops advancing, which is
+    /// why this logs at error.
+    async fn maybe_checkpoint(&self, key: &str, inserted: u64) {
+        let Some(persistence) = self.persistence.clone() else {
+            return;
+        };
+        let threshold = persistence.checkpoint_every();
+        if threshold == 0 {
+            return;
+        }
+
+        let Some(entry) = self.indexes.get(key) else {
+            return;
+        };
+        let pending = entry
+            .since_checkpoint
+            .fetch_add(inserted, Ordering::Relaxed)
+            + inserted;
+        if pending < threshold {
+            return;
+        }
+
+        let index = Arc::clone(&entry.index);
+        let counter = Arc::clone(&entry.since_checkpoint);
+        let dimension = entry.dimension as u32;
+        let metric = entry.metric as i32;
+        let config = entry.config.clone();
+        let created_at = entry.created_at;
+        let key = key.to_string();
+        drop(entry);
+
+        let result = tokio::task::spawn_blocking(move || {
+            let descriptor = VectorIndexDescriptor {
+                key: &key,
+                dimension,
+                metric,
+                config: &config,
+                created_at,
+            };
+            persistence
+                .checkpoint(&descriptor, &index)
+                .map(|generation| (key, generation))
+        })
+        .await;
+
+        match result {
+            Ok(Ok((key, generation))) => {
+                // Only reset once the generation is durable. Resetting first
+                // would let a failed checkpoint push the next attempt a full
+                // threshold further away.
+                counter.store(0, Ordering::Relaxed);
+                tracing::info!("Published generation {} for index '{}'", generation, key);
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Checkpoint failed; recovery point did not advance: {}", e)
+            }
+            Err(e) => tracing::error!("Checkpoint task failed: {}", e),
         }
     }
 
@@ -391,6 +517,7 @@ impl VectorIndexService for VectorIndexServer {
             metric: req.metric(),
             config: proto_config.clone(),
             created_at,
+            since_checkpoint: Arc::new(AtomicU64::new(0)),
         };
 
         self.indexes.insert(key, entry);
@@ -421,6 +548,18 @@ impl VectorIndexService for VectorIndexServer {
 
         match self.indexes.remove(&key) {
             Some(_) => {
+                if let Some(persistence) = &self.persistence {
+                    // Leaving the generations behind would resurrect a dropped
+                    // index on the next restart.
+                    if let Err(e) = persistence.forget(&key) {
+                        tracing::error!(
+                            "Dropped index '{}' but its durable copy remains and will \
+                             be restored on restart: {}",
+                            name,
+                            e
+                        );
+                    }
+                }
                 tracing::info!("Dropped index '{}'", name);
                 Ok(Response::new(DropIndexResponse {
                     success: true,
@@ -506,6 +645,7 @@ impl VectorIndexService for VectorIndexServer {
                     duration_us,
                     duration_us / 1000
                 );
+                self.maybe_checkpoint(&key, count as u64).await;
                 Ok(Response::new(InsertBatchResponse {
                     inserted_count: count as u32,
                     error: String::new(),
@@ -2377,5 +2517,127 @@ mod tests {
         println!("GROUPED_UNIQUE_PARENTS={}", g_unique_count);
         println!("GROUPED_DUPLICATE_WASTE={}", g_duplicate_waste);
         println!("GROUPED_SEARCH_USECASE_OK=1");
+    }
+
+    /// The whole point of Task 4: an index created and filled through the wire
+    /// must still be there, and still answer the same, after the process that
+    /// served it is gone. Before generations existed this test could not be
+    /// written at all -- `VectorIndexServer` had no path to disk, so a restart
+    /// was indistinguishable from `DropIndex` on every index at once.
+    #[tokio::test]
+    async fn indexes_survive_a_restart() {
+        use crate::security::{AuthMethod, Principal};
+        use crate::vector_persistence::VectorPersistence;
+        use std::collections::HashSet;
+
+        fn authed<T>(msg: T) -> Request<T> {
+            let mut r = Request::new(msg);
+            r.extensions_mut().insert(Principal {
+                id: "u".to_string(),
+                tenant_id: "t".to_string(),
+                capabilities: HashSet::from([
+                    Capability::Read,
+                    Capability::Write,
+                    Capability::ManageCollections,
+                ]),
+                expires_at: None,
+                auth_method: AuthMethod::Anonymous,
+            });
+            r
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Checkpoint on every insert so the test observes durability rather
+        // than the threshold policy.
+        let before = VectorIndexServer::new()
+            .with_persistence(Arc::new(VectorPersistence::open(dir.path(), 1).unwrap()));
+
+        before
+            .create_index(authed(CreateIndexRequest {
+                name: "docs".to_string(),
+                dimension: 4,
+                config: None,
+                metric: proto::DistanceMetric::Cosine as i32,
+            }))
+            .await
+            .unwrap();
+
+        before
+            .insert_batch(authed(InsertBatchRequest {
+                index_name: "docs".to_string(),
+                ids: vec![7, 9],
+                vectors: vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                metadata: vec![],
+            }))
+            .await
+            .unwrap();
+
+        let query = vec![1.0, 0.0, 0.0, 0.0];
+        let expected = before
+            .search(authed(SearchRequest {
+                index_name: "docs".to_string(),
+                query: query.clone(),
+                k: 2,
+                ef: 0,
+                grouping: None,
+                include_diagnostics: false,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        drop(before);
+
+        let after = VectorIndexServer::new()
+            .with_persistence(Arc::new(VectorPersistence::open(dir.path(), 1).unwrap()));
+
+        let actual = after
+            .search(authed(SearchRequest {
+                index_name: "docs".to_string(),
+                query,
+                k: 2,
+                ef: 0,
+                grouping: None,
+                include_diagnostics: false,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let ids_before: Vec<u64> = expected.results.iter().map(|r| r.id).collect();
+        let ids_after: Vec<u64> = actual.results.iter().map(|r| r.id).collect();
+        assert_eq!(
+            ids_before, ids_after,
+            "the restarted server returned different neighbours"
+        );
+        assert_eq!(ids_after, vec![7, 9]);
+
+        // Dropping must reach through to the durable copy, or the index comes
+        // back from the dead on the next restart.
+        after
+            .drop_index(authed(DropIndexRequest {
+                name: "docs".to_string(),
+            }))
+            .await
+            .unwrap();
+        drop(after);
+
+        let final_server = VectorIndexServer::new()
+            .with_persistence(Arc::new(VectorPersistence::open(dir.path(), 1).unwrap()));
+        assert!(
+            final_server
+                .search(authed(SearchRequest {
+                    index_name: "docs".to_string(),
+                    query: vec![1.0, 0.0, 0.0, 0.0],
+                    k: 1,
+                    ef: 0,
+                    grouping: None,
+                    include_diagnostics: false,
+                }))
+                .await
+                .is_err(),
+            "a dropped index was resurrected by the restart"
+        );
     }
 }
