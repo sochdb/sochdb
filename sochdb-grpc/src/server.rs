@@ -168,21 +168,34 @@ impl VectorIndexServer {
         (parent_id, view_type)
     }
 
+    /// Build a wire result, refusing ids the wire cannot represent.
+    ///
+    /// The index addresses vectors with `u128` but `SearchResult.id` is a
+    /// `uint64`. Narrowing with `as` would substitute a different, valid-looking
+    /// id, so a caller would fetch a document that was never matched and have no
+    /// way to notice. Failing the search is the only safe option until the
+    /// protocol carries the full width.
     fn search_result(
         index: &HnswIndex,
         id: u128,
         distance: f32,
         metric: &'static str,
-    ) -> SearchResult {
+    ) -> Result<SearchResult, GrpcError> {
+        let wire_id = u64::try_from(id).map_err(|_| {
+            GrpcError::Internal(format!(
+                "vector id {id} exceeds the uint64 search result id and cannot \
+                 be returned without changing which vector it names"
+            ))
+        })?;
         let (parent_id, view_type) = Self::result_metadata(index, id);
-        SearchResult {
-            id: id as u64,
+        Ok(SearchResult {
+            id: wire_id,
             distance,
             metric: metric.to_string(),
             parent_id,
             view_type,
             result_rank: None,
-        }
+        })
     }
 
     fn stable_sort_results(results: &mut [(u128, f32)]) {
@@ -244,7 +257,7 @@ impl VectorIndexServer {
         _max_per_group: u32,
         requested_candidate_k: u32,
         metric: &'static str,
-    ) -> (Vec<SearchResult>, proto::GroupingInfo, usize, usize) {
+    ) -> Result<(Vec<SearchResult>, proto::GroupingInfo, usize, usize), GrpcError> {
         let max_per_group = if _max_per_group == 0 {
             1
         } else {
@@ -286,7 +299,7 @@ impl VectorIndexServer {
             .into_iter()
             .take(k)
             .map(|(_, distance, id, _)| Self::search_result(index, id, distance, metric))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let info = proto::GroupingInfo {
             group_by: proto::GroupBy::ParentId.into(),
@@ -296,7 +309,7 @@ impl VectorIndexServer {
             returned_group_count,
         };
 
-        (results, info, groups_considered, excluded_by_group_limit)
+        Ok((results, info, groups_considered, excluded_by_group_limit))
     }
 }
 
@@ -705,7 +718,7 @@ impl VectorIndexService for VectorIndexServer {
                             candidate_k.0,
                             candidate_k.1 as u32,
                             metric,
-                        );
+                        )?;
                         (results, Some(info), groups, excluded)
                     } else {
                         let mut results = Vec::with_capacity(r.len());
@@ -715,7 +728,7 @@ impl VectorIndexService for VectorIndexServer {
                                 id,
                                 distance,
                                 metric,
-                            ));
+                            )?);
                         }
                         (results, None, 0, 0)
                     };
@@ -834,7 +847,8 @@ impl VectorIndexService for VectorIndexServer {
                                 max_per_group,
                                 search_k as u32,
                                 metric,
-                            );
+                            )
+                            .map_err(|e| e.to_string())?;
                         if include_diagnostics {
                             Self::add_result_ranks(&mut results);
                         }
@@ -861,7 +875,10 @@ impl VectorIndexService for VectorIndexServer {
                     } else {
                         let mut search_results = Vec::with_capacity(raw.len());
                         for (id, distance) in raw {
-                            search_results.push(Self::search_result(&index, id, distance, metric));
+                            search_results.push(
+                                Self::search_result(&index, id, distance, metric)
+                                    .map_err(|e| e.to_string())?,
+                            );
                         }
                         if include_diagnostics {
                             Self::add_result_ranks(&mut search_results);
@@ -1478,18 +1495,22 @@ mod tests {
         assert!(resp_a.error.is_empty() && !resp_a.results.is_empty());
     }
 
-    /// Regression: `u64::try_from(u128)` must reject IDs above `u64::MAX`
-    /// rather than silently truncating with `as u64`.
+    /// A vector id that does not fit the wire's `uint64` must not be reported
+    /// as some other id. Truncation is worse than an error here: the caller
+    /// receives a well-formed result naming a document that was never matched,
+    /// and nothing downstream can detect the substitution.
     #[tokio::test]
-    async fn search_checked_id_conversion_rejects_overflow() {
-        // Direct proof that `as u64` truncates but `try_from` errors.
-        let big: u128 = u64::MAX as u128 + 1;
-        let truncated = big as u64;
-        assert_eq!(
-            truncated, 0,
-            "as-cast silently truncates u128 > u64::MAX to 0"
+    async fn search_result_refuses_to_truncate_an_oversized_id() {
+        let index = HnswIndex::new(4, HnswConfig::default());
+        let oversized: u128 = u64::MAX as u128 + 1;
+
+        let result = VectorIndexServer::search_result(&index, oversized, 0.5, "cosine");
+
+        assert!(
+            result.is_err(),
+            "an id above u64::MAX must be refused, not silently reported as a \
+             different id"
         );
-        assert!(u64::try_from(big).is_err(), "try_from must fail");
     }
 
     /// Response-level `SearchResponse.metric` must be populated and agree
