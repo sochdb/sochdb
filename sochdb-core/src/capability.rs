@@ -386,6 +386,7 @@ impl CapabilityManifest {
 /// than string literals so a rename is a compile error somewhere.
 pub mod names {
     pub const RETRIEVAL_V2: &str = "retrieval.protocol.v2";
+    pub const GOVERNED_PUSHDOWN: &str = "retrieval.governed.pushdown";
     pub const HNSW_SEARCH: &str = "vector.hnsw.search";
     pub const VECTOR_INGEST_BATCH: &str = "vector.ingest.batch";
     pub const METADATA_PREFILTERED_SEARCH: &str = "vector.search.metadata_prefilter";
@@ -410,6 +411,25 @@ pub const RETRIEVAL_CONTRACT: ContractVersion = ContractVersion::new(1, 0);
 /// work, not on review.
 pub fn manifest() -> CapabilityManifest {
     let capabilities = vec![
+        Capability::new(
+            names::GOVERNED_PUSHDOWN,
+            RETRIEVAL_CONTRACT,
+            Maturity::Preview,
+            Durability::Stateless,
+        )
+        .guarantee("a filter is split so that pushed AND residual is the original filter")
+        .guarantee("a clause that cannot be fully evaluated is never partially pushed")
+        .guarantee(
+            "an unpushable filter is refused, scanned exactly, or overfetched, never dropped",
+        )
+        .guarantee("a row missing a governed field never satisfies a predicate on it")
+        .guarantee("a short result set reports whether the budget or the index ran out")
+        .limit("pushdown covers equality and set membership only; everything else is residual")
+        .limit(
+            "selectivity is supplied by the caller and is not estimated from \
+             index statistics",
+        )
+        .limit("the caller remains the authority on whether a candidate is authorised"),
         Capability::new(
             names::RETRIEVAL_V2,
             ContractVersion::new(2, 0),

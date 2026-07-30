@@ -67,6 +67,7 @@ pub mod exact_token_counter; // Task 6: BPE-accurate token counting
 pub mod executor; // v1.0 Volcano query executor [quarantined: unwired, not on live SQL path]
 pub mod filter_ir; // Task 1: Canonical Filter IR (CNF/DNF)
 pub mod filtered_vector_search; // Task 5: Filter-aware vector search with selectivity fallback
+pub mod governed_retrieval; // Task 8: Fail-closed pushdown and candidate budgeting
 pub mod grep_executor; // Task 5: Grep lane (trigram-accelerated regex search)
 pub mod like; // Canonical SQL LIKE matcher (single source of truth across all query paths)
 pub mod memory_compaction; // Task 5: Hierarchical memory compaction
