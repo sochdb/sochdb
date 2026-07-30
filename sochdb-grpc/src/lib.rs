@@ -66,6 +66,7 @@ pub mod observability; // Observability hardening: cardinality, slow query, SLOs
 pub mod security; // Security baseline: mTLS, AuthZ, audit, rate limiting
 
 // Service implementations
+pub mod capability_server; // Serves the build's capability manifest for client negotiation
 pub mod checkpoint_server;
 pub mod collection_server;
 pub mod context_server;
@@ -82,6 +83,7 @@ pub mod trace_server;
 pub mod ws_server; // WebSocket gateway (Task 4) // PostgreSQL wire protocol (Task 5)
 
 pub use blocking_pool::{BlockingPool, BlockingPoolConfig, BlockingPoolManager, PoolType};
+pub use capability_server::CapabilityServer;
 pub use error::GrpcError;
 pub use health_service::{
     DegradedCondition, HealthCheckResult, HealthService, HealthServiceConfig,

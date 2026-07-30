@@ -58,6 +58,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use sochdb_grpc::{
     SecurityConfig, SecurityService, VectorIndexServer,
     auth_interceptor::AuthInterceptor,
+    capability_server::CapabilityServer,
     checkpoint_server::CheckpointServer,
     collection_server::CollectionServer,
     context_server::ContextServer,
@@ -67,6 +68,7 @@ use sochdb_grpc::{
     namespace_server::NamespaceServer,
     policy_server::PolicyServer,
     proto::{
+        capability_service_server::CapabilityServiceServer,
         checkpoint_service_server::CheckpointServiceServer,
         collection_service_server::CollectionServiceServer,
         context_service_server::ContextServiceServer, graph_service_server::GraphServiceServer,
@@ -552,6 +554,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .add_service(KvServiceServer::with_interceptor(kv_server, auth.clone()))
         .add_service(SubscriptionServiceServer::with_interceptor(
             subscription_server,
+            auth.clone(),
+        ))
+        // Wrapped like every other service. The manifest is build metadata
+        // rather than tenant data, but a client that can reach it has to
+        // authenticate to act on it anyway, and an unauthenticated endpoint
+        // here would be the one exception someone later has to explain.
+        .add_service(CapabilityServiceServer::with_interceptor(
+            CapabilityServer::new(),
             auth.clone(),
         ))
         .serve(addr)

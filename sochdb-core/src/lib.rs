@@ -89,6 +89,7 @@ pub mod block_storage;
 )]
 #[allow(deprecated)]
 pub mod buddy_allocator;
+pub mod capability; // Machine-readable manifest of what this build actually promises
 pub mod catalog;
 pub mod columnar; // True Columnar Storage with Arrow-compatible layout (mm.md Task 1)
 pub mod concurrency; // Hierarchical Lock Architecture (mm.md Task 2)

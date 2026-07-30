@@ -1654,3 +1654,97 @@ message CancelSubscriptionResponse {
   bool success = 1;
   string error = 2;
 }
+
+// =============================================================================
+// Capability Service — what this build actually promises
+// =============================================================================
+//
+// Presence of a module in the SochDB source tree is not a production contract.
+// Some subsystems are compiled to prevent rot but are not reachable from any
+// served endpoint; others are reachable but hold their state only in process
+// memory. A client that infers what it may use from a version string or from
+// the presence of an RPC will eventually infer wrongly.
+//
+// Clients negotiate against this manifest instead of guessing. The Rust
+// definitions in sochdb-core::capability are canonical; these messages are
+// their wire form.
+
+service CapabilityService {
+  // Return the full manifest. Cheap and safe to call on every connection: a
+  // client should negotiate at connect time rather than discover an unmet
+  // requirement in the middle of a query. Authenticated like every other
+  // service, since a caller must authenticate to act on the answer anyway.
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (CapabilityManifest);
+}
+
+// How much of a promise a capability carries. Ordered: a client may require
+// "at least this much".
+enum CapabilityMaturity {
+  CAPABILITY_MATURITY_UNSPECIFIED = 0;
+
+  // Present in the codebase but not reachable through a served endpoint.
+  // Callable only by an application that links the crate directly.
+  CAPABILITY_MATURITY_LIBRARY_ONLY = 1;
+
+  // Behind the `experimental` feature. No compatibility promise.
+  CAPABILITY_MATURITY_EXPERIMENTAL = 2;
+
+  // Wired end to end and tested, but without the durability, recall and
+  // recovery qualification that SUPPORTED requires.
+  CAPABILITY_MATURITY_PREVIEW = 3;
+
+  // Qualified for production use.
+  CAPABILITY_MATURITY_SUPPORTED = 4;
+}
+
+// Whether a capability's state survives a restart.
+enum CapabilityDurability {
+  CAPABILITY_DURABILITY_UNSPECIFIED = 0;
+
+  // Rebuilt deterministically from a persisted manifest.
+  CAPABILITY_DURABILITY_DURABLE = 1;
+
+  // Held in process memory and lost on restart. Results must not be treated
+  // as authoritative across a restart boundary.
+  CAPABILITY_DURABILITY_EPHEMERAL = 2;
+
+  // Holds no state, so restart is not meaningful.
+  CAPABILITY_DURABILITY_STATELESS = 3;
+}
+
+// The retrieval contract version, deliberately independent of the crate
+// version: crate versions move for reasons unrelated to the wire contract, so
+// a client cannot use them to decide what it may send.
+message CapabilityContractVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+message CapabilityDescriptor {
+  // Stable identifier. Clients match on this, never on the guarantees text.
+  string name = 1;
+
+  CapabilityContractVersion contract_version = 2;
+
+  CapabilityMaturity maturity = 3;
+
+  CapabilityDurability durability = 4;
+
+  // What the capability promises when used within its limits.
+  repeated string guarantees = 5;
+
+  // Boundaries the caller must respect or design around.
+  repeated string limits = 6;
+}
+
+message GetCapabilitiesRequest {}
+
+message CapabilityManifest {
+  // Crate version of the server. Diagnostic only — never negotiate on it.
+  string server_version = 1;
+
+  // Source revision, when the build supplied one. Empty if unknown.
+  string build_revision = 2;
+
+  repeated CapabilityDescriptor capabilities = 3;
+}
