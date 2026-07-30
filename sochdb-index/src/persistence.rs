@@ -146,6 +146,31 @@ impl HnswIndex {
     /// index.save_to_disk("embeddings.hnsw").unwrap();
     /// ```
     pub fn save_to_disk<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
+        let file = File::create(path).map_err(|e| format!("Failed to create file: {}", e))?;
+        let mut writer = BufWriter::new(file);
+        self.save_to_writer(&mut writer)?;
+
+        // `BufWriter` flushes on drop but discards any error while doing so, so
+        // a failure in the final buffered write would be lost and this function
+        // would report success for an index that never fully reached the disk.
+        writer
+            .flush()
+            .map_err(|e| format!("Failed to flush index: {}", e))?;
+        writer
+            .into_inner()
+            .map_err(|e| format!("Failed to finalize index: {}", e))?
+            .sync_all()
+            .map_err(|e| format!("Failed to sync index: {}", e))?;
+        Ok(())
+    }
+
+    /// Serialize the index to any writer.
+    ///
+    /// Exposed separately from [`HnswIndex::save_to_disk`] so a caller that
+    /// stages an index elsewhere -- into a generation segment, an object store,
+    /// or a buffer -- does not have to go through a file and does not have to
+    /// reimplement this encoding.
+    pub fn save_to_writer<W: Write>(&self, writer: &mut W) -> Result<(), String> {
         // Collect all nodes — read vectors from vector_store (primary)
         let mut serializable_nodes = Vec::with_capacity(self.nodes.len());
         let store = self.vector_store.read();
@@ -184,12 +209,9 @@ impl HnswIndex {
             created_at: SystemTime::now(),
         };
 
-        let file = File::create(path).map_err(|e| format!("Failed to create file: {}", e))?;
-        let mut writer = BufWriter::new(file);
-
-        bincode::serialize_into(&mut writer, &snapshot)
+        bincode::serialize_into(&mut *writer, &snapshot)
             .map_err(|e| format!("Serialization failed: {}", e))?;
-        write_metadata_trailer(&mut writer, self)?;
+        write_metadata_trailer(writer, self)?;
 
         Ok(())
     }
@@ -205,10 +227,15 @@ impl HnswIndex {
     pub fn load_from_disk<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("Failed to open file: {}", e))?;
         let mut reader = BufReader::new(file);
+        Self::load_from_reader(&mut reader)
+    }
 
-        let snapshot: IndexSnapshot = bincode::deserialize_from(&mut reader)
+    /// Reconstruct an index from any reader written by
+    /// [`HnswIndex::save_to_writer`].
+    pub fn load_from_reader<R: Read>(reader: &mut R) -> Result<Self, String> {
+        let snapshot: IndexSnapshot = bincode::deserialize_from(&mut *reader)
             .map_err(|e| format!("Deserialization failed: {}", e))?;
-        let metadata_trailer = read_metadata_trailer(&mut reader)?;
+        let metadata_trailer = read_metadata_trailer(reader)?;
 
         // Validate version compatibility
         if snapshot.version != 1 {

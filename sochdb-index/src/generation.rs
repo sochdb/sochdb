@@ -48,6 +48,7 @@
 //! active would break the one thing this module promises, which is that the
 //! active generation names one exact source snapshot.
 
+use crate::hnsw::HnswIndex;
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -184,6 +185,13 @@ pub enum GenerationError {
     AlreadyPublished {
         generation: u64,
     },
+    /// The index could not be encoded or rebuilt.
+    Index(String),
+    /// The manifest describes an index that is not the one being published.
+    DimensionMismatch {
+        manifest: u32,
+        index: u32,
+    },
 }
 
 impl fmt::Display for GenerationError {
@@ -231,6 +239,12 @@ impl fmt::Display for GenerationError {
             GenerationError::AlreadyPublished { generation } => write!(
                 f,
                 "generation {generation} is already published and generations are immutable"
+            ),
+            GenerationError::Index(m) => write!(f, "index could not be encoded or rebuilt: {m}"),
+            GenerationError::DimensionMismatch { manifest, index } => write!(
+                f,
+                "manifest declares dimension {manifest} but the index has {index}; \
+                 publishing would record provenance that does not describe the data"
             ),
         }
     }
@@ -564,6 +578,56 @@ fn sync_dir(path: &Path) -> io::Result<()> {
     }
 }
 
+/// The segment an HNSW index is stored under inside a generation.
+pub const HNSW_SEGMENT: &str = "index.hnsw";
+
+impl GenerationStore {
+    /// Publish an HNSW index as a durable generation.
+    ///
+    /// The manifest's dimension is checked against the index rather than
+    /// trusted. A generation whose recorded provenance does not describe its own
+    /// contents is worse than no provenance, because everything downstream is
+    /// entitled to rely on it.
+    pub fn publish_hnsw(
+        &self,
+        manifest: &GenerationManifest,
+        index: &HnswIndex,
+    ) -> Result<GenerationManifest> {
+        let index_dimension = index.dimension as u32;
+        if manifest.dimension != index_dimension {
+            return Err(GenerationError::DimensionMismatch {
+                manifest: manifest.dimension,
+                index: index_dimension,
+            });
+        }
+
+        let mut encoded = Vec::new();
+        index
+            .save_to_writer(&mut encoded)
+            .map_err(GenerationError::Index)?;
+
+        let mut with_count = manifest.clone();
+        with_count.vector_count = index.len() as u64;
+        self.publish(&with_count, &[(HNSW_SEGMENT, &encoded)])
+    }
+
+    /// Load the active generation and rebuild its index.
+    ///
+    /// The generation is verified in full before a single byte is handed to the
+    /// index decoder, so a corrupt segment is reported as corruption rather than
+    /// as a confusing deserialization failure.
+    pub fn load_active_hnsw(&self) -> Result<Option<(GenerationManifest, HnswIndex)>> {
+        let Some(manifest) = self.load_active()? else {
+            return Ok(None);
+        };
+        let generation = manifest.generation;
+        let bytes = self.read_segment(generation, HNSW_SEGMENT)?;
+        let index =
+            HnswIndex::load_from_reader(&mut bytes.as_slice()).map_err(GenerationError::Index)?;
+        Ok(Some((manifest, index)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -888,6 +952,122 @@ mod tests {
         let seg = &published.segments[0];
         assert_eq!(seg.bytes, 14);
         assert_eq!(seg.checksum, checksum_hex(b"exact contents"));
+    }
+
+    fn seeded_index(dimension: usize, count: u128) -> HnswIndex {
+        let index = HnswIndex::new(dimension, crate::hnsw::HnswConfig::default());
+        for id in 0..count {
+            // Deterministic, well-separated vectors so nearest-neighbour order
+            // is unambiguous and a difference after recovery means a real
+            // difference rather than a tie broken differently.
+            let base = id as f32;
+            let v: Vec<f32> = (0..dimension).map(|d| base + d as f32 * 0.01).collect();
+            index.insert(id, v).expect("insert");
+        }
+        index
+    }
+
+    /// The criterion that makes durability worth having: an index rebuilt from
+    /// a published generation must answer identically to the one that was
+    /// published. A recovered index that merely *works* is not enough -- if it
+    /// returns different neighbours, a restart silently changes query results.
+    #[test]
+    fn an_index_recovered_from_a_generation_answers_identically() {
+        let (dir, store) = store();
+        let index = seeded_index(8, 64);
+
+        let queries: Vec<Vec<f32>> = (0..5)
+            .map(|q| (0..8).map(|d| q as f32 * 7.0 + d as f32 * 0.01).collect())
+            .collect();
+        let before: Vec<Vec<(u128, f32)>> = queries
+            .iter()
+            .map(|q| index.search(q, 10).expect("search"))
+            .collect();
+
+        let mut m = GenerationManifest::new(1, "docs", 8, "cosine");
+        m.source_snapshot_id = Some("snapshot-a".into());
+        let published = store.publish_hnsw(&m, &index).expect("publish");
+        assert_eq!(published.vector_count, 64, "count is taken from the index");
+        drop(index);
+        drop(store);
+
+        let reopened = GenerationStore::open(dir.path()).expect("reopen");
+        let (manifest, recovered) = reopened
+            .load_active_hnsw()
+            .expect("load")
+            .expect("a generation is active");
+        assert_eq!(manifest.generation, 1);
+        assert_eq!(manifest.source_snapshot_id.as_deref(), Some("snapshot-a"));
+        assert_eq!(recovered.len(), 64);
+
+        for (q, expected) in queries.iter().zip(&before) {
+            let actual = recovered.search(q, 10).expect("search after recovery");
+            let expected_ids: Vec<u128> = expected.iter().map(|(id, _)| *id).collect();
+            let actual_ids: Vec<u128> = actual.iter().map(|(id, _)| *id).collect();
+            assert_eq!(
+                actual_ids, expected_ids,
+                "a restart changed which vectors this query matches"
+            );
+            for ((_, a), (_, b)) in actual.iter().zip(expected) {
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "distances changed across recovery: {a} vs {b}"
+                );
+            }
+        }
+    }
+
+    /// A manifest that misdescribes its own index would make every downstream
+    /// consumer of that provenance wrong, so it is refused at publication
+    /// rather than discovered later.
+    #[test]
+    fn publishing_a_manifest_that_misdescribes_the_index_is_refused() {
+        let (_dir, store) = store();
+        let index = seeded_index(8, 4);
+        let m = GenerationManifest::new(1, "docs", 16, "cosine");
+
+        let err = store.publish_hnsw(&m, &index).unwrap_err();
+        assert!(matches!(
+            err,
+            GenerationError::DimensionMismatch {
+                manifest: 16,
+                index: 8
+            }
+        ));
+        assert!(
+            store.active_generation().unwrap().is_none(),
+            "a refused publication must not have moved the active pointer"
+        );
+    }
+
+    /// Corruption must be reported as corruption. Handing damaged bytes to the
+    /// index decoder would surface as an opaque deserialization message, and an
+    /// operator would spend the incident looking at the wrong layer.
+    #[test]
+    fn a_corrupted_index_segment_is_reported_as_corruption() {
+        let (dir, store) = store();
+        let index = seeded_index(8, 8);
+        let m = GenerationManifest::new(1, "docs", 8, "cosine");
+        store.publish_hnsw(&m, &index).expect("publish");
+
+        let seg = dir
+            .path()
+            .join(GENERATIONS_DIR)
+            .join("00000000000000000001")
+            .join(HNSW_SEGMENT);
+        let mut bytes = fs::read(&seg).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xFF;
+        fs::write(&seg, &bytes).unwrap();
+
+        match store.load_active_hnsw() {
+            Err(GenerationError::SegmentChecksumMismatch { generation, file }) => {
+                assert_eq!(generation, 1);
+                assert_eq!(file, HNSW_SEGMENT);
+            }
+            Err(other) => panic!("expected corruption to be named as such, got {other}"),
+            Ok(_) => panic!("a corrupted segment must not load"),
+        }
     }
 
     #[test]
