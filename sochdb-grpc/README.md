@@ -153,9 +153,12 @@ Model Context Protocol integration for agent workflows.
 
 ## Protocol Buffers
 
-Proto definitions available at: [proto/sochdb.proto](https://github.com/sochdb/sochdb/blob/main/proto/sochdb.proto)
+Proto definitions available at:
+[sochdb-grpc/proto/sochdb.proto](https://github.com/sochdb/sochdb/blob/main/sochdb-grpc/proto/sochdb.proto)
+— this is the file the server build compiles, so it is the only definition
+that describes what is actually served.
 
-Generate clients:
+Generate clients (run from `sochdb-grpc/`):
 
 ```bash
 # Python
