@@ -73,6 +73,7 @@
 pub mod ast_query;
 pub mod atomic_memory;
 pub mod batch;
+pub mod cache_scope; // Task 12: policy-safe semantic cache scoping
 pub mod checkpoint;
 pub mod column_access;
 pub mod connection;

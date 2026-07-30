@@ -389,6 +389,7 @@ pub mod names {
     pub const GOVERNED_PUSHDOWN: &str = "retrieval.governed.pushdown";
     pub const EMBEDDING_MAINTENANCE: &str = "embedding.maintenance.incremental";
     pub const HYBRID_PROFILE: &str = "retrieval.hybrid.profile";
+    pub const CACHE_SCOPE: &str = "cache.semantic.scoped";
     pub const HNSW_SEARCH: &str = "vector.hnsw.search";
     pub const VECTOR_INGEST_BATCH: &str = "vector.ingest.batch";
     pub const METADATA_PREFILTERED_SEARCH: &str = "vector.search.metadata_prefilter";
@@ -413,6 +414,27 @@ pub const RETRIEVAL_CONTRACT: ContractVersion = ContractVersion::new(1, 0);
 /// work, not on review.
 pub fn manifest() -> CapabilityManifest {
     let capabilities = vec![
+        Capability::new(
+            names::CACHE_SCOPE,
+            RETRIEVAL_CONTRACT,
+            Maturity::LibraryOnly,
+            Durability::Stateless,
+        )
+        .guarantee("tenant, policy revision and authorization decision are compared exactly")
+        .guarantee("a key cannot be built while a component the class depends on is unpinned")
+        .guarantee(
+            "authorization is checked before freshness, so a refusal never leaks as staleness",
+        )
+        .guarantee("entries requiring reauthorization cannot be stored without source evidence")
+        .guarantee("assembled context is never served on a merely similar query")
+        .limit(
+            "source freshness is only as good as the version lookup the caller supplies; \
+             this module cannot observe changes on its own",
+        )
+        .limit(
+            "the existing semantic_cache module is unchanged and still keys on an allowed-set hash",
+        )
+        .limit("not exposed over the wire, so this is a library capability only"),
         Capability::new(
             names::HYBRID_PROFILE,
             RETRIEVAL_CONTRACT,
