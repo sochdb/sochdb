@@ -1748,3 +1748,155 @@ message CapabilityManifest {
 
   repeated CapabilityDescriptor capabilities = 3;
 }
+
+// =============================================================================
+// Retrieval Protocol v2
+//
+// v1 (VectorIndexService) addresses an index by mutable name, carries vector
+// ids as uint64, has no notion of which generation of the index answered, no
+// deadline, and no way for a caller to state what it was authorised to do.
+// Those are not gaps that can be filled by adding fields, because each one
+// changes what a response means. v2 is added beside v1 rather than replacing
+// it; v1 keeps working for existing clients.
+// =============================================================================
+
+// A 128-bit identifier. Protobuf has no 128-bit integer, and splitting it
+// across two uint64 fields is the only representation that neither truncates
+// nor depends on string parsing.
+message Uint128 {
+  uint64 high = 1;
+  uint64 low = 2;
+}
+
+message RetrievalContractVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+enum RetrievalOperation {
+  RETRIEVAL_OPERATION_UNSPECIFIED = 0;
+  RETRIEVAL_OPERATION_SEARCH = 1;
+  RETRIEVAL_OPERATION_INGEST = 2;
+}
+
+// A short-lived grant, scoped to one index, one tenant, one operation and one
+// policy scope. This is deliberately NOT the caller's mutable request context:
+// forwarding that would make the callee trust whatever the caller last put in
+// it. The signature is over the scope, so a token cannot be edited to widen it.
+message RetrievalCapabilityToken {
+  string index_key = 1;
+  string tenant_id = 2;
+  uint64 expires_at_unix_ms = 3;
+  string policy_scope_digest = 4;
+  RetrievalOperation operation = 5;
+  bytes signature = 6;
+}
+
+message FilterPredicate {
+  string key = 1;
+  string value = 2;
+}
+
+// Filter intermediate representation. Only conjunctive exact-match predicates
+// are expressed today; the message is a container so that adding disjunction
+// or ranges later does not require a new request type.
+message FilterIr {
+  repeated FilterPredicate all_of = 1;
+}
+
+message RetrievalRequest {
+  RetrievalContractVersion contract_version = 1;
+  string query_id = 2;
+  string trace_context = 3;
+  Uint128 table_object_id = 4;
+  // Stable identity of the index. An index is addressed by this, not by name,
+  // so that renaming an index cannot silently redirect a query.
+  Uint128 index_object_id = 5;
+  // 0 means "whatever is current". Any other value pins the answer to that
+  // generation and the request fails rather than answering from a different one.
+  uint64 required_index_generation = 6;
+  string source_snapshot_id = 7;
+  repeated float query_vectors = 8;
+  uint32 query_count = 9;
+  uint32 top_k = 10;
+  uint32 candidate_budget = 11;
+  FilterIr filter_ir = 12;
+  string retrieval_profile = 13;
+  uint64 deadline_unix_ms = 14;
+  RetrievalCapabilityToken capability = 15;
+  // The policy scope the caller believes it is operating under. Checked
+  // against the token rather than read from it: reading it from the token
+  // would make the token attest to itself.
+  string policy_scope_digest = 16;
+}
+
+message RetrievalCandidate {
+  Uint128 id = 1;
+  float distance = 2;
+}
+
+message RetrievalStage {
+  string name = 1;
+  uint64 duration_us = 2;
+  uint32 candidates_in = 3;
+  uint32 candidates_out = 4;
+}
+
+message RetrievalResponse {
+  uint64 index_generation = 1;
+  string source_snapshot_id = 2;
+  uint64 searchable_watermark = 3;
+  repeated RetrievalCandidate candidates = 4;
+  // Whether the answer is approximate. A caller that must not present an
+  // approximate answer as exact needs to be told, not left to infer it.
+  bool approximate = 5;
+  string recall_configuration = 6;
+  repeated RetrievalStage stages = 7;
+  uint64 total_duration_us = 8;
+  repeated string warnings = 9;
+  string evidence_digest = 10;
+  string query_id = 11;
+}
+
+message RetrievalIngestRequest {
+  RetrievalContractVersion contract_version = 1;
+  Uint128 index_object_id = 2;
+  uint64 index_generation = 3;
+  string source_snapshot_id = 4;
+  // Position of this batch in its source stream. Together with the index,
+  // generation and snapshot it derives the operation id, which is what makes
+  // a retried batch recognisable as the same batch.
+  uint64 batch_sequence = 5;
+  repeated Uint128 ids = 6;
+  repeated float vectors = 7;
+  uint64 deadline_unix_ms = 8;
+  RetrievalCapabilityToken capability = 9;
+  string policy_scope_digest = 10;
+}
+
+message RetrievalIngestResponse {
+  string operation_id = 1;
+  // False when this exact operation had already been applied. The caller sees
+  // success either way; retrying a batch it is unsure about is safe.
+  bool applied = 2;
+  uint32 inserted_count = 3;
+  uint64 index_generation = 4;
+}
+
+message BindIndexRequest {
+  Uint128 index_object_id = 1;
+  string index_name = 2;
+}
+
+message BindIndexResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+service RetrievalService {
+  // Bind a stable object id to an index name. Until an index is bound it
+  // cannot be reached over v2 at all.
+  rpc BindIndex(BindIndexRequest) returns (BindIndexResponse);
+  rpc Retrieve(RetrievalRequest) returns (RetrievalResponse);
+  rpc Ingest(RetrievalIngestRequest) returns (RetrievalIngestResponse);
+}

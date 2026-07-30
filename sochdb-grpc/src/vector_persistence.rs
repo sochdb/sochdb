@@ -98,6 +98,19 @@ impl VectorPersistence {
         })
     }
 
+    /// Generation currently published for an index, if any.
+    pub fn active_generation(&self, key: &str) -> Result<Option<u64>, String> {
+        let dir = self.index_dir(key);
+        if !dir.exists() {
+            return Ok(None);
+        }
+        let store = GenerationStore::open(&dir)
+            .map_err(|e| format!("cannot open generation store: {e}"))?;
+        store
+            .active_generation()
+            .map_err(|e| format!("cannot read active generation: {e}"))
+    }
+
     pub fn checkpoint_every(&self) -> u64 {
         self.checkpoint_every
     }

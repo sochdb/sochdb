@@ -75,11 +75,14 @@ use sochdb_grpc::{
         kv_service_server::KvServiceServer, mcp_service_server::McpServiceServer,
         namespace_service_server::NamespaceServiceServer,
         policy_service_server::PolicyServiceServer,
+        retrieval_service_server::RetrievalServiceServer,
         semantic_cache_service_server::SemanticCacheServiceServer,
         subscription_service_server::SubscriptionServiceServer,
         trace_service_server::TraceServiceServer,
         vector_index_service_server::VectorIndexServiceServer,
     },
+    retrieval_protocol::CapabilityIssuer,
+    retrieval_server::RetrievalServer,
     security::{AuthMethod, Principal, Role},
     semantic_cache_server::SemanticCacheServer,
     subscription_server::SubscriptionServer,
@@ -154,6 +157,12 @@ struct Args {
     /// only for the lifetime of the process and are lost on any stop.
     #[arg(long = "vector-data-dir", env = "SOCHDB_VECTOR_DATA_DIR")]
     vector_data_dir: Option<String>,
+
+    /// Key used to sign retrieval capabilities for the v2 protocol. Only
+    /// needed when more than one process must accept the same tokens; left
+    /// unset, each process generates its own random key at startup.
+    #[arg(long = "retrieval-signing-key", env = "SOCHDB_RETRIEVAL_SIGNING_KEY")]
+    retrieval_signing_key: Option<String>,
 
     /// Vectors to accept between published generations. Recovery is to the
     /// last published generation, so this is the size of the window whose
@@ -395,6 +404,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             vector_server
         }
     };
+    let vector_server = std::sync::Arc::new(vector_server);
+
+    // The retrieval capability signing key is per-process by default. Tokens
+    // live minutes, so nothing needs them to survive a restart, and a random
+    // key means there is no default key to forget to change. A key is only
+    // configured when several processes must accept each other's tokens.
+    let retrieval_key: Vec<u8> = match args.retrieval_signing_key.as_deref() {
+        Some(key) => key.as_bytes().to_vec(),
+        None => {
+            use rand::RngCore;
+            let mut key = vec![0u8; 32];
+            rand::thread_rng().fill_bytes(&mut key);
+            key
+        }
+    };
+    let retrieval_server = RetrievalServer::new(
+        std::sync::Arc::clone(&vector_server),
+        CapabilityIssuer::new(retrieval_key),
+    );
     let graph_server = GraphServer::with_namespace_server(namespace_server.clone());
     let collection_server = CollectionServer::with_namespace_server(namespace_server.clone());
     let policy_server = Arc::new(PolicyServer::new());
@@ -556,7 +584,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // Configure the message-size limits on the inner server first, then wrap
         // it in the interceptor (max_*_message_size is not available post-wrap).
         .add_service(tonic::codegen::InterceptedService::new(
-            VectorIndexServiceServer::new(vector_server)
+            VectorIndexServiceServer::from_arc(vector_server)
+                .max_decoding_message_size(64 * 1024 * 1024)
+                .max_encoding_message_size(64 * 1024 * 1024),
+            auth.clone(),
+        ))
+        // SECURITY: v2 verifies a scoped capability per request, but that is a
+        // second gate, not a replacement for authentication. Without the
+        // interceptor the caller's tenant would be whatever it claimed.
+        .add_service(tonic::codegen::InterceptedService::new(
+            RetrievalServiceServer::new(retrieval_server)
                 .max_decoding_message_size(64 * 1024 * 1024)
                 .max_encoding_message_size(64 * 1024 * 1024),
             auth.clone(),

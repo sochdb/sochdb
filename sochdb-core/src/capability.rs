@@ -385,6 +385,7 @@ impl CapabilityManifest {
 /// Stable capability names. Clients should reference these constants rather
 /// than string literals so a rename is a compile error somewhere.
 pub mod names {
+    pub const RETRIEVAL_V2: &str = "retrieval.protocol.v2";
     pub const HNSW_SEARCH: &str = "vector.hnsw.search";
     pub const VECTOR_INGEST_BATCH: &str = "vector.ingest.batch";
     pub const METADATA_PREFILTERED_SEARCH: &str = "vector.search.metadata_prefilter";
@@ -409,6 +410,27 @@ pub const RETRIEVAL_CONTRACT: ContractVersion = ContractVersion::new(1, 0);
 /// work, not on review.
 pub fn manifest() -> CapabilityManifest {
     let capabilities = vec![
+        Capability::new(
+            names::RETRIEVAL_V2,
+            ContractVersion::new(2, 0),
+            Maturity::Preview,
+            Durability::Ephemeral,
+        )
+        .guarantee("indexes are addressed by a stable object id, never by name")
+        .guarantee("vector identifiers are 128 bits end to end")
+        .guarantee("a pinned index generation is honoured exactly or the request is refused")
+        .guarantee("every request carries a scoped, expiring capability that is verified")
+        .guarantee("a replayed ingest batch is recognised and not applied twice")
+        .guarantee("every response carries a digest of the answer it committed to")
+        .limit(
+            "the record of applied operations is held in memory, so a batch \
+             replayed across a restart is applied again",
+        )
+        .limit(
+            "the searchable watermark reports the published generation, not an \
+             ingestion timestamp",
+        )
+        .limit("filter IR expresses only conjunctive exact-match predicates"),
         Capability::new(
             names::HNSW_SEARCH,
             RETRIEVAL_CONTRACT,

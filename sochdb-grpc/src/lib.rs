@@ -77,6 +77,8 @@ pub mod memory_backend;
 pub mod namespace_server;
 pub mod pg_wire;
 pub mod policy_server;
+pub mod retrieval_protocol; // Rules of the v2 retrieval protocol
+pub mod retrieval_server; // The v2 retrieval service
 pub mod semantic_cache_server;
 pub mod subscription_server;
 pub mod trace_server;

@@ -216,6 +216,39 @@ impl VectorIndexServer {
     }
 
     /// Get an index by name and its dimension
+    /// Tenant-scoped index key, for callers outside this module that must
+    /// address the same index this server does.
+    pub fn key_for(namespace: &str, name: &str) -> String {
+        Self::index_key(namespace, name)
+    }
+
+    /// The index behind a key, if it is being served.
+    pub fn index_for(&self, key: &str) -> Option<(Arc<HnswIndex>, usize)> {
+        self.indexes
+            .get(key)
+            .map(|e| (Arc::clone(&e.index), e.dimension))
+    }
+
+    /// Generation currently on disk for an index.
+    ///
+    /// Zero means nothing has been published: either persistence is off, or
+    /// no checkpoint has happened yet. A caller pinning a generation must be
+    /// able to tell those apart from a real generation, and zero is never a
+    /// real generation.
+    pub fn published_generation(&self, key: &str) -> u64 {
+        self.persistence
+            .as_ref()
+            .and_then(|p| p.active_generation(key).ok().flatten())
+            .unwrap_or(0)
+    }
+
+    /// Record externally-performed inserts so they count toward the next
+    /// checkpoint. Without this, vectors written through another entry point
+    /// would never trigger a checkpoint and would sit undurable indefinitely.
+    pub async fn note_inserts(&self, key: &str, inserted: u64) {
+        self.maybe_checkpoint(key, inserted).await;
+    }
+
     fn get_index_with_dim(&self, name: &str) -> Result<(Arc<HnswIndex>, usize), GrpcError> {
         self.indexes
             .get(name)
