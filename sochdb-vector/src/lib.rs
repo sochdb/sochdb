@@ -32,6 +32,7 @@ pub mod dispatch;
 pub mod error;
 pub mod filter;
 pub mod filter_pushdown; // P2: Filter/projection pushdown plugin API
+pub mod global_topk; // Task 14: bounded global top-k over shards
 pub mod jit_ir; // P2: JIT compilation for filter expressions
 pub mod lsm;
 pub mod numa_alloc; // P1: NUMA-aware memory allocation

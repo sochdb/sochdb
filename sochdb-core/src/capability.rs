@@ -390,6 +390,7 @@ pub mod names {
     pub const EMBEDDING_MAINTENANCE: &str = "embedding.maintenance.incremental";
     pub const HYBRID_PROFILE: &str = "retrieval.hybrid.profile";
     pub const CACHE_SCOPE: &str = "cache.semantic.scoped";
+    pub const GLOBAL_TOPK: &str = "retrieval.distributed.topk";
     pub const HNSW_SEARCH: &str = "vector.hnsw.search";
     pub const VECTOR_INGEST_BATCH: &str = "vector.ingest.batch";
     pub const METADATA_PREFILTERED_SEARCH: &str = "vector.search.metadata_prefilter";
@@ -414,6 +415,24 @@ pub const RETRIEVAL_CONTRACT: ContractVersion = ContractVersion::new(1, 0);
 /// work, not on review.
 pub fn manifest() -> CapabilityManifest {
     let capabilities = vec![
+        Capability::new(
+            names::GLOBAL_TOPK,
+            RETRIEVAL_CONTRACT,
+            Maturity::LibraryOnly,
+            Durability::Stateless,
+        )
+        .guarantee("a result reports whether it is a proven global top-k or merely plausible")
+        .guarantee("shards answering against another snapshot are rejected whole, never partially")
+        .guarantee("duplicate ids across replicas are removed deterministically")
+        .guarantee("the merge holds O(k + shards), independent of fan-out")
+        .guarantee("a shard that contributed nothing is reported rather than absorbed")
+        .limit("performs no I/O; replica selection, timeouts and transport belong to the caller")
+        .limit(
+            "completeness is only as sound as the bound each shard reports; \
+             a shard that reports an optimistic bound is believed",
+        )
+        .limit("no cluster qualification has been run, so scale efficiency is unmeasured")
+        .limit("not exposed over the wire, so this is a library capability only"),
         Capability::new(
             names::CACHE_SCOPE,
             RETRIEVAL_CONTRACT,
