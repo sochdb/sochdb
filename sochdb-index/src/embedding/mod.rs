@@ -75,6 +75,7 @@ pub mod config;
 pub mod fastembed;
 pub mod hierarchical;
 pub mod index_integration;
+pub mod lineage;
 #[cfg(feature = "llm-embeddings")]
 pub mod llm_provider;
 pub mod model_manager;
@@ -95,6 +96,10 @@ pub use hierarchical::{
 };
 pub use index_integration::{
     EmbeddingIntegration, IntegrationConfig, IntegrationError, SemanticSearchResult,
+};
+pub use lineage::{
+    ChunkPolicy, EmbeddingContext, EmbeddingRecord, MaintenancePlan, ModelRef, Outbox,
+    RebuildReason, SourceChunk, content_digest, embedding_cache_key, plan_maintenance,
 };
 #[cfg(feature = "llm-embeddings")]
 pub use llm_provider::LlmEmbeddingProvider;

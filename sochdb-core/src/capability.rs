@@ -387,6 +387,7 @@ impl CapabilityManifest {
 pub mod names {
     pub const RETRIEVAL_V2: &str = "retrieval.protocol.v2";
     pub const GOVERNED_PUSHDOWN: &str = "retrieval.governed.pushdown";
+    pub const EMBEDDING_MAINTENANCE: &str = "embedding.maintenance.incremental";
     pub const HNSW_SEARCH: &str = "vector.hnsw.search";
     pub const VECTOR_INGEST_BATCH: &str = "vector.ingest.batch";
     pub const METADATA_PREFILTERED_SEARCH: &str = "vector.search.metadata_prefilter";
@@ -411,6 +412,23 @@ pub const RETRIEVAL_CONTRACT: ContractVersion = ContractVersion::new(1, 0);
 /// work, not on review.
 pub fn manifest() -> CapabilityManifest {
     let capabilities = vec![
+        Capability::new(
+            names::EMBEDDING_MAINTENANCE,
+            RETRIEVAL_CONTRACT,
+            Maturity::Preview,
+            Durability::Stateless,
+        )
+        .guarantee("replaying a maintenance run creates no duplicate chunks or vectors")
+        .guarantee("only chunks whose content changed are re-embedded")
+        .guarantee("a model, dimension or chunking-policy change forces a full rebuild")
+        .guarantee("every record carries source, chunk, policy and model lineage")
+        .guarantee("models are identified as provider:name@revision; bare names are refused")
+        .limit("planning is in-memory; the caller supplies and persists the record set")
+        .limit("chunking itself is not implemented here, only its policy revision")
+        .limit(
+            "the outbox is an at-least-once queue, so a crash between applying \
+             and acknowledging replays the batch",
+        ),
         Capability::new(
             names::GOVERNED_PUSHDOWN,
             RETRIEVAL_CONTRACT,
