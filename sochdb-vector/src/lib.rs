@@ -38,6 +38,7 @@ pub mod numa_alloc; // P1: NUMA-aware memory allocation
 pub mod outlier_encoding; // P1: Optimized outlier encoding with bitvector/sorted list hybrid
 pub mod query;
 pub mod rerank;
+pub mod retrieval_profile; // Task 11: versioned, explainable hybrid profiles
 pub mod rotation;
 pub mod search_plan; // P1: Quantization-aware search planning with SLA optimization
 pub mod segment;

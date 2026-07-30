@@ -388,6 +388,7 @@ pub mod names {
     pub const RETRIEVAL_V2: &str = "retrieval.protocol.v2";
     pub const GOVERNED_PUSHDOWN: &str = "retrieval.governed.pushdown";
     pub const EMBEDDING_MAINTENANCE: &str = "embedding.maintenance.incremental";
+    pub const HYBRID_PROFILE: &str = "retrieval.hybrid.profile";
     pub const HNSW_SEARCH: &str = "vector.hnsw.search";
     pub const VECTOR_INGEST_BATCH: &str = "vector.ingest.batch";
     pub const METADATA_PREFILTERED_SEARCH: &str = "vector.search.metadata_prefilter";
@@ -412,6 +413,22 @@ pub const RETRIEVAL_CONTRACT: ContractVersion = ContractVersion::new(1, 0);
 /// work, not on review.
 pub fn manifest() -> CapabilityManifest {
     let capabilities = vec![
+        Capability::new(
+            names::HYBRID_PROFILE,
+            RETRIEVAL_CONTRACT,
+            Maturity::LibraryOnly,
+            Durability::Stateless,
+        )
+        .guarantee("a ranking is reproducible from the profile digest that produced it")
+        .guarantee("ties break on document id, so input order cannot change the output")
+        .guarantee("every result reports its per-lane rank, raw score and contribution")
+        .guarantee("candidates are the union of the lanes, never the intersection")
+        .limit(
+            "a fused score is a ranking device, not a probability or relevance, \
+             and is not comparable across queries or profiles",
+        )
+        .limit("no reranker is implemented; the profile only records which one was named")
+        .limit("not exposed over the wire, so this is a library capability only"),
         Capability::new(
             names::EMBEDDING_MAINTENANCE,
             RETRIEVAL_CONTRACT,

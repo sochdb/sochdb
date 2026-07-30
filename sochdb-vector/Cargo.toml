@@ -11,6 +11,7 @@ name = "sochdb_vector"
 path = "src/lib.rs"
 
 [dependencies]
+blake3 = { workspace = true } # Profile digests for reproducible rankings
 # SochDB dependencies
 sochdb-core = { version = "2.1.0", path = "../sochdb-core" }
 sochdb-storage = { version = "2.1.0", path = "../sochdb-storage" }
