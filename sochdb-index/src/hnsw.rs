@@ -5856,21 +5856,26 @@ impl HnswIndex {
                     if let QuantizedVector::F32(arr) = &vs_ref[vi] {
                         if let Some(slice) = arr.as_slice() {
                             let dist = if use_normalized {
+                                // Both sides are unit length on this branch, so
+                                // `1 - dot` is exactly the cosine distance and
+                                // skipping the norms is a real saving in the
+                                // hot loop.
                                 1.0 - simd_distance::dot_product_fast(query_ref, slice)
                             } else {
-                                // For non-cosine metrics, compute raw distance
-                                let d = simd_distance::dot_product_fast(query_ref, slice);
-                                match self.config.metric {
-                                    DistanceMetric::Euclidean => {
-                                        // L2 distance from raw slices
-                                        query_ref
-                                            .iter()
-                                            .zip(slice.iter())
-                                            .map(|(a, b)| (a - b) * (a - b))
-                                            .sum::<f32>()
-                                    }
-                                    _ => 1.0 - d, // Default cosine
-                                }
+                                // Everything else defers to the one canonical
+                                // distance. This used to be a second, hand
+                                // rolled implementation, and it had drifted:
+                                // Euclidean returned the *squared* distance
+                                // while the graph path returned the rooted one,
+                                // and dot product returned `1 - dot` against
+                                // the graph path's `-dot`. Both differences are
+                                // monotonic, so ordering was unaffected and
+                                // nothing looked wrong -- but the score a
+                                // caller received changed scale the moment a
+                                // dataset grew past the flat-scan threshold,
+                                // which silently moves every distance
+                                // threshold a caller has written.
+                                self.distance_raw(query_ref, slice)
                             };
                             return Some((dist, nid));
                         }
