@@ -8,6 +8,7 @@
 //! Wires LLM context assembly to `sochdb-memory` (write-time lexical recall)
 //! and `sochdb-query::ContextCompiler` (exact-BPE budget packing).
 
+use crate::auth_interceptor::{extract_principal, require_namespace_access};
 use crate::memory_backend::{ContextOutputFormat, MemoryBackend};
 use crate::proto::{
     ContextQueryRequest, ContextQueryResponse, ContextSectionType, EstimateTokensRequest,
@@ -106,7 +107,20 @@ impl ContextService for ContextServer {
         &self,
         request: Request<ContextQueryRequest>,
     ) -> Result<Response<ContextQueryResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+
+        // Every namespace this request can reach must be authorised before any
+        // of it is read. A section names its namespace either explicitly or by
+        // falling back to the session id, so both routes are resolved here and
+        // checked together -- checking inside the loop would let an authorised
+        // first section emit content before an unauthorised later one is
+        // refused, which discloses exactly the rows the refusal is meant to
+        // withhold.
+        for section in &req.sections {
+            let ns = section_namespace(&req.session_id, &section.options);
+            require_namespace_access(&principal, &ns)?;
+        }
         let token_limit = req.token_limit.max(1) as usize;
         let output_fmt = proto_format(req.format);
         let template = compiler_template(output_fmt);
@@ -243,7 +257,9 @@ impl ContextService for ContextServer {
         &self,
         request: Request<WriteEpisodeRequest>,
     ) -> Result<Response<WriteEpisodeResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        require_namespace_access(&principal, &req.namespace)?;
         if req.text.is_empty() {
             return Ok(Response::new(WriteEpisodeResponse {
                 error: "text must not be empty".into(),
