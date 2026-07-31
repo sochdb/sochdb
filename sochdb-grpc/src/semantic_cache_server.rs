@@ -7,6 +7,7 @@
 //!
 //! Provides semantic caching for LLM queries via gRPC.
 
+use crate::auth_interceptor::extract_principal;
 use crate::proto::{
     SemanticCacheGetRequest, SemanticCacheGetResponse, SemanticCacheInvalidateRequest,
     SemanticCacheInvalidateResponse, SemanticCachePutRequest, SemanticCachePutResponse,
@@ -66,14 +67,29 @@ impl SemanticCacheServer {
         SemanticCacheServiceServer::new(self)
     }
 
+    /// The key a cache is actually stored under.
+    ///
+    /// The request carries only a `cache_name`, which is caller-supplied and so
+    /// cannot by itself say who may read the entries. Binding the authenticated
+    /// tenant into the key makes the name a tenant-local one: two tenants may
+    /// use the same `cache_name` and never see each other's answers, and there
+    /// is no name a caller can send that reaches another tenant's cache.
+    ///
+    /// The tenant is length-prefixed rather than merely joined, so that tenant
+    /// `a` with cache `b:c` and tenant `a:b` with cache `c` cannot collide on
+    /// one key.
+    fn cache_key(tenant: &str, name: &str) -> String {
+        format!("{}:{}:{}", tenant.len(), tenant, name)
+    }
+
     fn get_or_create_cache(
         &self,
-        name: &str,
+        key: &str,
     ) -> dashmap::mapref::one::Ref<'_, String, CacheInstance> {
-        if !self.caches.contains_key(name) {
-            self.caches.insert(name.to_string(), CacheInstance::new());
+        if !self.caches.contains_key(key) {
+            self.caches.insert(key.to_string(), CacheInstance::new());
         }
-        self.caches.get(name).unwrap()
+        self.caches.get(key).unwrap()
     }
 
     fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -111,8 +127,10 @@ impl SemanticCacheService for SemanticCacheServer {
         &self,
         request: Request<SemanticCacheGetRequest>,
     ) -> Result<Response<SemanticCacheGetResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
-        let cache = self.get_or_create_cache(&req.cache_name);
+        let cache =
+            self.get_or_create_cache(&Self::cache_key(&principal.tenant_id, &req.cache_name));
         let now = Instant::now();
 
         let mut best_match: Option<(String, String, f32)> = None;
@@ -173,14 +191,15 @@ impl SemanticCacheService for SemanticCacheServer {
         &self,
         request: Request<SemanticCachePutRequest>,
     ) -> Result<Response<SemanticCachePutResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        let cache_key = Self::cache_key(&principal.tenant_id, &req.cache_name);
 
-        if !self.caches.contains_key(&req.cache_name) {
-            self.caches
-                .insert(req.cache_name.clone(), CacheInstance::new());
+        if !self.caches.contains_key(&cache_key) {
+            self.caches.insert(cache_key.clone(), CacheInstance::new());
         }
 
-        let cache = self.caches.get(&req.cache_name).unwrap();
+        let cache = self.caches.get(&cache_key).unwrap();
 
         let expires_at = if req.ttl_seconds > 0 {
             Some(Instant::now() + Duration::from_secs(req.ttl_seconds))
@@ -207,9 +226,11 @@ impl SemanticCacheService for SemanticCacheServer {
         &self,
         request: Request<SemanticCacheInvalidateRequest>,
     ) -> Result<Response<SemanticCacheInvalidateResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        let cache_key = Self::cache_key(&principal.tenant_id, &req.cache_name);
 
-        let count = if let Some(cache) = self.caches.get(&req.cache_name) {
+        let count = if let Some(cache) = self.caches.get(&cache_key) {
             if req.pattern.is_empty() {
                 let count = cache.entries.len();
                 cache.entries.clear();
@@ -239,9 +260,11 @@ impl SemanticCacheService for SemanticCacheServer {
         &self,
         request: Request<SemanticCacheStatsRequest>,
     ) -> Result<Response<SemanticCacheStatsResponse>, Status> {
+        let principal = extract_principal(&request);
         let req = request.into_inner();
+        let cache_key = Self::cache_key(&principal.tenant_id, &req.cache_name);
 
-        match self.caches.get(&req.cache_name) {
+        match self.caches.get(&cache_key) {
             Some(cache) => {
                 let hits = cache.stats.hits.load(Ordering::Relaxed);
                 let misses = cache.stats.misses.load(Ordering::Relaxed);
