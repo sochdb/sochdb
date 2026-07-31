@@ -393,7 +393,7 @@ impl PerformanceCostModel {
 }
 
 /// Distance metric for vector similarity
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DistanceMetric {
     Cosine,
     Euclidean,
@@ -7223,6 +7223,26 @@ impl HnswIndex {
     /// Check if the index is empty
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// Width of every vector in this index.
+    ///
+    /// Exposed so a caller restoring a persisted index can check that the
+    /// graph it loaded matches the schema it expected. Without this the only
+    /// way to notice a mismatch is to run a search and interpret the failure,
+    /// which conflates "wrong index" with "bad query".
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// The distance metric this index was built with.
+    ///
+    /// A metric mismatch is worse than a dimension mismatch: the search still
+    /// succeeds and returns well-formed scores, they just rank by a different
+    /// notion of nearness. A caller that persists a metric alongside an index
+    /// needs to be able to verify it on load.
+    pub fn metric(&self) -> DistanceMetric {
+        self.config.metric
     }
 
     /// Check if a vector with the given ID exists in the index
