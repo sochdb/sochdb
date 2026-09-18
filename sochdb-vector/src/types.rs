@@ -139,7 +139,17 @@ pub struct QueryParams {
     pub r: usize,
     /// Enable adaptive widening
     pub adaptive: bool,
-    /// Filter bitset (if any)
+    /// Vector ids eligible for this query, or `None` for no filter.
+    ///
+    /// This is a list of ids, *not* a packed bitset, despite the `u64` element
+    /// type. The distinction is silent and unrecoverable if confused: a bitset
+    /// passed here is reinterpreted as ids, which does not error and does not
+    /// return nothing -- it matches a different, arbitrary set of vectors. When
+    /// the filter expresses a tenant or permission boundary that is a leak, so
+    /// the element type is worth the comment.
+    ///
+    /// Ids are narrowed to [`VectorId`] and ids beyond the index size are
+    /// dropped.
     pub filter: Option<Vec<u64>>,
 }
 

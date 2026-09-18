@@ -73,10 +73,10 @@ impl QueryEngine {
         stats.time_rotate_ns = rotate_start.elapsed().as_nanos() as u64;
 
         // Prepare filter
-        let filter = params.filter.as_ref().map(|bits| {
+        let filter = params.filter.as_ref().map(|ids| {
             BitsetFilter::from_ids(
                 self.total_vectors(),
-                &bits.iter().map(|&id| id as VectorId).collect::<Vec<_>>(),
+                &ids.iter().map(|&id| id as VectorId).collect::<Vec<_>>(),
             )
         });
 

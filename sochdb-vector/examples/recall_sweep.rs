@@ -15,6 +15,13 @@
 //! Confusing the two makes a budget look lossy when the loss is really in the
 //! quantizer.
 //!
+//! **This sweep is unfiltered, and its conclusion does not transfer.** The
+//! budget it reports as redundant is what filtered search spends: the filter is
+//! applied after candidate generation, so a query keeps roughly
+//! `budget * selectivity` usable candidates. Cutting the budget on the strength
+//! of this sweep alone drops filtered quality to single digits while this file
+//! still prints 98.7%. Run `filtered_recall` before changing `l_a` or `l_b`.
+//!
 //! Quality is a score ratio rather than exact-id recall@k. On data whose top-k
 //! are near-tied, exact-id recall counts a statistically identical vector as a
 //! miss and so measures tie-breaking noise instead of answer quality.
