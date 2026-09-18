@@ -42,6 +42,15 @@ pub struct CpuFeatures {
     pub has_avx512bw: bool,
     /// AVX-512 VNNI support (x86, for int8 acceleration)
     pub has_vnni: bool,
+    /// AVX-VNNI support (x86, 256-bit `VPDPBUSD` without AVX-512).
+    ///
+    /// Tracked separately from `has_vnni` because consumer Intel parts from
+    /// Alder Lake onwards (and Raptor Lake, Meteor Lake, Arrow Lake) ship
+    /// AVX-VNNI while having AVX-512 fused off entirely. Testing only
+    /// `avx512vnni` reports "no VNNI" on those CPUs and silently falls back to
+    /// the sign-extend-and-madd path, which needs roughly three times the uops
+    /// per 32 lanes for the same result.
+    pub has_avx_vnni: bool,
     /// NEON support (ARM, mandatory on aarch64)
     pub has_neon: bool,
     /// SVE support (ARM v8.2+)
@@ -77,6 +86,7 @@ impl CpuFeatures {
             has_avx512f: is_x86_feature_detected!("avx512f"),
             has_avx512bw: is_x86_feature_detected!("avx512bw"),
             has_vnni: is_x86_feature_detected!("avx512vnni"),
+            has_avx_vnni: is_x86_feature_detected!("avxvnni"),
             has_neon: false,
             has_sve: false,
             has_dotprod: false,
@@ -92,6 +102,7 @@ impl CpuFeatures {
             has_avx512f: false,
             has_avx512bw: false,
             has_vnni: false,
+            has_avx_vnni: false,
             has_neon: true,
             // SVE and dotprod detection would require reading system registers
             // For now, we rely on compile-time detection
@@ -244,6 +255,7 @@ pub fn dispatch_info() -> String {
         info.push_str(&format!("  AVX-512F: {}\n", features.has_avx512f));
         info.push_str(&format!("  AVX-512BW: {}\n", features.has_avx512bw));
         info.push_str(&format!("  VNNI: {}\n", features.has_vnni));
+        info.push_str(&format!("  AVX-VNNI: {}\n", features.has_avx_vnni));
     }
 
     #[cfg(target_arch = "aarch64")]

@@ -330,25 +330,32 @@ impl<'a> RdfScorer<'a> {
         // Allocate stripe accumulator ONCE, clear per-stripe (avoids N allocs)
         let mut stripe_acc = vec![0.0f32; self.stripe_size];
 
+        // One cursor per query dimension, created before the stripe loop so each
+        // posting list is read exactly once across the whole scan rather than
+        // being re-walked from the start for every stripe.
+        let mut cursors: Vec<DimCursor> = query_dims
+            .iter()
+            .filter_map(|&(dim_idx, _, q_value)| {
+                let entry = &self.directory[dim_idx];
+                if entry.length == 0 {
+                    return None;
+                }
+                Some(DimCursor {
+                    offset: entry.offset as usize,
+                    remaining: entry.num_stripes as u32,
+                    q_value,
+                    dim_weight: self.dim_weights[dim_idx],
+                })
+            })
+            .collect();
+
         // Process stripe by stripe for cache locality
         for stripe_id in 0..num_stripes as u32 {
             // Clear accumulator (memset — vectorizes to single SIMD store)
             stripe_acc.iter_mut().for_each(|x| *x = 0.0);
 
-            for &(dim_idx, _, q_value) in query_dims {
-                let entry = &self.directory[dim_idx];
-                if entry.length == 0 {
-                    continue;
-                }
-
-                // Find and process the stripe chunk for this dimension
-                self.accumulate_stripe(
-                    entry,
-                    stripe_id,
-                    q_value,
-                    self.dim_weights[dim_idx],
-                    &mut stripe_acc,
-                );
+            for cursor in cursors.iter_mut() {
+                self.accumulate_stripe(cursor, stripe_id, &mut stripe_acc);
             }
 
             // Collect non-zero scores from this stripe
@@ -377,32 +384,41 @@ impl<'a> RdfScorer<'a> {
         global_candidates
     }
 
-    /// Accumulate scores for a specific stripe from one dimension's posting list
+    /// Accumulate scores for a specific stripe from one dimension's posting list.
+    ///
+    /// `cursor` is advanced past every chunk it consumes and is never rewound.
+    /// Callers must therefore invoke this with non-decreasing
+    /// `target_stripe_id`, which `score_with_dims` does.
     fn accumulate_stripe(
         &self,
-        entry: &PostingListEntry,
+        cursor: &mut DimCursor,
         target_stripe_id: StripeId,
-        q_value: f32,
-        dim_weight: f32,
         stripe_acc: &mut [f32],
     ) {
-        let mut offset = entry.offset as usize;
         let header_size = std::mem::size_of::<StripeChunkHeader>();
         let posting_size = std::mem::size_of::<RdfPosting>();
 
-        for _ in 0..entry.num_stripes {
-            if offset + header_size > self.rdf_data.len() {
-                break;
+        while cursor.remaining > 0 {
+            if cursor.offset + header_size > self.rdf_data.len() {
+                cursor.remaining = 0;
+                return;
             }
 
-            let header: StripeChunkHeader =
-                unsafe { std::ptr::read_unaligned(self.rdf_data.as_ptr().add(offset) as *const _) };
-            offset += header_size;
+            let header: StripeChunkHeader = unsafe {
+                std::ptr::read_unaligned(self.rdf_data.as_ptr().add(cursor.offset) as *const _)
+            };
+
+            // Chunks ascend by stripe id and so do the targets, so a chunk past
+            // the target belongs to a later call. Leave the cursor on it.
+            if header.stripe_id > target_stripe_id {
+                return;
+            }
 
             let count = header.count as usize;
+            let mut offset = cursor.offset + header_size;
+            let matched = header.stripe_id == target_stripe_id;
 
-            if header.stripe_id == target_stripe_id {
-                // Process this stripe
+            if matched {
                 for _ in 0..count {
                     if offset + posting_size > self.rdf_data.len() {
                         break;
@@ -418,16 +434,43 @@ impl<'a> RdfScorer<'a> {
                     let mag = posting.magnitude() as f32 / 127.0;
 
                     // Score contribution: q_value * sign * mag * weight
-                    let contribution = q_value * sign * mag * dim_weight;
+                    let contribution = cursor.q_value * sign * mag * cursor.dim_weight;
                     stripe_acc[vid_in_stripe] += contribution;
                 }
+            }
+
+            // Consume the chunk either way: a chunk before the target can never
+            // match a later, larger target. That case only arises from malformed
+            // data (duplicate or out-of-range stripe ids), since the caller
+            // visits every stripe in order and so meets each chunk at its own
+            // stripe; skipping it keeps a corrupt posting list from stalling the
+            // cursor rather than serving any well-formed input.
+            cursor.offset += header_size + count * posting_size;
+            cursor.remaining -= 1;
+
+            if matched {
                 return;
-            } else {
-                // Skip this stripe
-                offset += count * posting_size;
             }
         }
     }
+}
+
+/// A monotonically advancing read cursor into one dimension's posting list.
+///
+/// `score_with_dims` visits stripe ids in increasing order, and `RdfBuilder`
+/// sorts each posting list's chunks by stripe id before writing them. Joining
+/// two sequences that are already sorted on the join key is a merge, not a
+/// nested loop. Restarting each posting list from `entry.offset` for every
+/// stripe made the scan O(top_t * num_stripes^2) — quadratic in the vector
+/// count, which is why RDF dominated query time and got worse with scale.
+/// Carrying the offset across stripes makes it O(top_t * (num_stripes + chunks)).
+struct DimCursor {
+    /// Byte offset of the next unconsumed chunk header in `rdf_data`.
+    offset: usize,
+    /// Chunks left in this dimension's posting list.
+    remaining: u32,
+    q_value: f32,
+    dim_weight: f32,
 }
 
 #[cfg(test)]
@@ -490,5 +533,137 @@ mod tests {
 
         // Should find vector 0 (and others with same pattern) as top candidates
         assert!(!candidates.is_empty());
+    }
+
+    #[test]
+    fn every_vector_holding_a_query_dimension_is_found_even_when_its_postings_span_many_stripes() {
+        // The scorer walks stripes in ascending order while each posting list
+        // carries its chunks in ascending stripe order, and it keeps one forward
+        // cursor per dimension. A cursor that advances past a chunk belonging to
+        // a later stripe silently drops every match in it, which reads as a mild
+        // recall regression rather than a bug.
+        //
+        // Catching that requires *gaps*: the dimension under test must be absent
+        // from long runs of stripes, so the cursor is repeatedly asked about a
+        // stripe earlier than the chunk it is parked on and must hold position.
+        // `top_t: 1` keeps each vector posting to exactly one dimension, which
+        // matters because ties among zero-valued dimensions otherwise scatter
+        // postings into every stripe and erase the gaps.
+        let config = RdfConfig {
+            top_t: 1,
+            stripe_shift: 4, // 16 vids per stripe
+            stop_dim_threshold: 10_000,
+            idf_weight: 0.5,
+            var_weight: 0.5,
+        };
+
+        let dim = 16usize;
+        let n = 1024usize;
+        let target_dim = 3usize;
+        // Hot in one stripe out of every eight, so the target dimension's chunks
+        // sit at stripes 0, 8, 16, ... with seven empty stripes between them.
+        let is_target = |i: usize| (i / 16) % 8 == 0;
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|i| {
+                let mut v = vec![0.0f32; dim];
+                if is_target(i) {
+                    v[target_dim] = 1.0;
+                } else {
+                    // Spread the remaining vectors over filler dimensions so no
+                    // single dimension collects a posting from every vector.
+                    v[4 + (i % 12)] = 0.5;
+                }
+                v
+            })
+            .collect();
+
+        let builder = RdfBuilder::new(&config, dim as u32, &vectors);
+        let dim_weights = builder.dim_weights();
+        let (directory, data) = builder.build();
+        let scorer = RdfScorer::new(&directory, &data, &dim_weights, 4, n as u32);
+
+        let query: Vec<f32> = (0..dim)
+            .map(|j| if j == target_dim { 1.0 } else { 0.0 })
+            .collect();
+        let candidates = scorer.score(&query, config.top_t as usize, n);
+
+        let found: std::collections::HashSet<u32> = candidates.iter().map(|c| c.id).collect();
+        let expected: Vec<u32> = (0..n).filter(|&i| is_target(i)).map(|i| i as u32).collect();
+        assert_eq!(expected.len(), 128, "test data should span eight stripes");
+
+        let missing: Vec<u32> = expected
+            .iter()
+            .copied()
+            .filter(|id| !found.contains(id))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "cursor dropped {} of {} vectors carrying dimension {}: {:?}",
+            missing.len(),
+            expected.len(),
+            target_dim,
+            &missing[..missing.len().min(16)]
+        );
+    }
+
+    #[test]
+    fn scores_are_unchanged_when_several_dimensions_interleave_across_stripes() {
+        // With one cursor per query dimension, an error in how far a cursor
+        // advances shows up as a wrong score rather than a missing id. Give two
+        // dimensions overlapping but offset stripe coverage and pin the exact
+        // scores, so both the traversal and the accumulated value are checked.
+        let config = RdfConfig {
+            top_t: 2,
+            stripe_shift: 2, // 4 vids per stripe
+            stop_dim_threshold: 10_000,
+            idf_weight: 0.5,
+            var_weight: 0.5,
+        };
+
+        let dim = 4usize;
+        let n = 64usize;
+        // Dimension 0 is hot on even vectors, dimension 1 on multiples of 8, so
+        // their chunks share some stripes and not others.
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|i| {
+                let mut v = vec![0.0f32; dim];
+                if i % 2 == 0 {
+                    v[0] = 1.0;
+                }
+                if i % 8 == 0 {
+                    v[1] = 1.0;
+                }
+                v
+            })
+            .collect();
+
+        let builder = RdfBuilder::new(&config, dim as u32, &vectors);
+        let dim_weights = builder.dim_weights();
+        let (directory, data) = builder.build();
+        let scorer = RdfScorer::new(&directory, &data, &dim_weights, 2, n as u32);
+
+        let query: Vec<f32> = vec![1.0, 1.0, 0.0, 0.0];
+        let candidates = scorer.score(&query, 2, n);
+        let by_id: std::collections::HashMap<u32, f32> =
+            candidates.iter().map(|c| (c.id, c.score)).collect();
+
+        // Vectors divisible by 8 carry both dimensions and must outscore those
+        // that carry only dimension 0.
+        for i in (0..n).step_by(8) {
+            let both = by_id
+                .get(&(i as u32))
+                .unwrap_or_else(|| panic!("vector {} carries both dims but is absent", i));
+            let only_dim0 = by_id
+                .get(&((i + 2) as u32))
+                .unwrap_or_else(|| panic!("vector {} carries dimension 0 but is absent", i + 2));
+            assert!(
+                *both > *only_dim0,
+                "vector {} carries two query dims and must outscore {}: {} vs {}",
+                i,
+                i + 2,
+                both,
+                only_dim0
+            );
+        }
     }
 }

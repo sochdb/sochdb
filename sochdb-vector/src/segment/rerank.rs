@@ -254,13 +254,7 @@ impl<'a> Reranker<'a> {
         query_i8: &[i8],
         query_scale: f32,
     ) -> Vec<ScoredCandidate> {
-        candidates
-            .iter()
-            .map(|&vid| ScoredCandidate {
-                id: vid,
-                score: self.score(vid, query_i8, query_scale),
-            })
-            .collect()
+        self.score_batch_inner(candidates, query_i8, query_scale, None)
     }
 
     /// Score multiple candidates with fp32 query for accurate outlier computation
@@ -271,13 +265,94 @@ impl<'a> Reranker<'a> {
         query_scale: f32,
         query_fp32: &[f32],
     ) -> Vec<ScoredCandidate> {
+        self.score_batch_inner(candidates, query_i8, query_scale, Some(query_fp32))
+    }
+
+    /// Shared batch scoring.
+    ///
+    /// The int8 dot products are taken in one pass so the kernel can hoist the
+    /// per-query work out of the candidate loop and prefetch across candidates;
+    /// scoring one candidate at a time forfeits both. Dequantization and the
+    /// outlier corrections stay per-candidate and unchanged, so the result is
+    /// identical to calling `score_with_fp32` in a loop.
+    fn score_batch_inner(
+        &self,
+        candidates: &[VectorId],
+        query_i8: &[i8],
+        query_scale: f32,
+        query_fp32: Option<&[f32]>,
+    ) -> Vec<ScoredCandidate> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        // A candidate whose vector is not fully present cannot be scored by the
+        // batch kernel, which indexes without bounds checks. Those are rare
+        // enough (only truncated or corrupt segments produce them) that routing
+        // them through the scalar path keeps the fast path branch-free.
+        let max_vid = self.i8_data.len() / self.dim.max(1);
+        if candidates.iter().any(|&v| (v as usize) >= max_vid) {
+            return candidates
+                .iter()
+                .map(|&vid| ScoredCandidate {
+                    id: vid,
+                    score: self.score_with_fp32(vid, query_i8, query_scale, query_fp32),
+                })
+                .collect();
+        }
+
+        let mut dots = vec![0i32; candidates.len()];
+        crate::simd::dot_i8::dot_i8_indexed(
+            &query_i8[..self.dim],
+            self.i8_data,
+            candidates,
+            self.dim,
+            &mut dots,
+        );
+
+        let denom = 127.0 * 127.0;
         candidates
             .iter()
-            .map(|&vid| ScoredCandidate {
-                id: vid,
-                score: self.score_with_fp32(vid, query_i8, query_scale, Some(query_fp32)),
+            .zip(dots.iter())
+            .map(|(&vid, &dot)| {
+                let v = vid as usize;
+                let mut score = (dot as f32) * query_scale * self.scales[v] / denom;
+                score += self.outlier_correction(v, query_i8, query_scale, query_fp32);
+                ScoredCandidate { id: vid, score }
             })
             .collect()
+    }
+
+    /// Outlier contribution for one vector, factored out so the batch and
+    /// single-candidate paths cannot drift apart.
+    fn outlier_correction(
+        &self,
+        vid: usize,
+        query_i8: &[i8],
+        query_scale: f32,
+        query_fp32: Option<&[f32]>,
+    ) -> f32 {
+        if self.num_outliers == 0 {
+            return 0.0;
+        }
+        let outlier_offset = vid * self.num_outliers;
+        if outlier_offset + self.num_outliers > self.outliers.len() {
+            return 0.0;
+        }
+
+        let mut acc = 0.0f32;
+        for outlier in &self.outliers[outlier_offset..outlier_offset + self.num_outliers] {
+            let dim_id = outlier.dim_id as usize;
+            if dim_id < self.dim {
+                let v_val = outlier.get_value().to_f32();
+                let q_val = match query_fp32 {
+                    Some(fp32) => fp32[dim_id],
+                    None => (query_i8[dim_id] as f32) * query_scale / 127.0,
+                };
+                acc += q_val * v_val;
+            }
+        }
+        acc
     }
 
     /// Rerank and return top R candidates

@@ -97,6 +97,10 @@ pub fn dot_i8_batch(query: &[i8], vectors: &[i8], scales: &[f32], dim: usize, re
 
     #[cfg(target_arch = "x86_64")]
     {
+        if features.has_avx_vnni && dim >= 32 && dim <= MAX_VNNI_DIM {
+            unsafe { dot_i8_batch_avxvnni(query, vectors, scales, dim, results) };
+            return;
+        }
         if features.has_avx2 {
             unsafe { dot_i8_batch_avx2(query, vectors, scales, dim, results) };
             return;
@@ -133,10 +137,183 @@ pub fn dot_i8_indexed(
     assert!(query.len() >= dim);
     assert!(out_scores.len() >= cand_ids.len());
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        // AVX-VNNI folds the multiply and the widening accumulate into one
+        // instruction, and the batch form hoists the query correction term out
+        // of the per-candidate loop. Only worth entering when there is a whole
+        // 32-lane block to work on.
+        if cpu_features().has_avx_vnni && dim >= 32 && dim <= MAX_VNNI_DIM {
+            // Safety: AVX-VNNI is verified present, and the bounds above keep
+            // the biased accumulator inside i32.
+            unsafe { dot_i8_indexed_avxvnni(query, vectors, cand_ids, dim, out_scores) };
+            return;
+        }
+    }
+
     for (i, &cand_id) in cand_ids.iter().enumerate() {
         let offset = cand_id as usize * dim;
         let vec = &vectors[offset..offset + dim];
         out_scores[i] = dot_i8(&query[..dim], vec);
+    }
+}
+
+/// Largest dimension for which the biased AVX-VNNI accumulator cannot overflow.
+///
+/// `VPDPBUSD` accumulates products of an unsigned byte and a signed byte, so
+/// after biasing the stored vector each term is bounded by `255 * 128 = 32_640`
+/// rather than the `127 * 127` of the unbiased signed product. The accumulator
+/// is i32, so the dimension must satisfy `dim * 32_640 <= i32::MAX`. Beyond this
+/// the scalar and AVX2 paths still apply, since they never form the biased term.
+const MAX_VNNI_DIM: usize = (i32::MAX as usize) / 32_640;
+
+/// AVX-VNNI indexed batch dot product.
+///
+/// `VPDPBUSD` multiplies an *unsigned* byte by a *signed* byte, but both the
+/// query and the stored vectors are signed. Biasing the stored vector into
+/// unsigned form with `v ^ 0x80` — which is exactly `v + 128` for a signed byte
+/// — gives
+///
+/// ```text
+/// dpbusd(v + 128, q) = Σ (vᵢ + 128)·qᵢ = Σ vᵢqᵢ + 128·Σ qᵢ
+/// ```
+///
+/// so the true dot product is the accumulator minus `128·Σ qᵢ`. The correction
+/// depends only on the query, which is why this is written as a batch: `Σ qᵢ` is
+/// computed once for every candidate instead of once per candidate. That leaves
+/// roughly four uops per 32 lanes against the twelve the sign-extend-and-madd
+/// path needs, and the results are bit-identical because every step is integer.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avxvnni")]
+unsafe fn dot_i8_indexed_avxvnni(
+    query: &[i8],
+    vectors: &[i8],
+    cand_ids: &[u32],
+    dim: usize,
+    out_scores: &mut [i32],
+) {
+    use std::arch::x86_64::*;
+
+    unsafe {
+        let dim_aligned = (dim / 32) * 32;
+        // Hoisted query correction: the whole reason for the batch form. Only
+        // the lanes that go through the biased path are corrected, so the sum
+        // covers the aligned prefix and the scalar tail is left untouched.
+        let sum_q: i32 = query[..dim_aligned].iter().map(|&x| x as i32).sum();
+        let correction = 128 * sum_q;
+        let bias = _mm256_set1_epi8(0x80u8 as i8);
+
+        for (i, &cand_id) in cand_ids.iter().enumerate() {
+            let offset = cand_id as usize * dim;
+            let vptr = vectors.as_ptr().add(offset);
+            let qptr = query.as_ptr();
+
+            // Candidate ids arrive in arbitrary order, so the hardware stride
+            // prefetcher cannot help. Pull the next candidate's first lines in
+            // while this one is still being reduced.
+            if let Some(&next) = cand_ids.get(i + 1) {
+                let nptr = vectors.as_ptr().add(next as usize * dim);
+                _mm_prefetch(nptr as *const i8, _MM_HINT_T0);
+                _mm_prefetch(nptr.add(64) as *const i8, _MM_HINT_T0);
+            }
+
+            let biased = dot_i8_vnni_core(qptr, vptr, dim_aligned, bias);
+
+            // Tail below a full 32-lane block never went through the bias, so it
+            // contributes its plain signed product with no correction.
+            let mut tail = 0i32;
+            for k in dim_aligned..dim {
+                tail +=
+                    (*query.get_unchecked(k) as i32) * (*vectors.get_unchecked(offset + k) as i32);
+            }
+
+            *out_scores.get_unchecked_mut(i) = biased - correction + tail;
+        }
+    }
+}
+
+/// One biased VNNI dot product over `dim_aligned` lanes (a multiple of 32).
+///
+/// Returns `Σ (vᵢ + 128)·qᵢ`; the caller subtracts the hoisted `128·Σ qᵢ`. Two
+/// accumulators keep the dpbusd latency chain off the critical path.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avxvnni")]
+#[inline]
+unsafe fn dot_i8_vnni_core(
+    qptr: *const i8,
+    vptr: *const i8,
+    dim_aligned: usize,
+    bias: std::arch::x86_64::__m256i,
+) -> i32 {
+    use std::arch::x86_64::*;
+
+    unsafe {
+        let mut acc0 = _mm256_setzero_si256();
+        let mut acc1 = _mm256_setzero_si256();
+
+        let mut d = 0usize;
+        while d + 64 <= dim_aligned {
+            let v0 = _mm256_loadu_si256(vptr.add(d) as *const __m256i);
+            let q0 = _mm256_loadu_si256(qptr.add(d) as *const __m256i);
+            let v1 = _mm256_loadu_si256(vptr.add(d + 32) as *const __m256i);
+            let q1 = _mm256_loadu_si256(qptr.add(d + 32) as *const __m256i);
+            acc0 = _mm256_dpbusd_avx_epi32(acc0, _mm256_xor_si256(v0, bias), q0);
+            acc1 = _mm256_dpbusd_avx_epi32(acc1, _mm256_xor_si256(v1, bias), q1);
+            d += 64;
+        }
+        while d + 32 <= dim_aligned {
+            let v0 = _mm256_loadu_si256(vptr.add(d) as *const __m256i);
+            let q0 = _mm256_loadu_si256(qptr.add(d) as *const __m256i);
+            acc0 = _mm256_dpbusd_avx_epi32(acc0, _mm256_xor_si256(v0, bias), q0);
+            d += 32;
+        }
+
+        let acc = _mm256_add_epi32(acc0, acc1);
+        let lo = _mm256_castsi256_si128(acc);
+        let hi = _mm256_extracti128_si256(acc, 1);
+        let s = _mm_add_epi32(lo, hi);
+        let s = _mm_hadd_epi32(s, s);
+        let s = _mm_hadd_epi32(s, s);
+        _mm_cvtsi128_si32(s)
+    }
+}
+
+/// AVX-VNNI contiguous batch dot product.
+///
+/// Same bias identity as the indexed kernel, but the candidates are laid out
+/// consecutively, so the hardware stride prefetcher covers the loads and no
+/// software prefetch is needed.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avxvnni")]
+unsafe fn dot_i8_batch_avxvnni(
+    query: &[i8],
+    vectors: &[i8],
+    scales: &[f32],
+    dim: usize,
+    results: &mut [f32],
+) {
+    use std::arch::x86_64::*;
+
+    unsafe {
+        let dim_aligned = (dim / 32) * 32;
+        let sum_q: i32 = query[..dim_aligned].iter().map(|&x| x as i32).sum();
+        let correction = 128 * sum_q;
+        let bias = _mm256_set1_epi8(0x80u8 as i8);
+        let qptr = query.as_ptr();
+
+        for (i, &scale) in scales.iter().enumerate() {
+            let offset = i * dim;
+            let vptr = vectors.as_ptr().add(offset);
+            let biased = dot_i8_vnni_core(qptr, vptr, dim_aligned, bias);
+
+            let mut tail = 0i32;
+            for k in dim_aligned..dim {
+                tail +=
+                    (*query.get_unchecked(k) as i32) * (*vectors.get_unchecked(offset + k) as i32);
+            }
+
+            *results.get_unchecked_mut(i) = (biased - correction + tail) as f32 * scale;
+        }
     }
 }
 
@@ -453,5 +630,108 @@ mod tests {
         let result = l2_distance_i8(&a, &b);
         // (10-11)^2 + (20-22)^2 + (30-33)^2 + (40-44)^2 = 1 + 4 + 9 + 16 = 30
         assert_eq!(result, 30);
+    }
+
+    /// Deterministic full-range i8 values, including both endpoints. The bias
+    /// trick maps `-128` to unsigned `0` and `127` to `255`, so the endpoints
+    /// are exactly where an off-by-one in the correction would show up.
+    fn pseudo_i8(seed: u64, n: usize) -> Vec<i8> {
+        let mut s = seed | 1;
+        (0..n)
+            .map(|i| {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                match i % 8 {
+                    0 => i8::MIN,
+                    1 => i8::MAX,
+                    2 => 0,
+                    _ => (s >> 56) as i8,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn indexed_batch_dot_is_bit_identical_to_the_scalar_reference() {
+        // The batch kernel may use AVX-VNNI, which cannot multiply two signed
+        // bytes and so computes a biased product and subtracts a per-query
+        // correction. That correction is applied only to the lanes that went
+        // through the vectorised path, so dimensions that are not a multiple of
+        // 32 are the interesting case: a correction computed over the whole
+        // query instead of the aligned prefix would be wrong only there.
+        // Integer arithmetic throughout means "close enough" is not the bar —
+        // the results must be equal.
+        for &dim in &[1usize, 7, 31, 32, 33, 63, 64, 96, 127, 128, 384, 768, 1000] {
+            let n_vec = 17usize;
+            let vectors = pseudo_i8(0xA5A5 ^ dim as u64, n_vec * dim);
+            let query = pseudo_i8(0x1234 ^ dim as u64, dim);
+            let cand_ids: Vec<u32> = (0..n_vec as u32).rev().collect();
+
+            let mut got = vec![0i32; n_vec];
+            dot_i8_indexed(&query, &vectors, &cand_ids, dim, &mut got);
+
+            for (slot, &cand) in cand_ids.iter().enumerate() {
+                let off = cand as usize * dim;
+                let want: i32 = (0..dim)
+                    .map(|k| query[k] as i32 * vectors[off + k] as i32)
+                    .sum();
+                assert_eq!(
+                    got[slot], want,
+                    "dim={} candidate={} mismatch (batch {} vs reference {})",
+                    dim, cand, got[slot], want
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_batch_dot_matches_the_single_vector_kernel() {
+        // Both kernels are public and callers mix them, so they must agree.
+        for &dim in &[32usize, 100, 768] {
+            let n_vec = 9usize;
+            let vectors = pseudo_i8(0xBEEF ^ dim as u64, n_vec * dim);
+            let query = pseudo_i8(0xF00D ^ dim as u64, dim);
+            let cand_ids: Vec<u32> = (0..n_vec as u32).collect();
+
+            let mut got = vec![0i32; n_vec];
+            dot_i8_indexed(&query, &vectors, &cand_ids, dim, &mut got);
+
+            for (slot, &cand) in cand_ids.iter().enumerate() {
+                let off = cand as usize * dim;
+                let single = dot_i8(&query, &vectors[off..off + dim]);
+                assert_eq!(got[slot], single, "dim={} candidate={}", dim, cand);
+            }
+        }
+    }
+
+    #[test]
+    fn contiguous_batch_dot_is_bit_identical_to_the_scalar_reference() {
+        // The biased VNNI accumulator only covers whole 32-lane blocks, so the
+        // hoisted correction must span the aligned prefix and not the whole
+        // query. Dimensions that are not multiples of 32 are the only ones that
+        // can catch a correction applied over the wrong range.
+        for dim in [32usize, 33, 63, 64, 96, 127, 128, 255, 768, 769] {
+            let query = pseudo_i8(0x1234_5678, dim);
+            let n_vec = 9usize;
+            let vectors = pseudo_i8(0x9ABC_DEF0, n_vec * dim);
+            let scales: Vec<f32> = (0..n_vec).map(|i| 0.5 + i as f32 * 0.25).collect();
+
+            let mut got = vec![0.0f32; n_vec];
+            dot_i8_batch(&query, &vectors, &scales, dim, &mut got);
+
+            for (i, &scale) in scales.iter().enumerate() {
+                let want: i32 = (0..dim)
+                    .map(|k| query[k] as i32 * vectors[i * dim + k] as i32)
+                    .sum();
+                assert_eq!(
+                    got[i],
+                    want as f32 * scale,
+                    "dim={} vector={} batch dot diverged from the scalar reference",
+                    dim,
+                    i
+                );
+            }
+        }
     }
 }

@@ -81,6 +81,22 @@ impl EngineConfig {
         if self.rdf.top_t == 0 {
             return Err(crate::Error::Config("RDF top_t must be > 0".into()));
         }
+        // BPS must cover every dimension. `BpsConfig::default()` derives
+        // `num_blocks` from `DEFAULT_DIM`, so a config built by setting `dim` on
+        // a default (rather than via `with_dim`) leaves the two inconsistent.
+        // Undetected, that mismatch is not a benign misconfiguration: when the
+        // blocks overrun `dim` the builder indexes past the vector and panics,
+        // and when they fall short the tail of every vector is silently left out
+        // of the sketch, degrading recall with no error anywhere. Both failure
+        // modes surface far from their cause, so reject them at construction.
+        let covered = self.bps.num_blocks as u32 * self.bps.block_size as u32;
+        if covered < self.dim {
+            return Err(crate::Error::Config(format!(
+                "BPS config covers {} dims ({} blocks x {} block_size) but dim is {}; \
+                 use EngineConfig::with_dim({}) to derive num_blocks",
+                covered, self.bps.num_blocks, self.bps.block_size, self.dim, self.dim
+            )));
+        }
         Ok(())
     }
 }
