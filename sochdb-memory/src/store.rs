@@ -38,6 +38,19 @@ pub struct MemoryStoreConfig {
     /// nowhere to log to otherwise, and [`MemoryStore::new`] rejects that
     /// combination rather than quietly downgrading it.
     pub durability: Durability,
+    /// Log records after which a checkpoint is due; `0` disables automatic ones.
+    ///
+    /// The bound that keeps the log from growing for the lifetime of the
+    /// deployment. Too low and the store pays a stop-the-world snapshot of live
+    /// state for a handful of episodes; too high and the log — and with it,
+    /// restart time — grows further than an operator would accept. The default
+    /// is deliberately large enough that a checkpoint is a rare event and small
+    /// enough that replay stays in the low seconds.
+    ///
+    /// Checkpoints are driven by the lifecycle daemon rather than by the write
+    /// path, so crossing this threshold costs an arbitrary unlucky request
+    /// nothing.
+    pub checkpoint_after_records: u64,
 }
 
 impl Default for MemoryStoreConfig {
@@ -46,6 +59,7 @@ impl Default for MemoryStoreConfig {
             max_enrichment_queue: 10_000,
             enrich_on_write: false,
             durability: Durability::None,
+            checkpoint_after_records: 50_000,
         }
     }
 }
@@ -104,21 +118,49 @@ impl NamespaceIndexes {
     /// replayed episode is indexed by exactly the code that indexes a live one.
     /// When recovery indexes through a second, parallel implementation, the two
     /// drift, and the resulting store is subtly unlike the one that crashed.
-    fn publish_episode(&mut self, episode: Episode) {
+    ///
+    /// Idempotent by id. A checkpoint renames a new snapshot into place and
+    /// *then* truncates the log, so a crash between those two steps leaves
+    /// records present in both — recovery must be able to see an episode twice
+    /// and produce the same store. Without this guard the second sighting would
+    /// call [`InvertedIndex::add_document_with_id`] again for a doc id it
+    /// already holds, which overwrites that document's postings while counting
+    /// its length into the corpus a second time: permanently skewed avgdl and
+    /// IDF for every query against that namespace.
+    ///
+    /// Returns whether the episode was newly inserted, so recovery can avoid
+    /// queueing a second embedding — and therefore a second HNSW vector — for
+    /// an episode it encounters in both the snapshot and the log.
+    fn publish_episode(&mut self, episode: Episode) -> bool {
         let doc_id = episode.id.0;
+        self.next_episode_id = self.next_episode_id.max(doc_id + 1);
+        if self.episodes.contains_key(&doc_id) {
+            return false;
+        }
         self.bm25.add_document_with_id(doc_id, &episode.text);
         self.trigram.insert(doc_id, &episode.text);
         self.episodes.insert(doc_id, episode);
-        self.next_episode_id = self.next_episode_id.max(doc_id + 1);
+        true
     }
 
-    /// Restore a logged fact under the id it was originally given.
+    /// Restore a fact under the id it was originally given.
     ///
     /// `next_fact_id` is advanced past it so a post-recovery assertion cannot
     /// reuse an id that a client already holds a reference to.
-    fn publish_fact(&mut self, fact: FactEdge) {
+    ///
+    /// Idempotent by id, for the same reason as [`Self::publish_episode`] — and
+    /// with an extra consequence: a snapshot stores each fact in its *current*
+    /// state, so a fact the snapshot already shows as retracted must not be
+    /// resurrected by the `FactAdded` record still sitting in the log.
+    ///
+    /// Returns whether the fact was newly inserted.
+    fn publish_fact(&mut self, fact: FactEdge) -> bool {
         self.next_fact_id = self.next_fact_id.max(fact.id.0 + 1);
+        if self.facts.iter().any(|f| f.id == fact.id) {
+            return false;
+        }
         self.facts.push(fact);
+        true
     }
 }
 
@@ -145,6 +187,22 @@ pub struct MemoryStore {
     /// the default and the hot one — costs a null check rather than a virtual
     /// call and a discarded serialization.
     wal: Option<MemoryWal>,
+    /// Held for reading by writers, for writing by [`Self::checkpoint`].
+    ///
+    /// A checkpoint snapshots memory and then discards the log that memory
+    /// subsumes, so it must not run while any writer sits between its log
+    /// append and its in-memory publish: that writer's record is in the log the
+    /// checkpoint is about to delete, and its state is not yet in the memory
+    /// the checkpoint is reading. Truncation would destroy the only remaining
+    /// copy of an acknowledged write.
+    ///
+    /// Guarding the pair rather than each half is the whole point, so this
+    /// cannot be folded into the per-namespace locks — a checkpoint spans every
+    /// namespace, and the gap it has to exclude spans two separate critical
+    /// sections. Writers contend only with checkpoints, never with each other:
+    /// an uncontended `parking_lot` read acquisition is tens of nanoseconds
+    /// against a checkpoint measured in milliseconds.
+    checkpoint_lock: RwLock<()>,
     /// What replay found at startup. Empty for a store that was not logged.
     recovery: RecoveryReport,
     config: MemoryStoreConfig,
@@ -204,6 +262,7 @@ impl MemoryStore {
             enrichment: EnrichmentQueue::new(config.max_enrichment_queue),
             embedder,
             wal,
+            checkpoint_lock: RwLock::new(()),
             recovery: RecoveryReport::default(),
             config,
         };
@@ -226,6 +285,11 @@ impl MemoryStore {
     ///   memory is not persisted and is lost on restart.
     /// - `SOCHDB_MEMORY_DURABILITY` — `none`, `buffered` (default when a
     ///   directory is set) or `sync`.
+    /// - `SOCHDB_MEMORY_CHECKPOINT_RECORDS` — log records after which the
+    ///   lifecycle daemon compacts the log; `0` means only on request. Reachable
+    ///   from the environment because the right value depends on how large the
+    ///   deployment's episodes are and how long a restart is allowed to take,
+    ///   neither of which this crate can know.
     ///
     /// # Errors
     ///
@@ -257,11 +321,25 @@ impl MemoryStore {
             }
         };
 
+        let default_config = MemoryStoreConfig::default();
+        let checkpoint_after_records = match std::env::var("SOCHDB_MEMORY_CHECKPOINT_RECORDS") {
+            Err(_) => default_config.checkpoint_after_records,
+            // Refused rather than defaulted, for the same reason an
+            // unrecognised durability tier is: an operator who set a threshold
+            // and got the built-in one instead has no way to find out.
+            Ok(raw) => raw.trim().parse::<u64>().map_err(|e| {
+                MemoryError::Durability(format!(
+                    "SOCHDB_MEMORY_CHECKPOINT_RECORDS={raw:?} is not a record count ({e})"
+                ))
+            })?,
+        };
+
         Self::with_embedder(
             data_dir.as_deref(),
             MemoryStoreConfig {
                 durability,
-                ..MemoryStoreConfig::default()
+                checkpoint_after_records,
+                ..default_config
             },
             sochdb_query::embedding_provider::embedder_from_env(),
         )
@@ -281,27 +359,42 @@ impl MemoryStore {
 
         wal.replay(|record| match record {
             MemoryRecord::Episode(episode) => {
-                report.episodes += 1;
-                requeue.push(EnrichmentJob {
-                    namespace: episode.namespace.clone(),
-                    episode_id: episode.id.0,
-                    text: episode.text.clone(),
-                });
                 // `enriched` is deliberately reset: the vector that justified
                 // it was never logged, so claiming enrichment here would leave
                 // the episode permanently invisible to the vector lane while
                 // reporting that it is not.
                 let mut restored = *episode;
                 restored.enriched = false;
-                self.namespace_or_create(&restored.namespace)
+                let namespace = restored.namespace.clone();
+                let episode_id = restored.id.0;
+                let text = restored.text.clone();
+
+                // Counted and re-queued only when it is genuinely new. An
+                // episode present in both the snapshot and the log is one
+                // episode; queueing it twice would insert two vectors for one
+                // id into the namespace's HNSW, and the vector lane would then
+                // return the same episode twice for a single query.
+                if self
+                    .namespace_or_create(&namespace)
                     .write()
-                    .publish_episode(restored);
+                    .publish_episode(restored)
+                {
+                    report.episodes += 1;
+                    requeue.push(EnrichmentJob {
+                        namespace,
+                        episode_id,
+                        text,
+                    });
+                }
             }
             MemoryRecord::FactAdded { namespace, fact } => {
-                report.facts += 1;
-                self.namespace_or_create(&namespace)
+                if self
+                    .namespace_or_create(&namespace)
                     .write()
-                    .publish_fact(*fact);
+                    .publish_fact(*fact)
+                {
+                    report.facts += 1;
+                }
             }
             MemoryRecord::FactInvalidated {
                 namespace,
@@ -368,6 +461,93 @@ impl MemoryStore {
             Some(wal) => wal.append(record).map_err(MemoryError::Durability),
             None => Ok(()),
         }
+    }
+
+    /// Records appended since the last checkpoint. Zero for an un-logged store.
+    pub fn records_since_checkpoint(&self) -> u64 {
+        self.wal.as_ref().map_or(0, |w| w.since_checkpoint())
+    }
+
+    /// The configured automatic-checkpoint threshold; `0` means manual only.
+    pub fn checkpoint_threshold(&self) -> u64 {
+        self.config.checkpoint_after_records
+    }
+
+    /// Whether enough has been logged to justify the cost of a checkpoint.
+    ///
+    /// Always false when [`MemoryStoreConfig::checkpoint_after_records`] is
+    /// zero, which is how a deployment asks to checkpoint only on demand.
+    pub fn checkpoint_due(&self) -> bool {
+        let threshold = self.config.checkpoint_after_records;
+        threshold > 0 && self.records_since_checkpoint() >= threshold
+    }
+
+    /// Compact the log: snapshot live state, then drop the log it subsumes.
+    ///
+    /// Returns the number of records written to the snapshot, or `Ok(0)` for an
+    /// un-logged store, for which there is nothing to compact.
+    ///
+    /// Without this the log is append-only for the lifetime of the deployment:
+    /// it ends at `ENOSPC`, and long before that every restart replays the
+    /// entire history of the store rather than its current contents, so startup
+    /// time grows without bound even though the memory being restored does not.
+    ///
+    /// # What a snapshot contains
+    ///
+    /// Live state, expressed in the same records the log carries: one `Episode`
+    /// per episode, and one `FactAdded` per fact *carrying its current temporal
+    /// coordinates*. A retracted fact therefore needs no accompanying
+    /// `FactInvalidated` — it is snapshotted already closed — which is what
+    /// keeps the snapshot proportional to live state instead of to history.
+    ///
+    /// # Cost
+    ///
+    /// Writers are excluded for the duration. The snapshot is built into a
+    /// `Vec` under the guard and encoded outside it in the sense that matters —
+    /// the namespace locks are released as soon as the records are cloned —
+    /// but the guard itself spans the `fsync`, because releasing it before the
+    /// log is truncated would reintroduce the race it exists to prevent.
+    pub fn checkpoint(&self) -> MemoryResult<u64> {
+        let Some(wal) = &self.wal else {
+            return Ok(0);
+        };
+
+        let _exclusive = self.checkpoint_lock.write();
+
+        // Checked before the record list is built, not after. Assembling it
+        // deep-clones every episode's text and every fact in every namespace,
+        // and a poisoned log will reject the result unconditionally — so doing
+        // the work first would charge a failing store the full cost of a
+        // snapshot on every attempt, with all writers blocked behind this
+        // guard for each one.
+        if wal.is_poisoned() {
+            return Err(MemoryError::Durability(
+                "memory WAL is no longer accepting writes after an earlier failure".to_string(),
+            ));
+        }
+
+        let handles: Vec<(String, NamespaceHandle)> = self
+            .namespaces
+            .read()
+            .iter()
+            .map(|(name, handle)| (name.clone(), Arc::clone(handle)))
+            .collect();
+
+        let mut records = Vec::new();
+        for (name, handle) in handles {
+            let ns = handle.read();
+            records.extend(
+                ns.episodes
+                    .values()
+                    .map(|e| MemoryRecord::Episode(Box::new(e.clone()))),
+            );
+            records.extend(ns.facts.iter().map(|f| MemoryRecord::FactAdded {
+                namespace: name.clone(),
+                fact: Box::new(f.clone()),
+            }));
+        }
+
+        wal.checkpoint(&records).map_err(MemoryError::Durability)
     }
 
     pub fn enrichment_queue(&self) -> &EnrichmentQueue {
@@ -447,7 +627,13 @@ impl MemoryStore {
         // promises before the episode becomes visible to any reader. Publishing
         // first would let a query observe — and an agent act on — an episode
         // that a crash one instant later erases.
+        //
+        // The checkpoint guard spans both steps. A checkpoint that ran between
+        // them would snapshot a namespace that does not yet contain this
+        // episode and then truncate the log record that does, erasing a write
+        // this call is about to report as successful.
         if self.wal.is_some() {
+            let _checkpoint_guard = self.checkpoint_lock.read();
             self.log(&MemoryRecord::Episode(Box::new(episode.clone())))?;
             handle.write().publish_episode(episode);
         }
@@ -595,6 +781,10 @@ impl MemoryStore {
     }
 
     pub fn add_fact(&self, namespace: &str, mut fact: FactEdge) -> MemoryResult<FactId> {
+        // Acquired before any namespace lock. Every path that takes both must
+        // take them in this order or a checkpoint waiting on a namespace read
+        // deadlocks against a writer waiting on the checkpoint guard.
+        let _checkpoint_guard = self.wal.is_some().then(|| self.checkpoint_lock.read());
         let handle = self.namespace_or_create(namespace);
         let mut ns = handle.write();
         let id = FactId(ns.next_fact_id);
@@ -653,6 +843,8 @@ impl MemoryStore {
         let Some(handle) = self.namespace(namespace) else {
             return Ok(false);
         };
+        // See `add_fact`: checkpoint guard before namespace lock, always.
+        let _checkpoint_guard = self.wal.is_some().then(|| self.checkpoint_lock.read());
         let mut ns = handle.write();
 
         if !ns.facts.iter().any(|f| f.id == fact_id) {

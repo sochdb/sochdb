@@ -12,6 +12,8 @@ pub mod embedding;
 pub mod enrichment;
 pub mod episode;
 pub mod fact;
+#[cfg(any(test, feature = "fault-injection"))]
+pub mod fault;
 pub mod lifecycle;
 pub mod provenance;
 pub mod query;

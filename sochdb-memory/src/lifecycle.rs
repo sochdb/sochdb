@@ -8,7 +8,7 @@ use sochdb_query::semantic_triggers::{SemanticTrigger, TriggerIndex};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct LifecycleConfig {
@@ -25,6 +25,29 @@ impl Default for LifecycleConfig {
             compaction: MemoryCompactionConfig::default(),
         }
     }
+}
+
+/// First retry delay after a failed checkpoint.
+///
+/// Well above the enrichment poll interval, so a failing checkpoint cannot be
+/// attempted at poll frequency. Each attempt takes the exclusive checkpoint
+/// guard and blocks every writer for its duration, so retrying at 10 Hz would
+/// convert a recoverable disk problem into a sustained write outage.
+const MIN_CHECKPOINT_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Ceiling the doubling stops at.
+///
+/// Bounded rather than unbounded so that a disk an operator has just freed is
+/// picked up within a few minutes instead of requiring a restart.
+const MAX_CHECKPOINT_BACKOFF: Duration = Duration::from_secs(300);
+
+/// Delay before the next checkpoint attempt, given the delay before this one.
+///
+/// Doubling from a floor: `Duration::ZERO` is the "no failures yet" state and
+/// doubles to zero, so the clamp is what lifts the first retry to the floor
+/// rather than letting it retry immediately.
+fn next_checkpoint_backoff(current: Duration) -> Duration {
+    (current * 2).clamp(MIN_CHECKPOINT_BACKOFF, MAX_CHECKPOINT_BACKOFF)
 }
 
 /// Background daemon: enrichment drain, contradiction pre-filter, compaction.
@@ -68,6 +91,8 @@ impl MemoryLifecycleDaemon {
             // flag and the clock. Bounded so a saturated queue cannot keep this
             // thread inside the inner loop indefinitely.
             const DRAIN_BATCH: usize = 256;
+            let mut backoff = Duration::ZERO;
+            let mut next_checkpoint = Instant::now();
 
             while running.load(Ordering::SeqCst) {
                 let mut processed = 0usize;
@@ -102,6 +127,46 @@ impl MemoryLifecycleDaemon {
                 // rejecting writes.
                 if processed == 0 {
                     thread::sleep(poll);
+                }
+
+                // Compaction of the write-ahead log runs here, on an idle
+                // background thread, rather than inline in `write_episode`.
+                // Triggering it from the write that happens to cross the
+                // threshold would charge one arbitrary request the full cost of
+                // snapshotting every namespace -- a latency spike with no
+                // relationship to anything that request asked for.
+                //
+                // The backoff matters as much as the trigger. `checkpoint_due`
+                // stays true until a checkpoint *succeeds*, so a persistent
+                // failure -- a full disk, a read-only mount, a fail-stopped log
+                // -- would otherwise be retried on every pass of this loop.
+                // Each retry takes the exclusive checkpoint guard and stalls
+                // every writer in the process, so an unbounded retry turns a
+                // recoverable disk problem into a write outage.
+                if store.checkpoint_due() && Instant::now() >= next_checkpoint {
+                    match store.checkpoint() {
+                        Ok(records) => {
+                            backoff = Duration::ZERO;
+                            tracing::info!(
+                                records,
+                                "checkpointed agent memory; write-ahead log truncated"
+                            );
+                        }
+                        // A failed checkpoint leaves the previous snapshot and
+                        // the whole log in place, so the store stays
+                        // recoverable and a later attempt can still succeed. It
+                        // is logged rather than escalated because losing the
+                        // ability to *compact* is not losing the ability to
+                        // *record*.
+                        Err(e) => {
+                            backoff = next_checkpoint_backoff(backoff);
+                            next_checkpoint = Instant::now() + backoff;
+                            tracing::error!(
+                                retry_in_s = backoff.as_secs(),
+                                "memory checkpoint failed: {e}"
+                            );
+                        }
+                    }
                 }
             }
         });
@@ -144,6 +209,48 @@ impl MemoryLifecycleDaemon {
 mod tests {
     use super::*;
     use crate::{EpisodeWrite, MemoryStore};
+
+    /// A failed checkpoint must not be retried at poll frequency.
+    ///
+    /// `checkpoint_due()` stays true until a checkpoint *succeeds*, so a
+    /// persistent failure -- a full disk, a read-only mount, a fail-stopped log
+    /// -- is re-attempted on every pass of the daemon loop. Each attempt takes
+    /// the exclusive checkpoint guard and stalls every writer for its duration,
+    /// so an unbacked-off retry turns a recoverable disk problem into a write
+    /// outage that lasts as long as the disk stays full.
+    #[test]
+    fn a_failing_checkpoint_backs_off_instead_of_retrying_every_poll() {
+        // The first failure must not schedule an immediate retry: doubling zero
+        // gives zero, so the floor is the only thing standing between a
+        // persistent failure and a spin.
+        let first = next_checkpoint_backoff(Duration::ZERO);
+        assert_eq!(first, MIN_CHECKPOINT_BACKOFF);
+        assert!(
+            first > Duration::from_millis(LifecycleConfig::default().enrichment_poll_ms),
+            "the first retry must be slower than the poll interval"
+        );
+
+        // Then it doubles.
+        let second = next_checkpoint_backoff(first);
+        assert_eq!(second, first * 2);
+    }
+
+    /// Backoff must be bounded, or a disk the operator just freed goes unused.
+    #[test]
+    fn checkpoint_backoff_saturates_rather_than_growing_without_limit() {
+        let mut backoff = Duration::ZERO;
+        for _ in 0..64 {
+            backoff = next_checkpoint_backoff(backoff);
+            assert!(
+                backoff <= MAX_CHECKPOINT_BACKOFF,
+                "backoff exceeded its ceiling: {backoff:?}"
+            );
+        }
+        assert_eq!(
+            backoff, MAX_CHECKPOINT_BACKOFF,
+            "repeated failures must settle at the ceiling, not below it"
+        );
+    }
 
     /// The daemon used to sleep for the poll interval after *every* job, so a
     /// backlog drained at one job per interval -- ten a second at the default

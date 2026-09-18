@@ -986,3 +986,895 @@ mod durability_tests {
         }
     }
 }
+
+/// Checkpointing: the bound that keeps the write-ahead log from growing for the
+/// lifetime of the deployment.
+///
+/// Every test here is about the *interaction* between a snapshot and the log it
+/// replaces, because that is where the data loss lives. Checkpointing is easy to
+/// implement in a way that works when nothing else is happening and silently
+/// drops writes when something is.
+#[cfg(test)]
+mod checkpoint_tests {
+    use crate::episode::EpisodeWrite;
+    use crate::fact::{FactEdge, FactId, FactKind};
+    use crate::store::{MemoryStore, MemoryStoreConfig};
+    use crate::{Durability, MemoryQuery, QueryLanes};
+    use sochdb_core::knowledge_object::BitemporalCoord;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tempfile::TempDir;
+
+    fn config() -> MemoryStoreConfig {
+        MemoryStoreConfig {
+            durability: Durability::Sync,
+            // Automatic checkpoints are disabled so each test drives the
+            // compaction it is actually testing; a background threshold firing
+            // mid-test would make failures depend on write volume.
+            checkpoint_after_records: 0,
+            ..MemoryStoreConfig::default()
+        }
+    }
+
+    fn open(dir: &Path) -> MemoryStore {
+        MemoryStore::new(Some(dir), config()).expect("store opens")
+    }
+
+    fn write(store: &MemoryStore, ns: &str, text: &str) -> u64 {
+        store
+            .write_episode(EpisodeWrite {
+                namespace: ns.to_string(),
+                text: text.to_string(),
+                t_valid_from: Some(1),
+                metadata: None,
+            })
+            .expect("write succeeds")
+            .episode_id
+            .0
+    }
+
+    fn fact(episode_id: u64, subject: &str, object: &str) -> FactEdge {
+        FactEdge {
+            id: FactId(0),
+            episode_id,
+            subject: subject.to_string(),
+            predicate: "likes".to_string(),
+            object: object.to_string(),
+            kind: FactKind::UserAsserted,
+            temporal: BitemporalCoord::new(1, 1),
+        }
+    }
+
+    fn wal_len(dir: &Path) -> u64 {
+        std::fs::metadata(dir.join("memory.wal"))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// The reason checkpointing exists: an append-only log ends at `ENOSPC`.
+    #[test]
+    fn checkpointing_shrinks_a_log_that_would_otherwise_only_grow() {
+        let dir = TempDir::new().unwrap();
+        let store = open(dir.path());
+
+        for i in 0..200 {
+            write(&store, "agent", &format!("episode number {i}"));
+        }
+        let before = wal_len(dir.path());
+        assert!(before > 0, "writes should have produced a log");
+
+        store.checkpoint().expect("checkpoint succeeds");
+
+        let after = wal_len(dir.path());
+        assert!(
+            after < before,
+            "log should shrink after checkpoint: {before} -> {after}"
+        );
+    }
+
+    /// Compaction must not be amnesia: the snapshot has to carry what the
+    /// truncated log was carrying.
+    #[test]
+    fn state_survives_a_checkpoint_and_the_restart_after_it() {
+        let dir = TempDir::new().unwrap();
+
+        let ids = {
+            let store = open(dir.path());
+            let ids = vec![
+                write(&store, "agent-a", "the deployment failed at 03:00"),
+                write(&store, "agent-a", "rollback completed successfully"),
+                write(&store, "agent-b", "unrelated tenant episode"),
+            ];
+            store
+                .add_fact("agent-a", fact(ids[0], "deploy", "failed"))
+                .unwrap();
+            store.checkpoint().expect("checkpoint succeeds");
+            ids
+        };
+
+        let store = open(dir.path());
+        assert_eq!(store.episode_count("agent-a"), 2);
+        assert_eq!(store.episode_count("agent-b"), 1);
+        assert_eq!(
+            store.episode_text("agent-a", ids[0]).as_deref(),
+            Some("the deployment failed at 03:00")
+        );
+        assert_eq!(store.facts_valid_at("agent-a", 1).len(), 1);
+    }
+
+    /// The log is not redundant after a checkpoint — it holds everything since.
+    #[test]
+    fn writes_after_a_checkpoint_are_recovered_alongside_the_snapshot() {
+        let dir = TempDir::new().unwrap();
+
+        {
+            let store = open(dir.path());
+            write(&store, "agent", "before the checkpoint");
+            store.checkpoint().expect("checkpoint succeeds");
+            write(&store, "agent", "after the checkpoint");
+        }
+
+        let store = open(dir.path());
+        assert_eq!(
+            store.episode_count("agent"),
+            2,
+            "snapshot and post-checkpoint log must both be replayed"
+        );
+        let report = store.recovery_report();
+        assert_eq!(report.episodes, 2);
+    }
+
+    /// Checkpointing must be a no-op as far as any reader can tell.
+    #[test]
+    fn recovery_is_identical_with_and_without_an_intervening_checkpoint() {
+        let texts = [
+            "alpha deployment log",
+            "beta rollback log",
+            "gamma incident log",
+            "delta postmortem log",
+        ];
+
+        let checkpointed = TempDir::new().unwrap();
+        {
+            let store = open(checkpointed.path());
+            for (i, t) in texts.iter().enumerate() {
+                write(&store, "agent", t);
+                if i == 1 {
+                    store.checkpoint().expect("checkpoint succeeds");
+                }
+            }
+        }
+
+        let plain = TempDir::new().unwrap();
+        {
+            let store = open(plain.path());
+            for t in texts {
+                write(&store, "agent", t);
+            }
+        }
+
+        let a = open(checkpointed.path());
+        let b = open(plain.path());
+
+        assert_eq!(a.episode_count("agent"), b.episode_count("agent"));
+        assert_eq!(a.episode_count("agent"), texts.len());
+        for id in 1..=texts.len() as u64 {
+            let text = a.episode_text("agent", id);
+            assert!(text.is_some(), "episode {id} missing after checkpoint");
+            assert_eq!(text, b.episode_text("agent", id), "episode {id} differs");
+        }
+
+        // Ranking, not just presence: a double-published episode leaves BM25
+        // corpus statistics skewed in a way episode counts cannot see.
+        let query = |s: &MemoryStore| {
+            s.query(&MemoryQuery {
+                namespace: "agent".to_string(),
+                query: "rollback".to_string(),
+                as_of: Some(2),
+                lanes: QueryLanes::lexical_only(),
+                k: 4,
+            })
+            .hits
+            .into_iter()
+            .map(|h| (h.doc_id, h.score))
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            query(&a),
+            query(&b),
+            "checkpointing changed retrieval scores"
+        );
+    }
+
+    /// A checkpoint renames the snapshot into place and *then* truncates the
+    /// log; a crash in between leaves both on disk describing the same records.
+    /// Recovery has to tolerate that, because it is a reachable state on every
+    /// single checkpoint.
+    #[test]
+    fn a_crash_between_snapshot_and_truncate_does_not_duplicate_anything() {
+        let dir = TempDir::new().unwrap();
+
+        {
+            let store = open(dir.path());
+            write(&store, "agent", "alpha deployment log");
+            write(&store, "agent", "beta rollback log");
+            store.checkpoint().expect("checkpoint succeeds");
+        }
+
+        // Reconstruct the interrupted state directly: the snapshot written by
+        // the checkpoint above, beside a log that still holds the records it
+        // subsumed. Copying a pre-checkpoint log back over the truncated one
+        // is exactly what the operator would find after losing power between
+        // the rename and the truncate.
+        let full_log = {
+            let scratch = TempDir::new().unwrap();
+            let store = open(scratch.path());
+            write(&store, "agent", "alpha deployment log");
+            write(&store, "agent", "beta rollback log");
+            drop(store);
+            std::fs::read(scratch.path().join("memory.wal")).unwrap()
+        };
+        std::fs::write(dir.path().join("memory.wal"), &full_log).unwrap();
+
+        let store = open(dir.path());
+        assert_eq!(
+            store.episode_count("agent"),
+            2,
+            "records present in both snapshot and log must be applied once"
+        );
+        assert_eq!(
+            store.recovery_report().episodes,
+            2,
+            "the recovery report must count episodes, not sightings"
+        );
+
+        // The id counter must sit past the duplicates, or the next write
+        // reuses a live id.
+        let next = write(&store, "agent", "written after recovery");
+        assert!(
+            store.episode_text("agent", next).as_deref() == Some("written after recovery"),
+            "the post-recovery write must not have overwritten a recovered episode"
+        );
+        assert_eq!(
+            store.episode_count("agent"),
+            3,
+            "next episode id collided with a recovered one"
+        );
+    }
+
+    /// A fact retracted before a checkpoint must stay retracted after one.
+    ///
+    /// The snapshot stores each fact in its current state, so the log's
+    /// original `FactAdded` — which still describes the fact as open — must not
+    /// be allowed to overwrite it during replay.
+    #[test]
+    fn a_retracted_fact_is_not_resurrected_by_the_log_behind_its_snapshot() {
+        let dir = TempDir::new().unwrap();
+
+        {
+            let store = open(dir.path());
+            let ep = write(&store, "agent", "the user said they like tea");
+            let id = store.add_fact("agent", fact(ep, "user", "tea")).unwrap();
+            assert!(store.invalidate_fact("agent", id, 50).unwrap());
+            store.checkpoint().expect("checkpoint succeeds");
+        }
+
+        // Same interrupted-checkpoint shape as above: snapshot plus the
+        // un-truncated log that produced it.
+        let full_log = {
+            let scratch = TempDir::new().unwrap();
+            let store = open(scratch.path());
+            let ep = write(&store, "agent", "the user said they like tea");
+            let id = store.add_fact("agent", fact(ep, "user", "tea")).unwrap();
+            store.invalidate_fact("agent", id, 50).unwrap();
+            drop(store);
+            std::fs::read(scratch.path().join("memory.wal")).unwrap()
+        };
+        std::fs::write(dir.path().join("memory.wal"), &full_log).unwrap();
+
+        let store = open(dir.path());
+        assert_eq!(
+            store.facts_valid_at("agent", 10).len(),
+            1,
+            "the fact was valid before it was retracted"
+        );
+        assert!(
+            store.facts_valid_at("agent", 100).is_empty(),
+            "a retracted fact must stay retracted across a checkpoint"
+        );
+    }
+
+    /// The race the checkpoint lock exists to prevent.
+    ///
+    /// A writer between its log append and its in-memory publish is invisible
+    /// to a snapshot and present only in the log — so a checkpoint that ran
+    /// there would truncate away the sole copy of an acknowledged write.
+    #[test]
+    fn a_checkpoint_racing_live_writers_loses_nothing() {
+        const WRITERS: usize = 8;
+        const PER_WRITER: usize = 60;
+
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(open(dir.path()));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let checkpointer = {
+            let store = Arc::clone(&store);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut taken = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    store.checkpoint().expect("checkpoint succeeds");
+                    taken += 1;
+                    std::thread::yield_now();
+                }
+                taken
+            })
+        };
+
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || {
+                    for i in 0..PER_WRITER {
+                        write(&store, "shared", &format!("writer {w} episode {i}"));
+                    }
+                })
+            })
+            .collect();
+
+        for h in writers {
+            h.join().unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        let checkpoints = checkpointer.join().unwrap();
+        assert!(checkpoints > 0, "the test must actually have checkpointed");
+
+        let expected = WRITERS * PER_WRITER;
+        assert_eq!(store.episode_count("shared"), expected);
+        drop(store);
+
+        let recovered = open(dir.path());
+        assert_eq!(
+            recovered.episode_count("shared"),
+            expected,
+            "a concurrent checkpoint truncated away acknowledged writes"
+        );
+    }
+
+    /// Repeated checkpoints must not accumulate; that is the whole point.
+    #[test]
+    fn repeated_checkpoints_keep_the_snapshot_proportional_to_live_state() {
+        let dir = TempDir::new().unwrap();
+        let store = open(dir.path());
+
+        let snapshot_len = |_: ()| {
+            std::fs::metadata(dir.path().join("memory.snapshot"))
+                .map(|m| m.len())
+                .unwrap_or(0)
+        };
+
+        for _ in 0..20 {
+            write(&store, "agent", "a stable, unchanging episode body");
+        }
+        store.checkpoint().unwrap();
+        let first = snapshot_len(());
+
+        for _ in 0..10 {
+            store.checkpoint().unwrap();
+        }
+        let after = snapshot_len(());
+
+        assert_eq!(
+            first, after,
+            "checkpointing without new writes must not grow the snapshot"
+        );
+    }
+
+    /// `checkpoint_after_records` is what the lifecycle daemon polls.
+    #[test]
+    fn the_checkpoint_trigger_tracks_records_and_resets_when_one_is_taken() {
+        let dir = TempDir::new().unwrap();
+        let store = MemoryStore::new(
+            Some(dir.path()),
+            MemoryStoreConfig {
+                durability: Durability::Buffered,
+                checkpoint_after_records: 5,
+                ..MemoryStoreConfig::default()
+            },
+        )
+        .expect("store opens");
+
+        assert!(!store.checkpoint_due(), "nothing has been written yet");
+        for i in 0..5 {
+            write(&store, "agent", &format!("episode {i}"));
+        }
+        assert_eq!(store.records_since_checkpoint(), 5);
+        assert!(store.checkpoint_due(), "threshold reached");
+
+        store.checkpoint().expect("checkpoint succeeds");
+        assert_eq!(store.records_since_checkpoint(), 0);
+        assert!(!store.checkpoint_due(), "the counter resets with the log");
+    }
+
+    /// Zero means "only when asked", which is what the tests above rely on.
+    #[test]
+    fn a_zero_threshold_never_triggers_an_automatic_checkpoint() {
+        let dir = TempDir::new().unwrap();
+        let store = open(dir.path());
+        for i in 0..50 {
+            write(&store, "agent", &format!("episode {i}"));
+        }
+        assert_eq!(store.records_since_checkpoint(), 50);
+        assert!(
+            !store.checkpoint_due(),
+            "a zero threshold must disable automatic checkpointing entirely"
+        );
+    }
+
+    /// An un-logged store has no log to compact, and must not pretend otherwise.
+    #[test]
+    fn checkpointing_an_in_memory_store_is_a_no_op_rather_than_an_error() {
+        let store = MemoryStore::with_defaults();
+        write(&store, "agent", "kept only in RAM");
+        assert_eq!(store.checkpoint().expect("no-op succeeds"), 0);
+        assert_eq!(store.episode_count("agent"), 1);
+    }
+}
+
+/// `QueryLanes::default()` used to be a silent dead end.
+#[cfg(test)]
+mod query_lane_default_tests {
+    use crate::episode::EpisodeWrite;
+    use crate::store::MemoryStore;
+    use crate::{MemoryQuery, QueryLanes};
+
+    fn store_with_one_episode() -> MemoryStore {
+        let store = MemoryStore::with_defaults();
+        store
+            .write_episode(EpisodeWrite {
+                namespace: "agent".to_string(),
+                text: "the rollback completed successfully".to_string(),
+                t_valid_from: Some(1),
+                metadata: None,
+            })
+            .expect("write succeeds");
+        store
+    }
+
+    fn hits(lanes: QueryLanes) -> usize {
+        store_with_one_episode()
+            .query(&MemoryQuery {
+                namespace: "agent".to_string(),
+                query: "rollback".to_string(),
+                as_of: Some(2),
+                lanes,
+                k: 10,
+            })
+            .hits
+            .len()
+    }
+
+    /// The derived `Default` produced every lane `false` and every weight
+    /// `0.0`, so a query built with `..Default::default()` searched nothing and
+    /// returned an empty result set — reporting "no matches" for a namespace
+    /// that plainly contained one.
+    #[test]
+    fn a_default_constructed_query_searches_instead_of_returning_nothing() {
+        assert!(
+            hits(QueryLanes::default()) > 0,
+            "QueryLanes::default() must retrieve, not silently match nothing"
+        );
+    }
+
+    /// The default is the same answer the gRPC layer already gives when a
+    /// caller names no lanes, so the two cannot drift apart.
+    #[test]
+    fn the_default_lane_set_is_the_three_lane_configuration() {
+        let default = QueryLanes::default();
+        let three = QueryLanes::three_lane();
+        assert_eq!(
+            (default.bm25, default.trigram, default.vector),
+            (three.bm25, three.trigram, three.vector)
+        );
+        assert_eq!(
+            (
+                default.bm25_weight,
+                default.trigram_weight,
+                default.vector_weight
+            ),
+            (three.bm25_weight, three.trigram_weight, three.vector_weight)
+        );
+    }
+
+    /// The inert value is still reachable, just no longer the accidental one.
+    #[test]
+    fn an_explicitly_empty_lane_set_still_matches_nothing() {
+        assert_eq!(
+            hits(QueryLanes::none()),
+            0,
+            "QueryLanes::none() is the deliberate way to search no lanes"
+        );
+    }
+}
+
+/// Injected faults against the real durability layer.
+///
+/// Every test here asserts on a state that only exists because something went
+/// wrong — a checkpoint interrupted between two syscalls, a log on a full disk,
+/// a snapshot line that will not decode. These are the states the durability
+/// code's correctness claims are entirely *about*, and the only ones that a
+/// happy-path suite can never reach.
+#[cfg(test)]
+mod fault_injection_tests {
+    use crate::Durability;
+    use crate::episode::EpisodeWrite;
+    use crate::fault::{CheckpointCrash, DurabilityFaults};
+    use crate::store::{MemoryStore, MemoryStoreConfig};
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    fn config() -> MemoryStoreConfig {
+        MemoryStoreConfig {
+            durability: Durability::Sync,
+            checkpoint_after_records: 0,
+            ..MemoryStoreConfig::default()
+        }
+    }
+
+    fn open(dir: &Path) -> MemoryStore {
+        MemoryStore::new(Some(dir), config()).expect("store opens")
+    }
+
+    fn write(store: &MemoryStore, text: &str) -> u64 {
+        store
+            .write_episode(EpisodeWrite {
+                namespace: "agent".to_string(),
+                text: text.to_string(),
+                t_valid_from: Some(1),
+                metadata: None,
+            })
+            .expect("write succeeds")
+            .episode_id
+            .0
+    }
+
+    const EPISODES: [&str; 4] = [
+        "the deployment failed at 03:00",
+        "rollback completed successfully",
+        "the incident was declared at 03:07",
+        "postmortem scheduled for friday",
+    ];
+
+    /// The core compaction claim: *every* prefix of the checkpoint sequence
+    /// recovers to the same live state.
+    ///
+    /// Run as one matrix rather than three tests because the claim is that the
+    /// outcomes are indistinguishable — comparing them against a shared
+    /// expectation is the assertion, and splitting it would lose that.
+    #[test]
+    fn a_checkpoint_interrupted_at_any_point_recovers_the_same_state() {
+        for crash in CheckpointCrash::all() {
+            let dir = TempDir::new().unwrap();
+
+            let faults = {
+                let store = open(dir.path());
+                for text in EPISODES {
+                    write(&store, text);
+                }
+                // Captured before the checkpoint destroys it, so the crash
+                // states can be rebuilt from real bytes.
+                let faults = DurabilityFaults::capture(dir.path());
+                store.checkpoint().expect("checkpoint succeeds");
+                faults
+            };
+
+            faults.rewind_to(crash);
+
+            let store = open(dir.path());
+            assert_eq!(
+                store.episode_count("agent"),
+                EPISODES.len(),
+                "{crash:?}: wrong episode count after recovery"
+            );
+            for (i, text) in EPISODES.iter().enumerate() {
+                assert_eq!(
+                    store.episode_text("agent", i as u64 + 1).as_deref(),
+                    Some(*text),
+                    "{crash:?}: episode {i} did not survive"
+                );
+            }
+            assert_eq!(
+                store.recovery_report().episodes,
+                EPISODES.len() as u64,
+                "{crash:?}: recovery counted sightings rather than episodes"
+            );
+        }
+    }
+
+    /// A crash while staging leaves a partial file that nothing may read.
+    #[test]
+    fn a_partial_staging_file_is_ignored_rather_than_recovered_from() {
+        let dir = TempDir::new().unwrap();
+
+        let faults = {
+            let store = open(dir.path());
+            for text in EPISODES {
+                write(&store, text);
+            }
+            let faults = DurabilityFaults::capture(dir.path());
+            store.checkpoint().expect("checkpoint succeeds");
+            faults
+        };
+        faults.rewind_to(CheckpointCrash::BeforeRename);
+        assert!(
+            faults.has_staging_file(),
+            "the fault harness must actually leave a staging file behind"
+        );
+
+        let store = open(dir.path());
+        assert_eq!(store.episode_count("agent"), EPISODES.len());
+
+        // And the next checkpoint must overwrite it rather than trip on it.
+        store
+            .checkpoint()
+            .expect("checkpoint succeeds over a stale staging file");
+        assert_eq!(open(dir.path()).episode_count("agent"), EPISODES.len());
+    }
+
+    /// The checkpoint must survive being interrupted repeatedly.
+    ///
+    /// A store that is crash-safe once but accumulates damage across crashes is
+    /// not crash-safe; a crash loop is a normal production failure mode.
+    #[test]
+    fn repeated_interrupted_checkpoints_do_not_accumulate_damage() {
+        let dir = TempDir::new().unwrap();
+        {
+            let store = open(dir.path());
+            for text in EPISODES {
+                write(&store, text);
+            }
+        }
+
+        for _ in 0..5 {
+            let store = open(dir.path());
+            let faults = DurabilityFaults::capture(dir.path());
+            store.checkpoint().expect("checkpoint succeeds");
+            drop(store);
+            faults.rewind_to(CheckpointCrash::AfterRename);
+
+            let recovered = open(dir.path());
+            assert_eq!(
+                recovered.episode_count("agent"),
+                EPISODES.len(),
+                "state drifted across a crash loop"
+            );
+        }
+    }
+
+    /// A torn log tail behind a good snapshot must not take the snapshot with it.
+    #[test]
+    fn a_torn_log_tail_after_a_checkpoint_costs_only_the_torn_record() {
+        let dir = TempDir::new().unwrap();
+
+        {
+            let store = open(dir.path());
+            for text in EPISODES {
+                write(&store, text);
+            }
+            store.checkpoint().expect("checkpoint succeeds");
+            write(&store, "written after the checkpoint");
+        }
+
+        let faults = DurabilityFaults::capture(dir.path());
+        faults.tear_log_tail(&[0xff, 0x00, 0x13, 0x37]);
+
+        let store = open(dir.path());
+        assert_eq!(
+            store.episode_count("agent"),
+            EPISODES.len() + 1,
+            "a torn tail must not cost the snapshot or the records before it"
+        );
+    }
+
+    /// A snapshot line that will not decode is unrecoverable data loss, and the
+    /// store must say so instead of opening short.
+    ///
+    /// This is the case where failing loudly is the *safe* behaviour: the log
+    /// that carried those records was truncated by the checkpoint that wrote
+    /// them here, so skipping the line deletes an episode permanently while
+    /// reporting success.
+    #[test]
+    fn a_corrupted_snapshot_fails_the_open_rather_than_silently_losing_state() {
+        let dir = TempDir::new().unwrap();
+
+        {
+            let store = open(dir.path());
+            for text in EPISODES {
+                write(&store, text);
+            }
+            store.checkpoint().expect("checkpoint succeeds");
+        }
+
+        DurabilityFaults::capture(dir.path()).corrupt_snapshot_tail();
+
+        let Err(e) = MemoryStore::new(Some(dir.path()), config()) else {
+            panic!("a corrupted snapshot must fail the open, not be skipped");
+        };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("memory.snapshot") && msg.contains("could not be decoded"),
+            "the error must name the file and the problem, got: {msg}"
+        );
+    }
+
+    /// A checkpoint that cannot write its snapshot must change nothing.
+    ///
+    /// The failure has to be atomic in the operator's sense: a full disk during
+    /// compaction is an inconvenience, but a full disk that destroys the log
+    /// while failing to produce its replacement is data loss.
+    #[test]
+    fn a_checkpoint_that_cannot_write_its_snapshot_leaves_the_log_intact() {
+        let dir = TempDir::new().unwrap();
+        let store = open(dir.path());
+        for text in EPISODES {
+            write(&store, text);
+        }
+
+        let log_before = DurabilityFaults::capture(dir.path()).log_len();
+        assert!(log_before > 0);
+
+        // Make the staging path unwritable by turning it into a directory:
+        // `File::create` on it fails, so the checkpoint aborts at its first
+        // step, which is the step whose failure must be harmless.
+        std::fs::create_dir(dir.path().join("memory.snapshot.tmp")).unwrap();
+
+        let err = store.checkpoint().expect_err("checkpoint must fail");
+        assert!(
+            err.to_string().contains("memory.snapshot.tmp"),
+            "the error must name what it could not write, got: {err}"
+        );
+
+        assert_eq!(
+            DurabilityFaults::capture(dir.path()).log_len(),
+            log_before,
+            "a failed checkpoint must not have truncated the log"
+        );
+        drop(store);
+
+        std::fs::remove_dir(dir.path().join("memory.snapshot.tmp")).unwrap();
+        let recovered = open(dir.path());
+        assert_eq!(
+            recovered.episode_count("agent"),
+            EPISODES.len(),
+            "everything must still be recoverable after a failed checkpoint"
+        );
+    }
+
+    /// A poisoned store must refuse to checkpoint *before* touching any state.
+    ///
+    /// `checkpoint_due()` stays true until a checkpoint succeeds, so the
+    /// lifecycle daemon re-attempts a failing one on every pass. Building the
+    /// record list reads every namespace and deep-clones every episode and fact
+    /// in it, all while holding the exclusive guard that blocks every writer —
+    /// so reaching that work on a store certain to reject it turns a transient
+    /// disk problem into a sustained write outage.
+    ///
+    /// Proven by holding a namespace's own lock and requiring the checkpoint to
+    /// return anyway. A checkpoint that reaches the record-building stage must
+    /// acquire that lock and therefore cannot return; one that short-circuits on
+    /// the poison latch never looks at it. The refusal has to come from the
+    /// store, before the namespace scan — the log's own check is too late,
+    /// because the scan has already happened by the time it runs.
+    #[test]
+    fn a_poisoned_store_refuses_to_checkpoint_without_reading_any_namespace() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = TempDir::new().unwrap();
+        let faults = DurabilityFaults::capture(dir.path());
+        if !faults.fill_disk() {
+            eprintln!("skipping: /dev/full unavailable");
+            return;
+        }
+
+        let store = std::sync::Arc::new(open(dir.path()));
+        assert!(
+            store
+                .write_episode(EpisodeWrite {
+                    namespace: "agent".to_string(),
+                    text: "this write has nowhere to go".to_string(),
+                    t_valid_from: Some(1),
+                    metadata: None,
+                })
+                .is_err(),
+            "the write must fail so the log latches"
+        );
+
+        let handle = store
+            .namespaces
+            .read()
+            .get("agent")
+            .cloned()
+            .expect("the failed write still created the namespace");
+        let held = handle.write();
+
+        let (tx, rx) = mpsc::channel();
+        let checkpointer = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || {
+                let _ = tx.send(store.checkpoint().map(|_| ()).map_err(|e| e.to_string()));
+            })
+        };
+
+        // Generous enough that only genuine blocking can exhaust it.
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a poisoned checkpoint must not wait on namespace state");
+        drop(held);
+        checkpointer.join().unwrap();
+
+        let Err(msg) = outcome else {
+            panic!("a poisoned store must not report a successful checkpoint");
+        };
+        assert!(
+            msg.contains("no longer accepting writes"),
+            "the refusal must name the poison latch, got: {msg}"
+        );
+        assert_eq!(
+            faults.snapshot_len(),
+            0,
+            "a refused checkpoint must not have written a snapshot"
+        );
+    }
+
+    /// A full disk must stop the store, not be absorbed silently.
+    #[test]
+    fn a_full_disk_fails_writes_loudly_and_keeps_failing_them() {
+        let dir = TempDir::new().unwrap();
+        let faults = DurabilityFaults::capture(dir.path());
+        if !faults.fill_disk() {
+            eprintln!("skipping: /dev/full unavailable");
+            return;
+        }
+
+        let store = open(dir.path());
+        let first = store.write_episode(EpisodeWrite {
+            namespace: "agent".to_string(),
+            text: "this write has nowhere to go".to_string(),
+            t_valid_from: Some(1),
+            metadata: None,
+        });
+        assert!(first.is_err(), "a write to a full disk must fail");
+
+        // Fail-stop: a failed append is indeterminate, so every subsequent
+        // write must fail too rather than layering more divergence on top.
+        let second = store.write_episode(EpisodeWrite {
+            namespace: "agent".to_string(),
+            text: "and neither has this one".to_string(),
+            t_valid_from: Some(1),
+            metadata: None,
+        });
+        assert!(
+            second.is_err(),
+            "the store must latch, not retry into drift"
+        );
+
+        // Including the checkpoint path, which would otherwise be a way to
+        // destroy the log after the store has already lost track of it.
+        //
+        // Asserted on the error *text*, not merely on `is_err()`: with the log
+        // on a full disk, `TxnWal::truncate` flushes its buffer first and fails
+        // with `ENOSPC` regardless, so a bare `is_err()` here would pass even
+        // with the poison check deleted — an assertion that cannot fail.
+        let err = store
+            .checkpoint()
+            .expect_err("a poisoned store must not checkpoint");
+        assert!(
+            err.to_string().contains("no longer accepting writes"),
+            "the checkpoint must be refused by the poison latch before it \
+             attempts any I/O, got: {err}"
+        );
+    }
+}

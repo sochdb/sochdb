@@ -433,7 +433,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // SOCHDB_MEMORY_DIR; without it, agent memory is lost on restart.
     let memory_store = Arc::new(MemoryStore::from_env()?);
     if memory_store.is_durable() {
-        tracing::info!("agent memory is write-ahead logged and survives restart");
+        let checkpoint = memory_store.checkpoint_threshold();
+        if checkpoint > 0 {
+            tracing::info!(
+                checkpoint_after_records = checkpoint,
+                "agent memory is write-ahead logged and survives restart"
+            );
+        } else {
+            // Worth a warning rather than silence: the log is still correct,
+            // but nothing will ever shrink it, so the deployment is on a path
+            // to a full disk and to restarts that get slower forever.
+            tracing::warn!(
+                "agent memory is write-ahead logged, but automatic checkpointing \
+                 is disabled; the log will grow without bound until \
+                 SOCHDB_MEMORY_CHECKPOINT_RECORDS is set"
+            );
+        }
     } else {
         tracing::warn!(
             "agent memory is in-memory only and will be LOST on restart; \

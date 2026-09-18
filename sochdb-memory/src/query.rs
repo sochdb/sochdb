@@ -11,7 +11,22 @@ pub enum Lane {
     Vector,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Which retrieval lanes a query runs, and how their scores are weighted.
+///
+/// # Why `Default` is written out
+///
+/// Deriving it produced a value that was *syntactically* valid and
+/// *semantically* inert: every lane `false`, every weight `0.0`. A query built
+/// with `..Default::default()` therefore searched nothing and returned an empty
+/// result set — not an error, not a warning, just zero hits, which is
+/// indistinguishable from a namespace that genuinely holds no match. The failure
+/// mode is silent and points at the data rather than at the query, which is the
+/// expensive kind to debug.
+///
+/// The default mirrors [`Self::three_lane`] because that is already the
+/// codebase's answer to "the caller expressed no preference": it is what the
+/// gRPC backend selects for an unrecognised or absent `lanes` option.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryLanes {
     pub bm25: bool,
     pub trigram: bool,
@@ -21,7 +36,33 @@ pub struct QueryLanes {
     pub vector_weight: f32,
 }
 
+impl Default for QueryLanes {
+    fn default() -> Self {
+        Self::three_lane()
+    }
+}
+
 impl QueryLanes {
+    /// Every lane off. The only way to ask for a search that finds nothing.
+    ///
+    /// Exists so that the inert value remains reachable for callers that build
+    /// lanes up field by field, now that it is no longer what `Default` hands
+    /// out by accident.
+    pub fn none() -> Self {
+        Self {
+            bm25: false,
+            trigram: false,
+            vector: false,
+            bm25_weight: 0.0,
+            trigram_weight: 0.0,
+            vector_weight: 0.0,
+        }
+    }
+
+    /// BM25 + trigram: everything indexed synchronously at write time.
+    ///
+    /// Unlike [`Self::three_lane`], returns an episode the instant it is
+    /// written, because neither lane waits on the enrichment daemon.
     pub fn lexical_only() -> Self {
         Self {
             bm25: true,
