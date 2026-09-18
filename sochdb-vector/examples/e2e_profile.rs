@@ -122,31 +122,33 @@ fn main() {
         return;
     }
 
-    let mut acc = [0u64; 6];
+    // Min-of-N, not mean: this box is shared and interference can only ever add
+    // time, so a mean drifts with whatever else is running while the minimum
+    // stays a stable lower bound on what the code itself costs.
+    let mut acc = [u64::MAX; 6];
     let mut counts = [0usize; 5];
-    let runs = 32;
+    let runs = 64;
     for i in 0..runs {
         let r = engine
             .search(&queries[i % queries.len()], &params)
             .expect("search");
         let s = &r.stats;
-        acc[0] += s.time_rotate_ns;
-        acc[1] += s.time_rdf_ns;
-        acc[2] += s.time_bps_ns;
-        acc[3] += s.time_filter_ns;
-        acc[4] += s.time_rerank_ns;
-        acc[5] += s.total_time_ns;
-        counts[0] += s.rdf_candidates;
-        counts[1] += s.bps_candidates;
-        counts[2] += s.union_size;
-        counts[3] += s.post_filter_size;
-        counts[4] += s.rerank_count;
+        acc[0] = acc[0].min(s.time_rotate_ns);
+        acc[1] = acc[1].min(s.time_rdf_ns);
+        acc[2] = acc[2].min(s.time_bps_ns);
+        acc[3] = acc[3].min(s.time_filter_ns);
+        acc[4] = acc[4].min(s.time_rerank_ns);
+        acc[5] = acc[5].min(s.total_time_ns);
+        counts[0] = s.rdf_candidates;
+        counts[1] = s.bps_candidates;
+        counts[2] = s.union_size;
+        counts[3] = s.post_filter_size;
+        counts[4] = s.rerank_count;
     }
 
-    let n = runs as f64;
-    let total = acc[5] as f64 / n;
+    let total = acc[5] as f64;
     let attributed: u64 = acc[..5].iter().sum();
-    let unattributed = total - (attributed as f64 / n);
+    let unattributed = total - attributed as f64;
 
     println!();
     println!(
@@ -161,7 +163,7 @@ fn main() {
     println!("{:>16} {:>12} {:>9}", "stage", "us/query", "% total");
     let names = ["rotate", "rdf", "bps", "filter", "rerank"];
     for (i, name) in names.iter().enumerate() {
-        let us = acc[i] as f64 / n / 1000.0;
+        let us = acc[i] as f64 / 1000.0;
         println!(
             "{:>16} {:>12.1} {:>8.1}%",
             name,
@@ -186,7 +188,7 @@ fn main() {
         "rerank_count",
     ];
     for (i, name) in cn.iter().enumerate() {
-        println!("{:>16} {:>12.0}", name, counts[i] as f64 / n);
+        println!("{:>16} {:>12}", name, counts[i]);
     }
     println!();
     println!("   QPS (single thread): {:.0}", 1e9 / total);

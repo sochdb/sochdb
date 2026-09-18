@@ -245,9 +245,21 @@ impl<'a> RdfScorer<'a> {
         }
     }
 
-    /// Score candidates using RDF
-    /// Returns top L_A candidates by score (higher = better)
+    /// Score candidates using RDF, returning the top `l_a` by descending score.
     pub fn score(&self, query: &[f32], top_t: usize, l_a: usize) -> Vec<ScoredCandidate> {
+        let mut candidates = self.score_unsorted(query, top_t, l_a);
+        candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        candidates
+    }
+
+    /// Score candidates using RDF, returning the same top `l_a` set as
+    /// [`RdfScorer::score`] but in unspecified order.
+    ///
+    /// The query engine unions these ids into a bitset and re-derives them in
+    /// id order, so ordering the set first is work that is immediately thrown
+    /// away - and it is a full sort of `l_a` elements, thousands of them on a
+    /// normal query. Callers that need the ranking use `score`.
+    pub fn score_unsorted(&self, query: &[f32], top_t: usize, l_a: usize) -> Vec<ScoredCandidate> {
         if self.directory.is_empty() {
             return Vec::new();
         }
@@ -323,9 +335,15 @@ impl<'a> RdfScorer<'a> {
         query_dims: &[(usize, f32, f32)],
         l_a: usize,
     ) -> Vec<ScoredCandidate> {
+        // `l_a - 1` is used as a selection index below, so an empty budget has
+        // to be handled before any of it runs.
+        if l_a == 0 {
+            return Vec::new();
+        }
+
         // Use stripe-based accumulation
         let num_stripes = (self.n_vec as usize + self.stripe_size - 1) / self.stripe_size;
-        let mut global_candidates = Vec::new();
+        let mut global_candidates: Vec<ScoredCandidate> = Vec::new();
 
         // Allocate stripe accumulator ONCE, clear per-stripe (avoids N allocs)
         let mut stripe_acc = vec![0.0f32; self.stripe_size];
@@ -349,6 +367,19 @@ impl<'a> RdfScorer<'a> {
             })
             .collect();
 
+        // Most vectors pick up a non-zero score from at least one query
+        // dimension - on a 200k segment roughly 80% of them do - but only `l_a`
+        // survive. Collecting every non-zero score and selecting afterwards
+        // therefore writes about thirty times more than it keeps.
+        //
+        // Instead keep a floor equal to the `l_a`-th best score seen so far.
+        // Once it is established, a candidate below it cannot reach the final
+        // set, so it is rejected by a single compare with no push and no
+        // allocation. The floor only ever rises, and it starts at zero so the
+        // "strictly positive" rule is unchanged.
+        let mut floor = 0.0f32;
+        let tighten_at = l_a.saturating_mul(2).max(1024);
+
         // Process stripe by stripe for cache locality
         for stripe_id in 0..num_stripes as u32 {
             // Clear accumulator (memset — vectorizes to single SIMD store)
@@ -358,28 +389,58 @@ impl<'a> RdfScorer<'a> {
                 self.accumulate_stripe(cursor, stripe_id, &mut stripe_acc);
             }
 
-            // Collect non-zero scores from this stripe
+            // Collect scores above the floor from this stripe.
+            //
+            // Once the floor is established only about a tenth of the slots
+            // qualify, and which ones is data-dependent, so a conditional push
+            // mispredicts on a large fraction of a hundred thousand slots per
+            // query - the measured cost was several times what a load and a
+            // compare should take. Writing every slot to the same output
+            // position and advancing that position by the predicate keeps the
+            // loop branch-free: rejected entries are simply overwritten by the
+            // next iteration and never committed, because the length is only
+            // extended by the number actually kept.
             let base_vid = stripe_id << self.stripe_shift;
-            for (i, &score) in stripe_acc.iter().enumerate() {
-                if score > 0.0 {
-                    let vid = base_vid + i as u32;
-                    if vid < self.n_vec {
-                        global_candidates.push(ScoredCandidate { id: vid, score });
+            let in_range = (self.n_vec as usize)
+                .saturating_sub(base_vid as usize)
+                .min(stripe_acc.len());
+            if in_range > 0 {
+                global_candidates.reserve(in_range);
+                let kept_before = global_candidates.len();
+                // Safety: `reserve` guarantees `in_range` writable slots past
+                // the current length, `w` never exceeds `in_range`, and
+                // `ScoredCandidate` is `Copy`, so no destructor is skipped by
+                // overwriting a rejected entry.
+                unsafe {
+                    let out = global_candidates.as_mut_ptr().add(kept_before);
+                    let mut w = 0usize;
+                    for (i, &score) in stripe_acc[..in_range].iter().enumerate() {
+                        out.add(w).write(ScoredCandidate {
+                            id: base_vid + i as u32,
+                            score,
+                        });
+                        w += (score > floor) as usize;
                     }
+                    global_candidates.set_len(kept_before + w);
                 }
+            }
+
+            if global_candidates.len() >= tighten_at {
+                global_candidates
+                    .select_nth_unstable_by(l_a - 1, |a, b| b.score.partial_cmp(&a.score).unwrap());
+                global_candidates.truncate(l_a);
+                floor = global_candidates[l_a - 1].score;
             }
         }
 
         // Select top L_A
         if global_candidates.len() <= l_a {
-            global_candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
             return global_candidates;
         }
 
         global_candidates
             .select_nth_unstable_by(l_a - 1, |a, b| b.score.partial_cmp(&a.score).unwrap());
         global_candidates.truncate(l_a);
-        global_candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
 
         global_candidates
     }
@@ -415,27 +476,37 @@ impl<'a> RdfScorer<'a> {
             }
 
             let count = header.count as usize;
-            let mut offset = cursor.offset + header_size;
+            let offset = cursor.offset + header_size;
             let matched = header.stripe_id == target_stripe_id;
 
             if matched {
-                for _ in 0..count {
-                    if offset + posting_size > self.rdf_data.len() {
-                        break;
+                // A posting is two bytes and the whole second byte is the
+                // quantised value, so every distinct contribution shape is one
+                // of 256 and can be read from a table instead of recomputed.
+                // That removes the sign branch - the sign bit is data, so it
+                // mispredicts about half the time - along with two masks and an
+                // integer-to-float conversion, leaving one L1 load and one
+                // multiply. Folding q_value, dim_weight and the 1/127 dequant
+                // into a single loop-invariant `scale` removes two more
+                // dependent multiplies from the chain feeding each store.
+                let scale = cursor.q_value * cursor.dim_weight * (1.0 / 127.0);
+                let available = (self.rdf_data.len() - offset) / posting_size;
+                let n = count.min(available);
+                let postings = &self.rdf_data[offset..offset + n * posting_size];
+
+                // Local ids are a u8, so against a full 256-slot accumulator the
+                // index is provably in range and the per-posting bounds check
+                // disappears. Narrower stripes keep the checked path.
+                if let Some(acc) = stripe_acc.get_mut(..256) {
+                    for p in postings.chunks_exact(posting_size) {
+                        acc[p[0] as usize] += scale * SIGNED_MAGNITUDE[p[1] as usize];
                     }
-
-                    let posting: RdfPosting = unsafe {
-                        std::ptr::read_unaligned(self.rdf_data.as_ptr().add(offset) as *const _)
-                    };
-                    offset += posting_size;
-
-                    let vid_in_stripe = posting.vid_in_stripe as usize;
-                    let sign = if posting.sign() { 1.0 } else { -1.0 };
-                    let mag = posting.magnitude() as f32 / 127.0;
-
-                    // Score contribution: q_value * sign * mag * weight
-                    let contribution = cursor.q_value * sign * mag * cursor.dim_weight;
-                    stripe_acc[vid_in_stripe] += contribution;
+                } else {
+                    for p in postings.chunks_exact(posting_size) {
+                        if let Some(slot) = stripe_acc.get_mut(p[0] as usize) {
+                            *slot += scale * SIGNED_MAGNITUDE[p[1] as usize];
+                        }
+                    }
                 }
             }
 
@@ -454,6 +525,24 @@ impl<'a> RdfScorer<'a> {
         }
     }
 }
+
+/// Dequantised posting values indexed by the raw `sign_and_mag` byte.
+///
+/// `RdfPosting` packs the sign in bit 7 and a 7-bit magnitude below it, so the
+/// byte has only 256 possible meanings. Materialising them once turns the
+/// per-posting `if sign { 1.0 } else { -1.0 }` - a branch on a bit that is
+/// effectively random, and so mispredicts about half the time - into a load
+/// from a 1 KB table that stays resident in L1 beside the stripe accumulator.
+static SIGNED_MAGNITUDE: [f32; 256] = {
+    let mut table = [0.0f32; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let magnitude = (i & 0x7F) as f32;
+        table[i] = if i & 0x80 != 0 { magnitude } else { -magnitude };
+        i += 1;
+    }
+    table
+};
 
 /// A monotonically advancing read cursor into one dimension's posting list.
 ///
@@ -663,6 +752,80 @@ mod tests {
                 i + 2,
                 both,
                 only_dim0
+            );
+        }
+    }
+
+    #[test]
+    fn the_running_floor_returns_the_same_top_scores_as_collecting_everything() {
+        // The floor exists so the scorer stops pushing ~30x more candidates than
+        // can survive. It is only sound while it stays at or below the l_a-th
+        // best score seen so far; a floor that rises too early silently drops
+        // qualifying vectors, which looks like a mild recall loss rather than a
+        // bug. Compare against an exhaustive collection over the same data at
+        // budgets both below and above the number of non-zero scores.
+        let config = RdfConfig {
+            top_t: 6,
+            stripe_shift: 8,
+            stop_dim_threshold: 10_000,
+            idf_weight: 0.5,
+            var_weight: 0.5,
+        };
+
+        // Large enough that the floor tightens many times with most of the data
+        // still unread: a floor bug only drops vectors that arrive *after* it
+        // has been set too high, so a small segment hides it.
+        let dim = 64usize;
+        let n = 60_000usize;
+        let mut st = 0x243F_6A88_85A3_08D3u64;
+        let mut rnd = move || {
+            st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((st >> 33) as f32 / (1u64 << 31) as f32) - 1.0
+        };
+        let vectors: Vec<Vec<f32>> = (0..n).map(|_| (0..dim).map(|_| rnd()).collect()).collect();
+
+        let builder = RdfBuilder::new(&config, dim as u32, &vectors);
+        let dim_weights = builder.dim_weights();
+        let (directory, data) = builder.build();
+        let scorer = RdfScorer::new(
+            &directory,
+            &data,
+            &dim_weights,
+            config.stripe_shift,
+            n as u32,
+        );
+
+        let query: Vec<f32> = (0..dim).map(|_| rnd()).collect();
+        let top_t = config.top_t as usize;
+
+        // Reference: no budget pressure, so the floor never rises.
+        let all = scorer.score(&query, top_t, n * 2);
+        let mut reference: Vec<f32> = all.iter().map(|c| c.score).collect();
+        reference.sort_by(|a: &f32, b: &f32| b.total_cmp(a));
+        assert!(
+            reference.len() > 1000,
+            "test data should produce many non-zero scores, got {}",
+            reference.len()
+        );
+
+        for &l_a in &[1usize, 10, 137, 1000, 3000, 20_000] {
+            let got = scorer.score(&query, top_t, l_a);
+            let mut got_scores: Vec<f32> = got.iter().map(|c| c.score).collect();
+            got_scores.sort_by(|a: &f32, b: &f32| b.total_cmp(a));
+
+            let want = &reference[..l_a.min(reference.len())];
+            assert_eq!(
+                got_scores.len(),
+                want.len(),
+                "l_a={} returned {} candidates, expected {}",
+                l_a,
+                got_scores.len(),
+                want.len()
+            );
+            assert_eq!(
+                got_scores, want,
+                "l_a={} floor dropped a score that belongs in the result",
+                l_a
             );
         }
     }

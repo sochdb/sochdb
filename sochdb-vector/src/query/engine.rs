@@ -253,7 +253,7 @@ impl QueryEngine {
             segment.num_vectors(),
         );
 
-        scorer.score(rotated_query, self.config.rdf.top_t as usize, l_a)
+        scorer.score_unsorted(rotated_query, self.config.rdf.top_t as usize, l_a)
     }
 
     /// BPS-based candidate generation

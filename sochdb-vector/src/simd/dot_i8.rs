@@ -134,7 +134,31 @@ pub fn dot_i8_indexed(
     dim: usize,
     out_scores: &mut [i32],
 ) {
-    assert!(query.len() >= dim);
+    dot_i8_indexed_prefix(query, vectors, cand_ids, dim, dim, out_scores);
+}
+
+/// Dot products over only the first `prefix` dimensions of each candidate.
+///
+/// `stride` stays the full stored dimension, so this reads a contiguous
+/// `prefix`-byte head of each record and skips the rest. Because the segment
+/// stores Hadamard-rotated vectors, energy is spread evenly across dimensions
+/// and a prefix dot is an unbiased estimate of the full dot - which makes this
+/// usable as a cheap ranking key for pruning before full scoring.
+///
+/// Reading `prefix` of `stride` bytes touches `ceil(prefix/64)` cache lines per
+/// record instead of `ceil(stride/64)`, and the scattered gather is
+/// bandwidth-bound, so the saving is close to the byte ratio.
+#[inline]
+pub fn dot_i8_indexed_prefix(
+    query: &[i8],
+    vectors: &[i8],
+    cand_ids: &[u32],
+    stride: usize,
+    prefix: usize,
+    out_scores: &mut [i32],
+) {
+    assert!(prefix <= stride, "prefix cannot exceed stride");
+    assert!(query.len() >= prefix);
     assert!(out_scores.len() >= cand_ids.len());
 
     #[cfg(target_arch = "x86_64")]
@@ -143,20 +167,36 @@ pub fn dot_i8_indexed(
         // instruction, and the batch form hoists the query correction term out
         // of the per-candidate loop. Only worth entering when there is a whole
         // 32-lane block to work on.
-        if cpu_features().has_avx_vnni && dim >= 32 && dim <= MAX_VNNI_DIM {
+        if cpu_features().has_avx_vnni && prefix >= 32 && prefix <= MAX_VNNI_DIM {
             // Safety: AVX-VNNI is verified present, and the bounds above keep
             // the biased accumulator inside i32.
-            unsafe { dot_i8_indexed_avxvnni(query, vectors, cand_ids, dim, out_scores) };
+            unsafe { dot_i8_indexed_avxvnni(query, vectors, cand_ids, stride, prefix, out_scores) };
             return;
         }
     }
 
     for (i, &cand_id) in cand_ids.iter().enumerate() {
-        let offset = cand_id as usize * dim;
-        let vec = &vectors[offset..offset + dim];
-        out_scores[i] = dot_i8(&query[..dim], vec);
+        let offset = cand_id as usize * stride;
+        let vec = &vectors[offset..offset + prefix];
+        out_scores[i] = dot_i8(&query[..prefix], vec);
     }
 }
+
+/// How many candidates ahead to request records for.
+///
+/// A scattered record is a cold miss costing on the order of 80 ns while
+/// scoring one costs a few nanoseconds, so requesting only the next candidate
+/// hides barely a tenth of the stall and leaves the loop latency-bound: the
+/// measured gather rate was several times below this machine's DRAM bandwidth,
+/// which is the signature of too few outstanding misses rather than too little
+/// bandwidth. The distance has to cover the miss with `distance x per-candidate
+/// work`, which lands in the low tens.
+///
+/// Sixteen was chosen by sweeping 1, 4, 8, 16, 32 and 64 - the curve falls
+/// steeply to 16 and is flat after. Scaling it down for records that span more
+/// cache lines was also measured and was consistently worse, so both the narrow
+/// prefix pass and full scoring use the same depth.
+const PREFETCH_DISTANCE: usize = 16;
 
 /// Largest dimension for which the biased AVX-VNNI accumulator cannot overflow.
 ///
@@ -189,13 +229,14 @@ unsafe fn dot_i8_indexed_avxvnni(
     query: &[i8],
     vectors: &[i8],
     cand_ids: &[u32],
-    dim: usize,
+    stride: usize,
+    prefix: usize,
     out_scores: &mut [i32],
 ) {
     use std::arch::x86_64::*;
 
     unsafe {
-        let dim_aligned = (dim / 32) * 32;
+        let dim_aligned = (prefix / 32) * 32;
         // Hoisted query correction: the whole reason for the batch form. Only
         // the lanes that go through the biased path are corrected, so the sum
         // covers the aligned prefix and the scalar tail is left untouched.
@@ -204,17 +245,21 @@ unsafe fn dot_i8_indexed_avxvnni(
         let bias = _mm256_set1_epi8(0x80u8 as i8);
 
         for (i, &cand_id) in cand_ids.iter().enumerate() {
-            let offset = cand_id as usize * dim;
+            let offset = cand_id as usize * stride;
             let vptr = vectors.as_ptr().add(offset);
             let qptr = query.as_ptr();
 
             // Candidate ids arrive in arbitrary order, so the hardware stride
-            // prefetcher cannot help. Pull the next candidate's first lines in
-            // while this one is still being reduced.
-            if let Some(&next) = cand_ids.get(i + 1) {
-                let nptr = vectors.as_ptr().add(next as usize * dim);
-                _mm_prefetch(nptr as *const i8, _MM_HINT_T0);
-                _mm_prefetch(nptr.add(64) as *const i8, _MM_HINT_T0);
+            // prefetcher cannot help; every record is a cold, scattered miss.
+            // Issue the request far enough ahead that the line has arrived by
+            // the time the loop reaches it - see `PREFETCH_DISTANCE`.
+            if let Some(&future) = cand_ids.get(i + PREFETCH_DISTANCE) {
+                let fptr = vectors.as_ptr().add(future as usize * stride);
+                let mut byte = 0usize;
+                while byte < prefix {
+                    _mm_prefetch(fptr.add(byte), _MM_HINT_T0);
+                    byte += 64;
+                }
             }
 
             let biased = dot_i8_vnni_core(qptr, vptr, dim_aligned, bias);
@@ -222,7 +267,7 @@ unsafe fn dot_i8_indexed_avxvnni(
             // Tail below a full 32-lane block never went through the bias, so it
             // contributes its plain signed product with no correction.
             let mut tail = 0i32;
-            for k in dim_aligned..dim {
+            for k in dim_aligned..prefix {
                 tail +=
                     (*query.get_unchecked(k) as i32) * (*vectors.get_unchecked(offset + k) as i32);
             }
@@ -730,6 +775,45 @@ mod tests {
                     "dim={} vector={} batch dot diverged from the scalar reference",
                     dim,
                     i
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prefix_dot_reads_the_head_of_each_record_and_skips_the_rest() {
+        // The whole point of the prefix kernel is that stride and scored length
+        // differ. Mixing them up still produces plausible numbers, so the test
+        // fills the unscored tail of every record with values that would
+        // dominate the result if they were ever read.
+        let stride = 768usize;
+        let n_vec = 40usize;
+        let query = pseudo_i8(0x5151, stride);
+
+        for prefix in [32usize, 64, 96, 128, 129, 256, 768] {
+            let mut vectors = vec![0i8; n_vec * stride];
+            for v in 0..n_vec {
+                let head = pseudo_i8(0x7000 + v as u64, prefix);
+                vectors[v * stride..v * stride + prefix].copy_from_slice(&head);
+                // Poison the tail: large values that must not reach the score.
+                for k in prefix..stride {
+                    vectors[v * stride + k] = if k % 2 == 0 { 127 } else { -128 };
+                }
+            }
+
+            let cand_ids: Vec<u32> = (0..n_vec as u32).filter(|i| i % 3 != 0).collect();
+            let mut got = vec![0i32; cand_ids.len()];
+            dot_i8_indexed_prefix(&query, &vectors, &cand_ids, stride, prefix, &mut got);
+
+            for (i, &cand) in cand_ids.iter().enumerate() {
+                let base = cand as usize * stride;
+                let want: i32 = (0..prefix)
+                    .map(|k| query[k] as i32 * vectors[base + k] as i32)
+                    .sum();
+                assert_eq!(
+                    got[i], want,
+                    "prefix={} candidate={} scored the wrong byte range",
+                    prefix, cand
                 );
             }
         }

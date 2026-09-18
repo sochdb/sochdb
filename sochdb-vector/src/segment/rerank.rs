@@ -355,6 +355,82 @@ impl<'a> Reranker<'a> {
         acc
     }
 
+    /// Dimensions scored in the pruning pass.
+    ///
+    /// 128 bytes is exactly two cache lines, so a pruning pass reads two lines
+    /// per record instead of the twelve a 768-dim record needs.
+    const PREFILTER_DIMS: usize = 64;
+    /// Candidates kept per requested result.
+    const PREFILTER_OVERSAMPLE: usize = 4;
+    /// Floor on survivors, so a small `r` still leaves a wide net.
+    const PREFILTER_MIN_KEEP: usize = 2048;
+    /// Only prune when the candidate set is this many times the survivor count;
+    /// below that the extra pass costs more than the scoring it removes.
+    const PREFILTER_MIN_RATIO: usize = 3;
+
+    /// Cheaply narrow a large candidate set before full scoring.
+    ///
+    /// Segments store Hadamard-rotated vectors, so vector energy is spread
+    /// evenly over the dimensions and the dot product of a dimension prefix is
+    /// an unbiased estimate of the full dot product. That makes
+    /// `prefix_dot * scale` a usable ranking key: `query_scale / 127^2` is a
+    /// positive constant across candidates and does not affect the order, while
+    /// `scale` varies per vector and must be included.
+    ///
+    /// The estimate is far too coarse to pick the final top-k - it only has to
+    /// be good enough that the true winners survive a net
+    /// `PREFILTER_OVERSAMPLE` times wider than the result set. Full scoring
+    /// still decides the ranking, so this trades a small recall risk for
+    /// reading roughly a sixth of the bytes.
+    ///
+    /// Returns `None` when pruning does not apply, in which case the caller
+    /// scores the original set.
+    fn prefilter(
+        &self,
+        candidates: &[VectorId],
+        query_i8: &[i8],
+        r: usize,
+    ) -> Option<Vec<VectorId>> {
+        // Below this there is no tail worth skipping.
+        if self.dim < Self::PREFILTER_DIMS * 2 || query_i8.len() < Self::PREFILTER_DIMS {
+            return None;
+        }
+        let keep = (r * Self::PREFILTER_OVERSAMPLE).max(Self::PREFILTER_MIN_KEEP);
+        if candidates.len() < keep.saturating_mul(Self::PREFILTER_MIN_RATIO) {
+            return None;
+        }
+        // The prefix kernel indexes without bounds checks.
+        let max_vid = self.i8_data.len() / self.dim.max(1);
+        if candidates.iter().any(|&v| (v as usize) >= max_vid) {
+            return None;
+        }
+
+        let mut dots = vec![0i32; candidates.len()];
+        crate::simd::dot_i8::dot_i8_indexed_prefix(
+            &query_i8[..Self::PREFILTER_DIMS],
+            self.i8_data,
+            candidates,
+            self.dim,
+            Self::PREFILTER_DIMS,
+            &mut dots,
+        );
+
+        let mut keyed: Vec<(VectorId, f32)> = candidates
+            .iter()
+            .zip(dots.iter())
+            .map(|(&vid, &dot)| (vid, dot as f32 * self.scales[vid as usize]))
+            .collect();
+        keyed.select_nth_unstable_by(keep - 1, |a, b| b.1.total_cmp(&a.1));
+        keyed.truncate(keep);
+
+        let mut kept: Vec<VectorId> = keyed.into_iter().map(|(vid, _)| vid).collect();
+        // Selection leaves survivors in arbitrary order; full scoring gathers
+        // 768-byte records, so restore ascending ids to keep that pass
+        // sequential.
+        kept.sort_unstable();
+        Some(kept)
+    }
+
     /// Rerank and return top R candidates
     pub fn rerank(
         &self,
@@ -363,6 +439,8 @@ impl<'a> Reranker<'a> {
         query_scale: f32,
         r: usize,
     ) -> Vec<ScoredCandidate> {
+        let pruned = self.prefilter(candidates, query_i8, r);
+        let candidates = pruned.as_deref().unwrap_or(candidates);
         let mut scored = self.score_batch(candidates, query_i8, query_scale);
 
         if scored.len() <= r {
@@ -386,6 +464,8 @@ impl<'a> Reranker<'a> {
         query_fp32: &[f32],
         r: usize,
     ) -> Vec<ScoredCandidate> {
+        let pruned = self.prefilter(candidates, query_i8, r);
+        let candidates = pruned.as_deref().unwrap_or(candidates);
         let mut scored = self.score_batch_with_fp32(candidates, query_i8, query_scale, query_fp32);
 
         if scored.len() <= r {
