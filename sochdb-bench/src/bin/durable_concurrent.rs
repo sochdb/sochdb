@@ -66,7 +66,7 @@ fn parse_sync(s: &str) -> SyncMode {
 /// One timed run: open a fresh durable DB with `cfg`, fan `nthreads` committers
 /// at it for `ops_per_thread` commits each, return aggregate ops/s.
 fn run_point(cfg: Cfg, nthreads: usize, ops_per_thread: usize, valsize: usize) -> f64 {
-    let tmp = tempfile::TempDir::new().expect("tmp");
+    let tmp = sochdb_bench::durable_temp_dir().expect("durable tmp");
     let path = tmp.path().join("dc_data");
     std::fs::create_dir_all(&path).unwrap();
 

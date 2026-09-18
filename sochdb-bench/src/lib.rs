@@ -326,3 +326,151 @@ impl WorkloadResult {
         self
     }
 }
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Durable scratch space
+// ────────────────────────────────────────────────────────────────────────────────
+
+/// Filesystems on which `fsync` returns without doing any I/O.
+///
+/// These are RAM-backed, so a durability benchmark pointed at one measures
+/// memcpy and reports it as durable throughput.
+const VOLATILE_FILESYSTEMS: &[&str] = &["tmpfs", "ramfs"];
+
+/// The filesystem type backing `path`, by longest-prefix match against
+/// `/proc/mounts`. Returns `None` when the table cannot be read, which is
+/// treated as "unknown" rather than "safe" by the caller.
+fn filesystem_type(path: &std::path::Path) -> Option<String> {
+    let target = path.canonicalize().ok()?;
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+    filesystem_type_in(&mounts, &target)
+}
+
+/// Longest-prefix mount lookup, split from the `/proc/mounts` read so the
+/// matching is testable.
+///
+/// Longest-prefix is required rather than merely tidy: `/` is a prefix of every
+/// path, so a first-match scan reports the root filesystem for a `/tmp` that is
+/// separately mounted as tmpfs -- precisely the configuration this guard exists
+/// to catch.
+fn filesystem_type_in(mounts: &str, target: &std::path::Path) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for line in mounts.lines() {
+        // A malformed or blank line must skip, not abort the scan: giving up
+        // early reports "unknown", which the caller treats as safe.
+        let mut f = line.split_whitespace();
+        let (mount_point, fstype) = match (f.next(), f.next(), f.next()) {
+            (Some(_dev), Some(m), Some(t)) => (m, t),
+            _ => continue,
+        };
+        // /proc/mounts octal-escapes spaces and tabs in mount points.
+        let mount_point = mount_point.replace("\\040", " ").replace("\\011", "\t");
+        if target.starts_with(&mount_point)
+            && best
+                .as_ref()
+                .is_none_or(|(len, _)| mount_point.len() > *len)
+        {
+            best = Some((mount_point.len(), fstype.to_string()));
+        }
+    }
+    best.map(|(_, fstype)| fstype)
+}
+
+/// Scratch directory for benchmarks whose result depends on `fsync` actually
+/// reaching stable storage.
+///
+/// `tempfile::TempDir::new` follows `TMPDIR`, which on most Linux desktops is
+/// `/tmp` and is frequently `tmpfs`. `fsync` on `tmpfs` is a no-op, so a
+/// durability benchmark run there does not fail or warn -- it returns numbers
+/// that are two to three orders of magnitude too high and, worse, can invert
+/// the ranking of the configurations under test. Group commit exists to
+/// amortize fsync across committers; with fsync free it looks like pure
+/// overhead, so a tmpfs run recommends turning off the one setting that makes
+/// durable writes scale.
+///
+/// This refuses to run on such a filesystem rather than annotating the output,
+/// because the failure is silent and the numbers are quotable.
+///
+/// `SOCHDB_BENCH_TMP` overrides the location. `SOCHDB_BENCH_ALLOW_TMPFS=1`
+/// suppresses the check for runs that are deliberately measuring the non-fsync
+/// path.
+pub fn durable_temp_dir() -> std::io::Result<tempfile::TempDir> {
+    let base = std::env::var_os("SOCHDB_BENCH_TMP")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    std::fs::create_dir_all(&base)?;
+
+    if std::env::var("SOCHDB_BENCH_ALLOW_TMPFS").as_deref() != Ok("1") {
+        if let Some(fstype) = filesystem_type(&base) {
+            if VOLATILE_FILESYSTEMS.contains(&fstype.as_str()) {
+                return Err(std::io::Error::other(format!(
+                    "{} is {}, where fsync is a no-op, so durable throughput measured \
+                     here is meaningless (observed: 2210x too high at 1 thread, and \
+                     group commit appears 709x slower than no group commit when on \
+                     real disk it is 18x faster at 64 threads).\n\
+                     Set SOCHDB_BENCH_TMP to a directory on a real filesystem, or \
+                     SOCHDB_BENCH_ALLOW_TMPFS=1 to measure the non-fsync path on purpose.",
+                    base.display(),
+                    fstype,
+                )));
+            }
+        }
+    }
+    tempfile::TempDir::new_in(&base)
+}
+
+#[cfg(test)]
+mod durable_scratch_tests {
+    use super::*;
+    use std::path::Path;
+
+    const MOUNTS: &str = "\
+/dev/nvme0n1p2 / ext4 rw,relatime 0 0
+tmpfs /tmp tmpfs rw,nosuid,nodev 0 0
+/dev/nvme0n1p1 /boot/efi vfat rw 0 0
+tmpfs /run/user/1000 tmpfs rw,nosuid 0 0
+";
+
+    #[test]
+    fn a_separately_mounted_tmp_is_reported_as_tmpfs_and_not_as_the_root_filesystem() {
+        // `/` is a prefix of `/tmp`, so a first-match scan would answer ext4
+        // here and the guard would pass on a filesystem where fsync is free.
+        assert_eq!(
+            filesystem_type_in(MOUNTS, Path::new("/tmp/dc_data")).as_deref(),
+            Some("tmpfs")
+        );
+        assert_eq!(
+            filesystem_type_in(MOUNTS, Path::new("/home/user/scratch")).as_deref(),
+            Some("ext4")
+        );
+    }
+
+    #[test]
+    fn a_blank_or_truncated_mounts_line_skips_rather_than_ending_the_scan() {
+        // Aborting early yields None, which the caller reads as "unknown" and
+        // therefore lets the run proceed -- the same silent pass the guard is
+        // meant to prevent.
+        let ragged = format!("\n{}bad-line-no-fields\n\n", MOUNTS);
+        assert_eq!(
+            filesystem_type_in(&ragged, Path::new("/tmp/dc_data")).as_deref(),
+            Some("tmpfs")
+        );
+    }
+
+    #[test]
+    fn mount_points_containing_escaped_whitespace_are_decoded_before_matching() {
+        let mounts = "tmpfs /mnt/my\\040disk tmpfs rw 0 0\n";
+        assert_eq!(
+            filesystem_type_in(mounts, Path::new("/mnt/my disk/x")).as_deref(),
+            Some("tmpfs")
+        );
+    }
+
+    #[test]
+    fn every_filesystem_named_volatile_is_one_whose_fsync_does_no_io() {
+        assert!(VOLATILE_FILESYSTEMS.contains(&"tmpfs"));
+        assert!(VOLATILE_FILESYSTEMS.contains(&"ramfs"));
+        assert!(!VOLATILE_FILESYSTEMS.contains(&"ext4"));
+        assert!(!VOLATILE_FILESYSTEMS.contains(&"xfs"));
+    }
+}
