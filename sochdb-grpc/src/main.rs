@@ -429,8 +429,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let kv_server = KvServer::with_namespace_server(namespace_server.clone())
         .with_policy_server(policy_server.clone());
     // Embedder selected by SOCHDB_EMBEDDER (e.g. fastembed:bge-small-en with the
-    // `fastembed` feature; mock/unset otherwise).
-    let memory_store = Arc::new(MemoryStore::from_env());
+    // `fastembed` feature; mock/unset otherwise). Persistence is opt-in via
+    // SOCHDB_MEMORY_DIR; without it, agent memory is lost on restart.
+    let memory_store = Arc::new(MemoryStore::from_env()?);
+    if memory_store.is_durable() {
+        tracing::info!("agent memory is write-ahead logged and survives restart");
+    } else {
+        tracing::warn!(
+            "agent memory is in-memory only and will be LOST on restart; \
+             set SOCHDB_MEMORY_DIR to persist it"
+        );
+    }
     let context_server = ContextServer::with_memory_store(Arc::clone(&memory_store));
     let semantic_cache_server = SemanticCacheServer::new();
     let trace_server = TraceServer::new();

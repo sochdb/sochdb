@@ -96,6 +96,26 @@ impl EnrichmentQueue {
         Ok(())
     }
 
+    /// Enqueue recovered work, ignoring the depth bound.
+    ///
+    /// The bound exists to apply backpressure to *live writers* — it stops an
+    /// ingest burst from growing an unbounded backlog. During recovery there is
+    /// no live writer to push back on, and the jobs are not new work: they are
+    /// work that was already accepted before the crash. Admitting them through
+    /// [`Self::try_enqueue`] instead would reject everything past `max_depth`,
+    /// and since nothing ever rescans for unenriched episodes, those episodes
+    /// would be missing from the vector lane permanently — a store recovered
+    /// from a 50k-episode log would silently answer semantic queries from its
+    /// first 10k episodes forever.
+    pub fn enqueue_recovered(&self, jobs: Vec<EnrichmentJob>) -> usize {
+        let mut pending = self.pending.lock();
+        let n = jobs.len();
+        for job in jobs {
+            pending.push(job);
+        }
+        n
+    }
+
     pub fn pop(&self) -> Option<EnrichmentJob> {
         let mut pending = self.pending.lock();
         let job = pending.jobs.pop_front()?;

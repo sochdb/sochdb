@@ -1,3 +1,4 @@
+use crate::durability::{Durability, MemoryRecord, MemoryWal};
 use crate::enrichment::{EnrichmentJob, EnrichmentQueue};
 use crate::episode::{ConversationTurn, Episode, EpisodeId, EpisodeWrite};
 use crate::fact::{FactEdge, FactId};
@@ -7,7 +8,7 @@ use sochdb_storage::hlc::HybridLogicalClock;
 use sochdb_vector::bm25::BM25Config;
 use sochdb_vector::inverted_index::InvertedIndex;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
@@ -20,6 +21,8 @@ pub enum MemoryError {
     EpisodeNotFound(u64),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("durability error: {0}")]
+    Durability(String),
 }
 
 pub type MemoryResult<T> = Result<T, MemoryError>;
@@ -29,6 +32,12 @@ pub struct MemoryStoreConfig {
     pub max_enrichment_queue: usize,
     /// Run embedding + HNSW insert synchronously on write (bench/tests).
     pub enrich_on_write: bool,
+    /// What an acknowledged write is expected to survive. See [`Durability`].
+    ///
+    /// Has no effect unless the store is opened with a data directory: there is
+    /// nowhere to log to otherwise, and [`MemoryStore::new`] rejects that
+    /// combination rather than quietly downgrading it.
+    pub durability: Durability,
 }
 
 impl Default for MemoryStoreConfig {
@@ -36,7 +45,24 @@ impl Default for MemoryStoreConfig {
         Self {
             max_enrichment_queue: 10_000,
             enrich_on_write: false,
+            durability: Durability::None,
         }
+    }
+}
+
+/// What a store found in its log when it started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub episodes: u64,
+    pub facts: u64,
+    pub invalidations: u64,
+    /// Episodes re-queued for embedding because vectors are not logged.
+    pub enrichment_requeued: u64,
+}
+
+impl RecoveryReport {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -71,6 +97,29 @@ impl NamespaceIndexes {
             next_fact_id: 1,
         }
     }
+
+    /// Make an episode retrievable on the lexical lanes.
+    ///
+    /// The single place indexes are populated from an episode, so that a
+    /// replayed episode is indexed by exactly the code that indexes a live one.
+    /// When recovery indexes through a second, parallel implementation, the two
+    /// drift, and the resulting store is subtly unlike the one that crashed.
+    fn publish_episode(&mut self, episode: Episode) {
+        let doc_id = episode.id.0;
+        self.bm25.add_document_with_id(doc_id, &episode.text);
+        self.trigram.insert(doc_id, &episode.text);
+        self.episodes.insert(doc_id, episode);
+        self.next_episode_id = self.next_episode_id.max(doc_id + 1);
+    }
+
+    /// Restore a logged fact under the id it was originally given.
+    ///
+    /// `next_fact_id` is advanced past it so a post-recovery assertion cannot
+    /// reuse an id that a client already holds a reference to.
+    fn publish_fact(&mut self, fact: FactEdge) {
+        self.next_fact_id = self.next_fact_id.max(fact.id.0 + 1);
+        self.facts.push(fact);
+    }
 }
 
 /// Independently owned mutable state for one namespace.
@@ -90,6 +139,14 @@ pub struct MemoryStore {
     pub(crate) namespaces: RwLock<HashMap<String, NamespaceHandle>>,
     pub(crate) enrichment: EnrichmentQueue,
     pub(crate) embedder: Arc<dyn EmbeddingProvider>,
+    /// Present exactly when this store was opened with a data directory.
+    ///
+    /// `Option` rather than a no-op sink so that the un-logged path — which is
+    /// the default and the hot one — costs a null check rather than a virtual
+    /// call and a discarded serialization.
+    wal: Option<MemoryWal>,
+    /// What replay found at startup. Empty for a store that was not logged.
+    recovery: RecoveryReport,
     config: MemoryStoreConfig,
 }
 
@@ -98,37 +155,219 @@ fn default_embedder() -> Arc<dyn EmbeddingProvider> {
 }
 
 impl MemoryStore {
-    pub fn new(_data_dir: Option<&Path>, config: MemoryStoreConfig) -> Self {
-        Self::with_embedder(_data_dir, config, default_embedder())
+    /// Open a store, recovering any memory left behind by a previous process.
+    ///
+    /// Passing `Some(dir)` opens a write-ahead log under `dir` and replays it;
+    /// passing `None` builds a purely in-memory store. The two are separated by
+    /// an argument rather than by two constructors because the failure this
+    /// guards against is a caller who *believes* they passed a directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryError::Durability`] if `data_dir` is `None` while
+    /// `config.durability` asks for a log. That combination is unsatisfiable,
+    /// and the previous behaviour — accepting it and silently keeping
+    /// everything in RAM — is precisely how an operator ends up believing their
+    /// agents' memory is being persisted when it is not.
+    pub fn new(data_dir: Option<&Path>, config: MemoryStoreConfig) -> MemoryResult<Self> {
+        Self::with_embedder(data_dir, config, default_embedder())
     }
 
     pub fn with_embedder(
-        _data_dir: Option<&Path>,
+        data_dir: Option<&Path>,
         config: MemoryStoreConfig,
         embedder: Arc<dyn EmbeddingProvider>,
-    ) -> Self {
-        Self {
+    ) -> MemoryResult<Self> {
+        // Durability is the switch; `data_dir` only says where. A directory
+        // supplied alongside `Durability::None` is deliberately left unused
+        // rather than rejected, so a deployment can toggle logging off through
+        // one config field without also having to unset its path. The reverse —
+        // asking for durability with nowhere to put it — is rejected, because
+        // that is the direction in which silence loses data.
+        let wal = match (data_dir, config.durability.is_logged()) {
+            (Some(dir), true) => {
+                std::fs::create_dir_all(dir)?;
+                Some(MemoryWal::open(dir, config.durability).map_err(MemoryError::Durability)?)
+            }
+            (None, true) => {
+                return Err(MemoryError::Durability(format!(
+                    "durability {:?} requires a data directory, but none was given",
+                    config.durability
+                )));
+            }
+            (_, false) => None,
+        };
+
+        let mut store = Self {
             hlc: HybridLogicalClock::new(),
             namespaces: RwLock::new(HashMap::new()),
             enrichment: EnrichmentQueue::new(config.max_enrichment_queue),
             embedder,
+            wal,
+            recovery: RecoveryReport::default(),
             config,
+        };
+        store.recovery = store.recover()?;
+        Ok(store)
+    }
+
+    /// In-memory store with default settings. Cannot fail: nothing is opened.
+    pub fn with_defaults() -> Self {
+        Self::new(None, MemoryStoreConfig::default())
+            .expect("an in-memory store with default config opens no files and cannot fail")
+    }
+
+    /// Build from the environment: embedder, data directory and durability.
+    ///
+    /// - `SOCHDB_EMBEDDER` — e.g. `fastembed:bge-small-en`, or `mock`/unset for
+    ///   the default mock embedder. See
+    ///   [`sochdb_query::embedding_provider::embedder_from_env`].
+    /// - `SOCHDB_MEMORY_DIR` — directory for the write-ahead log. Unset means
+    ///   memory is not persisted and is lost on restart.
+    /// - `SOCHDB_MEMORY_DURABILITY` — `none`, `buffered` (default when a
+    ///   directory is set) or `sync`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any failure to open or replay the log. A server that cannot
+    /// read the memory it was told to persist must not come up pretending to
+    /// have none: that silently presents every agent with a blank history.
+    pub fn from_env() -> MemoryResult<Self> {
+        let data_dir = std::env::var_os("SOCHDB_MEMORY_DIR").map(PathBuf::from);
+        let requested = std::env::var("SOCHDB_MEMORY_DURABILITY").unwrap_or_default();
+        let durability = match requested.trim().to_ascii_lowercase().as_str() {
+            "sync" => Durability::Sync,
+            "buffered" => Durability::Buffered,
+            "none" => Durability::None,
+            // Unset defaults to logging whenever a directory was named: a
+            // caller who set `SOCHDB_MEMORY_DIR` has already said they want
+            // their memory to survive.
+            "" if data_dir.is_some() => Durability::Buffered,
+            "" => Durability::None,
+            // A value that is set but not understood is refused rather than
+            // defaulted. Quietly reading `fsync` or `Sync ` as `Buffered` would
+            // hand an operator who asked to survive power loss a tier that does
+            // not, and every downstream signal — including the server's own
+            // "write-ahead logged" startup line — would agree that they got
+            // what they asked for.
+            other => {
+                return Err(MemoryError::Durability(format!(
+                    "SOCHDB_MEMORY_DURABILITY={other:?} is not one of none, buffered, sync"
+                )));
+            }
+        };
+
+        Self::with_embedder(
+            data_dir.as_deref(),
+            MemoryStoreConfig {
+                durability,
+                ..MemoryStoreConfig::default()
+            },
+            sochdb_query::embedding_provider::embedder_from_env(),
+        )
+    }
+
+    /// Replay the log into the indexes, if there is a log.
+    ///
+    /// Runs before the store is handed to any caller, so no query can observe
+    /// a half-recovered namespace.
+    fn recover(&self) -> MemoryResult<RecoveryReport> {
+        let Some(wal) = &self.wal else {
+            return Ok(RecoveryReport::default());
+        };
+
+        let mut report = RecoveryReport::default();
+        let mut requeue: Vec<EnrichmentJob> = Vec::new();
+
+        wal.replay(|record| match record {
+            MemoryRecord::Episode(episode) => {
+                report.episodes += 1;
+                requeue.push(EnrichmentJob {
+                    namespace: episode.namespace.clone(),
+                    episode_id: episode.id.0,
+                    text: episode.text.clone(),
+                });
+                // `enriched` is deliberately reset: the vector that justified
+                // it was never logged, so claiming enrichment here would leave
+                // the episode permanently invisible to the vector lane while
+                // reporting that it is not.
+                let mut restored = *episode;
+                restored.enriched = false;
+                self.namespace_or_create(&restored.namespace)
+                    .write()
+                    .publish_episode(restored);
+            }
+            MemoryRecord::FactAdded { namespace, fact } => {
+                report.facts += 1;
+                self.namespace_or_create(&namespace)
+                    .write()
+                    .publish_fact(*fact);
+            }
+            MemoryRecord::FactInvalidated {
+                namespace,
+                fact_id,
+                t_invalid,
+            } => {
+                report.invalidations += 1;
+                if let Some(handle) = self.namespace(&namespace) {
+                    let mut ns = handle.write();
+                    if let Some(fact) = ns.facts.iter_mut().find(|f| f.id == fact_id) {
+                        fact.invalidate(t_invalid);
+                    }
+                }
+            }
+        })
+        .map_err(MemoryError::Durability)?;
+
+        // Enqueued after replay rather than during it, and without the live
+        // depth bound: these jobs are not new work competing for admission,
+        // they are work that was already accepted before the crash. See
+        // [`EnrichmentQueue::enqueue_recovered`].
+        report.enrichment_requeued = self.enrichment.enqueue_recovered(requeue) as u64;
+
+        if !report.is_empty() {
+            tracing::info!(
+                episodes = report.episodes,
+                facts = report.facts,
+                invalidations = report.invalidations,
+                enrichment_requeued = report.enrichment_requeued,
+                "recovered agent memory from write-ahead log"
+            );
+        }
+        Ok(report)
+    }
+
+    /// Whether acknowledged writes are being logged.
+    pub fn is_durable(&self) -> bool {
+        self.wal.is_some()
+    }
+
+    /// What this store recovered from its log when it opened.
+    ///
+    /// Exposed so an operator can assert on it rather than read it out of a log
+    /// line: "how much memory came back" is the one question a restart raises.
+    pub fn recovery_report(&self) -> RecoveryReport {
+        self.recovery
+    }
+
+    /// Force every logged write all the way to disk.
+    ///
+    /// A no-op for an un-logged store. Lets a [`Durability::Buffered`] deployment
+    /// take a durability point before a planned restart without paying `fsync`
+    /// on every episode.
+    pub fn sync(&self) -> MemoryResult<()> {
+        match &self.wal {
+            Some(wal) => wal.sync().map_err(MemoryError::Durability),
+            None => Ok(()),
         }
     }
 
-    pub fn with_defaults() -> Self {
-        Self::new(None, MemoryStoreConfig::default())
-    }
-
-    /// Build with the embedder selected by the `SOCHDB_EMBEDDER` environment
-    /// variable (e.g. `fastembed:bge-small-en`, or `mock`/unset for the default
-    /// mock embedder). See [`sochdb_query::embedding_provider::embedder_from_env`].
-    pub fn from_env() -> Self {
-        Self::with_embedder(
-            None,
-            MemoryStoreConfig::default(),
-            sochdb_query::embedding_provider::embedder_from_env(),
-        )
+    /// Log a record, or do nothing if this store keeps no log.
+    fn log(&self, record: &MemoryRecord) -> MemoryResult<()> {
+        match &self.wal {
+            Some(wal) => wal.append(record).map_err(MemoryError::Durability),
+            None => Ok(()),
+        }
     }
 
     pub fn enrichment_queue(&self) -> &EnrichmentQueue {
@@ -178,16 +417,11 @@ impl MemoryStore {
             .unwrap_or_else(|| HybridLogicalClock::physical_time(t_created) / 1000);
 
         let handle = self.namespace_or_create(&write.namespace);
-        let episode_id;
-        {
+        let episode = {
             let mut ns = handle.write();
 
-            episode_id = EpisodeId(ns.next_episode_id);
+            let episode_id = EpisodeId(ns.next_episode_id);
             ns.next_episode_id += 1;
-
-            let doc_id = episode_id.0;
-            ns.bm25.add_document_with_id(doc_id, &write.text);
-            ns.trigram.insert(doc_id, &write.text);
 
             let episode = Episode {
                 id: episode_id,
@@ -198,7 +432,24 @@ impl MemoryStore {
                 enriched: false,
                 metadata: write.metadata.clone(),
             };
-            ns.episodes.insert(doc_id, episode);
+
+            // Un-logged stores publish under the same lock that allocated the
+            // id: there is nothing to order against, so splitting the critical
+            // section would only double lock traffic on the hot path.
+            if self.wal.is_none() {
+                ns.publish_episode(episode.clone());
+            }
+            episode
+        };
+        let episode_id = episode.id;
+
+        // Write-*ahead*: the record is on the medium its durability tier
+        // promises before the episode becomes visible to any reader. Publishing
+        // first would let a query observe — and an agent act on — an episode
+        // that a crash one instant later erases.
+        if self.wal.is_some() {
+            self.log(&MemoryRecord::Episode(Box::new(episode.clone())))?;
+            handle.write().publish_episode(episode);
         }
 
         let job = EnrichmentJob {
@@ -349,6 +600,19 @@ impl MemoryStore {
         let id = FactId(ns.next_fact_id);
         ns.next_fact_id += 1;
         fact.id = id;
+
+        // Unlike episodes, fact mutations are applied under the namespace lock
+        // held across the append. Episode publishing is order-independent —
+        // it is keyed by id and advances a counter by `max` — so splitting its
+        // critical section is free. Fact state is not: see `invalidate_fact`.
+        // Facts are asserted orders of magnitude less often than episodes are
+        // written, so the serialization costs nothing measurable.
+        if self.wal.is_some() {
+            self.log(&MemoryRecord::FactAdded {
+                namespace: namespace.to_string(),
+                fact: Box::new(fact.clone()),
+            })?;
+        }
         ns.facts.push(fact);
         Ok(id)
     }
@@ -365,16 +629,48 @@ impl MemoryStore {
             .collect()
     }
 
-    pub fn invalidate_fact(&self, namespace: &str, fact_id: FactId, t_invalid: u64) -> bool {
+    /// Close a fact's valid-time interval at `t_invalid`.
+    ///
+    /// Returns whether the fact was found. Errors only if the invalidation
+    /// could not be logged — in which case the fact is left *valid*, since a
+    /// retraction that a restart would undo is worse than one that visibly
+    /// failed: the caller can retry, but cannot detect silent resurrection.
+    ///
+    /// The namespace write lock is held across the append. `close_valid_time`
+    /// is a plain overwrite, so this is the one record type whose *application*
+    /// order changes the result: two concurrent invalidations of the same fact
+    /// could otherwise append as `(100, 200)` — appends are serialized by the
+    /// log's own writer lock — and then apply as `(200, 100)`, leaving live
+    /// state at `valid_to = 100` while the log replays to `200`. The store
+    /// would answer `facts_valid_at(150)` one way before a restart and the
+    /// other way after it.
+    pub fn invalidate_fact(
+        &self,
+        namespace: &str,
+        fact_id: FactId,
+        t_invalid: u64,
+    ) -> MemoryResult<bool> {
         let Some(handle) = self.namespace(namespace) else {
-            return false;
+            return Ok(false);
         };
         let mut ns = handle.write();
+
+        if !ns.facts.iter().any(|f| f.id == fact_id) {
+            return Ok(false);
+        }
+        if self.wal.is_some() {
+            self.log(&MemoryRecord::FactInvalidated {
+                namespace: namespace.to_string(),
+                fact_id,
+                t_invalid,
+            })?;
+        }
+
         if let Some(fact) = ns.facts.iter_mut().find(|f| f.id == fact_id) {
             fact.invalidate(t_invalid);
-            return true;
+            return Ok(true);
         }
-        false
+        Ok(false)
     }
 
     pub fn episode_count(&self, namespace: &str) -> usize {
