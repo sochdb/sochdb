@@ -9,7 +9,7 @@
 //! and `sochdb-query::ContextCompiler` (exact-BPE budget packing).
 
 use crate::auth_interceptor::{extract_principal, require_namespace_access};
-use crate::memory_backend::{ContextOutputFormat, MemoryBackend};
+use crate::memory_backend::{ContextOutputFormat, MemoryBackend, SectionCandidates};
 use crate::proto::{
     ContextQueryRequest, ContextQueryResponse, ContextSectionType, EstimateTokensRequest,
     EstimateTokensResponse, FormatContextRequest, FormatContextResponse, OutputFormat,
@@ -45,6 +45,82 @@ fn section_namespace(session_id: &str, options: &HashMap<String, String>) -> Str
         .get("namespace")
         .cloned()
         .unwrap_or_else(|| session_id.to_string())
+}
+
+/// How section contents are joined into the response body.
+fn section_separator(fmt: ContextOutputFormat) -> &'static str {
+    match fmt {
+        ContextOutputFormat::Json => ",",
+        _ => "\n---\n",
+    }
+}
+
+/// The smallest well-formed document a format can emit.
+///
+/// A caller whose budget cannot cover even this gets the empty document rather
+/// than malformed output: there is nothing smaller that a client could still
+/// parse, so truncating below it would trade a bounded overrun for a response
+/// the caller cannot read at all.
+fn empty_document(fmt: ContextOutputFormat) -> &'static str {
+    match fmt {
+        ContextOutputFormat::Json => "[]",
+        _ => "",
+    }
+}
+
+/// Assemble already-formatted section contents into the response body.
+///
+/// The parts are joined, not re-compiled. Passing the joined text back through
+/// `format_compiled` as a synthetic `CompiledContext` was how the multi-section
+/// path used to work, and it discarded every section for any format that
+/// renders from `facts`.
+///
+/// JSON is wrapped unconditionally. Wrapping only when two or more sections
+/// survived would make the response shape depend on the budget -- a bare object
+/// for one section, an array for two, an empty string for none -- so a client
+/// could not know what to parse without counting what it got back.
+fn join_sections(parts: Vec<String>, fmt: ContextOutputFormat) -> String {
+    match fmt {
+        ContextOutputFormat::Json => format!("[{}]", parts.join(section_separator(fmt))),
+        _ => parts.join(section_separator(fmt)),
+    }
+}
+
+/// Pack a search section so that its *rendered* form fits `budget`.
+///
+/// The output format wraps the compiled body, so a body packed exactly to the
+/// budget produces a section that overruns it. Rather than estimate the
+/// wrapper, compile, measure what will actually be emitted, and re-pack against
+/// a budget reduced by the overshoot. Retrieval is not repeated, so an extra
+/// attempt costs a re-pack of candidates already in hand.
+///
+/// Returns empty content when even an empty body's envelope does not fit:
+/// overrunning the caller's limit is not an acceptable alternative.
+fn pack_section(
+    candidates: &SectionCandidates,
+    budget: usize,
+    template: ContextTemplate,
+    fmt: ContextOutputFormat,
+) -> (String, u32, bool) {
+    const MAX_ATTEMPTS: usize = 6;
+
+    let mut body_budget = budget;
+    for _ in 0..MAX_ATTEMPTS {
+        let compiled = MemoryBackend::compile_candidates(candidates, body_budget, template);
+        let content = MemoryBackend::format_compiled(&compiled, fmt);
+        let tokens = MemoryBackend::estimate_tokens_exact(&content) as usize;
+        if tokens <= budget {
+            return (content, tokens as u32, compiled.truncated);
+        }
+        if body_budget == 0 {
+            break;
+        }
+        // Shrinking by the overshoot converges in a couple of rounds: body
+        // tokens map near one-to-one onto emitted tokens. `max(1)` keeps the
+        // loop strictly decreasing so it cannot spin.
+        body_budget = body_budget.saturating_sub((tokens - budget).max(1));
+    }
+    (String::new(), 0, true)
 }
 
 /// Context gRPC Server backed by sochdb-memory + ContextCompiler.
@@ -127,13 +203,25 @@ impl ContextService for ContextServer {
 
         let mut section_results = Vec::new();
         let mut total_tokens = 0u32;
-        let mut context_parts = Vec::new();
+        let mut context_parts: Vec<String> = Vec::new();
 
         let mut sections = req.sections;
         sections.sort_by_key(|s| s.priority);
 
+        // Assembling the sections costs tokens of its own -- the separator
+        // between each pair, and the brackets that make JSON an array.
+        // Reserving that up front is what keeps the returned context inside
+        // `token_limit`; adding it afterwards would overrun by exactly the glue.
+        // The brackets are reserved for every JSON request, not just
+        // multi-section ones, because JSON is always wrapped.
+        let separator_tokens =
+            MemoryBackend::estimate_tokens_exact(section_separator(output_fmt)) as usize;
+        let assembly_reserve = separator_tokens * sections.len().saturating_sub(1)
+            + MemoryBackend::estimate_tokens_exact(empty_document(output_fmt)) as usize;
+        let section_budget = token_limit.saturating_sub(assembly_reserve);
+
         for section in sections {
-            let remaining_budget = token_limit.saturating_sub(total_tokens as usize);
+            let remaining_budget = section_budget.saturating_sub(total_tokens as usize);
             if remaining_budget == 0 {
                 break;
             }
@@ -144,22 +232,8 @@ impl ContextService for ContextServer {
             let (final_content, tokens_used, truncated) = match section.section_type {
                 x if x == ContextSectionType::ContextSectionSearch as i32 => {
                     let lanes = MemoryBackend::parse_lanes(&section.options);
-                    match self.backend.search_and_compile(
-                        ns,
-                        &section.query,
-                        remaining_budget,
-                        lanes,
-                        template,
-                    ) {
-                        Ok(compiled) => {
-                            let truncated =
-                                compiled.truncated || compiled.exact_tokens > remaining_budget;
-                            let content = MemoryBackend::format_compiled(&compiled, output_fmt);
-                            let tokens = compiled.exact_tokens as u32;
-                            (content, tokens, truncated)
-                        }
-                        Err(e) => (format!("# {} (error)\n{}\n", section.name, e), 0, true),
-                    }
+                    let candidates = self.backend.search_candidates(ns, &section.query, lanes);
+                    pack_section(&candidates, remaining_budget, template, output_fmt)
                 }
                 x if x == ContextSectionType::ContextSectionGet as i32 => {
                     if let Some(text) = section.options.get("episode_text") {
@@ -175,11 +249,15 @@ impl ContextService for ContextServer {
                                 let tokens = MemoryBackend::estimate_tokens_exact(&content);
                                 (content, tokens, false)
                             }
-                            Err(e) => (
-                                format!("# {} (write error)\n{}\n", section.name, e),
-                                0,
-                                true,
-                            ),
+                            Err(e) => {
+                                let content = format!("# {} (write error)\n{}\n", section.name, e);
+                                // Charged like every sibling branch: returning
+                                // it with a cost of 0 would slip past the
+                                // budget guard below and overrun `token_limit`
+                                // by the whole error message.
+                                let tokens = MemoryBackend::estimate_tokens_exact(&content);
+                                (content, tokens, true)
+                            }
                         }
                     } else if let Some(doc_id) = section
                         .options
@@ -220,8 +298,21 @@ impl ContextService for ContextServer {
                 }
             };
 
+            // Sections other than search build their content without regard to
+            // the budget. Emitting one anyway would push the response past
+            // `token_limit`; reporting it as truncated keeps the contract that
+            // what we return fits in what the caller asked for.
+            let (final_content, tokens_used, truncated) = if tokens_used as usize > remaining_budget
+            {
+                (String::new(), 0, true)
+            } else {
+                (final_content, tokens_used, truncated)
+            };
+
             total_tokens += tokens_used;
-            context_parts.push(final_content.clone());
+            if !final_content.is_empty() {
+                context_parts.push(final_content.clone());
+            }
             section_results.push(SectionResult {
                 name: section.name,
                 tokens_used,
@@ -230,20 +321,11 @@ impl ContextService for ContextServer {
             });
         }
 
-        let context = if context_parts.len() == 1 {
-            context_parts.into_iter().next().unwrap_or_default()
-        } else {
-            MemoryBackend::format_compiled(
-                &sochdb_query::CompiledContext {
-                    body: context_parts.join("\n---\n"),
-                    exact_tokens: total_tokens as usize,
-                    budget: token_limit,
-                    facts: vec![],
-                    truncated: total_tokens as usize >= token_limit,
-                },
-                output_fmt,
-            )
-        };
+        let context = join_sections(context_parts, output_fmt);
+        // Report what was actually assembled rather than the sum of the parts:
+        // joining can only merge tokens, never add them beyond the reserved
+        // glue, so this is both honest and within `token_limit`.
+        let total_tokens = MemoryBackend::estimate_tokens_exact(&context);
 
         Ok(Response::new(ContextQueryResponse {
             context,

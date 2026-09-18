@@ -23,28 +23,65 @@
 //! retrieval usually stops matching the single-node answer it claims to
 //! approximate.
 //!
-//! # Why asking every shard for k is not enough
+//! # Skew is not the reason a merge needs a bound
 //!
-//! The obvious plan -- ask `S` shards for their local top-`k`, merge, keep `k`
-//! -- is correct only when the true global top-`k` is spread evenly. It is not.
-//! If one shard holds `k` of the global best, every other shard's `k` results
-//! were wasted and nothing was lost. But if a shard holds `k + 1` of them, its
-//! `k + 1`-th is dropped locally and can never be recovered by the merge. The
-//! coordinator cannot detect this from the results alone: the merged list looks
-//! complete, is the right length, and is wrong.
+//! It is tempting to say that asking `S` shards for their local top-`k` fails
+//! when the global best are unevenly distributed. That is false, and believing
+//! it buys work that proves nothing.
 //!
-//! Three things fix it, and all three are needed:
+//! Assume disjoint shard contents `D_i`, one snapshot, one eligibility
+//! predicate, and one total order over candidates including tie-breaking --
+//! exactly what [`Candidate`] defines. Then
 //!
-//! - **Oversampling.** Ask each shard for `k' = ceil(k × factor)` so a skewed
-//!   shard has room to return more than its even share.
+//! ```text
+//! TopK(D_0 ∪ D_1 ∪ … ∪ D_{S-1}) ⊆ TopK(D_0) ∪ TopK(D_1) ∪ … ∪ TopK(D_{S-1})
+//! ```
+//!
+//! Proof. Let `x` fall outside its own shard's local top-`k`. Then at least `k`
+//! candidates in that shard precede `x`. They are in the union too, and the
+//! order is the same one, so at least `k` candidates precede `x` globally, so
+//! `x` is not in the global top-`k`. Contrapositive: every member of the global
+//! top-`k` is in its own shard's local top-`k`. A shard cannot hold `k + 1` of
+//! the global top-`k`, because the global top-`k` has `k` members.
+//!
+//! So under *exact* local search, skew alone costs nothing: `k` per shard is
+//! enough, however lopsided the distribution.
+//!
+//! # What does break the containment
+//!
+//! Every one of these breaks a hypothesis of the proof, not the arithmetic:
+//!
+//! - **A shard returned fewer than its local top-`k`.** A search budget, an
+//!   early stop, or a predicate applied after candidate generation all leave a
+//!   shard holding results it did not return. Its contribution is then not
+//!   `TopK(D_i)` and the containment says nothing.
+//! - **Local search is approximate.** An ANN traversal returns a good `k`, not
+//!   the exact local top-`k`, and its frontier is not a bound on every vector
+//!   it never visited.
+//! - **The final score is not the shard's score.** Reranking, or fusion against
+//!   corpus-global statistics, reorders candidates after the merge, so a
+//!   locally-fused top-`k` is not a globally-fused top-`k`.
+//! - **Something downstream consumes more than `k`.** Diversification and
+//!   dedup-after-merge need slack to select from.
+//!
+//! # What this module therefore provides
+//!
 //! - **A bound per shard.** A shard reports the best score it did *not* return.
 //!   If every shard's unreturned best is worse than the current global `k`-th,
-//!   the answer is provably complete and no further work is needed. This is the
-//!   only signal that distinguishes "we have the right answer" from "we have an
-//!   answer".
+//!   the answer is provably complete. This is the only signal that
+//!   distinguishes "we have the right answer" from "we have an answer", and it
+//!   holds whether or not local search was exact -- provided the shard is
+//!   honest about having stopped early, which is what
+//!   [`ShardResponse::budget_exhausted`] records.
 //! - **Expansion.** When the bound says the answer might be incomplete, ask the
 //!   shards that could still contribute for more. Bounded, and only those
 //!   shards.
+//! - **Oversampling.** Ask each shard for `k' = ceil(k × factor)` to make an
+//!   expansion round less likely. It is a latency optimisation for the four
+//!   cases above, not a correctness requirement, and it is not a remedy for
+//!   skew.
+//!
+//! The completeness a caller gets is stated, not assumed: see [`Completeness`].
 //!
 //! # Memory
 //!
@@ -67,10 +104,13 @@ use crate::shard_topology::ShardId;
 
 /// Default oversampling factor.
 ///
-/// Two is a deliberate compromise. Skew tolerance rises with the factor, but so
-/// does the work every shard does whether or not it is the skewed one. The
-/// bound is what actually protects recall; oversampling only reduces how often
-/// an expansion round is needed.
+/// Two is a deliberate compromise, and it is a latency choice rather than a
+/// correctness one. Under exact local search, `k` per shard already contains
+/// the global top-`k` (see the module documentation), so the factor buys
+/// nothing there. What it buys is fewer expansion rounds when local search is
+/// approximate, a filter runs after candidate generation, or the final ranking
+/// is not the shard's ranking -- paid for by work every shard does whether or
+/// not it is the one that needed the slack. The bound is what protects recall.
 pub const DEFAULT_OVERSAMPLING: f32 = 2.0;
 
 /// The most expansion rounds a query will run before returning what it has.
@@ -647,16 +687,39 @@ mod tests {
         outcome.results.iter().map(|c| c.id).collect()
     }
 
-    /// The defect the bound exists for, demonstrated rather than described.
+    /// The containment proof from the module documentation, as a test.
     ///
-    /// Shard 0 holds four of the global best five. Asked for its local top-3 it
-    /// returns three, and its fourth -- which belongs in the global answer --
-    /// is lost. The merged list is the right length and looks complete. The
-    /// bound is the only thing that reveals otherwise.
+    /// Shard 0 holds four of the global best five -- as skewed as this gets --
+    /// and every shard searched exhaustively. The merge of the local top-5s is
+    /// the global top-5, and the bound proves it without a single expansion
+    /// round. Skew alone costs nothing.
     #[test]
-    fn a_skewed_shard_loses_results_the_merge_alone_cannot_detect() {
+    fn exhaustive_shards_merge_exactly_however_skewed_they_are() {
         let config = MergeConfig::new(5, SNAP);
-        let skewed = ShardResponse::truncated(
+        let skewed = shard(0, &[(1, 0.1), (2, 0.2), (3, 0.3), (4, 0.4), (80, 8.0)]);
+        let other = shard(1, &[(10, 0.5), (11, 6.0), (12, 7.0)]);
+        let outcome = merge_round(config, vec![skewed, other]);
+
+        assert_eq!(ids(&outcome), vec![1, 2, 3, 4, 10]);
+        assert!(
+            outcome.is_exact(),
+            "exhaustive shards under one total order need no oversampling"
+        );
+        assert!(outcome.expansion.is_none());
+    }
+
+    /// The defect the bound actually exists for, demonstrated rather than
+    /// described.
+    ///
+    /// Shard 0 stopped before returning its local top-5: it returned three and
+    /// is still holding a 0.4. That is a budget or a post-filter, not skew, and
+    /// it is what breaks the containment above. The merged list is the right
+    /// length and looks complete; the bound is the only thing that reveals
+    /// otherwise.
+    #[test]
+    fn a_shard_that_withheld_results_is_caught_by_its_bound() {
+        let config = MergeConfig::new(5, SNAP);
+        let truncated = ShardResponse::truncated(
             0,
             SNAP,
             vec![
@@ -667,7 +730,7 @@ mod tests {
             0.4,
         );
         let other = shard(1, &[(10, 0.9), (11, 1.0)]);
-        let outcome = merge_round(config, vec![skewed, other]);
+        let outcome = merge_round(config, vec![truncated, other]);
 
         assert_eq!(ids(&outcome), vec![1, 2, 3, 10, 11]);
         // The k-th result scores 1.0 and shard 0 is still holding a 0.4, so

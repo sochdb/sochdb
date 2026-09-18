@@ -130,9 +130,11 @@ impl MemoryStore {
         let tau = q.as_of.unwrap_or(u64::MAX);
         let trust_cfg = TrustScoreConfig::default();
 
-        let mut ranked: Vec<(u64, f32)> = scores.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        ranked.truncate(k);
+        // Bounded selection with a stable tie-break, not sort-everything-then-
+        // truncate. `scores` is a `HashMap`, so a comparator that calls equal
+        // scores equal let the same query return different documents on
+        // different runs depending on hash iteration order.
+        let ranked = crate::topk::top_k(scores, k);
 
         let hits: Vec<MemoryHit> = ranked
             .into_iter()

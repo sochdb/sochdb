@@ -73,10 +73,21 @@ impl NamespaceIndexes {
     }
 }
 
+/// Independently owned mutable state for one namespace.
+pub(crate) type NamespaceHandle = Arc<RwLock<NamespaceIndexes>>;
+
 /// Agent memory store: write-time lexical recall + async enrichment queue.
 pub struct MemoryStore {
     hlc: HybridLogicalClock,
-    pub(crate) namespaces: RwLock<HashMap<String, NamespaceIndexes>>,
+    /// Directory of namespaces — *lookup and creation only*.
+    ///
+    /// Each namespace owns its indexes behind its own lock, so this outer lock
+    /// is held just long enough for a hash lookup and an `Arc` clone, never
+    /// across index mutation. Holding one store-wide write guard while updating
+    /// BM25, trigram and episode state made every agent's write serialise
+    /// against every other agent's write, and block every reader, over state
+    /// they do not share: namespaces have nothing in common but this map.
+    pub(crate) namespaces: RwLock<HashMap<String, NamespaceHandle>>,
     pub(crate) enrichment: EnrichmentQueue,
     pub(crate) embedder: Arc<dyn EmbeddingProvider>,
     config: MemoryStoreConfig,
@@ -124,6 +135,33 @@ impl MemoryStore {
         &self.enrichment
     }
 
+    /// Handle for an existing namespace, or `None`.
+    ///
+    /// The store-wide read guard is dropped before the caller can touch the
+    /// namespace, so a long read of one namespace never blocks a write to
+    /// another.
+    pub(crate) fn namespace(&self, name: &str) -> Option<NamespaceHandle> {
+        self.namespaces.read().get(name).cloned()
+    }
+
+    /// Handle for a namespace, creating it if this is its first write.
+    ///
+    /// Takes the cheap read path first: after the first write to a namespace,
+    /// which is the overwhelming majority of calls, no writer ever touches the
+    /// directory. `entry` on the write path keeps a concurrent creation of the
+    /// same namespace from producing two sets of indexes.
+    pub(crate) fn namespace_or_create(&self, name: &str) -> NamespaceHandle {
+        if let Some(handle) = self.namespaces.read().get(name) {
+            return Arc::clone(handle);
+        }
+        Arc::clone(
+            self.namespaces
+                .write()
+                .entry(name.to_string())
+                .or_insert_with(|| Arc::new(RwLock::new(NamespaceIndexes::new()))),
+        )
+    }
+
     /// Write episode: lexical lanes indexed synchronously; enrichment queued async.
     pub fn write_episode(&self, write: EpisodeWrite) -> MemoryResult<WriteResult> {
         let start = Instant::now();
@@ -139,32 +177,33 @@ impl MemoryStore {
             .t_valid_from
             .unwrap_or_else(|| HybridLogicalClock::physical_time(t_created) / 1000);
 
-        let mut namespaces = self.namespaces.write();
-        let ns = namespaces
-            .entry(write.namespace.clone())
-            .or_insert_with(NamespaceIndexes::new);
+        let handle = self.namespace_or_create(&write.namespace);
+        let episode_id;
+        {
+            let mut ns = handle.write();
 
-        let episode_id = EpisodeId(ns.next_episode_id);
-        ns.next_episode_id += 1;
+            episode_id = EpisodeId(ns.next_episode_id);
+            ns.next_episode_id += 1;
 
-        let doc_id = episode_id.0;
-        ns.bm25.add_document_with_id(doc_id, &write.text);
-        ns.trigram.insert(doc_id, &write.text);
+            let doc_id = episode_id.0;
+            ns.bm25.add_document_with_id(doc_id, &write.text);
+            ns.trigram.insert(doc_id, &write.text);
 
-        let episode = Episode {
-            id: episode_id,
-            namespace: write.namespace.clone(),
-            text: write.text.clone(),
-            t_created,
-            t_valid_from: t_valid,
-            enriched: false,
-            metadata: write.metadata.clone(),
-        };
-        ns.episodes.insert(doc_id, episode);
+            let episode = Episode {
+                id: episode_id,
+                namespace: write.namespace.clone(),
+                text: write.text.clone(),
+                t_created,
+                t_valid_from: t_valid,
+                enriched: false,
+                metadata: write.metadata.clone(),
+            };
+            ns.episodes.insert(doc_id, episode);
+        }
 
         let job = EnrichmentJob {
             namespace: write.namespace.clone(),
-            episode_id: doc_id,
+            episode_id: episode_id.0,
             text: write.text.clone(),
         };
 
@@ -178,9 +217,6 @@ impl MemoryStore {
             ingestion_lag_us,
             enrichment_queued,
         };
-
-        // Release namespace lock before enrichment (embed + vector insert re-lock).
-        drop(namespaces);
 
         if self.config.enrich_on_write {
             let _ = self.enrich_episode(&job);
@@ -255,28 +291,28 @@ impl MemoryStore {
     }
 
     pub fn get_episode(&self, namespace: &str, id: EpisodeId) -> MemoryResult<Episode> {
-        let namespaces = self.namespaces.read();
-        let ns = namespaces
-            .get(namespace)
+        let handle = self
+            .namespace(namespace)
             .ok_or_else(|| MemoryError::NamespaceNotFound(namespace.to_string()))?;
+        let ns = handle.read();
         ns.episodes
             .get(&id.0)
             .cloned()
-            .ok_or_else(|| MemoryError::EpisodeNotFound(id.0))
+            .ok_or(MemoryError::EpisodeNotFound(id.0))
     }
 
     pub fn namespace_bm25(&self, namespace: &str) -> Option<Arc<InvertedIndex>> {
-        // BM25 index is behind RwLock in namespace — expose search via store methods instead
+        // BM25 index is behind the namespace lock — expose search via store methods instead
         let _ = namespace;
         None
     }
 
     pub fn search_bm25(&self, namespace: &str, query: &str, k: usize) -> Vec<(u64, f32)> {
-        let namespaces = self.namespaces.read();
-        namespaces
-            .get(namespace)
-            .map(|ns| ns.bm25.search(query, k))
-            .unwrap_or_default()
+        let Some(handle) = self.namespace(namespace) else {
+            return Vec::new();
+        };
+        let ns = handle.read();
+        ns.bm25.search(query, k)
     }
 
     pub fn search_trigram_literal(
@@ -285,16 +321,16 @@ impl MemoryStore {
         literal: &str,
         k: usize,
     ) -> Vec<(u64, f32)> {
-        let namespaces = self.namespaces.read();
-        let Some(ns) = namespaces.get(namespace) else {
-            return Vec::new();
-        };
         let trigrams = sochdb_query::trigram_index::trigrams_of(literal);
         if trigrams.is_empty() {
             return Vec::new();
         }
-        let candidates = ns.trigram.candidates(&trigrams);
-        candidates
+        let Some(handle) = self.namespace(namespace) else {
+            return Vec::new();
+        };
+        let ns = handle.read();
+        ns.trigram
+            .candidates(&trigrams)
             .into_iter()
             .take(k)
             .map(|doc_id| (doc_id, 1.0))
@@ -302,19 +338,14 @@ impl MemoryStore {
     }
 
     pub fn episode_text(&self, namespace: &str, doc_id: u64) -> Option<String> {
-        let namespaces = self.namespaces.read();
-        namespaces
-            .get(namespace)?
-            .episodes
-            .get(&doc_id)
-            .map(|e| e.text.clone())
+        let handle = self.namespace(namespace)?;
+        let ns = handle.read();
+        ns.episodes.get(&doc_id).map(|e| e.text.clone())
     }
 
     pub fn add_fact(&self, namespace: &str, mut fact: FactEdge) -> MemoryResult<FactId> {
-        let mut namespaces = self.namespaces.write();
-        let ns = namespaces
-            .entry(namespace.to_string())
-            .or_insert_with(NamespaceIndexes::new);
+        let handle = self.namespace_or_create(namespace);
+        let mut ns = handle.write();
         let id = FactId(ns.next_fact_id);
         ns.next_fact_id += 1;
         fact.id = id;
@@ -323,24 +354,22 @@ impl MemoryStore {
     }
 
     pub fn facts_valid_at(&self, namespace: &str, tau: u64) -> Vec<FactEdge> {
-        let namespaces = self.namespaces.read();
-        namespaces
-            .get(namespace)
-            .map(|ns| {
-                ns.facts
-                    .iter()
-                    .filter(|f| f.is_valid_at(tau))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        let Some(handle) = self.namespace(namespace) else {
+            return Vec::new();
+        };
+        let ns = handle.read();
+        ns.facts
+            .iter()
+            .filter(|f| f.is_valid_at(tau))
+            .cloned()
+            .collect()
     }
 
     pub fn invalidate_fact(&self, namespace: &str, fact_id: FactId, t_invalid: u64) -> bool {
-        let mut namespaces = self.namespaces.write();
-        let Some(ns) = namespaces.get_mut(namespace) else {
+        let Some(handle) = self.namespace(namespace) else {
             return false;
         };
+        let mut ns = handle.write();
         if let Some(fact) = ns.facts.iter_mut().find(|f| f.id == fact_id) {
             fact.invalidate(t_invalid);
             return true;
@@ -349,10 +378,8 @@ impl MemoryStore {
     }
 
     pub fn episode_count(&self, namespace: &str) -> usize {
-        self.namespaces
-            .read()
-            .get(namespace)
-            .map(|ns| ns.episodes.len())
+        self.namespace(namespace)
+            .map(|handle| handle.read().episodes.len())
             .unwrap_or(0)
     }
 }

@@ -11,6 +11,7 @@ pub mod lifecycle;
 pub mod provenance;
 pub mod query;
 pub mod store;
+mod topk;
 
 pub use enrichment::{EnrichmentJob, EnrichmentQueue, EnrichmentQueueConfig};
 pub use episode::{ConversationTurn, Episode, EpisodeId, EpisodeWrite};

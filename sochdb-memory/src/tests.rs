@@ -228,4 +228,123 @@ mod tests {
         let vector_hits = store.search_vector("async-ns", "rescue dog Biscuit", 5);
         assert!(!vector_hits.is_empty());
     }
+
+    /// A reader of one namespace must not be made to do another namespace's
+    /// enrichment. Draining the whole queue instead let one busy tenant's
+    /// backlog become every other tenant's query latency.
+    #[test]
+    fn enrichment_waits_are_scoped_to_the_queried_namespace() {
+        let store = MemoryStore::with_defaults();
+        for ns in ["busy", "busy", "busy", "quiet"] {
+            store
+                .write_episode(EpisodeWrite {
+                    namespace: ns.into(),
+                    text: format!("an episode belonging to {ns}"),
+                    t_valid_from: None,
+                    metadata: None,
+                })
+                .unwrap();
+        }
+        assert_eq!(store.enrichment_queue().depth(), 4);
+        assert_eq!(store.enrichment_queue().depth_for("busy"), 3);
+
+        assert_eq!(store.drain_enrichment_for("quiet"), 1);
+
+        assert_eq!(
+            store.enriched_episode_count("quiet"),
+            1,
+            "the queried namespace is fresh"
+        );
+        assert_eq!(
+            store.enriched_episode_count("busy"),
+            0,
+            "the unrelated namespace's work was not done on this query's time"
+        );
+        assert_eq!(
+            store.enrichment_queue().depth(),
+            3,
+            "and it is still queued for the worker"
+        );
+    }
+
+    /// The store-wide lock must not be held across namespace mutation: two
+    /// agents writing to different namespaces share nothing but the directory.
+    #[test]
+    fn concurrent_writes_to_different_namespaces_do_not_lose_episodes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let store = Arc::new(MemoryStore::with_defaults());
+        let mut handles = Vec::new();
+        for agent in 0..8u32 {
+            let store = Arc::clone(&store);
+            handles.push(thread::spawn(move || {
+                for i in 0..50u32 {
+                    store
+                        .write_episode(EpisodeWrite {
+                            namespace: format!("agent-{agent}"),
+                            text: format!("agent {agent} step {i}"),
+                            t_valid_from: None,
+                            metadata: None,
+                        })
+                        .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        for agent in 0..8u32 {
+            assert_eq!(
+                store.episode_count(&format!("agent-{agent}")),
+                50,
+                "agent-{agent} lost writes"
+            );
+        }
+    }
+
+    /// Concurrent first writes to the *same* namespace must not produce two
+    /// sets of indexes: the read-then-write lookup has to settle on one.
+    #[test]
+    fn concurrent_creation_of_one_namespace_yields_one_index_set() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+
+        let store = Arc::new(MemoryStore::with_defaults());
+        let go = Arc::new(AtomicBool::new(false));
+        let mut handles = Vec::new();
+        for i in 0..8u32 {
+            let store = Arc::clone(&store);
+            let go = Arc::clone(&go);
+            handles.push(thread::spawn(move || {
+                while !go.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+                store
+                    .write_episode(EpisodeWrite {
+                        namespace: "shared".into(),
+                        text: format!("racing write {i}"),
+                        t_valid_from: None,
+                        metadata: None,
+                    })
+                    .unwrap()
+            }));
+        }
+        go.store(true, Ordering::Release);
+
+        let mut ids: Vec<u64> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().episode_id.0)
+            .collect();
+        ids.sort_unstable();
+
+        assert_eq!(store.episode_count("shared"), 8);
+        assert_eq!(
+            ids,
+            (1..=8).collect::<Vec<u64>>(),
+            "episode ids must come from a single counter"
+        );
+    }
 }
