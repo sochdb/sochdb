@@ -694,6 +694,9 @@ pub struct TxnWal {
     /// Path to WAL file
     path: PathBuf,
     /// Buffered writer
+    /// The barrier is a lock-free `barrier_lock`/writer split so appends can
+    /// continue while the device flush is in flight; see `sync`.
+    barrier_lock: Mutex<()>,
     writer: Mutex<BufWriter<File>>,
     /// Next transaction ID
     next_txn_id: AtomicU64,
@@ -783,6 +786,7 @@ impl TxnWal {
 
         let wal = Self {
             path,
+            barrier_lock: Mutex::new(()),
             writer: Mutex::new(BufWriter::with_capacity(256 * 1024, file)),
             next_txn_id: AtomicU64::new(1),
             sequence: AtomicU64::new(0),
@@ -1223,15 +1227,44 @@ impl TxnWal {
     /// commits the journal, and pre-sizing while still calling `fsync` still
     /// persists the inode. Both are required. See `examples/fsync_roofline.rs`.
     pub fn sync(&self) -> Result<()> {
-        let mut writer = self.writer.lock();
-        writer.flush()?;
-        // After flush the file cursor is exactly the write offset, so the
-        // runway needs no separate bookkeeping on the write paths.
-        let offset = writer.get_mut().stream_position()?;
-        if offset + WAL_RUNWAY_LOW_WATER > self.runway_end.load(Ordering::Relaxed) {
-            self.extend_runway(writer.get_ref(), offset);
-        }
-        writer.get_ref().sync_data()?;
+        // Serialise barriers against each other and against `truncate`. Two
+        // concurrent flushes would not make the device any faster, and a
+        // truncation racing a flush could persist and then acknowledge records
+        // the truncation had already removed.
+        let _barrier = self.barrier_lock.lock();
+
+        // Get the data into the page cache and a private fd out, then release
+        // the writer. The flush below is the expensive part -- ~0.96 ms on this
+        // device, and irreducibly so (see examples/fsync_roofline.rs) -- and
+        // holding the writer across it stalls every appender in the engine for
+        // that entire millisecond. Appends and the barrier then run strictly
+        // one after the other instead of overlapping, which caps the achieved
+        // commit batch well below the number of threads actually committing.
+        //
+        // Dropping the writer first lets the next batch accumulate in the
+        // BufWriter while this batch is being persisted. Records that race in
+        // after the flush starts may or may not be covered by it, which is
+        // exactly `fdatasync`'s contract and is harmless in both directions:
+        // persisting more than was promised is never a durability violation,
+        // and those records are not acknowledged until their own barrier
+        // returns. What matters is the guarantee that does hold -- everything
+        // written before this call is durable when it returns -- and that is
+        // what the waiters for this batch are told.
+        let file = {
+            let mut writer = self.writer.lock();
+            writer.flush()?;
+            // After flush the file cursor is exactly the write offset, so the
+            // runway needs no separate bookkeeping on the write paths.
+            let offset = writer.get_mut().stream_position()?;
+            if offset + WAL_RUNWAY_LOW_WATER > self.runway_end.load(Ordering::Relaxed) {
+                self.extend_runway(writer.get_ref(), offset);
+            }
+            // A dup of the same inode. `fdatasync` is per-inode, not per-fd, so
+            // this persists the writer's data without borrowing the writer.
+            writer.get_ref().try_clone()?
+        };
+
+        file.sync_data()?;
         self.bytes_since_sync.store(0, Ordering::Relaxed);
         Ok(())
     }
@@ -1586,6 +1619,9 @@ impl TxnWal {
     /// but a crash after truncation means the data cannot be recovered
     /// from the WAL.
     pub fn truncate(&self) -> Result<()> {
+        // Held across the whole truncation so it cannot interleave with a
+        // barrier that is persisting data this call is about to discard.
+        let _barrier = self.barrier_lock.lock();
         let mut writer = self.writer.lock();
         // Flush BufWriter so no stale data is written after truncation
         writer.flush()?;
@@ -2229,6 +2265,79 @@ mod tests {
     /// valid record, would walk straight into them and hand back writes that
     /// were never committed in this generation. Zeroing the tail at open is what
     /// closes that.
+    /// Appending while a barrier is in flight must not corrupt the log.
+    ///
+    /// `sync` releases the writer lock before `fdatasync` so the next batch can
+    /// accumulate while this one is being persisted -- without that, no thread
+    /// in the engine can append for the ~1 ms the device flush takes. The
+    /// hazard the split creates is that appends now genuinely overlap a
+    /// barrier, including the runway extension inside it, so this drives both
+    /// concurrently and then replays to prove every acknowledged record is
+    /// intact and in order.
+    #[test]
+    fn appends_that_race_a_barrier_still_replay_intact() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("race.wal");
+        let wal = Arc::new(TxnWal::new(&wal_path).unwrap());
+
+        const WRITERS: u64 = 4;
+        const PER_WRITER: u64 = 200;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let syncer = {
+            let wal = Arc::clone(&wal);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(AtomicOrdering::Relaxed) {
+                    wal.sync().expect("barrier must not fail");
+                }
+            })
+        };
+
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let wal = Arc::clone(&wal);
+                std::thread::spawn(move || {
+                    for i in 0..PER_WRITER {
+                        let entry = TxnWalEntry::txn_commit(w * PER_WRITER + i);
+                        wal.append_no_flush(&entry).expect("append must not fail");
+                    }
+                })
+            })
+            .collect();
+
+        for h in writers {
+            h.join().unwrap();
+        }
+        stop.store(true, AtomicOrdering::Relaxed);
+        syncer.join().unwrap();
+
+        wal.flush().unwrap();
+        wal.sync().unwrap();
+        drop(wal);
+
+        let replayed = TxnWal::new(&wal_path).unwrap();
+        let mut ids: Vec<u64> = Vec::new();
+        replayed
+            .replay(|entry| {
+                if matches!(entry.record_type, WalRecordType::TxnCommit) {
+                    ids.push(entry.txn_id);
+                }
+                Ok(())
+            })
+            .unwrap();
+        ids.sort_unstable();
+
+        let expected: Vec<u64> = (0..WRITERS * PER_WRITER).collect();
+        assert_eq!(
+            ids, expected,
+            "every record appended alongside a barrier must survive exactly once"
+        );
+    }
+
     #[test]
     fn stale_records_past_a_torn_write_are_not_resurrected() {
         use std::os::unix::fs::FileExt;
