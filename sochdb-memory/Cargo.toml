@@ -11,6 +11,9 @@ description = "Bi-temporal agent memory layer with write-time lexical recall"
 default = []
 # Real semantic embeddings via fastembed (forwards to sochdb-query/fastembed).
 fastembed = ["sochdb-query/fastembed"]
+# Expose `fault` to downstream test suites. Off by default so nothing that
+# deliberately corrupts a data directory can be reached from a release build.
+fault-injection = []
 
 [dependencies]
 sochdb-core = { version = "2.1.0", path = "../sochdb-core" }

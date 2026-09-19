@@ -109,7 +109,8 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, data: &[Value], k: usi
                 ..MemoryStoreConfig::default()
             },
             Arc::clone(&embedder),
-        );
+        )
+        .expect("an in-memory store opens no files and cannot fail");
         let ns = "loco";
         // A turn can land in several overlapping windows -> list of episode docs.
         let mut dia2docs: HashMap<String, Vec<u64>> = HashMap::new();

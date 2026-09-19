@@ -429,8 +429,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let kv_server = KvServer::with_namespace_server(namespace_server.clone())
         .with_policy_server(policy_server.clone());
     // Embedder selected by SOCHDB_EMBEDDER (e.g. fastembed:bge-small-en with the
-    // `fastembed` feature; mock/unset otherwise).
-    let memory_store = Arc::new(MemoryStore::from_env());
+    // `fastembed` feature; mock/unset otherwise). Persistence is opt-in via
+    // SOCHDB_MEMORY_DIR; without it, agent memory is lost on restart.
+    let memory_store = Arc::new(MemoryStore::from_env()?);
+    if memory_store.is_durable() {
+        let checkpoint = memory_store.checkpoint_threshold();
+        if checkpoint > 0 {
+            tracing::info!(
+                checkpoint_after_records = checkpoint,
+                "agent memory is write-ahead logged and survives restart"
+            );
+        } else {
+            // Worth a warning rather than silence: the log is still correct,
+            // but nothing will ever shrink it, so the deployment is on a path
+            // to a full disk and to restarts that get slower forever.
+            tracing::warn!(
+                "agent memory is write-ahead logged, but automatic checkpointing \
+                 is disabled; the log will grow without bound until \
+                 SOCHDB_MEMORY_CHECKPOINT_RECORDS is set"
+            );
+        }
+    } else {
+        tracing::warn!(
+            "agent memory is in-memory only and will be LOST on restart; \
+             set SOCHDB_MEMORY_DIR to persist it"
+        );
+    }
     let context_server = ContextServer::with_memory_store(Arc::clone(&memory_store));
     let semantic_cache_server = SemanticCacheServer::new();
     let trace_server = TraceServer::new();

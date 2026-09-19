@@ -254,13 +254,7 @@ impl<'a> Reranker<'a> {
         query_i8: &[i8],
         query_scale: f32,
     ) -> Vec<ScoredCandidate> {
-        candidates
-            .iter()
-            .map(|&vid| ScoredCandidate {
-                id: vid,
-                score: self.score(vid, query_i8, query_scale),
-            })
-            .collect()
+        self.score_batch_inner(candidates, query_i8, query_scale, None)
     }
 
     /// Score multiple candidates with fp32 query for accurate outlier computation
@@ -271,13 +265,170 @@ impl<'a> Reranker<'a> {
         query_scale: f32,
         query_fp32: &[f32],
     ) -> Vec<ScoredCandidate> {
+        self.score_batch_inner(candidates, query_i8, query_scale, Some(query_fp32))
+    }
+
+    /// Shared batch scoring.
+    ///
+    /// The int8 dot products are taken in one pass so the kernel can hoist the
+    /// per-query work out of the candidate loop and prefetch across candidates;
+    /// scoring one candidate at a time forfeits both. Dequantization and the
+    /// outlier corrections stay per-candidate and unchanged, so the result is
+    /// identical to calling `score_with_fp32` in a loop.
+    fn score_batch_inner(
+        &self,
+        candidates: &[VectorId],
+        query_i8: &[i8],
+        query_scale: f32,
+        query_fp32: Option<&[f32]>,
+    ) -> Vec<ScoredCandidate> {
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        // A candidate whose vector is not fully present cannot be scored by the
+        // batch kernel, which indexes without bounds checks. Those are rare
+        // enough (only truncated or corrupt segments produce them) that routing
+        // them through the scalar path keeps the fast path branch-free.
+        let max_vid = self.i8_data.len() / self.dim.max(1);
+        if candidates.iter().any(|&v| (v as usize) >= max_vid) {
+            return candidates
+                .iter()
+                .map(|&vid| ScoredCandidate {
+                    id: vid,
+                    score: self.score_with_fp32(vid, query_i8, query_scale, query_fp32),
+                })
+                .collect();
+        }
+
+        let mut dots = vec![0i32; candidates.len()];
+        crate::simd::dot_i8::dot_i8_indexed(
+            &query_i8[..self.dim],
+            self.i8_data,
+            candidates,
+            self.dim,
+            &mut dots,
+        );
+
+        let denom = 127.0 * 127.0;
         candidates
             .iter()
-            .map(|&vid| ScoredCandidate {
-                id: vid,
-                score: self.score_with_fp32(vid, query_i8, query_scale, Some(query_fp32)),
+            .zip(dots.iter())
+            .map(|(&vid, &dot)| {
+                let v = vid as usize;
+                let mut score = (dot as f32) * query_scale * self.scales[v] / denom;
+                score += self.outlier_correction(v, query_i8, query_scale, query_fp32);
+                ScoredCandidate { id: vid, score }
             })
             .collect()
+    }
+
+    /// Outlier contribution for one vector, factored out so the batch and
+    /// single-candidate paths cannot drift apart.
+    fn outlier_correction(
+        &self,
+        vid: usize,
+        query_i8: &[i8],
+        query_scale: f32,
+        query_fp32: Option<&[f32]>,
+    ) -> f32 {
+        if self.num_outliers == 0 {
+            return 0.0;
+        }
+        let outlier_offset = vid * self.num_outliers;
+        if outlier_offset + self.num_outliers > self.outliers.len() {
+            return 0.0;
+        }
+
+        let mut acc = 0.0f32;
+        for outlier in &self.outliers[outlier_offset..outlier_offset + self.num_outliers] {
+            let dim_id = outlier.dim_id as usize;
+            if dim_id < self.dim {
+                let v_val = outlier.get_value().to_f32();
+                let q_val = match query_fp32 {
+                    Some(fp32) => fp32[dim_id],
+                    None => (query_i8[dim_id] as f32) * query_scale / 127.0,
+                };
+                acc += q_val * v_val;
+            }
+        }
+        acc
+    }
+
+    /// Dimensions scored in the pruning pass.
+    ///
+    /// 128 bytes is exactly two cache lines, so a pruning pass reads two lines
+    /// per record instead of the twelve a 768-dim record needs.
+    const PREFILTER_DIMS: usize = 64;
+    /// Candidates kept per requested result.
+    const PREFILTER_OVERSAMPLE: usize = 4;
+    /// Floor on survivors, so a small `r` still leaves a wide net.
+    const PREFILTER_MIN_KEEP: usize = 2048;
+    /// Only prune when the candidate set is this many times the survivor count;
+    /// below that the extra pass costs more than the scoring it removes.
+    const PREFILTER_MIN_RATIO: usize = 3;
+
+    /// Cheaply narrow a large candidate set before full scoring.
+    ///
+    /// Segments store Hadamard-rotated vectors, so vector energy is spread
+    /// evenly over the dimensions and the dot product of a dimension prefix is
+    /// an unbiased estimate of the full dot product. That makes
+    /// `prefix_dot * scale` a usable ranking key: `query_scale / 127^2` is a
+    /// positive constant across candidates and does not affect the order, while
+    /// `scale` varies per vector and must be included.
+    ///
+    /// The estimate is far too coarse to pick the final top-k - it only has to
+    /// be good enough that the true winners survive a net
+    /// `PREFILTER_OVERSAMPLE` times wider than the result set. Full scoring
+    /// still decides the ranking, so this trades a small recall risk for
+    /// reading roughly a sixth of the bytes.
+    ///
+    /// Returns `None` when pruning does not apply, in which case the caller
+    /// scores the original set.
+    fn prefilter(
+        &self,
+        candidates: &[VectorId],
+        query_i8: &[i8],
+        r: usize,
+    ) -> Option<Vec<VectorId>> {
+        // Below this there is no tail worth skipping.
+        if self.dim < Self::PREFILTER_DIMS * 2 || query_i8.len() < Self::PREFILTER_DIMS {
+            return None;
+        }
+        let keep = (r * Self::PREFILTER_OVERSAMPLE).max(Self::PREFILTER_MIN_KEEP);
+        if candidates.len() < keep.saturating_mul(Self::PREFILTER_MIN_RATIO) {
+            return None;
+        }
+        // The prefix kernel indexes without bounds checks.
+        let max_vid = self.i8_data.len() / self.dim.max(1);
+        if candidates.iter().any(|&v| (v as usize) >= max_vid) {
+            return None;
+        }
+
+        let mut dots = vec![0i32; candidates.len()];
+        crate::simd::dot_i8::dot_i8_indexed_prefix(
+            &query_i8[..Self::PREFILTER_DIMS],
+            self.i8_data,
+            candidates,
+            self.dim,
+            Self::PREFILTER_DIMS,
+            &mut dots,
+        );
+
+        let mut keyed: Vec<(VectorId, f32)> = candidates
+            .iter()
+            .zip(dots.iter())
+            .map(|(&vid, &dot)| (vid, dot as f32 * self.scales[vid as usize]))
+            .collect();
+        keyed.select_nth_unstable_by(keep - 1, |a, b| b.1.total_cmp(&a.1));
+        keyed.truncate(keep);
+
+        let mut kept: Vec<VectorId> = keyed.into_iter().map(|(vid, _)| vid).collect();
+        // Selection leaves survivors in arbitrary order; full scoring gathers
+        // 768-byte records, so restore ascending ids to keep that pass
+        // sequential.
+        kept.sort_unstable();
+        Some(kept)
     }
 
     /// Rerank and return top R candidates
@@ -288,6 +439,8 @@ impl<'a> Reranker<'a> {
         query_scale: f32,
         r: usize,
     ) -> Vec<ScoredCandidate> {
+        let pruned = self.prefilter(candidates, query_i8, r);
+        let candidates = pruned.as_deref().unwrap_or(candidates);
         let mut scored = self.score_batch(candidates, query_i8, query_scale);
 
         if scored.len() <= r {
@@ -311,6 +464,8 @@ impl<'a> Reranker<'a> {
         query_fp32: &[f32],
         r: usize,
     ) -> Vec<ScoredCandidate> {
+        let pruned = self.prefilter(candidates, query_i8, r);
+        let candidates = pruned.as_deref().unwrap_or(candidates);
         let mut scored = self.score_batch_with_fp32(candidates, query_i8, query_scale, query_fp32);
 
         if scored.len() <= r {

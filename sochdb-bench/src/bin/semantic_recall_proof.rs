@@ -74,7 +74,8 @@ fn run(label: &str, embedder: Arc<dyn EmbeddingProvider>, k: usize) {
             ..MemoryStoreConfig::default()
         },
         embedder,
-    );
+    )
+    .expect("an in-memory store opens no files and cannot fail");
 
     // Ingest all episodes; remember each one's doc_id for scoring.
     let mut ids = Vec::with_capacity(CASES.len());

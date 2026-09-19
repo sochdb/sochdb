@@ -86,6 +86,11 @@ metadata:
     app.kubernetes.io/name: sochdb
     app.kubernetes.io/managed-by: sochdb-operator
 spec:
+  # NOT a replication factor. SochDB has no replication protocol: each pod is
+  # an independent database on its own PersistentVolumeClaim and nothing
+  # copies data between them. A write served by one pod is invisible to the
+  # others, and losing a pod's volume loses that pod's data with no copy to
+  # fail over to. See SochDBClusterSpec::replicas.
   replicas: {replicas}
   serviceName: {name}-headless
   selector:

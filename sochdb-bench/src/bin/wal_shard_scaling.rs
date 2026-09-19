@@ -40,8 +40,7 @@ fn env_usize(k: &str, d: usize) -> usize {
 }
 
 fn run_point(shards: usize, threads: usize, ops_per_thread: usize) -> f64 {
-    let tmp = tempfile::TempDir::new().expect("tmp");
-    // N independent WAL files, each its own writer mutex + fsync stream.
+    let tmp = sochdb_bench::durable_temp_dir().expect("durable tmp");
     let wals: Vec<Arc<TxnWal>> = (0..shards)
         .map(|s| {
             let path = tmp.path().join(format!("wal_{s}.log"));

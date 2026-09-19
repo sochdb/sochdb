@@ -61,6 +61,13 @@ libc = "0.2"
 criterion = "0.5"
 proptest = "1.4"
 
+# Criterion supplies its own main(); without harness = false cargo builds the
+# bench against libtest, which finds no #[bench] functions and silently reports
+# "0 measured" instead of running anything.
+[[bench]]
+name = "simd_kernels"
+harness = false
+
 [features]
 default = []
 # Unified SIMD feature flag (workspace-consistent name per Rule #1)

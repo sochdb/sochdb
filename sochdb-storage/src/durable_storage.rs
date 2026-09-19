@@ -2510,6 +2510,24 @@ impl MemTableKind {
     }
 }
 
+/// Wrap a group committer in an `Arc` and start its background flusher.
+///
+/// Starting the flusher is what makes group commit actually group. Without it
+/// `is_running()` is false and every committing thread flushes inline over
+/// whatever slice of the queue it drained, so concurrent committers produce a
+/// run of small serialized barriers rather than one barrier covering them all.
+///
+/// Failure to spawn is not fatal: `start_background` leaves the committer in
+/// the not-running state, which is exactly the inline-flush path that worked
+/// before. Slower, still correct.
+fn start_group_commit(gc: EventDrivenGroupCommit) -> Arc<EventDrivenGroupCommit> {
+    let gc = Arc::new(gc);
+    if let Err(e) = gc.start_background() {
+        eprintln!("group commit flusher not started ({e}); falling back to inline flush");
+    }
+    gc
+}
+
 /// Durable storage engine with full ACID support
 pub struct DurableStorage {
     /// Path to storage directory
@@ -2769,7 +2787,7 @@ impl DurableStorage {
                 .unwrap()
                 .as_micros() as u64)
         });
-        storage.group_commit = Some(Arc::new(gc));
+        storage.group_commit = Some(start_group_commit(gc));
 
         Ok(EphemeralHandle {
             storage,
@@ -2888,7 +2906,7 @@ impl DurableStorage {
                 .as_micros() as u64)
         });
 
-        storage.group_commit = Some(Arc::new(gc));
+        storage.group_commit = Some(start_group_commit(gc));
         Ok(storage)
     }
 
@@ -2958,7 +2976,7 @@ impl DurableStorage {
                     .unwrap()
                     .as_micros() as u64)
             });
-            storage.group_commit = Some(Arc::new(gc));
+            storage.group_commit = Some(start_group_commit(gc));
             Ok(storage)
         } else {
             Self::open_with_encryption(path, enable_ordered_index, memtable_type, encryption)

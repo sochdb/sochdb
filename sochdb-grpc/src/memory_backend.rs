@@ -22,6 +22,19 @@ pub struct MemoryBackend {
     store: Arc<MemoryStore>,
 }
 
+/// Retrieval results for one section, reusable across compilations.
+///
+/// Packing a context to a budget can need more than one attempt when the
+/// output format wraps the compiled body, and retrieval must not be repeated
+/// for each attempt: the search is the expensive half and its results do not
+/// depend on the budget.
+pub struct SectionCandidates {
+    /// Fused hits, best first.
+    pub ranked: Vec<(u64, f32)>,
+    /// Candidate texts by doc id.
+    pub texts: HashMap<u64, ContextCandidate>,
+}
+
 impl MemoryBackend {
     pub fn new(store: Arc<MemoryStore>) -> Self {
         Self { store }
@@ -52,17 +65,19 @@ impl MemoryBackend {
         self.store.episode_text(namespace, doc_id)
     }
 
-    /// Three-lane retrieval + context compiler under an exact token budget.
-    pub fn search_and_compile(
+    /// Three-lane retrieval, without packing.
+    pub fn search_candidates(
         &self,
         namespace: &str,
         query: &str,
-        budget: usize,
         lanes: QueryLanes,
-        template: ContextTemplate,
-    ) -> Result<CompiledContext, String> {
-        if lanes.vector && self.store.enrichment_queue().depth() > 0 {
-            self.store.drain_enrichment_queue();
+    ) -> SectionCandidates {
+        // Wait only for this namespace's enrichment. The store-wide queue also
+        // holds work for namespaces this query will never read, and blocking on
+        // that imports another tenant's backlog into this request's latency
+        // without making this request's results any fresher.
+        if lanes.vector && self.store.enrichment_queue().depth_for(namespace) > 0 {
+            self.store.drain_enrichment_for(namespace);
         }
 
         let mq = MemoryQuery {
@@ -74,9 +89,9 @@ impl MemoryBackend {
         };
         let hits = self.store.query(&mq);
 
-        let bm25: Vec<(u64, f32)> = hits.hits.iter().map(|h| (h.doc_id, h.score)).collect();
+        let ranked: Vec<(u64, f32)> = hits.hits.iter().map(|h| (h.doc_id, h.score)).collect();
 
-        let mut candidates = HashMap::new();
+        let mut texts = HashMap::new();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs_f64())
@@ -87,7 +102,7 @@ impl MemoryBackend {
                 .store
                 .get_episode(namespace, sochdb_memory::EpisodeId(hit.doc_id))
             {
-                candidates.insert(
+                texts.insert(
                     hit.doc_id,
                     ContextCandidate {
                         doc_id: hit.doc_id,
@@ -102,15 +117,45 @@ impl MemoryBackend {
             }
         }
 
+        SectionCandidates { ranked, texts }
+    }
+
+    /// Pack already-retrieved candidates into a context of at most `budget`
+    /// tokens.
+    pub fn compile_candidates(
+        candidates: &SectionCandidates,
+        budget: usize,
+        template: ContextTemplate,
+    ) -> CompiledContext {
         let spec = ContextSpec {
             budget,
             template,
             ..ContextSpec::default()
         };
         let compiler = ContextCompiler::new(&spec);
-        Ok(compiler.compile(&spec, &bm25, &[], &[], &candidates))
+        compiler.compile(&spec, &candidates.ranked, &[], &[], &candidates.texts)
     }
 
+    /// Three-lane retrieval + context compiler under an exact token budget.
+    pub fn search_and_compile(
+        &self,
+        namespace: &str,
+        query: &str,
+        budget: usize,
+        lanes: QueryLanes,
+        template: ContextTemplate,
+    ) -> Result<CompiledContext, String> {
+        let candidates = self.search_candidates(namespace, query, lanes);
+        Ok(Self::compile_candidates(&candidates, budget, template))
+    }
+
+    /// Render a compiled context in the requested wire format.
+    ///
+    /// Every format emits `compiled.body`. The compiler packed that body to the
+    /// budget using the matching [`ContextTemplate`], so re-rendering the facts
+    /// here with different framing would emit something the budget never
+    /// measured — and would silently drop the content of any `CompiledContext`
+    /// carrying a body with no facts beside it.
     pub fn format_compiled(compiled: &CompiledContext, format: ContextOutputFormat) -> String {
         match format {
             ContextOutputFormat::Json => serde_json::json!({
@@ -121,30 +166,11 @@ impl MemoryBackend {
                 "facts": compiled.facts,
             })
             .to_string(),
-            ContextOutputFormat::Markdown => compiled.body.clone(),
-            ContextOutputFormat::Text => compiled
-                .facts
-                .iter()
-                .map(|f| f.text.clone())
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-            ContextOutputFormat::Toon => {
-                let mut lines = vec![format!(
-                    "<context tokens=\"{}\" budget=\"{}\" truncated=\"{}\">",
-                    compiled.exact_tokens, compiled.budget, compiled.truncated
-                )];
-                for fact in &compiled.facts {
-                    lines.push(format!(
-                        "  <fact ep=\"{:?}\" trust=\"{:.2}\" tokens=\"{}\">{}</fact>",
-                        fact.episode_id,
-                        fact.trust_hint,
-                        fact.tokens,
-                        fact.text.replace('\n', " ")
-                    ));
-                }
-                lines.push("</context>".to_string());
-                lines.join("\n")
-            }
+            ContextOutputFormat::Markdown | ContextOutputFormat::Text => compiled.body.clone(),
+            ContextOutputFormat::Toon => format!(
+                "<context tokens=\"{}\" budget=\"{}\" truncated=\"{}\">\n{}\n</context>",
+                compiled.exact_tokens, compiled.budget, compiled.truncated, compiled.body
+            ),
         }
     }
 

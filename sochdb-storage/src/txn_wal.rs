@@ -55,7 +55,8 @@ use sochdb_core::{Result, SochDBError, WalRecordType};
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -207,6 +208,73 @@ const WAL_AAD_LEN: usize = 1 + 16 + 4 + 8;
 /// Upper bound on a single WAL frame's on-disk length, to reject a corrupted
 /// length prefix before it triggers a multi-GB `read_exact` allocation/DoS.
 const MAX_WAL_FRAME_LEN: u32 = 512 * 1024 * 1024;
+
+/// Size of the zero-filled runway kept ahead of the write cursor.
+///
+/// The WAL file is pre-sized so that an ordinary commit writes into blocks that
+/// already exist and are already in the *written* extent state. That is what
+/// lets `sync()` use `fdatasync` instead of `fsync`: the file's metadata does
+/// not change, so no filesystem journal transaction has to be committed to make
+/// the record findable. See `examples/fsync_roofline.rs` for the measurement --
+/// on ext4 this is the difference between 5.1 ms and 1.0 ms per durable commit.
+///
+/// 1 MiB, not more. Laying a runway costs one `fsync`, amortized over roughly
+/// `WAL_RUNWAY_BYTES / record_size` commits -- at a 300-byte average that is
+/// ~3,500 commits, so it adds about 1.4 us to each. Making the runway larger
+/// buys nothing measurable and costs real disk: the runway is a floor under the
+/// file's size, and a store with many small WALs pays it on every one.
+const WAL_RUNWAY_BYTES: u64 = 1024 * 1024;
+
+/// Extend the runway once fewer than this many bytes remain ahead of the write
+/// cursor. Overshooting is a slow path, not a bug: a commit that runs past the
+/// runway grows the file and pays the journal commit it would have paid anyway.
+const WAL_RUNWAY_LOW_WATER: u64 = 256 * 1024;
+
+/// A zero length prefix is the end-of-log sentinel.
+///
+/// Zero is not a legal frame length -- a real record always carries at least a
+/// header and a checksum -- so a zero prefix is unambiguous, and it is exactly
+/// what the pre-sized runway is full of. Reported as `UnexpectedEof` so it flows
+/// into the *clean end of WAL* arm of the error taxonomy that every replay path
+/// already implements, rather than the fail-loud `Corruption`/`Encryption` arm.
+/// Without this, opening a pre-sized WAL would log a spurious corruption warning
+/// on every plaintext recovery and would abort recovery outright when encrypted.
+#[inline]
+fn end_of_log() -> SochDBError {
+    SochDBError::Io(std::io::Error::new(
+        std::io::ErrorKind::UnexpectedEof,
+        "end of WAL (zero length prefix)",
+    ))
+}
+
+/// Wraps a replay reader to track how many bytes have been consumed, so that/// opening a WAL can position the write cursor immediately after the last record
+/// that parsed cleanly -- rather than at the end of the file, which in a pre-sized
+/// WAL is megabytes of runway away.
+struct CountingReader<R> {
+    inner: R,
+    bytes: u64,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes += n as u64;
+        Ok(n)
+    }
+}
+
+/// Write real zeroes over `[from, to)` without disturbing the file cursor the
+/// BufWriter is about to append at.
+fn write_zeros(file: &File, from: u64, to: u64) -> std::io::Result<()> {
+    let zeros = vec![0u8; 256 * 1024];
+    let mut pos = from;
+    while pos < to {
+        let n = ((to - pos) as usize).min(zeros.len());
+        file.write_at(&zeros[..n], pos)?;
+        pos += n as u64;
+    }
+    Ok(())
+}
 
 // =============================================================================
 // Transaction-Local WAL Buffer - Zero Lock Overhead During Transaction
@@ -548,6 +616,9 @@ impl TxnWalEntry {
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<Self> {
         // Length (allows torn write detection - if length claims more data than exists)
         let content_len = reader.read_u32::<LittleEndian>()?;
+        if content_len == 0 {
+            return Err(end_of_log());
+        }
         if content_len < (RECORD_HEADER_SIZE - 4 + CHECKSUM_SIZE) as u32 {
             return Err(SochDBError::Corruption("WAL entry too short".into()));
         }
@@ -623,6 +694,9 @@ pub struct TxnWal {
     /// Path to WAL file
     path: PathBuf,
     /// Buffered writer
+    /// The barrier is a lock-free `barrier_lock`/writer split so appends can
+    /// continue while the device flush is in flight; see `sync`.
+    barrier_lock: Mutex<()>,
     writer: Mutex<BufWriter<File>>,
     /// Next transaction ID
     next_txn_id: AtomicU64,
@@ -650,6 +724,10 @@ pub struct TxnWal {
     /// this counter is only mutated under that lock; it is read locklessly by the
     /// (single-threaded) replay paths.
     records_in_file: AtomicU64,
+    /// File offset one byte past the pre-sized, zero-filled runway. Writes below
+    /// this offset land in blocks that already exist in the written extent state,
+    /// so they do not dirty the inode and `sync()` can use `fdatasync`.
+    runway_end: AtomicU64,
 }
 
 impl TxnWal {
@@ -687,10 +765,19 @@ impl TxnWal {
             std::fs::create_dir_all(parent)?;
         }
 
+        // NOT opened with O_APPEND. O_APPEND forces every write to the current
+        // end of file, which would place records *after* the pre-sized runway and
+        // grow the file on every commit -- exactly the inode-dirtying behaviour
+        // the runway exists to avoid. Writes are positioned by the file cursor
+        // instead, which is safe because every write path holds the `writer` lock.
         let file = OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
             .read(true)
+            // Explicit: opening an existing WAL must never discard it. With
+            // O_APPEND gone, `create + write` is one keystroke away from
+            // O_TRUNC, so the intent is stated rather than left to the default.
+            .truncate(false)
             .open(&path)?;
 
         // Use 256KB buffer for better batch performance (default is 8KB)
@@ -699,6 +786,7 @@ impl TxnWal {
 
         let wal = Self {
             path,
+            barrier_lock: Mutex::new(()),
             writer: Mutex::new(BufWriter::with_capacity(256 * 1024, file)),
             next_txn_id: AtomicU64::new(1),
             sequence: AtomicU64::new(0),
@@ -708,12 +796,70 @@ impl TxnWal {
             db_uuid,
             dek_epoch,
             records_in_file: AtomicU64::new(0),
+            runway_end: AtomicU64::new(0),
         };
 
-        // Recover state from existing WAL
-        wal.recover_state()?;
+        // Recover state from existing WAL, then position the write cursor just
+        // past the last valid record, zero any unreachable tail behind it, and
+        // lay a runway ahead of it.
+        let end_offset = wal.recover_state()?;
+        {
+            let mut writer = wal.writer.lock();
+            writer.get_mut().seek(SeekFrom::Start(end_offset))?;
+            let known_zero = wal.repair_tail(writer.get_ref(), end_offset)?;
+            wal.runway_end.store(known_zero, Ordering::Relaxed);
+            wal.extend_runway(writer.get_ref(), end_offset);
+        }
 
         Ok(wal)
+    }
+
+    /// Zero everything between the end of the log and the end of the file.
+    ///
+    /// This is correctness, not performance. Replay stops at the first record
+    /// that does not parse, so anything past that point is unreachable data that
+    /// the next write is entitled to overwrite. If the replacement record is
+    /// shorter than what it replaces, the tail of the old record would still be
+    /// lying there -- and replay, having just parsed a valid record, would walk
+    /// straight into it and hand back writes from a previous generation. Zeroing
+    /// the tail at open is what closes that.
+    ///
+    /// Only rewrites blocks the file already owns, so it allocates nothing and
+    /// cannot fail for want of space.
+    fn repair_tail(&self, file: &File, log_end: u64) -> Result<u64> {
+        let file_len = file.metadata()?.len();
+        if file_len > log_end {
+            write_zeros(file, log_end, file_len)?;
+        }
+        Ok(file_len.max(log_end))
+    }
+
+    /// Extend the pre-written runway ahead of `offset`. Best effort.
+    ///
+    /// Zeroes are written for real rather than reserved with `fallocate`.
+    /// `fallocate` leaves *unwritten* extents, and the first write to one has to
+    /// clear that flag -- an extent tree update, which is metadata, which is a
+    /// journal commit. Measured, that is the difference between a p99 of 5.7 ms
+    /// and one of 2.0 ms: the median improves but the tail does not, because the
+    /// journal is still being committed on first touch of each new extent.
+    ///
+    /// Failure is not propagated. The runway only makes commits cheaper; a disk
+    /// too full to grant it must leave the WAL growing on demand exactly as it
+    /// did before, never turn into a failure to open or to commit. On failure
+    /// the file is trimmed back to the end of the log so the bytes past it stay
+    /// zero-or-EOF, which is what replay relies on.
+    fn extend_runway(&self, file: &File, offset: u64) {
+        let target = offset + WAL_RUNWAY_BYTES;
+        let from = self.runway_end.load(Ordering::Relaxed).max(offset);
+        if target <= from {
+            return;
+        }
+        if write_zeros(file, from, target).is_ok() && file.sync_all().is_ok() {
+            self.runway_end.store(target, Ordering::Relaxed);
+        } else {
+            let _ = file.set_len(offset);
+            self.runway_end.store(offset, Ordering::Relaxed);
+        }
     }
 
     /// Build the per-record AAD for a given file-relative ordinal. The reader
@@ -758,6 +904,9 @@ impl TxnWal {
         }
         // Encrypted frame: [outer_len][envelope]
         let outer_len = reader.read_u32::<LittleEndian>()?; // EOF here = clean end
+        if outer_len == 0 {
+            return Err(end_of_log()); // pre-sized runway: clean end, not a tamper
+        }
         if outer_len > MAX_WAL_FRAME_LEN {
             return Err(SochDBError::Corruption(format!(
                 "encrypted WAL frame length {outer_len} exceeds maximum {MAX_WAL_FRAME_LEN}"
@@ -782,10 +931,26 @@ impl TxnWal {
     /// WAL concurrently, we incorporate the PID into the starting txn_id.
     /// Format: upper 32 bits = PID, lower 32 bits = counter.
     /// This guarantees uniqueness across processes without coordination.
-    fn recover_state(&self) -> Result<()> {
+    /// Recover state (next txn ID, sequence) from existing WAL, returning the
+    /// byte offset just past the last record that parsed cleanly.
+    ///
+    /// That offset -- not the file length -- is where the next write belongs. In
+    /// a pre-sized WAL the file length is megabytes of zero runway beyond the
+    /// real end of the log, so seeking to the end of the file would strand every
+    /// subsequent record behind a hole that replay would stop at.
+    ///
+    /// To avoid txn_id collisions when multiple processes open the same
+    /// WAL concurrently, we incorporate the PID into the starting txn_id.
+    /// Format: upper 32 bits = PID, lower 32 bits = counter.
+    /// This guarantees uniqueness across processes without coordination.
+    fn recover_state(&self) -> Result<u64> {
         let file = File::open(&self.path)?;
-        let mut reader = BufReader::new(file);
+        let mut reader = CountingReader {
+            inner: BufReader::new(file),
+            bytes: 0,
+        };
         let mut count: u64 = 0;
+        let mut end_offset: u64 = 0;
 
         // Track the max counter (lower 32 bits) for OUR PID only.
         // Each process owns its own txn_id space: upper 32 bits = PID.
@@ -800,6 +965,9 @@ impl TxnWal {
             match self.read_record(&mut reader, &mut ordinal) {
                 Ok(entry) => {
                     count += 1;
+                    // Only advance past records that parsed AND verified, so a
+                    // torn or corrupt tail is overwritten rather than preserved.
+                    end_offset = reader.bytes;
                     // Only track counters from entries that belong to our PID
                     let entry_pid = entry.txn_id >> 32;
                     if entry_pid == our_pid {
@@ -838,7 +1006,7 @@ impl TxnWal {
         // write must continue the AAD ordinal sequence from there.
         self.records_in_file.store(count, Ordering::SeqCst);
 
-        Ok(())
+        Ok(end_offset)
     }
 
     /// Get cached timestamp, updating if stale (>1ms old)
@@ -1041,15 +1209,62 @@ impl TxnWal {
 
     /// Force sync to disk.
     ///
-    /// Must flush the BufWriter BEFORE fsync: `get_ref()` reaches the raw File
-    /// and bypasses the 256 KB buffer, so without an explicit `flush()` the
-    /// just-appended commit/checkpoint record may still sit in userspace and
-    /// `sync_all()` would fsync stale bytes — silently breaking the durability
+    /// Must flush the BufWriter BEFORE the barrier: `get_ref()` reaches the raw
+    /// File and bypasses the 256 KB buffer, so without an explicit `flush()` the
+    /// just-appended commit/checkpoint record may still sit in userspace and the
+    /// barrier would persist stale bytes — silently breaking the durability
     /// guarantee `append_sync`/`commit`/`checkpoint` advertise.
+    ///
+    /// Uses `fdatasync` (`sync_data`), not `fsync`. The distinction is not a
+    /// micro-optimization: `fsync` must also persist the inode, and on a file
+    /// that just grew, the new `i_size` is metadata the data cannot be found
+    /// without — so ext4 commits a journal transaction, a second ordered
+    /// write-and-flush, costing ~4 ms that the record itself never needed.
+    /// Because the runway keeps the file pre-sized, an ordinary commit changes
+    /// no metadata, and `fdatasync` is both correct and ~5x cheaper.
+    ///
+    /// Note that neither half works alone: `fdatasync` on a growing file still
+    /// commits the journal, and pre-sizing while still calling `fsync` still
+    /// persists the inode. Both are required. See `examples/fsync_roofline.rs`.
     pub fn sync(&self) -> Result<()> {
-        let mut writer = self.writer.lock();
-        writer.flush()?;
-        writer.get_ref().sync_all()?;
+        // Serialise barriers against each other and against `truncate`. Two
+        // concurrent flushes would not make the device any faster, and a
+        // truncation racing a flush could persist and then acknowledge records
+        // the truncation had already removed.
+        let _barrier = self.barrier_lock.lock();
+
+        // Get the data into the page cache and a private fd out, then release
+        // the writer. The flush below is the expensive part -- ~0.96 ms on this
+        // device, and irreducibly so (see examples/fsync_roofline.rs) -- and
+        // holding the writer across it stalls every appender in the engine for
+        // that entire millisecond. Appends and the barrier then run strictly
+        // one after the other instead of overlapping, which caps the achieved
+        // commit batch well below the number of threads actually committing.
+        //
+        // Dropping the writer first lets the next batch accumulate in the
+        // BufWriter while this batch is being persisted. Records that race in
+        // after the flush starts may or may not be covered by it, which is
+        // exactly `fdatasync`'s contract and is harmless in both directions:
+        // persisting more than was promised is never a durability violation,
+        // and those records are not acknowledged until their own barrier
+        // returns. What matters is the guarantee that does hold -- everything
+        // written before this call is durable when it returns -- and that is
+        // what the waiters for this batch are told.
+        let file = {
+            let mut writer = self.writer.lock();
+            writer.flush()?;
+            // After flush the file cursor is exactly the write offset, so the
+            // runway needs no separate bookkeeping on the write paths.
+            let offset = writer.get_mut().stream_position()?;
+            if offset + WAL_RUNWAY_LOW_WATER > self.runway_end.load(Ordering::Relaxed) {
+                self.extend_runway(writer.get_ref(), offset);
+            }
+            // A dup of the same inode. `fdatasync` is per-inode, not per-fd, so
+            // this persists the writer's data without borrowing the writer.
+            writer.get_ref().try_clone()?
+        };
+
+        file.sync_data()?;
         self.bytes_since_sync.store(0, Ordering::Relaxed);
         Ok(())
     }
@@ -1392,21 +1607,32 @@ impl TxnWal {
 
     /// Truncate WAL (called after successful checkpoint)
     ///
-    /// Flushes any buffered writes, truncates the file to 0 bytes,
-    /// and resets sequence counters. The file is opened in `O_APPEND`
-    /// mode so subsequent writes will correctly start at offset 0.
+    /// Flushes any buffered writes, truncates the file to 0 bytes, and
+    /// resets sequence counters.
+    ///
+    /// The rewind is explicit: the file is no longer opened `O_APPEND`, so
+    /// truncating alone would leave the cursor at its old offset and the next
+    /// record would be written into a hole that replay stops at.
     ///
     /// **WARNING**: After truncation, all data durability is lost.
     /// The in-memory memtable still holds data for the current session,
     /// but a crash after truncation means the data cannot be recovered
     /// from the WAL.
     pub fn truncate(&self) -> Result<()> {
+        // Held across the whole truncation so it cannot interleave with a
+        // barrier that is persisting data this call is about to discard.
+        let _barrier = self.barrier_lock.lock();
         let mut writer = self.writer.lock();
         // Flush BufWriter so no stale data is written after truncation
         writer.flush()?;
-        let file = writer.get_ref();
-        file.set_len(0)?;
-        file.sync_all()?;
+        writer.get_ref().set_len(0)?;
+        writer.get_mut().seek(SeekFrom::Start(0))?;
+        writer.get_ref().sync_all()?;
+        // Deliberately does NOT re-lay the runway. Truncation is how a
+        // checkpoint reclaims space, and pre-sizing here would hand it straight
+        // back -- leaving a floor under the file that a checkpoint could never
+        // get below. The next sync lays it, on a file that is being written to.
+        self.runway_end.store(0, Ordering::Relaxed);
         self.sequence.store(0, Ordering::SeqCst);
         self.bytes_since_sync.store(0, Ordering::Relaxed);
         // The file restarts at offset 0, so per-record AAD ordinals restart too;
@@ -1986,15 +2212,21 @@ mod tests {
             wal.commit_transaction(txn).unwrap();
         }
 
-        // Append corrupted bytes to simulate torn write
+        // Append corrupted bytes to simulate torn write.
+        //
+        // Written at the end of the LOG, not the end of the FILE: the WAL is
+        // pre-sized with a zero-filled runway, so the file extends well past the
+        // last record and an O_APPEND write would land in the runway where
+        // replay has already stopped.
         {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
+            use std::os::unix::fs::FileExt;
+            let log_end = TxnWal::new(&wal_path).unwrap().recover_state().unwrap();
+            let file = std::fs::OpenOptions::new()
+                .write(true)
                 .open(&wal_path)
                 .unwrap();
             // Write partial record (torn write)
-            file.write_all(&[0x10, 0x00, 0x00, 0x00, 0xFF, 0xFF])
+            file.write_at(&[0x10, 0x00, 0x00, 0x00, 0xFF, 0xFF], log_end)
                 .unwrap();
         }
 
@@ -2006,8 +2238,157 @@ mod tests {
             // Should recover the valid transaction
             assert_eq!(writes.len(), 1);
             assert_eq!(stats.committed_txns, 1);
-            assert_eq!(stats.torn_records, 1);
+
+            // The torn tail is now REPAIRED at open rather than left in place:
+            // laying the runway zeroes everything past the last valid record, so
+            // by the time crash_recovery runs there is nothing torn left to
+            // count. That is why this asserts 0 where it used to assert 1.
+            assert_eq!(stats.torn_records, 0);
         }
+
+        // ...and the torn bytes really are gone, not merely skipped.
+        let log_end = TxnWal::new(&wal_path).unwrap().recover_state().unwrap();
+        let raw = std::fs::read(&wal_path).unwrap();
+        assert!(
+            raw[log_end as usize..].iter().all(|&b| b == 0),
+            "torn tail must be zeroed so it can never be re-read as data"
+        );
+    }
+
+    /// Records stranded beyond a torn write must not be resurrected when writing
+    /// resumes.
+    ///
+    /// Replay stops at the torn record, so everything after it is unreachable
+    /// data that the next write is entitled to overwrite. If the next record is
+    /// shorter than the region it replaces, the leftover bytes of the old
+    /// records would still be sitting there -- and replay, having just parsed a
+    /// valid record, would walk straight into them and hand back writes that
+    /// were never committed in this generation. Zeroing the tail at open is what
+    /// closes that.
+    /// Appending while a barrier is in flight must not corrupt the log.
+    ///
+    /// `sync` releases the writer lock before `fdatasync` so the next batch can
+    /// accumulate while this one is being persisted -- without that, no thread
+    /// in the engine can append for the ~1 ms the device flush takes. The
+    /// hazard the split creates is that appends now genuinely overlap a
+    /// barrier, including the runway extension inside it, so this drives both
+    /// concurrently and then replays to prove every acknowledged record is
+    /// intact and in order.
+    #[test]
+    fn appends_that_race_a_barrier_still_replay_intact() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("race.wal");
+        let wal = Arc::new(TxnWal::new(&wal_path).unwrap());
+
+        const WRITERS: u64 = 4;
+        const PER_WRITER: u64 = 200;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let syncer = {
+            let wal = Arc::clone(&wal);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(AtomicOrdering::Relaxed) {
+                    wal.sync().expect("barrier must not fail");
+                }
+            })
+        };
+
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let wal = Arc::clone(&wal);
+                std::thread::spawn(move || {
+                    for i in 0..PER_WRITER {
+                        let entry = TxnWalEntry::txn_commit(w * PER_WRITER + i);
+                        wal.append_no_flush(&entry).expect("append must not fail");
+                    }
+                })
+            })
+            .collect();
+
+        for h in writers {
+            h.join().unwrap();
+        }
+        stop.store(true, AtomicOrdering::Relaxed);
+        syncer.join().unwrap();
+
+        wal.flush().unwrap();
+        wal.sync().unwrap();
+        drop(wal);
+
+        let replayed = TxnWal::new(&wal_path).unwrap();
+        let mut ids: Vec<u64> = Vec::new();
+        replayed
+            .replay(|entry| {
+                if matches!(entry.record_type, WalRecordType::TxnCommit) {
+                    ids.push(entry.txn_id);
+                }
+                Ok(())
+            })
+            .unwrap();
+        ids.sort_unstable();
+
+        let expected: Vec<u64> = (0..WRITERS * PER_WRITER).collect();
+        assert_eq!(
+            ids, expected,
+            "every record appended alongside a barrier must survive exactly once"
+        );
+    }
+
+    #[test]
+    fn stale_records_past_a_torn_write_are_not_resurrected() {
+        use std::os::unix::fs::FileExt;
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("stale.wal");
+
+        // Three committed records, so there is plenty of well-formed data
+        // sitting past wherever we tear the log.
+        {
+            let wal = TxnWal::new(&wal_path).unwrap();
+            for k in [b"aaaa", b"bbbb", b"cccc"] {
+                let t = wal.begin_transaction().unwrap();
+                wal.write(t, k.to_vec(), vec![b'z'; 64]).unwrap();
+                wal.commit_transaction(t).unwrap();
+            }
+            wal.sync().unwrap();
+        }
+
+        // Tear the log early, leaving records 2 and 3 intact on disk behind it.
+        let tear_at = {
+            let wal = TxnWal::new(&wal_path).unwrap();
+            let end = wal.recover_state().unwrap();
+            end / 3
+        };
+        {
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&wal_path)
+                .unwrap();
+            f.write_at(&[0xFF; 4], tear_at).unwrap();
+        }
+
+        // Reopen (repairs the tail) and write one short record.
+        {
+            let wal = TxnWal::new(&wal_path).unwrap();
+            let t = wal.begin_transaction().unwrap();
+            wal.write(t, b"new".to_vec(), b"1".to_vec()).unwrap();
+            wal.commit_transaction(t).unwrap();
+            wal.sync().unwrap();
+        }
+
+        let (writes, _) = TxnWal::new(&wal_path).unwrap().crash_recovery().unwrap();
+        let keys: Vec<Vec<u8>> = writes.iter().map(|(k, _)| k.clone()).collect();
+        assert!(
+            keys.contains(&b"new".to_vec()),
+            "post-repair write was lost: {keys:?}"
+        );
+        assert!(
+            !keys.contains(&b"cccc".to_vec()),
+            "record stranded past the torn write was resurrected: {keys:?}"
+        );
     }
 
     #[test]
@@ -2122,9 +2503,15 @@ mod encryption_wal_tests {
             wal.commit_transaction(t).unwrap();
             wal.sync().unwrap();
         }
-        // Flip a byte well inside the file (not the final torn-tail region).
+        // Flip a byte well inside the RECORD region (not the final torn-tail
+        // region, and not the pre-sized zero runway that follows the log --
+        // len()/2 would land in the runway, which replay never reaches).
+        let log_end = TxnWal::new_with_encryption(&path, enc(5), UUID, 0)
+            .unwrap()
+            .recover_state()
+            .unwrap();
         let mut raw = std::fs::read(&path).unwrap();
-        let mid = raw.len() / 2;
+        let mid = (log_end / 2) as usize;
         raw[mid] ^= 0xFF;
         std::fs::write(&path, &raw).unwrap();
 
@@ -2164,10 +2551,19 @@ mod encryption_wal_tests {
             wal.append(&entry).unwrap();
             wal.sync().unwrap();
         }
+        // Compare the LOG region only. The WAL is pre-sized, so the file is the
+        // frame followed by a zero-filled runway; assert that runway really is
+        // all zeroes, since those zeroes are the end-of-log sentinel replay
+        // depends on.
+        let dis_bytes = std::fs::read(&p_dis).unwrap();
         assert_eq!(
-            std::fs::read(&p_dis).unwrap(),
-            golden,
+            &dis_bytes[..golden.len()],
+            &golden[..],
             "disabled-engine append diverged from legacy plaintext frame"
+        );
+        assert!(
+            dis_bytes[golden.len()..].iter().all(|&b| b == 0),
+            "runway past the log must be zero-filled (end-of-log sentinel)"
         );
 
         // Enabled engine: file bytes differ and are NOT plaintext-parseable.
@@ -2178,12 +2574,171 @@ mod encryption_wal_tests {
             wal.sync().unwrap();
         }
         let enc_bytes = std::fs::read(&p_enc).unwrap();
-        assert_ne!(enc_bytes, golden);
+        assert_ne!(&enc_bytes[..golden.len()], &golden[..]);
         let mut cur = std::io::Cursor::new(&enc_bytes);
         assert!(
-            TxnWalEntry::from_reader(&mut cur).is_err()
-                || cur.position() as usize != enc_bytes.len(),
+            TxnWalEntry::from_reader(&mut cur).is_err() || cur.position() as usize != golden.len(),
             "ciphertext frame must not parse cleanly as a plaintext record"
+        );
+    }
+
+    /// A zero length prefix terminates replay cleanly rather than being reported
+    /// as corruption.
+    ///
+    /// This is what makes a pre-sized WAL readable at all: the runway ahead of
+    /// the log is zeroes, and replay walks straight into it on every recovery.
+    /// Before the sentinel existed, a zero prefix hit the `WAL entry too short`
+    /// corruption arm -- a spurious warning on every plaintext recovery, and a
+    /// hard recovery failure on an encrypted WAL, which fails loud on any
+    /// non-EOF error.
+    #[test]
+    fn zero_length_prefix_is_a_clean_end_of_log() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sentinel.wal");
+
+        let wal = TxnWal::new(&path).unwrap();
+        let txn = wal.begin_transaction().unwrap();
+        wal.write(txn, b"k".to_vec(), b"v".to_vec()).unwrap();
+        wal.commit_transaction(txn).unwrap();
+        wal.sync().unwrap();
+        drop(wal);
+
+        // The bytes after the log are runway zeroes, so replay must stop there
+        // and report exactly the records that were written -- no error, no
+        // truncation of real data.
+        let reopened = TxnWal::new(&path).unwrap();
+        let (writes, stats) = reopened.crash_recovery().unwrap();
+        assert_eq!(writes.len(), 1, "committed write lost at the sentinel");
+        assert_eq!(stats.committed_txns, 1);
+        assert_eq!(
+            stats.torn_records, 0,
+            "runway zeroes must not be counted as a torn record"
+        );
+    }
+
+    /// The same sentinel must not turn an encrypted WAL's recovery into a silent
+    /// success where it used to fail loud, and must not lose committed records.
+    #[test]
+    fn encrypted_wal_replays_across_the_runway() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("enc_sentinel.wal");
+        {
+            let wal = TxnWal::new_with_encryption(&path, enc(7), UUID, 0).unwrap();
+            for i in 0..8u8 {
+                let t = wal.begin_transaction().unwrap();
+                wal.write(t, vec![i], vec![i, i]).unwrap();
+                wal.commit_transaction(t).unwrap();
+            }
+            wal.sync().unwrap();
+        }
+        let wal = TxnWal::new_with_encryption(&path, enc(7), UUID, 0).unwrap();
+        let (writes, _) = wal.crash_recovery().unwrap();
+        assert_eq!(writes.len(), 8, "encrypted records lost at the runway");
+    }
+
+    /// Reopening a pre-sized WAL must resume writing at the end of the LOG, not
+    /// the end of the FILE.
+    ///
+    /// The file is megabytes of runway longer than the log. Appending at the
+    /// file end would strand every new record behind a stretch of zeroes that
+    /// replay stops at, silently losing all post-restart writes -- which is
+    /// precisely why the file is no longer opened `O_APPEND`.
+    #[test]
+    fn reopen_resumes_at_log_end_not_file_end() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("resume.wal");
+        {
+            let wal = TxnWal::new(&path).unwrap();
+            let t = wal.begin_transaction().unwrap();
+            wal.write(t, b"before".to_vec(), b"1".to_vec()).unwrap();
+            wal.commit_transaction(t).unwrap();
+            wal.sync().unwrap();
+        }
+        {
+            let wal = TxnWal::new(&path).unwrap();
+            let t = wal.begin_transaction().unwrap();
+            wal.write(t, b"after".to_vec(), b"2".to_vec()).unwrap();
+            wal.commit_transaction(t).unwrap();
+            wal.sync().unwrap();
+        }
+        let wal = TxnWal::new(&path).unwrap();
+        let (writes, _) = wal.crash_recovery().unwrap();
+        let keys: Vec<&[u8]> = writes.iter().map(|(k, _)| k.as_slice()).collect();
+        assert!(
+            keys.contains(&b"before".as_slice()) && keys.contains(&b"after".as_slice()),
+            "records written after reopen were stranded past the runway: {keys:?}"
+        );
+    }
+
+    /// `truncate()` must rewind the cursor and must actually reclaim the space.
+    ///
+    /// Without the rewind the cursor would still sit at its pre-truncate offset
+    /// (the file is no longer `O_APPEND`) and the next record would land past a
+    /// stretch of nothing. And because truncation is how a checkpoint reclaims
+    /// space, it must not immediately re-pre-size the file, or a checkpoint
+    /// could never shrink the WAL below one runway.
+    #[test]
+    fn truncate_rewinds_and_reclaims_space() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("trunc.wal");
+        let wal = TxnWal::new(&path).unwrap();
+        let t = wal.begin_transaction().unwrap();
+        wal.write(t, b"old".to_vec(), b"x".to_vec()).unwrap();
+        wal.commit_transaction(t).unwrap();
+        wal.sync().unwrap();
+        let grown = std::fs::metadata(&path).unwrap().len();
+
+        wal.truncate().unwrap();
+        assert!(
+            std::fs::metadata(&path).unwrap().len() < grown,
+            "checkpoint truncation must reclaim the runway, not re-reserve it"
+        );
+
+        let t = wal.begin_transaction().unwrap();
+        wal.write(t, b"new".to_vec(), b"y".to_vec()).unwrap();
+        wal.commit_transaction(t).unwrap();
+        wal.sync().unwrap();
+
+        let (writes, _) = TxnWal::new(&path).unwrap().crash_recovery().unwrap();
+        let keys: Vec<&[u8]> = writes.iter().map(|(k, _)| k.as_slice()).collect();
+        assert_eq!(
+            keys,
+            vec![b"new".as_slice()],
+            "post-truncate WAL must contain exactly the records written after it"
+        );
+    }
+
+    /// A disk too full to grant a runway must not break the WAL.
+    ///
+    /// The runway only makes commits cheaper. If it cannot be laid, the WAL has
+    /// to keep working exactly as it did before -- growing on demand -- rather
+    /// than turning a full disk into a failure to open or to commit. Simulated
+    /// here by pointing the runway at a file whose extension fails: the store
+    /// must still open, write, and replay.
+    #[test]
+    fn a_runway_that_cannot_be_laid_does_not_break_the_wal() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nospace.wal");
+        let wal = TxnWal::new(&path).unwrap();
+
+        // Force the runway to look unavailable, then prove commits still work
+        // and still replay. runway_end is left where the cursor is, so every
+        // sync takes the grow-the-file fallback path.
+        wal.runway_end.store(u64::MAX, Ordering::Relaxed);
+
+        for i in 0..4u8 {
+            let t = wal.begin_transaction().unwrap();
+            wal.write(t, vec![i], vec![i; 8]).unwrap();
+            wal.commit_transaction(t).unwrap();
+        }
+        wal.sync().unwrap();
+        drop(wal);
+
+        let (writes, _) = TxnWal::new(&path).unwrap().crash_recovery().unwrap();
+        assert_eq!(
+            writes.len(),
+            4,
+            "commits must survive when no runway is available"
         );
     }
 

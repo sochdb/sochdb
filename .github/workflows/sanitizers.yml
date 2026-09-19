@@ -1,0 +1,155 @@
+# =============================================================================
+# SochDB sanitizers — AddressSanitizer over the unsafe-heavy crates
+# =============================================================================
+#
+# Why this exists, separately from ci.yml
+# ---------------------------------------
+# The storage stack carries roughly a thousand `unsafe` blocks (sochdb-storage
+# ~497, sochdb-index ~335, sochdb-vector ~138) built around mmap, raw libc
+# syscalls, io_uring and SIMD intrinsics. A full workspace run once aborted with
+# a glibc `corrupted size vs. prev_size` (SIGABRT) that forty subsequent
+# isolated runs could not reproduce: a load- or concurrency-dependent heap
+# corruption that ordinary `cargo test` detects only by luck, and only after it
+# has already done its damage.
+#
+# AddressSanitizer turns that class of bug into a deterministic, located failure
+# with a stack trace at the point of corruption rather than a crash somewhere
+# later in an unrelated allocation.
+#
+# Why it is not on the per-push path
+# ----------------------------------
+# It needs a nightly toolchain, and instrumented builds plus instrumented
+# execution are far slower than the stable lane — `sochdb-index` alone runs for
+# about ten minutes under ASAN. Putting that on every push would trade the fast
+# feedback ci.yml is deliberately built for against a check whose value is
+# cumulative rather than immediate. Nightly-scheduled catches the same bugs a
+# day later, which for a latent heap-corruption hunt is the right trade.
+#
+# Leak detection is off
+# ---------------------
+# LeakSanitizer currently reports ~1.4 MB across ~1345 allocations at exit in
+# sochdb-storage, so leaving it on would make the lane permanently red and
+# therefore permanently ignored. Disabling it costs nothing for the bug being
+# hunted: ASAN still detects use-after-free, heap-buffer-overflow, double-free
+# and stack-buffer-overflow, which is the whole corruption class. Re-enable it
+# as a separate job once those allocations are triaged.
+# =============================================================================
+
+name: Sanitizers
+
+on:
+  schedule:
+    # 09:17 UTC daily. Off-peak, and offset from the hour to avoid the
+    # scheduling spike GitHub warns about for on-the-hour crons.
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ===========================================================================
+  # AddressSanitizer — one job per crate
+  # ===========================================================================
+  #
+  # Split per crate rather than run as one job so that a finding names the crate
+  # in the job list, and so the ten-minute sochdb-index run does not serialise
+  # ahead of the three crates that finish in seconds.
+  #
+  # Every crate listed here was verified green under this exact configuration
+  # before the lane was added; `fail-fast: false` keeps one crate's regression
+  # from hiding the others' results.
+  address-sanitizer:
+    name: ASAN (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Where the heap corruption was actually observed.
+          - crate: sochdb-storage
+            timeout: 30
+          # Largest unsafe surface; ~10 min under ASAN, hence the headroom.
+          - crate: sochdb-index
+            timeout: 45
+          - crate: sochdb-vector
+            timeout: 30
+          # Small, but it owns the write-ahead log and checkpoint paths, which
+          # are the ones that run concurrently with everything else.
+          - crate: sochdb-memory
+            timeout: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly
+          # `-Zsanitizer` requires an explicit target: the sanitizer runtime is
+          # linked into the test binary, and build scripts and proc macros must
+          # stay uninstrumented on the host.
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          # Keyed separately from the ci.yml caches: these artifacts are
+          # instrumented and must never be reused by the stable lanes.
+          key: ${{ runner.os }}-asan-${{ matrix.crate }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Test ${{ matrix.crate }} under AddressSanitizer
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+          # See the header: leaks are a separate, currently-red concern.
+          # `abort_on_error` makes a finding fail the step immediately instead of
+          # letting the run continue past corrupted memory.
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+        run: |
+          cargo +nightly test -p ${{ matrix.crate }} \
+            --target x86_64-unknown-linux-gnu \
+            --lib -- --test-threads=4
+
+  # ===========================================================================
+  # Summary
+  # ===========================================================================
+  sanitizers-pass:
+    name: Sanitizers ✅
+    runs-on: ubuntu-latest
+    needs: [address-sanitizer]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "## Sanitizer Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Lane | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| AddressSanitizer | ${{ needs.address-sanitizer.result }} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.address-sanitizer.result }}" != "success" ]; then
+            echo ""
+            echo "❌ Sanitizer run failed — check the per-crate job logs for the"
+            echo "   ==ERROR: AddressSanitizer block and its stack trace."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ No sanitizer findings"

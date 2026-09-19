@@ -74,7 +74,7 @@ impl<'a> BpsBuilder<'a> {
         for vec in self.vectors {
             let mut vec_proj = Vec::with_capacity(num_slots);
             for block_idx in 0..num_blocks {
-                let block_start = block_idx * block_size;
+                let block_start = (block_idx * block_size).min(vec.len());
                 let block_end = (block_start + block_size).min(vec.len());
 
                 for proj_idx in 0..num_proj {
@@ -142,7 +142,7 @@ impl<'a> BpsBuilder<'a> {
         let mut slot_idx = 0;
 
         for block_idx in 0..num_blocks {
-            let block_start = block_idx * block_size;
+            let block_start = (block_idx * block_size).min(rotated_query.len());
             let block_end = (block_start + block_size).min(rotated_query.len());
 
             for _ in 0..num_proj {
@@ -196,7 +196,7 @@ impl<'a> BpsBuilder<'a> {
         let mut sketch = Vec::with_capacity(num_blocks * num_proj);
 
         for block_idx in 0..num_blocks {
-            let block_start = block_idx * block_size;
+            let block_start = (block_idx * block_size).min(rotated_query.len());
             let block_end = (block_start + block_size).min(rotated_query.len());
 
             for _ in 0..num_proj {
@@ -285,29 +285,46 @@ impl<'a> BpsScanner<'a> {
         }
     }
 
-    /// Get top-k candidates by distance (lower is better)
+    /// Get top-k candidates by distance (lower is better), sorted ascending.
     pub fn top_k(&self, query_sketch: &[u8], k: usize) -> Vec<(u32, u16)> {
-        let distances = self.scan(query_sketch);
-
-        // Use partial selection for efficiency
-        let mut candidates: Vec<(u32, u16)> = distances
-            .into_iter()
-            .enumerate()
-            .map(|(i, d)| (i as u32, d))
-            .collect();
-
-        if candidates.len() <= k {
-            candidates.sort_by_key(|&(_, d)| d);
-            return candidates;
-        }
-
-        // Partial sort for top k
-        candidates.select_nth_unstable_by_key(k - 1, |&(_, d)| d);
-        candidates.truncate(k);
+        let mut candidates = self.top_k_unsorted(query_sketch, k);
         candidates.sort_by_key(|&(_, d)| d);
-
         candidates
     }
+
+    /// Get top-k candidates by distance in arbitrary order.
+    ///
+    /// Sorting the survivors costs ~150us at k=20_000 and the query pipeline
+    /// discards the order (it unions BPS ids into a bitset, which re-orders
+    /// them anyway), so callers that only need the candidate *set* should use
+    /// this and skip the sort.
+    pub fn top_k_unsorted(&self, query_sketch: &[u8], k: usize) -> Vec<(u32, u16)> {
+        let distances = self.scan(query_sketch);
+        select_k_smallest(&distances, k)
+    }
+}
+
+/// Select the `k` smallest distances as unordered `(id, distance)` pairs.
+///
+/// Ties at the cut-off are truncated so the result is exactly `k` long
+/// whenever `k <= distances.len()`.
+fn select_k_smallest(distances: &[u16], k: usize) -> Vec<(u32, u16)> {
+    let mut candidates: Vec<(u32, u16)> = distances
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| (i as u32, d))
+        .collect();
+
+    if candidates.len() <= k || k == 0 {
+        if k == 0 {
+            candidates.clear();
+        }
+        return candidates;
+    }
+
+    candidates.select_nth_unstable_by_key(k - 1, |&(_, d)| d);
+    candidates.truncate(k);
+    candidates
 }
 
 #[cfg(test)]
@@ -357,5 +374,61 @@ mod tests {
         let candidates = scanner.top_k(&query_sketch, 10);
 
         assert_eq!(candidates.len(), 10);
+    }
+
+    #[test]
+    fn radix_top_k_returns_exactly_the_k_smallest_distances() {
+        // Selection by histogram has to reproduce quickselect exactly: the same
+        // multiset of distances, capped at k even when the cut-off value is
+        // heavily tied. Ties at the threshold are the failure mode — an
+        // uncapped collect returns more than k, and an over-eager cap drops
+        // vectors that belong in the result.
+        fn reference(distances: &[u16], k: usize) -> Vec<u16> {
+            let mut d = distances.to_vec();
+            d.sort_unstable();
+            d.truncate(k);
+            d
+        }
+
+        // A deliberately coarse distance domain so many vectors tie exactly on
+        // the threshold, plus a wide one to exercise the high-byte bucketing.
+        for &(n, modulus) in &[(1000usize, 7u32), (1000, 1), (5000, 60000), (300, 256)] {
+            let mut distances: Vec<u16> = Vec::with_capacity(n);
+            let mut s = 0x9E3779B97F4A7C15u64;
+            for _ in 0..n {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                distances.push((((s >> 32) as u32) % modulus.max(1)) as u16);
+            }
+
+            for &k in &[1usize, 10, 137, 999] {
+                if k >= n {
+                    continue;
+                }
+                let got = select_k_smallest(&distances, k);
+
+                assert_eq!(got.len(), k, "n={} modulus={} k={}", n, modulus, k);
+                let mut got_d: Vec<u16> = got.iter().map(|&(_, d)| d).collect();
+                got_d.sort_unstable();
+                assert_eq!(
+                    got_d,
+                    reference(&distances, k),
+                    "n={} modulus={} k={} distance multiset differs",
+                    n,
+                    modulus,
+                    k
+                );
+                let mut ids: Vec<u32> = got.iter().map(|&(id, _)| id).collect();
+                ids.sort_unstable();
+                ids.dedup();
+                assert_eq!(ids.len(), k, "ids must be distinct");
+                for &(id, d) in &got {
+                    assert_eq!(
+                        distances[id as usize], d,
+                        "id {} carries a wrong distance",
+                        id
+                    );
+                }
+            }
+        }
     }
 }

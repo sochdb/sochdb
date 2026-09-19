@@ -108,52 +108,64 @@ pub fn bps_scan_u32(bps: &[u8], n_vec: usize, n_blocks: usize, query: &[u8], out
 unsafe fn bps_scan_avx2(bps: &[u8], n_vec: usize, n_blocks: usize, query: &[u8], out: &mut [u16]) {
     use std::arch::x86_64::*;
     unsafe {
-        // Process 32 vectors at a time (256 bits / 8 bits = 32)
-        let vec_aligned = (n_vec / 32) * 32;
+        // Sketch bytes are stored slot-major, so the value a given vector
+        // contributes for one slot sits `n_vec` bytes from the next slot's.
+        // Walking the slots for a single 32-vector group therefore opens one
+        // memory stream per slot - dozens of them, hundreds of kilobytes apart,
+        // each advancing only 32 bytes per pass. That is well past the number
+        // of streams a core's prefetcher tracks, so almost every load is a
+        // demand miss and the scan runs at a fraction of the cache bandwidth it
+        // should reach.
+        //
+        // Widening the group multiplies the contiguous run each stream reads
+        // without changing the total bytes touched, which is what lets the
+        // prefetcher work. The limit is register pressure: the accumulators are
+        // deliberately kept in registers so the running distances never go to
+        // memory, and each group of 32 vectors needs two of the sixteen YMM
+        // registers.
+        const GROUPS: usize = 4;
+        const LANES: usize = 32;
+        const TILE: usize = GROUPS * LANES;
+
+        let vec_aligned = (n_vec / TILE) * TILE;
 
         // Zero output
         out.iter_mut().take(n_vec).for_each(|d| *d = 0);
 
-        // Main loop: process 32 vectors at a time
-        for chunk_start in (0..vec_aligned).step_by(32) {
-            // Accumulators for 32 vectors (split into 2x16 u16)
-            let mut acc_lo = _mm256_setzero_si256(); // Vectors 0-15
-            let mut acc_hi = _mm256_setzero_si256(); // Vectors 16-31
+        for chunk_start in (0..vec_aligned).step_by(TILE) {
+            let mut acc_lo = [_mm256_setzero_si256(); GROUPS];
+            let mut acc_hi = [_mm256_setzero_si256(); GROUPS];
 
             for slot in 0..n_blocks {
                 let base = slot * n_vec + chunk_start;
-
-                // Load 32 vector values
-                let v = _mm256_loadu_si256(bps.as_ptr().add(base) as *const __m256i);
-
-                // Broadcast query value
                 let qv = _mm256_set1_epi8(query[slot] as i8);
 
-                // Compute absolute difference: |a - b| = (a ⊖ b) ∨ (b ⊖ a)
-                let d1 = _mm256_subs_epu8(v, qv);
-                let d2 = _mm256_subs_epu8(qv, v);
-                let diff = _mm256_or_si256(d1, d2);
+                for g in 0..GROUPS {
+                    let v =
+                        _mm256_loadu_si256(bps.as_ptr().add(base + g * LANES) as *const __m256i);
 
-                // Widen u8 → u16 and accumulate
-                // Extract low and high 128-bit lanes
-                let diff_lo128 = _mm256_castsi256_si128(diff);
-                let diff_hi128 = _mm256_extracti128_si256(diff, 1);
+                    // Absolute difference without a compare: |a - b| is
+                    // (a - b) saturated or (b - a) saturated, one of which is
+                    // zero.
+                    let d1 = _mm256_subs_epu8(v, qv);
+                    let d2 = _mm256_subs_epu8(qv, v);
+                    let diff = _mm256_or_si256(d1, d2);
 
-                // Zero-extend u8 to u16
-                let lo16 = _mm256_cvtepu8_epi16(diff_lo128);
-                let hi16 = _mm256_cvtepu8_epi16(diff_hi128);
+                    // Widen u8 -> u16; a slot can contribute up to 255 and there
+                    // are many slots, so the running total does not fit in u8.
+                    let lo16 = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(diff));
+                    let hi16 = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(diff, 1));
 
-                // Accumulate
-                acc_lo = _mm256_add_epi16(acc_lo, lo16);
-                acc_hi = _mm256_add_epi16(acc_hi, hi16);
+                    acc_lo[g] = _mm256_add_epi16(acc_lo[g], lo16);
+                    acc_hi[g] = _mm256_add_epi16(acc_hi[g], hi16);
+                }
             }
 
-            // Store results
-            _mm256_storeu_si256(out.as_mut_ptr().add(chunk_start) as *mut __m256i, acc_lo);
-            _mm256_storeu_si256(
-                out.as_mut_ptr().add(chunk_start + 16) as *mut __m256i,
-                acc_hi,
-            );
+            for g in 0..GROUPS {
+                let at = chunk_start + g * LANES;
+                _mm256_storeu_si256(out.as_mut_ptr().add(at) as *mut __m256i, acc_lo[g]);
+                _mm256_storeu_si256(out.as_mut_ptr().add(at + 16) as *mut __m256i, acc_hi[g]);
+            }
         }
 
         // Handle remaining vectors with scalar code

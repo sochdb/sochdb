@@ -23,7 +23,30 @@
     shortname = "sdb",
 ))]
 pub struct SochDBClusterSpec {
-    /// Number of replicas (nodes) in the cluster.
+    /// Number of pods in the StatefulSet.
+    ///
+    /// # This is not a replication factor
+    ///
+    /// SochDB has no replication or consensus protocol. Each pod this field
+    /// creates runs an independent database against its own
+    /// `PersistentVolumeClaim`, and nothing copies data between them. Three
+    /// pods are three separate databases that happen to share a Service, not
+    /// one database with three copies of the data.
+    ///
+    /// The consequences an operator needs to know before setting this above
+    /// `1`:
+    ///
+    /// - A write served by one pod is invisible to every other pod, so a
+    ///   client load-balanced across the Service reads its own writes only by
+    ///   chance.
+    /// - Losing a pod's volume loses that pod's data outright. There is no
+    ///   copy to fail over to, so raising this number does not raise
+    ///   durability.
+    /// - Scaling down destroys whatever data lived on the removed pods.
+    ///
+    /// Values above `1` are therefore only meaningful when each pod is
+    /// addressed individually through its stable StatefulSet DNS name and
+    /// sharded by the client — never behind the round-robin Service.
     pub replicas: u32,
     /// Docker image to use.
     pub image: String,

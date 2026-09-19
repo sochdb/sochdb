@@ -66,6 +66,45 @@ pub struct PendingCommitV2 {
     pub notifier: Arc<(Mutex<CommitResult>, Condvar)>,
 }
 
+/// A submitted commit must always get an answer, however its flusher dies.
+///
+/// The committing thread blocks on `notifier` until the result leaves
+/// `Pending`. Once flushing moved off that thread and onto a shared flusher,
+/// nothing guaranteed anyone would ever write that result: `flush_batch`
+/// drains the batch out of the queue before calling the flush callback, so if
+/// that callback panics the batch is dropped during unwinding and every waiter
+/// in it blocks forever on a condvar no one will signal again. A hung commit is
+/// worse than a failed one -- it is indistinguishable from a slow disk.
+///
+/// Resolving on drop makes the guarantee structural rather than a property of
+/// every path through the flusher. A commit that is still `Pending` when its
+/// record is destroyed was, by definition, never durably written, so reporting
+/// it as an error is also the truthful answer.
+impl Drop for PendingCommitV2 {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.notifier;
+        // A poisoned lock means the flusher panicked mid-notify. The waiter is
+        // stuck either way, so take the guard and answer anyway.
+        let mut result = match lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if matches!(*result, CommitResult::Pending) {
+            *result = CommitResult::Error("group commit flusher dropped the batch".into());
+            cvar.notify_all();
+        }
+    }
+}
+
+/// Clears the running flag when the flusher thread leaves, panic included.
+struct FlusherExit(Arc<AtomicU64>);
+
+impl Drop for FlusherExit {
+    fn drop(&mut self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+}
+
 /// Result of a commit operation
 #[derive(Debug, Clone)]
 pub enum CommitResult {
@@ -92,7 +131,10 @@ pub struct EventDrivenGroupCommit {
     #[allow(clippy::type_complexity)]
     flush_fn: Arc<dyn Fn(&[u64]) -> Result<u64, String> + Send + Sync>,
     /// Running flag
-    running: AtomicU64, // 1 = running, 0 = stopped
+    ///
+    /// Behind an `Arc` so the flusher thread can clear it on the way out
+    /// without holding the whole committer alive; see `start_background`.
+    running: Arc<AtomicU64>, // 1 = running, 0 = stopped
     /// Flush thread handle
     flush_thread: Mutex<Option<JoinHandle<()>>>,
 }
@@ -179,7 +221,7 @@ impl EventDrivenGroupCommit {
             config,
             metrics: GroupCommitMetrics::default(),
             flush_fn: Arc::new(flush_fn),
-            running: AtomicU64::new(0),
+            running: Arc::new(AtomicU64::new(0)),
             flush_thread: Mutex::new(None),
         };
 
@@ -199,10 +241,64 @@ impl EventDrivenGroupCommit {
             return Err("Already running".into());
         }
 
-        // We can't easily start a thread that references self
-        // In a real implementation, we'd use Arc<Self> pattern
-        // For now, document that flush_loop should be called from the owner
+        // Marks the committer as running without owning a thread. Callers that
+        // hold an `Arc` should prefer `start_background`, which actually runs
+        // the loop; this exists for owners that drive `flush_loop` themselves.
         Ok(())
+    }
+
+    /// Spawn the background flusher.
+    ///
+    /// Without a flusher thread `is_running()` is false, and `submit_and_wait`
+    /// falls back to flushing inline on the committing thread. Every committer
+    /// then issues its own barrier over whatever slice of the queue it happened
+    /// to drain, so N concurrent committers produce N small serialized barriers
+    /// instead of one that covers them all. With a single flusher, committers
+    /// only enqueue and wait, and the barrier in progress becomes the batching
+    /// window for everyone who arrives during it.
+    ///
+    /// The thread holds a `Weak`, not an `Arc`: an `Arc` would keep the group
+    /// committer alive forever and the thread would never exit. Each iteration
+    /// upgrades, does one step, and drops, so once the owner lets go the upgrade
+    /// fails and the loop ends.
+    pub fn start_background(self: &Arc<Self>) -> Result<(), String> {
+        if self
+            .running
+            .compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err("Already running".into());
+        }
+
+        let weak = Arc::downgrade(self);
+        let running = Arc::clone(&self.running);
+        match std::thread::Builder::new()
+            .name("sochdb-group-commit".into())
+            .spawn(move || {
+                // Clears `running` however this thread leaves, including by
+                // unwinding. `is_running()` is what `submit_and_wait` consults
+                // to decide whether someone else will flush for it; if a panic
+                // left the flag set with no thread behind it, every subsequent
+                // commit would wait on a flusher that no longer exists. Clearing
+                // it sends them back down the inline path, which is slower but
+                // is exactly how the engine ran before there was a flusher.
+                let _stopped = FlusherExit(running);
+                while let Some(gc) = weak.upgrade() {
+                    if !gc.is_running() {
+                        break;
+                    }
+                    gc.flush_step();
+                }
+            }) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // Undo the flag. Left set with no thread behind it, every
+                // committer would skip the inline flush and wait forever for a
+                // flusher that does not exist.
+                self.running.store(0, Ordering::SeqCst);
+                Err(e.to_string())
+            }
+        }
     }
 
     /// Stop the flush thread
@@ -289,7 +385,23 @@ impl EventDrivenGroupCommit {
                 return;
             }
 
-            let batch_size = self.optimal_batch_size().min(pending.len());
+            // Take EVERYONE who is already waiting, not `optimal_batch_size()`.
+            //
+            // A durability barrier is a fixed cost: measured on this machine it
+            // is ~965 us whether it covers 8 records or 64 (see
+            // examples/fsync_roofline.rs -- 121 us/record at batch=8, 15 us at
+            // batch=64, i.e. the same barrier divided by more records). So a
+            // commit that is already enqueued and already blocked rides along
+            // for free, and excluding it does not make this barrier any cheaper
+            // -- it just forces that commit to wait for an entire extra one.
+            //
+            // Little's Law still governs how long to WAIT for commits that have
+            // not arrived yet, which is a real latency/throughput tradeoff and
+            // is why `flush_loop` still consults `optimal_batch_size()`. It must
+            // not also cap work that has already arrived. Capping it here held
+            // the achieved batch to ~15 with 64 threads blocked, which put a
+            // ceiling on durable throughput at roughly a quarter of the device.
+            let batch_size = pending.len().min(self.config.max_batch_size);
             pending.drain(..batch_size).collect::<Vec<_>>()
         };
 
@@ -327,49 +439,55 @@ impl EventDrivenGroupCommit {
         }
     }
 
+    /// One iteration of the flush loop: wait for work if there is none, then
+    /// flush everything that has arrived.
+    fn flush_step(&self) {
+        let should_flush = {
+            let pending = self.pending.lock().unwrap();
+            let batch_size = self.optimal_batch_size();
+
+            if pending.len() >= batch_size {
+                true
+            } else if pending.is_empty() {
+                // Wait for commits
+                let _pending = self
+                    .commit_available
+                    .wait_timeout(pending, Duration::from_micros(self.config.max_wait_us))
+                    .unwrap()
+                    .0;
+                false
+            } else {
+                // Have some commits, check if we should wait longer
+                let oldest = pending
+                    .front()
+                    .map(|c| c.enqueue_time.elapsed().as_micros() as u64)
+                    .unwrap_or(0);
+
+                if oldest > self.config.max_wait_us {
+                    true
+                } else {
+                    // Wait for more commits
+                    let remaining =
+                        Duration::from_micros(self.config.max_wait_us.saturating_sub(oldest));
+                    let _pending = self
+                        .commit_available
+                        .wait_timeout(pending, remaining)
+                        .unwrap()
+                        .0;
+                    true // Flush after wait
+                }
+            }
+        };
+
+        if should_flush {
+            self.flush_batch();
+        }
+    }
+
     /// Background flush loop (call from owner thread)
     pub fn flush_loop(&self) {
         while self.is_running() {
-            let should_flush = {
-                let pending = self.pending.lock().unwrap();
-                let batch_size = self.optimal_batch_size();
-
-                if pending.len() >= batch_size {
-                    true
-                } else if pending.is_empty() {
-                    // Wait for commits
-                    let _pending = self
-                        .commit_available
-                        .wait_timeout(pending, Duration::from_micros(self.config.max_wait_us))
-                        .unwrap()
-                        .0;
-                    false
-                } else {
-                    // Have some commits, check if we should wait longer
-                    let oldest = pending
-                        .front()
-                        .map(|c| c.enqueue_time.elapsed().as_micros() as u64)
-                        .unwrap_or(0);
-
-                    if oldest > self.config.max_wait_us {
-                        true
-                    } else {
-                        // Wait for more commits
-                        let remaining =
-                            Duration::from_micros(self.config.max_wait_us.saturating_sub(oldest));
-                        let _pending = self
-                            .commit_available
-                            .wait_timeout(pending, remaining)
-                            .unwrap()
-                            .0;
-                        true // Flush after wait
-                    }
-                }
-            };
-
-            if should_flush {
-                self.flush_batch();
-            }
+            self.flush_step();
         }
     }
 
@@ -574,5 +692,158 @@ mod tests {
         assert_eq!(stats.total_batches, 10);
         assert_eq!(stats.avg_batch_size, 10.0);
         assert_eq!(stats.avg_fsync_time_us, 5000);
+    }
+
+    /// The whole point of a background flusher: concurrent committers pay for
+    /// one barrier between them, not one barrier each.
+    ///
+    /// Without a running flusher every committer flushes inline over whatever
+    /// slice of the queue it drained, so this workload produced a run of tiny
+    /// batches. Asserting on the batch count rather than on throughput keeps
+    /// the test honest on a loaded or virtualised machine.
+    #[test]
+    fn a_running_flusher_groups_concurrent_commits_into_few_barriers() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let batches = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&batches);
+
+        let gc = Arc::new(EventDrivenGroupCommit::with_config(
+            move |txn_ids| {
+                seen.lock().unwrap().push(txn_ids.len());
+                // Stand in for a durability barrier, which is a fixed cost
+                // regardless of how many records it covers.
+                thread::sleep(Duration::from_millis(5));
+                Ok(1)
+            },
+            GroupCommitConfig {
+                min_batch_size: 1,
+                ..Default::default()
+            },
+        ));
+        gc.start_background().expect("flusher should start");
+        assert!(gc.is_running());
+
+        const COMMITTERS: u64 = 32;
+        let handles: Vec<_> = (0..COMMITTERS)
+            .map(|i| {
+                let gc = Arc::clone(&gc);
+                thread::spawn(move || gc.submit_and_wait(i))
+            })
+            .collect();
+        for h in handles {
+            assert!(h.join().unwrap().is_ok(), "every commit must be answered");
+        }
+
+        let sizes = batches.lock().unwrap();
+        let total: usize = sizes.iter().sum();
+        assert_eq!(total as u64, COMMITTERS, "no commit may be lost or doubled");
+        assert!(
+            sizes.len() < COMMITTERS as usize,
+            "{COMMITTERS} commits took {} barriers; they were not grouped at all",
+            sizes.len()
+        );
+
+        gc.stop();
+    }
+
+    /// A flusher that dies must not take every future commit down with it.
+    ///
+    /// `submit_and_wait` only flushes inline when `is_running()` is false, so a
+    /// panicking flusher that left the flag set would leave the engine unable
+    /// to commit anything ever again -- a hang, not an error, and so
+    /// indistinguishable from a slow disk.
+    #[test]
+    fn a_panicking_flusher_falls_back_to_inline_commit() {
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = Arc::clone(&calls);
+        let gc = Arc::new(EventDrivenGroupCommit::with_config(
+            move |_txn_ids| {
+                // Panic on the first flush only, so the fallback path has a
+                // working callback to prove the engine still commits.
+                if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    panic!("flusher died");
+                }
+                Ok(7)
+            },
+            GroupCommitConfig {
+                min_batch_size: 1,
+                max_wait_us: 1_000,
+                ..Default::default()
+            },
+        ));
+        gc.start_background().expect("flusher should start");
+
+        // Force the flusher to run a batch through the panicking callback. Its
+        // waiter must be failed, not stranded.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        assert!(
+            gc.submit_and_wait(1).is_err(),
+            "the commit the flusher died on must report failure"
+        );
+        std::panic::set_hook(prev);
+        // The exit guard must have cleared the flag on the way out, whether the
+        // callback panicked or not.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while gc.is_running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !gc.is_running(),
+            "a dead flusher must not leave the running flag set"
+        );
+
+        // And the engine still commits, inline, without hanging.
+        assert_eq!(gc.submit_and_wait(2), Ok(7));
+    }
+
+    /// A submitted commit always gets an answer, even if its batch is destroyed
+    /// before anyone writes a result into it.
+    ///
+    /// `flush_batch` removes a batch from the queue before invoking the flush
+    /// callback, so an unwinding flusher drops those records on the floor. The
+    /// waiters are blocked on a condvar nobody else can reach, so without a
+    /// resolve-on-drop they wait forever.
+    #[test]
+    fn a_dropped_batch_fails_its_waiters_instead_of_stranding_them() {
+        let notifier = Arc::new((Mutex::new(CommitResult::Pending), Condvar::new()));
+        let commit = PendingCommitV2 {
+            txn_id: 1,
+            enqueue_time: Instant::now(),
+            notifier: Arc::clone(&notifier),
+        };
+
+        drop(commit);
+
+        let result = notifier.0.lock().unwrap();
+        assert!(
+            matches!(*result, CommitResult::Error(_)),
+            "a commit that was never flushed must report failure, not stay pending"
+        );
+    }
+
+    /// Resolving on drop must not overwrite a real result with a spurious
+    /// error: `flush_batch` writes the result and then drops the record.
+    #[test]
+    fn resolving_on_drop_does_not_clobber_a_real_result() {
+        let notifier = Arc::new((Mutex::new(CommitResult::Pending), Condvar::new()));
+        let commit = PendingCommitV2 {
+            txn_id: 1,
+            enqueue_time: Instant::now(),
+            notifier: Arc::clone(&notifier),
+        };
+
+        *notifier.0.lock().unwrap() = CommitResult::Success(42);
+        drop(commit);
+
+        assert!(matches!(
+            *notifier.0.lock().unwrap(),
+            CommitResult::Success(42)
+        ));
     }
 }

@@ -1,6 +1,5 @@
 //! Query engine implementation.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -74,10 +73,10 @@ impl QueryEngine {
         stats.time_rotate_ns = rotate_start.elapsed().as_nanos() as u64;
 
         // Prepare filter
-        let filter = params.filter.as_ref().map(|bits| {
+        let filter = params.filter.as_ref().map(|ids| {
             BitsetFilter::from_ids(
                 self.total_vectors(),
-                &bits.iter().map(|&id| id as VectorId).collect::<Vec<_>>(),
+                &ids.iter().map(|&id| id as VectorId).collect::<Vec<_>>(),
             )
         });
 
@@ -163,29 +162,52 @@ impl QueryEngine {
         stats.time_bps_ns += bps_start.elapsed().as_nanos() as u64;
         stats.bps_candidates += bps_candidates.len();
 
-        // Step 4: Union candidates
-        let mut candidate_set: HashSet<VectorId> = HashSet::new();
+        // Step 4: Union candidates.
+        //
+        // The two candidate lists are sets of ids drawn from a dense, bounded
+        // universe, which is a bitmap problem rather than a hash problem: union
+        // and dedup become a bit-or, and the whole map for a million vectors is
+        // 128 KB against several megabytes of hash table. The property that
+        // matters most here is not the union cost though — it is that a bitmap
+        // yields its members in ascending id order, whereas a HashSet yields
+        // them in hash order. Rerank immediately gathers a `dim`-byte vector per
+        // id, so hash order turns a sequential walk of the int8 block into a
+        // random scatter across it, defeating the prefetcher and missing the TLB
+        // on nearly every candidate.
+        let n_vec_total = segment.num_vectors() as usize;
+        let mut candidate_bits = vec![0u64; n_vec_total.div_ceil(64)];
+        let mut mark = |id: VectorId| {
+            let i = id as usize;
+            if i < n_vec_total {
+                candidate_bits[i >> 6] |= 1u64 << (i & 63);
+            }
+        };
         for c in &rdf_candidates {
-            candidate_set.insert(c.id);
+            mark(c.id);
         }
         for (vid, _) in &bps_candidates {
-            candidate_set.insert(*vid);
+            mark(*vid);
         }
-        stats.union_size += candidate_set.len();
+        let union_size: usize = candidate_bits.iter().map(|w| w.count_ones() as usize).sum();
+        stats.union_size += union_size;
 
         // Apply filter
         let filter_start = Instant::now();
-        let filtered_candidates: Vec<VectorId> = if let Some(f) = filter {
-            candidate_set
-                .into_iter()
-                .filter(|&id| f.contains(id) && !segment.is_tombstoned(id))
-                .collect()
-        } else {
-            candidate_set
-                .into_iter()
-                .filter(|&id| !segment.is_tombstoned(id))
-                .collect()
-        };
+        let mut filtered_candidates: Vec<VectorId> = Vec::with_capacity(union_size);
+        for (word_idx, &word) in candidate_bits.iter().enumerate() {
+            let mut w = word;
+            while w != 0 {
+                let id = ((word_idx as u32) << 6) | w.trailing_zeros();
+                w &= w - 1;
+                let keep = match filter {
+                    Some(f) => f.contains(id) && !segment.is_tombstoned(id),
+                    None => !segment.is_tombstoned(id),
+                };
+                if keep {
+                    filtered_candidates.push(id);
+                }
+            }
+        }
         stats.time_filter_ns += filter_start.elapsed().as_nanos() as u64;
         stats.post_filter_size += filtered_candidates.len();
 
@@ -231,7 +253,7 @@ impl QueryEngine {
             segment.num_vectors(),
         );
 
-        scorer.score(rotated_query, self.config.rdf.top_t as usize, l_a)
+        scorer.score_unsorted(rotated_query, self.config.rdf.top_t as usize, l_a)
     }
 
     /// BPS-based candidate generation
@@ -261,7 +283,7 @@ impl QueryEngine {
             header.bps_proj as usize,
         );
 
-        scanner.top_k(&query_sketch, l_b)
+        scanner.top_k_unsorted(&query_sketch, l_b)
     }
 
     /// Rerank candidates using int8 dot product

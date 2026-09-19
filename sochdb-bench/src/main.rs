@@ -15,7 +15,6 @@ use sochdb_bench::report;
 use sochdb_bench::workloads::{self, WorkloadConfig};
 use sochdb_bench::{BenchDb, BenchResult, BenchSuite, SystemInfo, WorkloadResult};
 use std::path::Path;
-use tempfile::TempDir;
 
 #[derive(Parser, Debug)]
 #[command(name = "sochdb-bench", about = "SochDB comparative benchmark suite")]
@@ -116,8 +115,10 @@ fn main() -> BenchResult<()> {
         results: Vec::new(),
     };
 
-    // Create temporary directories for each database.
-    let tmp = TempDir::new()?;
+    // Create temporary directories for each database. `durable_temp_dir`
+    // refuses tmpfs, where fsync is a no-op and every engine here looks
+    // uniformly fast for the wrong reason.
+    let tmp = sochdb_bench::durable_temp_dir()?;
 
     // Build database adapters.
     let mut databases: Vec<Box<dyn BenchDb>> = Vec::new();
